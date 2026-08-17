@@ -54,6 +54,17 @@ CREATE TABLE IF NOT EXISTS samples (
 
 CREATE INDEX IF NOT EXISTS idx_samples_lap ON samples(lap_id, t_ms);
 CREATE INDEX IF NOT EXISTS idx_laps_session ON laps(session_id);
+
+CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY,
+    session_id INTEGER,               -- NULL if collector wasn't recording
+    lap_count INTEGER NOT NULL,       -- completed laps when pressed (current lap = lap_count+1)
+    spline REAL NOT NULL,             -- 0..1, comparable to samples.norm_pos / corner apex_pos
+    tag TEXT NOT NULL,
+    speed_kmh REAL NOT NULL,
+    created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notes_session ON notes(session_id);
 """
 
 SAMPLE_COLUMNS = [
@@ -138,3 +149,24 @@ def list_sessions(conn, limit: int = 20) -> list[dict]:
         " FROM sessions LEFT JOIN laps ON laps.session_id = sessions.id"
         " GROUP BY sessions.id ORDER BY sessions.id DESC LIMIT ?", (limit,))
     return [dict(r) for r in rows]
+
+
+def add_note(conn, session_id, lap_count: int, spline: float, tag: str,
+             speed_kmh: float) -> int:
+    cur = conn.execute(
+        "INSERT INTO notes (session_id, lap_count, spline, tag, speed_kmh,"
+        " created_at) VALUES (?,?,?,?,?,?)",
+        (session_id, lap_count, spline, tag, speed_kmh, time.time()))
+    conn.commit()
+    return cur.lastrowid
+
+
+def list_notes(conn, session_id: int | None = None, limit: int = 100):
+    q = "SELECT * FROM notes"
+    args: list = []
+    if session_id is not None:
+        q += " WHERE session_id = ?"
+        args.append(session_id)
+    q += " ORDER BY id DESC LIMIT ?"
+    args.append(limit)
+    return [dict(r) for r in conn.execute(q, args)]

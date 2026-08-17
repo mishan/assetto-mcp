@@ -14,12 +14,15 @@ TARGET_HZ = 25  # plenty for setup work; keeps the DB small
 
 
 class Collector:
-    def __init__(self, conn, sim_info_factory):
+    def __init__(self, db_path, sim_info_factory):
         """sim_info_factory: zero-arg callable returning a SimInfo-like object.
 
-        Injected so tests can run without Windows/AC.
+        Injected so tests can run without Windows/AC. The collector opens its
+        own SQLite connection inside its thread; sharing one connection across
+        the MCP main thread, the bridge, and this thread isn't safe.
         """
-        self._conn = conn
+        self._db_path = db_path
+        self._conn = None
         self._sim_factory = sim_info_factory
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -58,6 +61,7 @@ class Collector:
             return
 
         self.status = "waiting for AC to go live"
+        self._conn = db.connect(self._db_path)
         try:
             self._loop(sim, AC_LIVE)
         except Exception as e:
@@ -65,6 +69,8 @@ class Collector:
             self.status = "error"
         finally:
             sim.close()
+            self._conn.close()
+            self._conn = None
 
     def _loop(self, sim, AC_LIVE):
         interval = 1.0 / TARGET_HZ

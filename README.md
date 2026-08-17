@@ -72,6 +72,31 @@ each car's legal min/max/step:
 Without a ranges file, writes still work but come back with a warning, and you
 should sanity-check the values in the setup screen.
 
+## In-game app (CSP Lua)
+
+`lua_app/race_engineer/` is an in-game companion app. Copy the folder to
+`assettocorsa/apps/lua/race_engineer/` (requires Custom Shaders Patch; you
+already have it if you use Content Manager with CSP enabled). Enable it from
+the in-game apps sidebar.
+
+What it does:
+
+- **Complaint tags while driving** — Understeer / Oversteer / Braking /
+  Traction buttons, each bindable to a wheel button via the app's Settings
+  window (they show up as CSP control bindings). Pressing one records your
+  exact spline position, lap, and speed. Claude reads them with
+  `get_driver_notes` and correlates them with corner telemetry: "you flagged
+  understeer twice at spline 0.34 — that's the corner where front slip
+  exceeds rear by 0.09".
+- **Status overlay** — recording indicator + laps stored, so you never
+  alt-tab to check.
+- **Messages from Claude** — `send_driver_message` puts a note on the
+  overlay ("claude_v2 saved — pit and load it"); dismiss with OK.
+
+The app talks to the server's HTTP bridge on `127.0.0.1:9666` (change with
+`AC_ENGINEER_BRIDGE_PORT`, and edit `BASE` in the Lua to match). The bridge
+binds localhost only.
+
 ## Layout
 
 ```
@@ -81,7 +106,10 @@ ac_race_engineer/
   db.py         schema + storage
   analysis.py   corner detection, lap summaries, lap comparison
   setups.py     setup INI read/write, range clamping
+  bridge.py     localhost HTTP bridge for the in-game app
   server.py     MCP tools
+lua_app/
+  race_engineer/  CSP Lua in-game app (copy to apps/lua/)
 ```
 
 ## Notes / future ideas

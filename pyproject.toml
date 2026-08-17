@@ -1,0 +1,16 @@
+[project]
+name = "ac-race-engineer"
+version = "0.1.0"
+description = "MCP server exposing Assetto Corsa telemetry and setup files to Claude"
+requires-python = ">=3.10"
+dependencies = ["mcp>=1.0.0"]
+
+[project.scripts]
+ac-race-engineer = "ac_race_engineer.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["ac_race_engineer"]

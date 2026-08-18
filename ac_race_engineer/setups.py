@@ -24,7 +24,13 @@ _NAME_RE = re.compile(r"^[\w][\w \-.]{0,60}$")
 
 
 def _parser() -> configparser.ConfigParser:
-    cp = configparser.ConfigParser(strict=False, interpolation=None)
+    # Kunos' own setup.ini files use C-style '//' banner comments between
+    # sections. configparser only knows ';' and '#', so parsing an unpacked
+    # setup.ini -- exactly what the README tells people to drop into the
+    # ranges folder -- raised ParsingError and took the tool down with it.
+    cp = configparser.ConfigParser(
+        strict=False, interpolation=None,
+        comment_prefixes=(";", "#", "//"))
     cp.optionxform = str  # AC keys are case-sensitive-ish; preserve as-is
     return cp
 

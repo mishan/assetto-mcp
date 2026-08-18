@@ -68,6 +68,37 @@ To open the folder rather than the file, use `explorer $env:APPDATA\Claude`
 in PowerShell.
 </details>
 
+<details>
+<summary><strong>On a packaged Claude Desktop install, that path is a lie</strong></summary>
+
+Claude Desktop for Windows ships as an **MSIX package** — including the build
+you download straight from Anthropic's site, not just the Microsoft Store one.
+MSIX gives each package a private, redirected view of `%APPDATA%`. The app
+writes and reads:
+
+```
+%LOCALAPPDATA%\Packages\Claude_<hash>\LocalCache\Roaming\Claude\claude_desktop_config.json
+```
+
+Once a file exists in that redirect layer it **shadows** the real
+`%APPDATA%\Claude` copy. So you can edit
+`%APPDATA%\Claude\claude_desktop_config.json` all day, get valid JSON and a
+correct Python path, and the app will still show no tools — it never opens that
+file. The `logs` folder moves with it, too, so a missing
+`%APPDATA%\Claude\logs` is the tell.
+
+To find yours:
+
+```powershell
+Get-ChildItem "$env:LOCALAPPDATA\Packages\Claude*" -Directory |
+  ForEach-Object { Join-Path $_.FullName 'LocalCache\Roaming\Claude' }
+```
+
+`install-windows.bat` handles both locations automatically. The safest manual
+route is **Claude Desktop → Settings → Developer → Edit Config**, which always
+opens the file the running app actually reads.
+</details>
+
 ```json
 {
   "mcpServers": {
@@ -108,6 +139,28 @@ Desktop (tray icon → Quit). Then read the server log:
 ```powershell
 notepad $env:APPDATA\Claude\logs\mcp-server-ac-race-engineer.log
 ```
+
+**...and there is no `logs` folder there.** That means Claude Desktop is the
+MSIX-packaged build (the normal case, whatever you downloaded) and is reading a
+different config entirely — see the MSIX note in the install section above. Re-run
+`install-windows.bat`. Both the config and the logs live under:
+
+```powershell
+Get-ChildItem "$env:LOCALAPPDATA\Packages\Claude*\LocalCache\Roaming\Claude" -Recurse -Filter 'mcp-server-*.log'
+```
+
+**Two Pythons.** `pip install -e .` records the pointer to this repo in *one*
+interpreter's `site-packages`. If `command` in the config names a different
+Python, `-m ac_race_engineer.server` dies with `ModuleNotFoundError` and Claude
+shows nothing rather than an error. Check with:
+
+```powershell
+& "<the command path from your config>" -c "import ac_race_engineer; print('ok')"
+```
+
+`diagnose.bat` in this folder checks all of the above — every config location,
+JSON validity, BOM, every Python on the box, and a live cold-start of the
+server — and writes `diagnose-report.txt`.
 
 **Typing `python` opens the Microsoft Store** (or says "not recognized").
 Windows ships an app-execution-alias stub at

@@ -10,6 +10,16 @@
 local BASE = 'http://127.0.0.1:9666'
 local POLL_INTERVAL = 2.0
 
+-- Opponent capture. AC's shared memory is ego-only, so the server can only
+-- learn about other cars from here. Sampling every frame would be wasteful
+-- and would swamp the SQLite writer; 10Hz resolves a braking point to about
+-- 5m at Mugello's speeds, which is finer than any decision we make from it.
+local RIVAL_SAMPLE_INTERVAL = 0.1
+local RIVAL_POST_INTERVAL = 1.0
+-- Two seconds of a full 64-car grid at 10Hz, so a single delayed POST does
+-- not start shedding samples. Must stay under the bridge's MAX_RIVAL_BATCH.
+local RIVAL_BUFFER_MAX = 1400
+
 local car = ac.getCar(0)
 
 local status = {
@@ -18,6 +28,12 @@ local status = {
   text = 'connecting...',
   laps = 0,
 }
+local rivalBuffer = {}
+local rivalSampleTimer = 0
+local rivalPostTimer = 0
+local rivalBusy = false
+local rivalDropped = 0
+local rivalSent = 0
 local message = nil        -- { id, text } from Claude, shown until dismissed
 local ackedId = 0          -- last message id we dismissed (poll may race ack)
 local pollTimer = 0
@@ -81,6 +97,64 @@ local function pumpNotes()
     end)
 end
 
+-- Snapshot every car on track. Fields that AC doesn't transmit for remote
+-- cars are sent as nil rather than 0: the server distinguishes "absent" from
+-- "driver wasn't braking", and silently coercing to 0 would destroy that.
+local function sampleRivals()
+  local n = ac.getSim().carsCount
+  if not n or n < 2 then return end
+  for i = 0, n - 1 do
+    if i ~= 0 then
+      local c = ac.getCar(i)
+      -- Cars that have left, not yet spawned, or are in the pits contribute
+      -- nothing useful to a speed trace.
+      if c and c.isConnected and not c.isInPitlane then
+        if #rivalBuffer >= RIVAL_BUFFER_MAX then
+          rivalDropped = rivalDropped + 1
+        else
+          rivalBuffer[#rivalBuffer + 1] = {
+            car_index = i,
+            driver_name = ac.getDriverName(i) or '',
+            car_model = c.carId or '',
+            lap_count = clamp(math.floor(num(c.lapCount, 0)), 0, 100000),
+            spline = clamp(num(c.splinePosition, 0), 0, 1),
+            speed_kmh = clamp(num(c.speedKmh, 0), 0, 1000),
+            gear = num(c.gear, nil),
+            gas = num(c.gas, nil),
+            brake = num(c.brake, nil),
+            best_lap_ms = num(c.bestLapTimeMs, nil),
+            last_lap_ms = num(c.previousLapTimeMs, nil),
+          }
+        end
+      end
+    end
+  end
+end
+
+local function postRivals()
+  if rivalBusy or #rivalBuffer == 0 then return end
+  -- Only ship telemetry the server can file against a session.
+  if not status.running then
+    rivalBuffer = {}
+    return
+  end
+  rivalBusy = true
+  local batch = rivalBuffer
+  rivalBuffer = {}
+  web.post(BASE .. '/rivals', { ['Content-Type'] = 'application/json' },
+    JSON.stringify{ cars = batch },
+    function(err, response)
+      rivalBusy = false
+      if err or not response then return end
+      if response.status == 200 then
+        rivalSent = rivalSent + #batch
+      else
+        ac.warn('race_engineer: /rivals rejected: '
+          .. tostring(response.status) .. ' ' .. tostring(response.body))
+      end
+    end)
+end
+
 local function poll()
   if pollBusy then return end
   pollBusy = true
@@ -125,6 +199,18 @@ function script.update(dt)
     poll()
   end
 
+  rivalSampleTimer = rivalSampleTimer - dt
+  if rivalSampleTimer <= 0 then
+    rivalSampleTimer = RIVAL_SAMPLE_INTERVAL
+    if status.running then sampleRivals() end
+  end
+
+  rivalPostTimer = rivalPostTimer - dt
+  if rivalPostTimer <= 0 then
+    rivalPostTimer = RIVAL_POST_INTERVAL
+    postRivals()
+  end
+
   if toastTimer > 0 then toastTimer = toastTimer - dt end
 end
 
@@ -136,6 +222,11 @@ function windowMain(dt)
     ui.textColored('● recording', rgbm(0.3, 1, 0.3, 1))
     ui.sameLine()
     ui.text(string.format('%d laps stored', status.laps))
+    if rivalSent > 0 or rivalDropped > 0 then
+      ui.textColored(string.format('rivals: %d sent%s', rivalSent,
+        rivalDropped > 0 and (', ' .. rivalDropped .. ' dropped') or ''),
+        rgbm(0.7, 0.7, 0.7, 1))
+    end
   else
     ui.textColored('● connected, not recording', rgbm(1, 0.8, 0.2, 1))
   end

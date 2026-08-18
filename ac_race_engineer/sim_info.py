@@ -176,10 +176,16 @@ class _Page:
         self.data = struct_cls.from_buffer(self._mm)
 
     def close(self):
-        # ctypes keeps an exported pointer into the mmap; drop it first
-        # or mmap.close() raises BufferError.
-        del self.data
-        self._mm.close()
+        # from_buffer() registers an export on the mmap, so mmap.close()
+        # raises BufferError while *any* reference to the struct is alive --
+        # including a caller's local, or a frame pinned by a live traceback.
+        # Drop our own reference; if others remain, leave the mapping to be
+        # reclaimed by refcounting rather than blowing up the caller.
+        self.data = None
+        try:
+            self._mm.close()
+        except BufferError:
+            pass
 
 
 class SimInfo:

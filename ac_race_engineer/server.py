@@ -96,7 +96,7 @@ def live_snapshot() -> str:
     sim = SimInfo()
     try:
         p, g, s = sim.physics, sim.graphics, sim.static
-        return _j({
+        payload = {
             "car": s.carModel,
             "track": s.track,
             "track_config": s.trackConfiguration,
@@ -115,9 +115,12 @@ def live_snapshot() -> str:
             "tyre_core_temps_c": {
                 w: round(p.tyreCoreTemperature[i], 1)
                 for i, w in enumerate(("fl", "fr", "rl", "rr"))},
-        })
+        }
     finally:
+        # Release the ctypes views before closing the mapping.
+        p = g = s = None
         sim.close()
+    return _j(payload)
 
 
 # --- stored telemetry --------------------------------------------------
@@ -127,6 +130,87 @@ def live_snapshot() -> str:
 def list_sessions() -> str:
     """List recorded sessions with car, track, lap count and best time."""
     return _j(db.list_sessions(_conn))
+
+
+@mcp.tool()
+def list_rivals(session_id: int | None = None) -> str:
+    """Opponents seen in a session, best-lap order, with how much of their
+    telemetry we captured.
+
+    Requires the in-game Lua app: AC's shared memory is ego-only, so
+    opponent data can only reach the server via the bridge."""
+    sid = session_id if session_id is not None else _collector.session_id
+    if sid is None:
+        return _j({"error": "no active session; pass session_id explicitly"})
+    rivals = db.list_rivals(_conn, sid)
+    if not rivals:
+        return _j({"rivals": [],
+                   "note": "No opponent data. The in-game app must be "
+                           "running and updated to push rival telemetry."})
+    for r in rivals:
+        laps = db.rival_lap_counts(_conn, sid, r["car_index"])
+        # Only laps we saw nearly all of are worth comparing against.
+        r["captured_laps"] = [
+            {"lap_count": l["lap_count"], "samples": l["n"],
+             "coverage": round(l["hi"] - l["lo"], 3)}
+            for l in laps if l["n"] >= 20 and (l["hi"] - l["lo"]) > 0.8
+        ]
+    return _j({"session_id": sid, "rivals": rivals})
+
+
+@mcp.tool()
+def compare_to_rival(car_index: int, lap_id: int,
+                     rival_lap_count: int | None = None,
+                     session_id: int | None = None) -> str:
+    """Compare one of your laps against a rival's, by track position.
+
+    Shows where they carry more speed, and -- if the server transmits remote
+    pedal inputs -- where they brake and get back on power. Use list_rivals
+    to find car_index and which of their laps were captured.
+
+    rival_lap_count defaults to their best captured lap."""
+    sid = session_id if session_id is not None else _collector.session_id
+    if sid is None:
+        return _j({"error": "no active session; pass session_id explicitly"})
+
+    lap = db.get_lap(_conn, lap_id)
+    if not lap:
+        return _j({"error": f"no lap with id {lap_id}"})
+
+    laps = [l for l in db.rival_lap_counts(_conn, sid, car_index)
+            if l["n"] >= 20 and (l["hi"] - l["lo"]) > 0.8]
+    if not laps:
+        return _j({"error": f"no well-covered laps captured for car "
+                            f"{car_index} in session {sid}"})
+    if rival_lap_count is None:
+        rival_lap_count = max(laps, key=lambda l: l["n"])["lap_count"]
+
+    rival_samples = db.get_rival_lap_samples(
+        _conn, sid, car_index, rival_lap_count)
+    result = analysis.compare_to_rival(
+        db.get_samples(_conn, lap_id), rival_samples)
+    result["my_lap"] = {"id": lap_id,
+                        "time_ms": lap["lap_time_ms"],
+                        "setup": lap.get("setup_name", "")}
+    result["rival"] = {"car_index": car_index,
+                       "lap_count": rival_lap_count}
+    return _j(result)
+
+
+@mcp.tool()
+def set_session_setup(setup_name: str, session_id: int | None = None) -> str:
+    """Record which setup a session is running, so laps can be attributed.
+
+    AC's shared memory does not expose the setup loaded in the garage, so
+    this has to be stated explicitly -- call it whenever the driver says
+    they've loaded a different setup. Defaults to the session currently
+    being recorded."""
+    sid = session_id if session_id is not None else _collector.session_id
+    if sid is None:
+        return _j({"error": "no active session; pass session_id explicitly"})
+    if not db.set_session_setup(_conn, sid, setup_name):
+        return _j({"error": f"no session with id {sid}"})
+    return _j({"ok": True, "session_id": sid, "setup_name": setup_name})
 
 
 @mcp.tool()

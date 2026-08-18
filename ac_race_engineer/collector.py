@@ -12,6 +12,24 @@ from . import db
 
 TARGET_HZ = 25  # plenty for setup work; keeps the DB small
 
+# A lap this much slower than the session's best is a stop, a spin, or a
+# tow -- not a representative lap. Generous on purpose: a scrappy lap with a
+# half-spin is still worth analysing, and marking it invalid only excludes it
+# from best-lap maths, it is still stored and still readable.
+OUTLIER_RATIO = 1.5
+
+
+def _is_outlier(lap_time_ms: int, session_best_ms: int | None) -> bool:
+    """True if this lap is grossly slower than the session's best so far.
+
+    Returns False when there is no reference yet: the first flying lap of a
+    session has nothing to be an outlier against, and guessing an absolute
+    ceiling would break on tracks like the Nordschleife.
+    """
+    if session_best_ms is None:
+        return False
+    return lap_time_ms > session_best_ms * OUTLIER_RATIO
+
 
 class Collector:
     def __init__(self, db_path, sim_info_factory):
@@ -77,6 +95,8 @@ class Collector:
         session_started = False
         lap_samples: list[tuple] = []
         lap_dirty = False        # any tyres-out excursion this lap
+        lap_pitted = False       # driver entered the pit lane this lap
+        session_best = None      # fastest valid lap so far, for outlier check
         last_completed = None
         lap_start_wall = None
         last_packet = -1
@@ -90,9 +110,25 @@ class Collector:
                 if g.status == 0:  # AC_OFF -> back to waiting
                     session_started = False
                     last_completed = None
+                    session_best = None
                     lap_samples = []
                 time.sleep(0.25)
                 continue
+
+            # Restarting a session from the in-game menu resets completedLaps
+            # without ever passing through AC_OFF, so watching only for that
+            # transition left the new run appended to the old session -- same
+            # session_id, lap numbers starting over, and two different track
+            # states averaged together. A lap counter that goes backwards can
+            # only mean a restart, so roll a fresh session on it.
+            if (session_started and last_completed is not None
+                    and g.completedLaps < last_completed):
+                session_started = False
+                last_completed = None
+                session_best = None
+                lap_samples = []
+                lap_dirty = False
+                lap_pitted = False
 
             if not session_started:
                 s = sim.static
@@ -107,6 +143,7 @@ class Collector:
                 last_completed = g.completedLaps
                 lap_samples = []
                 lap_dirty = False
+                lap_pitted = False
                 lap_start_wall = time.monotonic()
                 self.status = f"recording (session {self.session_id})"
 
@@ -116,15 +153,28 @@ class Collector:
                 # First crossing of the line after leaving the pits produces
                 # an out-lap with no meaningful time; iLastTime is 0 then.
                 if lap_samples and lap_time > 0:
-                    valid = not lap_dirty
+                    valid = (not lap_dirty
+                             and not lap_pitted
+                             and not _is_outlier(lap_time, session_best))
                     db.store_lap(self._conn, self.session_id,
                                  last_completed + 1, lap_time, valid,
                                  lap_samples)
                     self.laps_recorded += 1
+                    if valid and (session_best is None
+                                  or lap_time < session_best):
+                        session_best = lap_time
                 last_completed = g.completedLaps
                 lap_samples = []
                 lap_dirty = False
+                lap_pitted = False
                 lap_start_wall = time.monotonic()
+
+            # A lap containing a pit visit is wall-clock nonsense -- the
+            # 4:34 and 10:22 "valid" laps in testing were both stops. Note it
+            # before the sampling guard below, which skips pit-lane ticks and
+            # would otherwise hide the visit entirely.
+            if g.isInPitLane:
+                lap_pitted = True
 
             # New physics tick since last sample?
             if p.packetId != last_packet and not g.isInPitLane:

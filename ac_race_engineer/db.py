@@ -16,7 +16,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -108,6 +108,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_rival_samples
 -- rival_drivers.last_lap_ms is overwritten every batch, so without this
 -- there is no way to tell which of a rival's stored laps was their quick
 -- one -- and comparing against an unknown-pace lap is worse than useless.
+-- Suspension telemetry, pushed by the in-game Lua app. Stock shared memory
+-- exposes none of this: no suspension travel, no wheel load, no ride height.
+--
+-- `source` records which tier produced the row and is not decoration. 'app'
+-- is render-rate (60-144Hz), fine for ride height and load transfer but
+-- aliased for damper velocity; 'worker' is a CSP physics worker at 333Hz,
+-- where damper numbers are real. Mixing them silently would let a histogram
+-- built from body motion be presented as damper valving.
+CREATE TABLE IF NOT EXISTS suspension_samples (
+    session_id INTEGER NOT NULL,
+    lap_count INTEGER NOT NULL,     -- completed laps when sampled
+    t_ms INTEGER NOT NULL,          -- AC physics clock, not wall time
+    spline REAL NOT NULL,           -- 0..1, comparable to samples.norm_pos
+    source TEXT NOT NULL DEFAULT 'app',
+    brake REAL,                     -- used to infer the compression sign
+    speed_kmh REAL,
+    travel_fl REAL, travel_fr REAL, travel_rl REAL, travel_rr REAL,
+    load_fl REAL, load_fr REAL, load_rl REAL, load_rr REAL,
+    ride_f REAL, ride_r REAL,
+    plank_wear REAL,
+    PRIMARY KEY (session_id, lap_count, t_ms, source)
+);
+CREATE INDEX IF NOT EXISTS idx_suspension_lap
+    ON suspension_samples(session_id, lap_count);
+
 CREATE TABLE IF NOT EXISTS rival_laps (
     session_id INTEGER NOT NULL,
     car_index INTEGER NOT NULL,
@@ -195,6 +220,11 @@ def _migrate(conn) -> list[str]:
         if flipped:
             log.append(f"re-checked stored laps: {flipped} gross outlier(s) "
                        "marked invalid (they are still readable)")
+
+    # v3 added suspension_samples, a new table only -- CREATE TABLE IF NOT
+    # EXISTS below covers it, so there is no ALTER step here. Recorded so
+    # the next person can see the version was accounted for rather than
+    # skipped.
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
@@ -526,6 +556,104 @@ def add_note(conn, session_id, lap_count: int, spline: float, tag: str,
         (session_id, lap_count, spline, tag, speed_kmh, time.time()))
     conn.commit()
     return cur.lastrowid
+
+
+SUSPENSION_COLUMNS = [
+    "session_id", "lap_count", "t_ms", "spline", "source", "brake",
+    "speed_kmh",
+    "travel_fl", "travel_fr", "travel_rl", "travel_rr",
+    "load_fl", "load_fr", "load_rl", "load_rr",
+    "ride_f", "ride_r", "plank_wear",
+]
+
+
+def store_suspension_batch(conn, session_id: int, source: str,
+                           samples: list[dict]) -> int:
+    """Append suspension samples. Returns how many were newly stored.
+
+    OR IGNORE against the primary key: the app resends a batch whose
+    response it never saw, and the physics clock makes each sample
+    identifiable, so a retry is a no-op instead of a duplicate that would
+    skew every histogram built from it.
+    """
+    rows = [
+        (session_id, s["lap_count"], s["t_ms"], s["spline"], source,
+         s.get("brake"), s.get("speed_kmh"),
+         s.get("travel_fl"), s.get("travel_fr"),
+         s.get("travel_rl"), s.get("travel_rr"),
+         s.get("load_fl"), s.get("load_fr"),
+         s.get("load_rl"), s.get("load_rr"),
+         s.get("ride_f"), s.get("ride_r"), s.get("plank_wear"))
+        for s in samples
+    ]
+    if not rows:
+        return 0
+    placeholders = ",".join("?" * len(SUSPENSION_COLUMNS))
+    before = conn.total_changes
+    conn.executemany(
+        f"INSERT OR IGNORE INTO suspension_samples"
+        f" ({','.join(SUSPENSION_COLUMNS)}) VALUES ({placeholders})", rows)
+    conn.commit()
+    return conn.total_changes - before
+
+
+def get_suspension_samples(conn, session_id: int, lap_count: int,
+                           source: str | None = None) -> list[dict]:
+    """Samples for one lap, of one tier or all of them.
+
+    Both tiers are returned by default because they carry different things:
+    the worker has travel at 333Hz, the render-rate rows have the wheel
+    loads and ride height that the physics API does not expose at all.
+    Every row keeps its own `source` so the analysis can keep them apart --
+    which it must, since they are different channels on different clocks.
+    """
+    q = ("SELECT * FROM suspension_samples WHERE session_id = ?"
+         " AND lap_count = ?")
+    args: list = [session_id, lap_count]
+    if source is not None:
+        q += " AND source = ?"
+        args.append(source)
+    q += " ORDER BY t_ms"
+    return [dict(r) for r in conn.execute(q, args)]
+
+
+def best_suspension_source(conn, session_id: int,
+                           lap_count: int) -> str | None:
+    rows = {r["source"]: r["n"] for r in conn.execute(
+        "SELECT source, COUNT(*) AS n FROM suspension_samples"
+        " WHERE session_id = ? AND lap_count = ? GROUP BY source",
+        (session_id, lap_count))}
+    if rows.get("worker"):
+        return "worker"
+    return "app" if rows.get("app") else None
+
+
+def suspension_lap_counts(conn, session_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT lap_count, source, COUNT(*) AS n,"
+        " MIN(spline) AS lo, MAX(spline) AS hi"
+        " FROM suspension_samples WHERE session_id = ?"
+        " GROUP BY lap_count, source ORDER BY lap_count", (session_id,))
+    return [dict(r) for r in rows]
+
+
+def prune_suspension_samples(conn, session_id: int,
+                             keep_laps: int = 20) -> int:
+    """Keep the most recent `keep_laps` laps of suspension data.
+
+    At 333Hz this is the highest-volume table in the database by some
+    margin, and old laps are not what anyone compares against.
+    """
+    laps = [r["lap_count"] for r in conn.execute(
+        "SELECT DISTINCT lap_count FROM suspension_samples"
+        " WHERE session_id = ? ORDER BY lap_count DESC", (session_id,))]
+    if len(laps) <= keep_laps:
+        return 0
+    cur = conn.execute(
+        "DELETE FROM suspension_samples WHERE session_id = ?"
+        " AND lap_count < ?", (session_id, laps[keep_laps - 1]))
+    conn.commit()
+    return cur.rowcount
 
 
 def count_orphan_notes(conn) -> int:

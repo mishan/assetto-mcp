@@ -7,6 +7,8 @@ on 127.0.0.1 that it polls and posts to:
     POST /note    -> driver complaint tag at current track position
     POST /rivals  -> batched opponent telemetry (AC's shared memory is
                      ego-only, so this is the only way to see other cars)
+    POST /suspension -> suspension travel, wheel loads and ride height,
+                     none of which stock shared memory exposes
     POST /ack     -> dismiss the currently displayed message
 
 Messages flow the other way via the send_driver_message MCP tool: Claude sets
@@ -74,6 +76,20 @@ MAX_RIVAL_BATCH = 2000
 # because bracketing the constant loosely is how it got sized for a single
 # grid snapshot the first time.
 RIVAL_BUFFER_MAX_CLIENT = 1400
+
+# Suspension arrives from two tiers: the app at render rate (~60-144Hz) and
+# a CSP physics worker at 333Hz. One second of the worker's output is ~333
+# samples, so this holds several seconds of the faster stream.
+MAX_SUSPENSION_BATCH = 2000
+
+# A wheel load past this is a bad read, not a heavy car. Roughly ten tonnes
+# on one corner.
+MAX_WHEEL_LOAD_N = 100_000.0
+
+# Sweep old suspension laps every N accepted batches. At one batch a second
+# that is roughly every three minutes -- often enough to bound the table,
+# rarely enough that the delete never lands in a hot path.
+SUSPENSION_PRUNE_EVERY = 200
 
 # Ceiling on a request body before we even parse it. A full 1400-sample
 # batch measures ~300KB; 4MB is generous for that and still bounded.
@@ -196,6 +212,7 @@ class Bridge:
         self._server: ThreadingHTTPServer | None = None
         self._handler_cls = None
         self._bind_stop = threading.Event()
+        self._susp_writes = 0
         self.error: str | None = None
 
     # -- session resolution ---------------------------------------------
@@ -478,6 +495,95 @@ class Bridge:
                         conn.close()
                     return self._send(200, {"ok": True, "stored": n,
                                             "skipped": skipped})
+
+                if self.path == "/suspension":
+                    sid = bridge.active_session_id()
+                    if sid is None:
+                        return self._send(200, {"ok": False,
+                                                "reason": "not recording"})
+                    source = body.get("source")
+                    if source not in ("app", "worker"):
+                        return self._send(400, {
+                            "error": "'source' must be 'app' or 'worker' -- "
+                                     "the tier decides which analyses are "
+                                     "honest to run on the data"})
+                    raw = body.get("samples")
+                    if not isinstance(raw, list):
+                        return self._send(400, {"error": "'samples' must be "
+                                                "a list"})
+                    if len(raw) > MAX_SUSPENSION_BATCH:
+                        return self._send(400, {
+                            "error": f"batch too large "
+                                     f"(max {MAX_SUSPENSION_BATCH})"})
+
+                    samples, skipped = [], 0
+                    # Out-of-range optional fields become NULL, which is
+                    # correct but invisible: if the client sent millimetres
+                    # where metres were expected, every travel field would
+                    # silently vanish and the report would come back empty
+                    # with no explanation. Count them so it reads as a units
+                    # problem rather than a mystery.
+                    rejected: dict[str, int] = {}
+
+                    def opt(src, key, lo, hi, integral=False):
+                        raw_v = src.get(key)
+                        val = (_opt_int(raw_v, int(lo), int(hi)) if integral
+                               else _opt_float(raw_v, lo, hi))
+                        if val is None and raw_v is not None:
+                            rejected[key] = rejected.get(key, 0) + 1
+                        return val
+
+                    for s in raw:
+                        if not isinstance(s, dict):
+                            skipped += 1
+                            continue
+                        try:
+                            row = {
+                                "lap_count": _req_int(s, "lap_count",
+                                                      0, 100_000),
+                                "t_ms": _req_int(s, "t_ms", 0, 2**53),
+                                "spline": min(max(_req_float(
+                                    s, "spline", -0.1, 1.1), 0.0), 1.0),
+                            }
+                        except FieldError:
+                            skipped += 1
+                            continue
+                        row["brake"] = opt(s, "brake", 0.0, 1.0)
+                        row["speed_kmh"] = opt(s, "speed_kmh", 0.0,
+                                               MAX_SPEED_KMH)
+                        for w in ("fl", "fr", "rl", "rr"):
+                            # Travel in metres. A metre of suspension travel
+                            # is not a car, it is a bad read.
+                            row[f"travel_{w}"] = opt(s, f"travel_{w}",
+                                                     -1.0, 1.0)
+                            row[f"load_{w}"] = opt(s, f"load_{w}", 0.0,
+                                                   MAX_WHEEL_LOAD_N)
+                        row["ride_f"] = opt(s, "ride_f", 0.0, 1.0)
+                        row["ride_r"] = opt(s, "ride_r", 0.0, 1.0)
+                        row["plank_wear"] = opt(s, "plank_wear", 0.0, 1.0)
+                        samples.append(row)
+
+                    conn = db.connect(bridge._db_path)
+                    try:
+                        n = db.store_suspension_batch(conn, sid, source,
+                                                      samples)
+                        # Highest-volume table in the database by an order
+                        # of magnitude; sweep occasionally rather than never.
+                        if n:
+                            bridge._susp_writes += 1
+                            if bridge._susp_writes % SUSPENSION_PRUNE_EVERY == 0:
+                                db.prune_suspension_samples(conn, sid)
+                    finally:
+                        conn.close()
+                    reply = {"ok": True, "stored": n, "skipped": skipped,
+                             "session_id": sid}
+                    if rejected:
+                        reply["rejected_fields"] = rejected
+                        reply["hint"] = ("Fields out of their expected range "
+                                         "were stored as null. Travel and "
+                                         "ride height are expected in "
+                                         "metres.")
+                    return self._send(200, reply)
 
                 if self.path == "/ack":
                     try:

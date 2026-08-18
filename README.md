@@ -280,6 +280,56 @@ The app talks to the server's HTTP bridge on `127.0.0.1:9666` (change with
 `AC_ENGINEER_BRIDGE_PORT`, and edit `BASE` in the Lua to match). The bridge
 binds localhost only.
 
+## Suspension
+
+Stock shared memory exposes no suspension travel, no wheel load and no ride
+height, so all of this comes from the in-game Lua app. Ask Claude for
+`suspension_report` after a lap, or look at the `suspension` block that
+`lap_summary` now includes.
+
+Three questions, in the order you'd ask them:
+
+- **Are the dampers doing the right thing?** A velocity histogram per axle,
+  split bump vs rebound. Most of a lap should sit in the low-speed bins;
+  a fat high-speed bump tail means the valving is packing down over kerbs.
+- **Is the car running low enough, or too low?** Min/median/max ride height
+  front and rear, rake, and the five places on track where it runs lowest,
+  plus AC's plank wear as a bottoming indicator.
+- **Which axle takes the load transfer?** The front's share of total lateral
+  load transfer. Above 50% biases toward understeer, and it should agree
+  with the slip-balance metric — when those two disagree, something else is
+  going on and that's worth knowing.
+
+### Two capture tiers, and why the report tells you which one it used
+
+| Tier | Rate | Good for | Not good for |
+|---|---|---|---|
+| `worker` | 333 Hz | everything, including damper valving | — |
+| `app` | render rate, 60–144 Hz | ride height, loads, roll balance | damper histograms |
+
+The app tries to start a **CSP physics worker** — a script CSP runs on the
+physics thread at 333Hz — and falls back to sampling on the render thread if
+physics scripting isn't available. That fallback matters: damper velocity is
+a fast signal, and differentiating a 60Hz sample of it aliases exactly the
+band the valving lives in. A histogram built that way describes body motion,
+not dampers. Rather than quietly present one as the other, the report
+labels the tier and adds a caution when it's render-rate.
+
+The app's own window shows which tier it got (`◆` worker, `◇` app), and
+`suspension_capture_status` explains it from Claude's side.
+
+### The sign convention
+
+CSP documents neither the units nor the direction of suspension travel, and
+whether a rising number means compression decides whether "add bump" or
+"add rebound" is the right advice. So it isn't assumed — it's **inferred
+from your data**: under braking the front suspension compresses, which is
+about as dependable as vehicle dynamics gets, so the report compares where
+the front axle sits on the brakes against where it sits off them. If a lap
+has no usable braking, the direction is reported as unknown and the
+bump/rebound split is withheld rather than guessed. `sign_convention` in the
+report shows the reasoning and a confidence figure.
+
 ## Layout
 
 ```
@@ -291,8 +341,11 @@ ac_race_engineer/
   setups.py     setup INI read/write, range clamping
   bridge.py     localhost HTTP bridge for the in-game app
   server.py     MCP tools
+  suspension.py damper histograms, ride height, roll balance
 lua_app/
   race_engineer/  CSP Lua in-game app (copy to apps/lua/)
+    race_engineer.lua      the app itself, render thread
+    suspension_worker.lua  CSP physics worker, 333Hz damper sampling
 install-windows.ps1  one-shot Windows installer
 install-windows.bat  double-clickable wrapper for the above
 ```
@@ -304,6 +357,8 @@ install-windows.bat  double-clickable wrapper for the above
 - Out-laps (no valid time) are skipped automatically.
 - Corner detection is generic (speed minima); a per-track corner-name map
   would make Claude's advice read nicer ("T3/Variante" vs "corner at 0.34").
-- CSP/Lua could expose damper velocities and more channels than stock shared
-  memory if you ever want deeper suspension work — Telemetrick's source is a
-  good reference.
+- Suspension capture is in — see the section above. The remaining gap is
+  true damper *velocity* as a first-class channel: CSP only exposes that
+  inside a per-car physics script (`script.lua` in the car's data folder,
+  requires extended physics). The physics worker gets damper *travel* at
+  333Hz, which is close enough to differentiate honestly.

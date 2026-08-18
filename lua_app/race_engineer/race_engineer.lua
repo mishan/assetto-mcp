@@ -4,12 +4,13 @@
 --   * polls /status every 2s (recording state + messages from Claude)
 --   * POSTs /note when a complaint tag is pressed (button or wheel binding)
 --   * POSTs /rivals once a second (batched opponent telemetry)
+--   * POSTs /suspension once a second (travel, loads, ride height)
 --
--- CSP caps Lua apps at 2 concurrent web requests. There are three things
+-- CSP caps Lua apps at 2 concurrent web requests. There are four things
 -- that want to talk, so they take turns: sendSlots() below is the single
--- gate, and the poll and rival timers are deliberately out of phase so they
--- don't collide every second frame. A note press wins any tie -- it is the
--- one request the driver is waiting on.
+-- gate, and the timers are deliberately out of phase so they don't collide
+-- every second frame. A note press wins any tie -- it is the one request
+-- the driver is waiting on.
 
 local BASE = 'http://127.0.0.1:9666'
 local MAX_CONCURRENT_REQUESTS = 2
@@ -29,6 +30,27 @@ local RIVAL_POST_PHASE = 0.5
 -- Two seconds of a full 64-car grid at 10Hz, so a single delayed POST does
 -- not start shedding samples. Must stay under the bridge's MAX_RIVAL_BATCH.
 local RIVAL_BUFFER_MAX = 1400
+
+-- Suspension capture. Stock shared memory exposes none of this, so like
+-- rival data it can only come from in here.
+--
+-- Two tiers, and which one we get is decided at runtime:
+--
+--   worker  a CSP physics worker sampling at 333Hz. Damper velocity is a
+--           fast signal, and this is the only app-reachable way to see it
+--           without aliasing. CSP gates physics scripting, so this may not
+--           be available.
+--   app     this script, at render rate. Fine for ride height and wheel
+--           loads, which move slowly. Not fine for damper valving, and the
+--           server labels it accordingly rather than quietly pretending.
+local SUSP_SAMPLE_INTERVAL = 1 / 60      -- app tier; no point beating frames
+local SUSP_POST_INTERVAL = 1.0
+-- Distinct from both the poll (period 2.0, fires on even seconds) and the
+-- rival post (period 1.0, phase 0.5). 1.5 would have looked staggered and
+-- collided with rivals on every single second: 1.5 mod 1.0 == 0.5.
+local SUSP_POST_PHASE = 0.25
+local SUSP_BUFFER_MAX = 1800             -- under the bridge's cap, ~5s at 333Hz
+local WORKER_RING = 1024                 -- must match suspension_worker.lua
 
 local car = ac.getCar(0)
 
@@ -52,6 +74,25 @@ local pollBusy = false
 local sendBusy = false
 local noteQueue = {}
 local toast, toastTimer = nil, 0
+
+-- Two buffers, not one. The tiers are different channels on different
+-- clocks: the worker reads damper travel from the physics API at 333Hz,
+-- while the render-rate sampler reads suspension travel, wheel loads and
+-- ride height from ac.getCar(). Posting them under a single label let a
+-- histogram be built across the seam between two zero points, which
+-- manufactures a high-speed tail out of nothing -- and reads exactly like
+-- valving that packs down over kerbs.
+local suspAppBuffer = {}
+local suspWorkerBuffer = {}
+local suspSampleTimer = 0
+local suspPostTimer = SUSP_POST_PHASE
+local suspBusy = false
+local suspDropped = 0
+local suspSent = 0
+local suspNote = 'starting'  -- shown in the app window
+local worker = nil           -- shared struct, once connected
+local workerReadIndex = 0
+local workerProducing = false -- only true once samples have actually arrived
 
 -- Complaint tags. Each gets a clickable button and a bindable control
 -- (Settings window) so they can go on wheel buttons.
@@ -88,6 +129,7 @@ local function sendSlots()
   if pollBusy then used = used + 1 end
   if sendBusy then used = used + 1 end
   if rivalBusy then used = used + 1 end
+  if suspBusy then used = used + 1 end
   return MAX_CONCURRENT_REQUESTS - used
 end
 
@@ -144,6 +186,256 @@ local function pumpNotes()
         end
       end
     end)
+end
+
+-- ---------------------------------------------------------------- suspension
+
+-- Try for the 333Hz physics worker, and be explicit when we don't get it.
+--
+-- Everything here is defensive on purpose: physics scripting is gated by
+-- CSP and by the track, the two getters are undocumented, and older CSP
+-- builds may not have startPhysicsWorker at all. A missing capability must
+-- degrade to render-rate sampling, never take the app down -- losing the
+-- complaint tags because a damper channel was unavailable would be a poor
+-- trade.
+local function startSuspensionWorker()
+  if type(physics) ~= 'table' or type(physics.startPhysicsWorker) ~= 'function' then
+    suspNote = 'CSP too old for physics workers - render rate only'
+    return
+  end
+
+  -- physics.allowed() reports whether this session permits physics
+  -- scripting at all. When it is false the docs say only raycasting works,
+  -- so there is no point starting a worker that can't read anything.
+  if type(physics.allowed) == 'function' then
+    local ok, allowed = pcall(physics.allowed)
+    if ok and allowed == false then
+      suspNote = 'physics scripting not allowed here - render rate only'
+      return
+    end
+  end
+
+  -- Probe the exact getter the worker will call, not a neighbouring one.
+  -- If it returns nothing useful, a worker would faithfully record zeroes
+  -- at 333Hz -- worse than honest render-rate data, because it looks
+  -- precise.
+  if type(physics.getExtendedDamperTravel) ~= 'function' then
+    suspNote = 'damper channel unavailable - render rate only'
+    return
+  end
+  local ok, v = pcall(physics.getExtendedDamperTravel, 0, 0)
+  if not ok or type(v) ~= 'number' then
+    suspNote = 'damper channel unavailable - render rate only'
+    return
+  end
+
+  worker = ac.connect({
+    ac.StructItem.key('ac_race_engineer.suspension'),
+    writeIndex = ac.StructItem.int32(),
+    running    = ac.StructItem.int32(),
+    samples    = ac.StructItem.array(ac.StructItem.struct({
+      t_ms      = ac.StructItem.int32(),
+      spline    = ac.StructItem.float(),
+      brake     = ac.StructItem.float(),
+      speed_kmh = ac.StructItem.float(),
+      damper    = ac.StructItem.array(ac.StructItem.float(), 4),
+    }), WORKER_RING)
+  })
+  worker.writeIndex = 0
+  worker.running = 0
+  workerReadIndex = 0
+
+  local started = pcall(physics.startPhysicsWorker, 'suspension_worker', 0,
+    function(err)
+      if err then
+        worker, workerProducing = nil, false
+        suspNote = 'worker stopped: ' .. tostring(err)
+        ac.warn('race_engineer: physics worker stopped: ' .. tostring(err))
+      end
+    end)
+  if not started then
+    worker = nil
+    suspNote = 'could not start physics worker - render rate only'
+    return
+  end
+  -- Deliberately not claiming the worker tier yet. startPhysicsWorker
+  -- returning without throwing only means the call was accepted; it says
+  -- nothing about whether the script loaded or is producing. The tier is
+  -- promoted in drainWorker() once samples actually arrive -- otherwise a
+  -- worker that never runs would have its render-rate fallback labelled
+  -- 333Hz, which is the one thing this whole design is trying to prevent.
+  suspNote = 'physics worker starting...'
+end
+
+-- Drain whatever the worker has written since we last looked.
+-- `keep` false means catch up without collecting: used while not recording,
+-- so the index stays in step instead of accumulating a phantom drop count
+-- for every sample produced while the driver sat in the garage.
+local function drainWorker(keep)
+  if not worker then return end
+  if worker.running == 0 then return end        -- not producing yet
+
+  local write = worker.writeIndex
+
+  -- writeIndex only ever climbs, so a value below our read index means it
+  -- wrapped int32 (~74 days at 333Hz) or the worker restarted and reset it.
+  -- Resync rather than sit in a loop that can never make progress again.
+  if write < workerReadIndex then
+    workerReadIndex = write
+    return
+  end
+
+  -- Lapped the ring: the oldest unread samples are already overwritten.
+  -- Count them rather than pretending the trace is continuous.
+  if write - workerReadIndex > WORKER_RING then
+    if keep then
+      suspDropped = suspDropped + (write - workerReadIndex - WORKER_RING)
+    end
+    workerReadIndex = write - WORKER_RING
+  end
+
+  if not keep then
+    workerReadIndex = write
+    return
+  end
+
+  if write > workerReadIndex and not workerProducing then
+    workerProducing = true
+    suspNote = 'physics worker: 333Hz damper data'
+  end
+
+  local lap = clamp(math.floor(num(car.lapCount, 0)), 0, 100000)
+  while workerReadIndex < write do
+    if #suspWorkerBuffer >= SUSP_BUFFER_MAX then
+      suspDropped = suspDropped + (write - workerReadIndex)
+      workerReadIndex = write
+      break
+    end
+    local s = worker.samples[workerReadIndex % WORKER_RING]
+    local d = s.damper
+    suspWorkerBuffer[#suspWorkerBuffer + 1] = {
+      lap_count = lap,
+      t_ms = s.t_ms,
+      spline = clamp(num(s.spline, 0), 0, 1),
+      brake = clamp(num(s.brake, 0), 0, 1),
+      speed_kmh = clamp(num(s.speed_kmh, 0), 0, 1000),
+      travel_fl = num(d[0], nil), travel_fr = num(d[1], nil),
+      travel_rl = num(d[2], nil), travel_rr = num(d[3], nil),
+    }
+    workerReadIndex = workerReadIndex + 1
+  end
+end
+
+-- Render-rate sampling. Used as the only source when the worker is
+-- unavailable, and alongside it for the channels the worker cannot see:
+-- wheel loads and ride height live on ac.getCar(), not in the physics API.
+local function sampleSuspension()
+  if not car then return end
+  if #suspAppBuffer >= SUSP_BUFFER_MAX then
+    suspDropped = suspDropped + 1
+    return
+  end
+
+  local row = {
+    lap_count = clamp(math.floor(num(car.lapCount, 0)), 0, 100000),
+    -- car.timestamp is AC's physics clock. Using it rather than a wall
+    -- clock means a dropped frame shows up as a longer interval instead of
+    -- a phantom velocity spike, and duplicate frames are detectable.
+    t_ms = math.floor(num(car.timestamp, 0)),
+    spline = clamp(num(car.splinePosition, 0), 0, 1),
+    brake = clamp(num(car.brake, 0), 0, 1),
+    speed_kmh = clamp(num(car.speedKmh, 0), 0, 1000),
+  }
+
+  local wheels = car.wheels
+  if wheels then
+    local names = { 'fl', 'fr', 'rl', 'rr' }
+    for i = 0, 3 do
+      local w = wheels[i]
+      if w then
+        row['travel_' .. names[i + 1]] = num(w.suspensionTravel, nil)
+        -- load is documented as unreliable for remote cars and replays;
+        -- this is our own car, so it is the right field here.
+        row['load_' .. names[i + 1]] = num(w.load, nil)
+      end
+    end
+  end
+
+  -- rideHeight is a 2-element array: front, rear. There is no per-corner
+  -- ride height in the app-side API.
+  local rh = car.rideHeight
+  if rh then
+    row.ride_f = num(rh[0], nil)
+    row.ride_r = num(rh[1], nil)
+  end
+  -- AC's own measure of the floor scraping, 0..1.
+  row.plank_wear = num(car.maxRelativePlankWear, nil)
+
+  -- When the worker is supplying travel, these rows exist for the channels
+  -- the physics API cannot see. Sending suspension travel alongside damper
+  -- travel under two different source labels is fine -- the server keeps
+  -- them apart -- but it doubles the volume for a channel we already have
+  -- at 333Hz, so leave it out.
+  if workerProducing then
+    row.travel_fl, row.travel_fr = nil, nil
+    row.travel_rl, row.travel_rr = nil, nil
+  end
+
+  suspAppBuffer[#suspAppBuffer + 1] = row
+end
+
+-- One POST per tier. They are different channels on different clocks, and
+-- the server stores `source` per row so the analysis can keep them apart.
+local function postSuspensionBuffer(which, buffer)
+  if #buffer == 0 then return false end
+  suspBusy = true
+  local batch = buffer
+  web.post(BASE .. '/suspension', { ['Content-Type'] = 'application/json' },
+    JSON.stringify{ source = which, samples = batch },
+    function(err, response)
+      suspBusy = false
+      if err or not response or response.status ~= 200 then
+        suspDropped = suspDropped + #batch
+        if response and response.status and response.status ~= 200 then
+          ac.warn('race_engineer: /suspension rejected: '
+            .. tostring(response.status) .. ' ' .. tostring(response.body))
+        end
+        return
+      end
+      local ok, parsed = pcall(JSON.parse, response.body or '')
+      if ok and type(parsed) == 'table' and parsed.stored ~= nil then
+        suspSent = suspSent + (tonumber(parsed.stored) or 0)
+        -- The server nulls out-of-range fields and says which. Almost
+        -- always a units disagreement, and silent nulls would surface much
+        -- later as an empty report with no explanation.
+        if parsed.rejected_fields then
+          ac.warn('race_engineer: /suspension rejected fields: '
+            .. tostring(response.body))
+        end
+      else
+        suspSent = suspSent + #batch
+      end
+    end)
+  return true
+end
+
+local function postSuspension()
+  if suspBusy or sendSlots() < 1 then return end
+  if not status.running then
+    suspAppBuffer, suspWorkerBuffer = {}, {}
+    return
+  end
+  -- Alternate so neither tier can starve the other when only one slot is
+  -- free. The worker buffer fills far faster, so it goes first.
+  if #suspWorkerBuffer > 0 then
+    local batch = suspWorkerBuffer
+    suspWorkerBuffer = {}
+    postSuspensionBuffer('worker', batch)
+  elseif #suspAppBuffer > 0 then
+    local batch = suspAppBuffer
+    suspAppBuffer = {}
+    postSuspensionBuffer('app', batch)
+  end
 end
 
 -- Snapshot every car on track. Fields that AC doesn't transmit for remote
@@ -278,7 +570,23 @@ local function dismissMessage()
   message = nil
 end
 
+-- Probe once, on the first frame rather than at load time: the sim isn't
+-- fully up when the app script is first evaluated, and physics.allowed()
+-- answers for the session we're actually in.
+local started = false
+
 function script.update(dt)
+  if not started then
+    started = true
+    local ok, err = pcall(startSuspensionWorker)
+    if not ok then
+      suspTier, worker = 'app', nil
+      suspNote = 'render rate only (worker probe failed)'
+      ac.warn('race_engineer: suspension worker probe failed: '
+        .. tostring(err))
+    end
+  end
+
   for _, t in ipairs(TAGS) do
     if t.btn:pressed() then enqueueNote(t.tag) end
   end
@@ -302,6 +610,33 @@ function script.update(dt)
     postRivals()
   end
 
+  -- Suspension. The worker (if we have one) is doing the fast sampling on
+  -- the physics thread; here we only move its output into the send buffer.
+  -- Wheel loads and ride height are not in the physics API, so the
+  -- render-rate sampler runs either way -- just at a lower rate when the
+  -- worker is supplying travel.
+  -- Keep the read index in step even while stopped, discarding as we go.
+  -- Otherwise ten minutes in the garage charges 200,000 samples to the
+  -- drop counter on the next green flag, none of which were lost.
+  drainWorker(status.running)
+
+  if status.running then
+    suspSampleTimer = suspSampleTimer - dt
+    if suspSampleTimer <= 0 then
+      -- Once the worker is supplying travel, these rows only carry wheel
+      -- loads and ride height, which move with the body rather than the
+      -- dampers -- no reason to sample them every frame.
+      suspSampleTimer = workerProducing and 0.1 or SUSP_SAMPLE_INTERVAL
+      sampleSuspension()
+    end
+  end
+
+  suspPostTimer = suspPostTimer - dt
+  if suspPostTimer <= 0 then
+    suspPostTimer = SUSP_POST_INTERVAL
+    postSuspension()
+  end
+
   if toastTimer > 0 then toastTimer = toastTimer - dt end
 end
 
@@ -318,10 +653,22 @@ function windowMain(dt)
         rivalDropped > 0 and (', ' .. rivalDropped .. ' dropped') or ''),
         rgbm(0.7, 0.7, 0.7, 1))
     end
+    if suspSent > 0 or suspDropped > 0 then
+      ui.textColored(string.format('suspension: %d sent%s', suspSent,
+        suspDropped > 0 and (', ' .. suspDropped .. ' dropped') or ''),
+        rgbm(0.7, 0.7, 0.7, 1))
+    end
   else
     ui.textColored('● connected, not recording', rgbm(1, 0.8, 0.2, 1))
   end
   ui.textColored(status.text, rgbm(0.7, 0.7, 0.7, 1))
+
+  -- Which suspension tier we got. Worth showing plainly: it decides
+  -- whether the damper histograms mean anything, and the driver is the
+  -- only one who can see this.
+  ui.textColored(
+    (suspTier == 'worker' and '◆ ' or '◇ ') .. suspNote,
+    suspTier == 'worker' and rgbm(0.4, 0.9, 0.5, 1) or rgbm(0.8, 0.7, 0.4, 1))
   ui.separator()
 
   -- complaint buttons

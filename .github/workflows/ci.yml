@@ -46,18 +46,13 @@ jobs:
         # anything -- but it does exercise the real bridge over real HTTP.
         run: python -m pytest tests/ -v --durations=10
 
-      - name: Check each file also runs standalone
-        # The gaming PC may not have pytest. Each test module has a
-        # __main__ runner so a single file can be run there directly; this
-        # keeps that path from rotting.
-        shell: bash
-        run: |
-          status=0
-          for f in tests/test_*.py; do
-            echo "--- $f"
-            python "$f" > /dev/null || { echo "FAILED standalone: $f"; status=1; }
-          done
-          exit $status
+      - name: Check each module also runs standalone
+        # The gaming PC has Python (the server needs it) but no reason to
+        # have pytest, so every test module has a __main__ runner. This
+        # keeps that path from rotting, and run_tests.py --isolate is the
+        # same check the developer runs locally rather than a shell loop
+        # that only exists in CI.
+        run: python run_tests.py --isolate
 
   lua:
     name: lua syntax
@@ -74,14 +69,9 @@ jobs:
       - name: Parse the in-game app
         # CSP loads this at runtime and reports failures in a debug window
         # nobody has open, so a syntax error costs a session to notice.
-        run: |
-          python - <<'PY'
-          from luaparser import ast
-          from pathlib import Path
-          for f in Path("lua_app").rglob("*.lua"):
-              ast.parse(f.read_text(encoding="utf-8"))
-              print(f"ok  {f}")
-          PY
+        # Same check the developer runs locally, rather than a copy of it
+        # that only exists in YAML and can drift.
+        run: python run_tests.py --lua-only
 
   powershell:
     name: powershell (Windows PowerShell 5.1)

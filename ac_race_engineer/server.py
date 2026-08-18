@@ -18,7 +18,7 @@ try:  # mcp SDK 2.x
 except ImportError:  # mcp SDK 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import analysis, db, setups
+from . import analysis, db, setups, suspension
 from .collector import Collector
 
 AC_DOCS_DIR = Path(os.environ.get(
@@ -305,11 +305,117 @@ def lap_summary(lap_id: int) -> str:
     """Engineer's summary of one lap: lap time, throttle/brake/coast split,
     tyre pressures and core temps, per-corner min speed, brake points,
     and a front/rear slip balance metric (positive = understeer tendency,
-    negative = oversteer tendency)."""
+    negative = oversteer tendency).
+
+    Includes a few suspension headlines when the in-game app captured them;
+    call suspension_report for the full damper histograms and ride height."""
     lap = db.get_lap(_conn, lap_id)
     if not lap:
         return _j({"error": f"no lap with id {lap_id}"})
-    return _j(analysis.lap_summary(lap, db.get_samples(_conn, lap_id)))
+    out = analysis.lap_summary(lap, db.get_samples(_conn, lap_id))
+
+    # A pointer, not a replacement: lap_summary has a ~1KB budget and the
+    # full suspension report is an order of magnitude bigger.
+    lap_count = lap["lap_number"] - 1
+    susp_samples = db.get_suspension_samples(_conn, lap["session_id"],
+                                             lap_count)
+    if susp_samples:
+        compact = suspension.compact(suspension.summarise(susp_samples))
+        if compact:
+            out["suspension"] = compact
+    return _j(out)
+
+
+@mcp.tool()
+def suspension_report(lap_id: int | None = None,
+                      lap_count: int | None = None,
+                      session_id: int | None = None) -> str:
+    """Damper histograms, ride height and roll balance for one lap.
+
+    Requires the in-game Lua app: stock shared memory exposes no suspension
+    travel, no wheel load and no ride height at all.
+
+    Reports which tier captured the data. Render-rate sampling is fine for
+    ride height and load transfer but aliases damper velocity, so damper
+    histograms from that tier are labelled as body motion rather than
+    valving. A CSP physics worker (333Hz) gives real damper numbers -- see
+    suspension_capture_status for whether it is running.
+
+    Pass a lap_id from list_laps, or a raw lap_count if the lap was not
+    stored (an out-lap, say)."""
+    sid = _active_session(session_id)
+    if lap_id is not None:
+        lap = db.get_lap(_conn, lap_id)
+        if not lap:
+            return _j({"error": f"no lap with id {lap_id}"})
+        sid = lap["session_id"]
+        # laps.lap_number counts from 1; suspension rows are stamped with
+        # AC's completed-lap count, which is one behind during the lap.
+        lap_count = lap["lap_number"] - 1
+    if sid is None:
+        return _j({"error": "no active session; pass session_id explicitly"})
+    if lap_count is None:
+        return _j({"error": "pass either lap_id or lap_count"})
+
+    samples = db.get_suspension_samples(_conn, sid, lap_count)
+    if not samples:
+        captured = db.suspension_lap_counts(_conn, sid)
+        return _j({"error": f"no suspension data for lap_count {lap_count} "
+                            f"in session {sid}",
+                   "captured_laps": [
+                       {"lap_count": r["lap_count"], "source": r["source"],
+                        "samples": r["n"]} for r in captured[-10:]],
+                   "hint": ("If this list is empty the in-game app either "
+                            "isn't running or predates suspension capture.")})
+
+    out = suspension.summarise(samples)
+    out["session_id"] = sid
+    out["lap_count"] = lap_count
+    if lap_id is not None:
+        out["lap_id"] = lap_id
+    return _j(out)
+
+
+@mcp.tool()
+def suspension_capture_status() -> str:
+    """Whether suspension data is arriving, and at what fidelity.
+
+    Call this when suspension_report says there is no data, or when damper
+    numbers look implausible. Explains the difference between the two
+    capture tiers and what to do about it."""
+    sid = _active_session()
+    out = {"session_id": sid}
+    if sid is None:
+        out["error"] = "no active session"
+        return _j(out)
+
+    laps = db.suspension_lap_counts(_conn, sid)
+    by_source: dict[str, int] = {}
+    for r in laps:
+        by_source[r["source"]] = by_source.get(r["source"], 0) + r["n"]
+    out["samples_by_source"] = by_source
+    out["laps_captured"] = len({r["lap_count"] for r in laps})
+
+    if not laps:
+        out["status"] = "no suspension data in this session"
+        out["what_to_check"] = [
+            "Is the Race Engineer app enabled in the in-game apps sidebar?",
+            "Is it the current version? Suspension capture was added after "
+            "the first release -- re-run install-windows.bat to update it.",
+            "Does the app's status window show a bridge connection?",
+        ]
+    elif "worker" in by_source:
+        out["status"] = "physics worker running: real damper velocity (333Hz)"
+    else:
+        out["status"] = ("render-rate capture only: ride height and load "
+                         "transfer are trustworthy, damper histograms show "
+                         "body motion rather than valving")
+        out["why"] = (
+            "The app tries to start a CSP physics worker for 333Hz damper "
+            "data. It falls back to render-rate sampling when physics "
+            "scripting is unavailable -- CSP gates it, and some tracks "
+            "disable it. The app's status window reports which tier it got.")
+    return _j(out)
 
 
 @mcp.tool()

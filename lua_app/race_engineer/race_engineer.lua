@@ -38,12 +38,27 @@ for _, t in ipairs(TAGS) do
   t.btn = ac.ControlButton('__EXT_RACE_ENGINEER_' .. t.tag:upper())
 end
 
+-- The bridge rejects out-of-range values (they would never correlate with a
+-- corner downstream), so clamp here rather than lose a note to a 400. Spline
+-- can read slightly outside 0..1 around the start/finish line, and these
+-- fields are nil before the session is fully loaded.
+local function num(v, fallback)
+  if type(v) ~= 'number' or v ~= v then return fallback end  -- v ~= v -> NaN
+  return v
+end
+
+local function clamp(v, lo, hi)
+  if v < lo then return lo end
+  if v > hi then return hi end
+  return v
+end
+
 local function enqueueNote(tag)
   noteQueue[#noteQueue + 1] = JSON.stringify{
     tag = tag,
-    spline = car.splinePosition,
-    lap_count = car.lapCount,
-    speed_kmh = car.speedKmh,
+    spline = clamp(num(car.splinePosition, 0), 0, 1),
+    lap_count = clamp(math.floor(num(car.lapCount, 0)), 0, 100000),
+    speed_kmh = clamp(num(car.speedKmh, 0), 0, 1000),
   }
   toast, toastTimer = tag:upper() .. ' noted', 1.5
 end
@@ -55,8 +70,13 @@ local function pumpNotes()
   web.post(BASE .. '/note', { ['Content-Type'] = 'application/json' }, body,
     function(err, response)
       sendBusy = false
-      if err then
-        toast, toastTimer = 'send failed', 1.5
+      if err or not response then
+        toast, toastTimer = 'send failed', 2
+      elseif response.status ~= 200 then
+        -- Don't let a rejected note look like a recorded one: the "noted"
+        -- toast already fired at enqueue time.
+        toast, toastTimer = 'note REJECTED (' .. tostring(response.status) .. ')', 3
+        ac.warn('race_engineer: /note rejected: ' .. tostring(response.body))
       end
     end)
 end

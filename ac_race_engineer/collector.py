@@ -37,6 +37,15 @@ class Collector:
         self.last_session_id: int | None = None
         self.laps_recorded = 0
         self.last_error: str | None = None
+        # Observable progress. These exist so "has the collector noticed
+        # yet?" is answerable rather than something callers have to guess at
+        # with a sleep -- which is what made the test suite flaky on a
+        # loaded CI runner, and what makes a stalled collector look
+        # identical to an idle one in recording_status.
+        self.sessions_started = 0
+        self.samples_taken = 0
+        self.current_lap_dirty = False
+        self.current_lap_pitted = False
 
     @property
     def running(self) -> bool:
@@ -52,14 +61,26 @@ class Collector:
     def stop(self):
         self._stop.set()
         if self._thread:
-            self._thread.join(timeout=3)
+            # Join generously and report if it didn't take. The thread owns
+            # a SQLite connection, so returning while it is still alive
+            # means the caller can delete the database out from under it --
+            # which on Windows surfaces as an unrelated-looking
+            # NotADirectoryError from a thread nobody was watching.
+            self._thread.join(timeout=10)
+            if self._thread.is_alive():
+                self.last_error = ("collector thread did not stop within 10s;"
+                                   " its database connection is still open")
+            else:
+                self._thread = None
         self.status = "stopped"
         # session_id has to be cleared, not just left behind. The bridge
-        # asks "which session should this note go to"; a leftover id means
-        # data keeps being filed against a session that has ended, which is
-        # harder to spot than filing it against none. Keep it separately for
-        # reporting, where being stale is only cosmetic.
-        self.last_session_id = self.session_id
+        # asks the collector which session inbound driver data belongs to; a
+        # leftover id means notes and rival telemetry keep being filed
+        # against a session that has ended, which is harder to spot than
+        # filing them against none. Keep it separately for reporting, where
+        # being stale is only cosmetic.
+        if self.session_id is not None:
+            self.last_session_id = self.session_id
         self.session_id = None
 
     # ------------------------------------------------------------------
@@ -108,6 +129,10 @@ class Collector:
                     last_completed = None
                     session_best = None
                     lap_samples = []
+                    # Say so. Leaving this reading "recording (session 7)"
+                    # while AC sits in the menus is the same class of lie as
+                    # the overlay claiming nothing is being recorded.
+                    self.status = "waiting for AC to go live"
                 time.sleep(0.25)
                 continue
 
@@ -141,6 +166,9 @@ class Collector:
                 lap_dirty = False
                 lap_pitted = False
                 lap_start_wall = time.monotonic()
+                self.sessions_started += 1
+                self.current_lap_dirty = False
+                self.current_lap_pitted = False
                 self.status = f"recording (session {self.session_id})"
 
             # Lap boundary?
@@ -174,6 +202,8 @@ class Collector:
                 lap_dirty = False
                 lap_pitted = False
                 lap_start_wall = time.monotonic()
+                self.current_lap_dirty = False
+                self.current_lap_pitted = False
 
             # A lap containing a pit visit is wall-clock nonsense -- the
             # 4:34 and 10:22 "valid" laps in testing were both stops. Note it
@@ -181,6 +211,7 @@ class Collector:
             # would otherwise hide the visit entirely.
             if g.isInPitLane:
                 lap_pitted = True
+                self.current_lap_pitted = True
 
             # New physics tick since last sample?
             if p.packetId != last_packet and not g.isInPitLane:
@@ -188,6 +219,8 @@ class Collector:
                 t_ms = int((time.monotonic() - lap_start_wall) * 1000)
                 if p.numberOfTyresOut > 2:
                     lap_dirty = True
+                    self.current_lap_dirty = True
+                self.samples_taken += 1
                 lap_samples.append((
                     t_ms,
                     g.normalizedCarPosition,

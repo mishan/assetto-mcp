@@ -1,8 +1,11 @@
 name: CI
 
 on:
+  # Only main on push. A branch with an open PR would otherwise run the
+  # whole matrix twice for every commit -- once for `push`, once for
+  # `pull_request` -- which is eight identical jobs saying the same thing.
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 

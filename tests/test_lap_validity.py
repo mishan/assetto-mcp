@@ -13,8 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import (complete_lap, make_session, run_collector,  # noqa: E402
-                     run_module, tick)
+from support import (complete_lap, enter_pits, leave_pits,  # noqa: E402
+                     make_session, run_collector, run_module, tick)
 
 from ac_race_engineer import analysis, db  # noqa: E402
 from ac_race_engineer.collector import _is_outlier  # noqa: E402
@@ -67,16 +67,16 @@ def test_lap_containing_a_pit_visit_is_invalid():
     with tempfile.TemporaryDirectory() as d:
         path = Path(d) / "t.db"
         script = [
-            lambda s: tick(s),
+            lambda s, c: tick(s, c),
             # Lap 1: clean flying lap.
-            lambda s: (tick(s), complete_lap(s, 114000)),
-            lambda s: tick(s),
+            lambda s, c: (tick(s, c), complete_lap(s, c, 114000)),
+            lambda s, c: tick(s, c),
             # Lap 2: driver dives into the pits mid-lap.
-            lambda s: setattr(s.graphics, "isInPitLane", 1),
-            lambda s: setattr(s.graphics, "isInPitLane", 0),
-            lambda s: (tick(s), complete_lap(s, 622162)),
-            lambda s: tick(s),
-            lambda s: (tick(s), complete_lap(s, 115000)),
+            enter_pits,
+            leave_pits,
+            lambda s, c: (tick(s, c), complete_lap(s, c, 622162)),
+            lambda s, c: tick(s, c),
+            lambda s, c: (tick(s, c), complete_lap(s, c, 115000)),
         ]
         run_collector(script, path)
 
@@ -105,12 +105,12 @@ def test_pit_stop_alone_invalidates_a_lap():
     with tempfile.TemporaryDirectory() as d:
         path = Path(d) / "t.db"
         script = [
-            lambda s: tick(s),
-            lambda s: (tick(s), complete_lap(s, ref)),
-            lambda s: tick(s),
-            lambda s: setattr(s.graphics, "isInPitLane", 1),
-            lambda s: setattr(s.graphics, "isInPitLane", 0),
-            lambda s: (tick(s), complete_lap(s, quick_stop)),
+            lambda s, c: tick(s, c),
+            lambda s, c: (tick(s, c), complete_lap(s, c, ref)),
+            lambda s, c: tick(s, c),
+            enter_pits,
+            leave_pits,
+            lambda s, c: (tick(s, c), complete_lap(s, c, quick_stop)),
         ]
         run_collector(script, path)
         conn = db.connect(path)

@@ -87,31 +87,105 @@ class FakeCollector:
 # --- driving the collector ----------------------------------------------
 
 
+class TimedOut(AssertionError):
+    """The collector never reached the state a step was waiting for."""
+
+
+def wait_for(predicate, what, timeout=15.0, interval=0.002):
+    """Block until `predicate()` is true, or fail saying what we wanted.
+
+    Every wait in this harness goes through here rather than sleeping for a
+    plausible-looking interval. A fixed sleep encodes an assumption about
+    how fast the machine is, and the CI runners are not that machine: the
+    sleep-based version of this file passed thousands of times locally and
+    failed on GitHub's Windows and Ubuntu runners within a day.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(interval)
+    raise TimedOut(f"timed out after {timeout}s waiting for {what}")
+
+
 def run_collector(script, db_path):
-    """Drive a Collector through `script`, a list of fn(sim) steps."""
+    """Drive a Collector through `script`, a list of fn(sim, col) steps.
+
+    The collector is fully stopped before returning, so callers can delete
+    the database afterwards. Leaving its thread alive with the connection
+    open is how a temp-directory cleanup turned into a NotADirectoryError
+    from a thread nobody was watching.
+    """
     sim = FakeSim()
     col = Collector(db_path, lambda: sim)
     col.start()
-    for step in script:
-        step(sim)
-        time.sleep(0.06)
-    time.sleep(0.15)
-    col.stop()
+    try:
+        wait_for(lambda: col.sessions_started > 0, "the first session")
+        for i, step in enumerate(script):
+            try:
+                step(sim, col)
+            except TimedOut as e:
+                raise TimedOut(f"script step {i}: {e}") from None
+    finally:
+        col.stop()
+        assert not col.running, col.last_error
     return col
 
 
-def tick(sim, n=6):
-    """Advance physics packets so samples accumulate."""
+def tick(sim, col, n=6):
+    """Advance physics packets and wait for each to be sampled."""
     for _ in range(n):
-        sim.physics.packetId += 1
+        before = col.samples_taken
         sim.graphics.normalizedCarPosition = (
             sim.graphics.normalizedCarPosition + 0.1) % 1.0
-        time.sleep(0.01)
+        sim.physics.packetId += 1
+        wait_for(lambda: col.samples_taken > before, "a sample to be taken")
 
 
-def complete_lap(sim, lap_time_ms):
-    sim.graphics.completedLaps += 1
+def complete_lap(sim, col, lap_time_ms, stored=True):
+    """Cross the line, and wait for the lap to land in the database.
+
+    stored=False for an out-lap, which has no meaningful time and is
+    deliberately skipped.
+    """
+    before = col.laps_recorded
     sim.graphics.iLastTime = lap_time_ms
+    sim.graphics.completedLaps += 1
+    if stored:
+        wait_for(lambda: col.laps_recorded > before, "the lap to be stored")
+
+
+def enter_pits(sim, col):
+    sim.graphics.isInPitLane = 1
+    wait_for(lambda: col.current_lap_pitted, "the pit visit to be noticed")
+
+
+def leave_pits(sim, col):
+    sim.graphics.isInPitLane = 0
+
+
+def go_off(sim, col):
+    """Leave the session to the menus (AC_OFF)."""
+    sim.graphics.status = AC_OFF
+    wait_for(lambda: "waiting" in col.status, "the collector to go idle")
+
+
+def go_live(sim, col):
+    """Re-enter a session, lap counters reset as AC does on a fresh run."""
+    before = col.sessions_started
+    sim.graphics.completedLaps = 0
+    sim.graphics.iLastTime = 0
+    sim.graphics.status = AC_LIVE
+    wait_for(lambda: col.sessions_started > before, "a new session")
+
+
+def restart_from_menu(sim, col):
+    """Restart in-game: the lap counter goes backwards, status never
+    leaves AC_LIVE, which is why watching for AC_OFF alone missed it."""
+    before = col.sessions_started
+    sim.graphics.iLastTime = 0
+    sim.graphics.completedLaps = 0
+    wait_for(lambda: col.sessions_started > before, "a new session")
 
 
 # --- database -----------------------------------------------------------

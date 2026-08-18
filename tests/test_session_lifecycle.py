@@ -12,8 +12,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import (AC_OFF, FakeSim, complete_lap, run_collector,  # noqa: E402
-                     run_module, tick)
+from support import (FakeSim, complete_lap, go_live, go_off,  # noqa: E402
+                     restart_from_menu, run_collector, run_module, tick,
+                     wait_for)
 
 from ac_race_engineer import db  # noqa: E402
 from ac_race_engineer.collector import Collector  # noqa: E402
@@ -29,15 +30,13 @@ def test_restart_from_the_menu_starts_a_new_session():
     with tempfile.TemporaryDirectory() as d:
         path = Path(d) / "t.db"
         script = [
-            lambda s: tick(s),
-            lambda s: (tick(s), complete_lap(s, 114000)),
-            lambda s: tick(s),
-            lambda s: (tick(s), complete_lap(s, 115000)),
-            # The restart: lap counter goes backwards, status stays AC_LIVE.
-            lambda s: (setattr(s.graphics, "completedLaps", 0),
-                       setattr(s.graphics, "iLastTime", 0)),
-            lambda s: tick(s),
-            lambda s: (tick(s), complete_lap(s, 113000)),
+            lambda s, c: tick(s, c),
+            lambda s, c: (tick(s, c), complete_lap(s, c, 114000)),
+            lambda s, c: tick(s, c),
+            lambda s, c: (tick(s, c), complete_lap(s, c, 115000)),
+            restart_from_menu,
+            lambda s, c: tick(s, c),
+            lambda s, c: (tick(s, c), complete_lap(s, c, 113000)),
         ]
         run_collector(script, path)
 
@@ -53,20 +52,34 @@ def test_leaving_the_session_starts_a_new_one():
     with tempfile.TemporaryDirectory() as d:
         path = Path(d) / "t.db"
         script = [
-            lambda s: tick(s),
-            lambda s: (tick(s), complete_lap(s, 114000)),
-            lambda s: setattr(s.graphics, "status", AC_OFF),
-            lambda s: (setattr(s.graphics, "status", 2),
-                       setattr(s.graphics, "completedLaps", 0),
-                       setattr(s.graphics, "iLastTime", 0)),
-            lambda s: tick(s),
-            lambda s: (tick(s), complete_lap(s, 116000)),
+            lambda s, c: tick(s, c),
+            lambda s, c: (tick(s, c), complete_lap(s, c, 114000)),
+            go_off,
+            go_live,
+            lambda s, c: tick(s, c),
+            lambda s, c: (tick(s, c), complete_lap(s, c, 116000)),
         ]
         run_collector(script, path)
         conn = db.connect(path)
         assert len(db.list_sessions(conn)) >= 2
         print("  AC_OFF also rolls the session")
         conn.close()
+
+
+def test_status_stops_claiming_to_record_once_ac_is_off():
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "t.db"
+        seen = {}
+        script = [
+            lambda s, c: tick(s, c),
+            lambda s, c: seen.update(recording=c.status),
+            go_off,
+            lambda s, c: seen.update(idle=c.status),
+        ]
+        run_collector(script, path)
+        assert "recording" in seen["recording"], seen
+        assert "waiting" in seen["idle"], seen
+        print(f"  {seen['recording']!r} -> {seen['idle']!r}")
 
 
 def test_stopping_clears_the_current_session():
@@ -82,17 +95,17 @@ def test_stopping_clears_the_current_session():
         sim = FakeSim()
         col = Collector(path, lambda: sim)
         col.start()
-        tick(sim)
-        import time
-        time.sleep(0.15)
-        assert col.session_id is not None, "should have opened a session"
-        opened = col.session_id
+        try:
+            wait_for(lambda: col.session_id is not None, "a session to open")
+            opened = col.session_id
+        finally:
+            col.stop()
 
-        col.stop()
         assert col.session_id is None, (
             f"session_id survived stop(): {col.session_id}")
         # Kept for reporting, where being stale is only cosmetic.
         assert col.last_session_id == opened
+        assert not col.running, col.last_error
         print(f"  session {opened} cleared on stop, retained for reporting")
 
 

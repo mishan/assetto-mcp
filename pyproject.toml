@@ -5,6 +5,11 @@ description = "MCP server exposing Assetto Corsa telemetry and setup files to Cl
 requires-python = ">=3.10"
 dependencies = ["mcp>=1.0.0"]
 
+[project.optional-dependencies]
+# The suite runs without pytest too (each file has a __main__ runner), so
+# that a single test can be run on the gaming PC with nothing installed.
+test = ["pytest>=7"]
+
 [project.scripts]
 ac-race-engineer = "ac_race_engineer.server:main"
 
@@ -14,3 +19,15 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["ac_race_engineer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Tests import their shared harness as `support`, so tests/ must be on the
+# path. rootdir-relative imports alone don't achieve that under pytest's
+# default importmode.
+pythonpath = [".", "tests"]
+filterwarnings = [
+    # ctypes layout is load-bearing in sim_info; a deprecation there should
+    # fail the build rather than scroll past.
+    "error::DeprecationWarning:ac_race_engineer.*",
+]

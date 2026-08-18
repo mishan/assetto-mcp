@@ -80,9 +80,17 @@ function Invoke-Native {
     param([scriptblock] $Block)
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
+    # $LASTEXITCODE is global and sticky: if the command below never actually
+    # starts (CommandNotFoundException, missing .exe) PowerShell leaves it at
+    # whatever the *previous* command set, so a stale 0 reads as success. Seed
+    # it with cmd.exe's "command not found" code so a failed launch fails.
+    $global:LASTEXITCODE = 9009
     try {
         $out = & $Block 2>&1
         return [pscustomobject]@{ Output = $out; ExitCode = $LASTEXITCODE }
+    } catch {
+        # A genuinely terminating launch failure (bad path, access denied).
+        return [pscustomobject]@{ Output = @([string]$_.Exception.Message); ExitCode = 9009 }
     } finally {
         $ErrorActionPreference = $prev
     }
@@ -104,35 +112,246 @@ Write-Host "  $script:RepoRoot" -ForegroundColor DarkGray
 # $env:APPDATA is PowerShell's way of saying %APPDATA%; it resolves to
 # C:\Users\<you>\AppData\Roaming. AppData is hidden in Explorer by default,
 # which is why browsing to it by hand is miserable.
-$ClaudeConfigDir  = Join-Path $env:APPDATA 'Claude'
-$ServerName       = 'ac-race-engineer'
+$ServerName            = 'ac-race-engineer'
+$script:OwnerConfigDir = Join-Path $env:APPDATA 'Claude'   # refined in step 3
 
 # ...except when Claude Desktop is the MSIX-packaged build - which is what
 # Anthropic's own Windows download installs, not just the Store version. MSIX
 # packages get a private, redirected view of %APPDATA%: the app writes and reads
-#   %LOCALAPPDATA%\Packages\Claude_<hash>\LocalCache\Roaming\Claude\
+#   %LOCALAPPDATA%\Packages\<PackageFamilyName>\LocalCache\Roaming\Claude\
 # and once a file exists in that layer it *shadows* the real %APPDATA% copy.
 # So writing only to %APPDATA%\Claude silently does nothing there - the entry
-# lands in a file the app will never open. Write to every location we can
-# find; a stale entry in an unused one is harmless.
-function Get-ClaudeConfigDirs {
-    $dirs = @(Join-Path $env:APPDATA 'Claude')
+# lands in a file the app will never open.
+#
+# We enumerate every location, but we do NOT write the entry to all of them:
+# see Select-OwnerConfig below for why exactly one config must own it.
+function Get-ClaudeConfigCandidates {
+    $out = @()
+
+    $plain = Join-Path $env:APPDATA 'Claude'
+    $out += [pscustomobject]@{
+        Dir           = $plain
+        Path          = Join-Path $plain 'claude_desktop_config.json'
+        IsPackage     = $false
+        PackageFamily = $null
+        NameRank      = 0
+    }
 
     $packages = Join-Path $env:LOCALAPPDATA 'Packages'
     if (Test-Path -LiteralPath $packages) {
-        Get-ChildItem -LiteralPath $packages -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like 'Claude*' -or $_.Name -like '*Anthropic*' } |
-            ForEach-Object {
-                $d = Join-Path $_.FullName 'LocalCache\Roaming\Claude'
-                if (Test-Path -LiteralPath $d) { $dirs += $d }
+        foreach ($pkg in @(Get-ChildItem -LiteralPath $packages -Directory -ErrorAction SilentlyContinue)) {
+            # The redirect directory actually existing - not the folder name -
+            # is what proves this package is a Claude Desktop build. The old
+            # 'Claude*' -or '*Anthropic*' name filter was loose enough to catch
+            # unrelated packages, so name matching is now only used to *rank*
+            # candidates, never to exclude them: a differently named package
+            # that has the redirect dir still works, it just ranks lower.
+            $d = Join-Path $pkg.FullName 'LocalCache\Roaming\Claude'
+            if (-not (Test-Path -LiteralPath $d)) { continue }
+
+            $rank = 1
+            if ($pkg.Name -like 'AnthropicClaude*' -or $pkg.Name -like 'Claude_*') {
+                $rank = 3      # the shapes Anthropic's own installer produces
+            } elseif ($pkg.Name -like 'Claude*' -or $pkg.Name -like '*Anthropic*') {
+                $rank = 2
             }
+
+            $out += [pscustomobject]@{
+                Dir           = $d
+                Path          = Join-Path $d 'claude_desktop_config.json'
+                IsPackage     = $true
+                PackageFamily = $pkg.Name
+                NameRank      = $rank
+            }
+        }
     }
-    return @($dirs | Select-Object -Unique)
+
+    # De-duplicate on directory, keeping the first occurrence.
+    $seen = @{}
+    $uniq = @()
+    foreach ($c in $out) {
+        $k = $c.Dir.ToLowerInvariant()
+        if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; $uniq += $c }
+    }
+    return @($uniq)
+}
+
+function Get-ClaudeConfigDirs {
+    return @(Get-ClaudeConfigCandidates | ForEach-Object { $_.Dir })
 }
 
 function Get-ClaudeConfigPaths {
-    return @(Get-ClaudeConfigDirs |
-             ForEach-Object { Join-Path $_ 'claude_desktop_config.json' })
+    return @(Get-ClaudeConfigCandidates | ForEach-Object { $_.Path })
+}
+
+# An MSIX package runs from
+#   %PROGRAMFILES%\WindowsApps\<Name>_<version>_<arch>__<PublisherId>\claude.exe
+# (the package *full* name) while its redirected AppData lives in
+#   %LOCALAPPDATA%\Packages\<Name>_<PublisherId>
+# (the package *family* name). Turn the former into the latter.
+function Get-PackageFamilyFromExePath {
+    param([string] $ExePath)
+    if (-not $ExePath) { return $null }
+    $m = [regex]::Match($ExePath, '(?i)\\WindowsApps\\([^\\]+)\\')
+    if (-not $m.Success) { return $null }
+    $parts = $m.Groups[1].Value -split '_'
+    if ($parts.Count -lt 2) { return $null }
+    return ($parts[0] + '_' + $parts[$parts.Count - 1])
+}
+
+# Exactly ONE config file may carry the ac-race-engineer entry.
+#
+# If several do, every Claude surface that reads one of them spawns its own
+# copy of the MCP server, and those copies then fight over the single
+# 127.0.0.1:9666 bridge socket and the same SQLite file. bridge.py has ~90
+# lines of defensive code for precisely that situation; don't cause it here.
+#
+# Precedence (first match wins), preferring the config the *running* app reads:
+#   1. The config belonging to a Claude process running right now. Reading
+#      another process's .Path needs rights we may not have, so it's guarded.
+#   2. Otherwise: an existing config that already has an mcpServers key, most
+#      recently written - that is the file something is actively maintaining.
+#   3. Otherwise: an existing MSIX config over the plain %APPDATA% one, because
+#      the redirect layer shadows %APPDATA% whenever it has a copy.
+#   4. Otherwise: %APPDATA%\Claude\claude_desktop_config.json.
+function Select-OwnerConfig {
+    param($Candidates)
+
+    function New-Result ($cand, $reason) {
+        return [pscustomobject]@{ Owner = $cand; Reason = $reason }
+    }
+
+    # --- 1. follow the running process --------------------------------
+    $exes = @()
+    try {
+        foreach ($proc in @(Get-Process -Name 'Claude*' -ErrorAction SilentlyContinue)) {
+            $p = $null
+            try { $p = $proc.Path } catch { $p = $null }
+            if ($p) { $exes += $p }
+        }
+    } catch { $exes = @() }
+
+    foreach ($exe in @($exes | Select-Object -Unique)) {
+        $fam = Get-PackageFamilyFromExePath $exe
+        if ($fam) {
+            $hit = @($Candidates | Where-Object { $_.IsPackage -and $_.PackageFamily -eq $fam })
+            if ($hit.Count -eq 0) {
+                $stem = ($fam -split '_')[0]
+                $hit = @($Candidates | Where-Object { $_.IsPackage -and $_.PackageFamily -like "$stem*" })
+            }
+            if ($hit.Count -gt 0) {
+                return (New-Result $hit[0] "Claude Desktop is running right now from MSIX package '$fam'")
+            }
+        } else {
+            $hit = @($Candidates | Where-Object { -not $_.IsPackage })
+            if ($hit.Count -gt 0) {
+                return (New-Result $hit[0] "Claude Desktop is running right now as an unpackaged build ($exe)")
+            }
+        }
+    }
+
+    # --- gather facts about the files that exist ----------------------
+    $existing = @()
+    foreach ($c in $Candidates) {
+        if (-not (Test-Path -LiteralPath $c.Path)) { continue }
+        $hasServers = $false
+        $lastWrite  = [datetime]::MinValue
+        try {
+            $lastWrite = (Get-Item -LiteralPath $c.Path).LastWriteTime
+            $raw = Get-Content -Raw -LiteralPath $c.Path
+            if ($raw -and $raw.Trim()) {
+                $j = $raw | ConvertFrom-Json
+                if ($j -and $j.PSObject.Properties['mcpServers']) { $hasServers = $true }
+            }
+        } catch { }
+        $existing += [pscustomobject]@{
+            Cand = $c; HasServers = $hasServers; LastWrite = $lastWrite
+        }
+    }
+
+    # --- 2. the file already defining mcpServers, most recently written -
+    $withServers = @($existing | Where-Object { $_.HasServers } |
+                     Sort-Object -Property @{Expression={$_.LastWrite};Descending=$true})
+    if ($withServers.Count -gt 0) {
+        return (New-Result $withServers[0].Cand `
+                "it already defines mcpServers and is the most recently written config (last written $($withServers[0].LastWrite))")
+    }
+
+    # --- 3. an existing MSIX config shadows %APPDATA% -------------------
+    $pkg = @($existing | Where-Object { $_.Cand.IsPackage } |
+             Sort-Object -Property @{Expression={$_.Cand.NameRank};Descending=$true},
+                                   @{Expression={$_.LastWrite};Descending=$true})
+    if ($pkg.Count -gt 0) {
+        return (New-Result $pkg[0].Cand `
+                "an MSIX redirect layer exists ($($pkg[0].Cand.PackageFamily)) and shadows %APPDATA%")
+    }
+
+    # --- 4. default -----------------------------------------------------
+    $plain = @($Candidates | Where-Object { -not $_.IsPackage })
+    if ($plain.Count -gt 0) {
+        return (New-Result $plain[0] "default location; no packaged build and no existing config found")
+    }
+    return (New-Result $Candidates[0] "only candidate found")
+}
+
+# Backups are byte-for-byte copies of claude_desktop_config.json, so they can
+# contain OTHER MCP servers' API keys and tokens. Keep the 5 most recent per
+# config file and delete the rest rather than letting credential copies pile
+# up forever in a folder nobody ever looks at.
+function Remove-OldBackups ($configPath) {
+    try {
+        $dir  = Split-Path -Parent $configPath
+        $leaf = Split-Path -Leaf   $configPath
+        $baks = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Name -like "$leaf.*.bak" } |
+                  Sort-Object -Property LastWriteTime -Descending)
+        if ($baks.Count -gt 5) {
+            foreach ($old in $baks[5..($baks.Count - 1)]) {
+                Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch { }
+}
+
+function Backup-ConfigFile ($path) {
+    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $bak   = "$path.$stamp.bak"
+    Copy-Item -LiteralPath $path -Destination $bak
+    Remove-OldBackups $path
+    return $bak
+}
+
+# Remove the ac-race-engineer entry from one config, preserving every other
+# MCP server and every other top-level setting. Only rewrites the file if the
+# entry was actually there. Returns 'removed', 'absent' or 'error'.
+function Remove-ServerEntry ($path) {
+    if (-not (Test-Path -LiteralPath $path)) { return 'absent' }
+
+    $cfg = $null
+    try {
+        $raw = Get-Content -Raw -LiteralPath $path
+        if ($raw -and $raw.Trim()) { $cfg = $raw | ConvertFrom-Json }
+    } catch {
+        Write-Warn2 "Not valid JSON, leaving it alone: $path"
+        return 'error'
+    }
+    if (-not $cfg) { return 'absent' }
+    if (-not $cfg.PSObject.Properties['mcpServers'] -or -not $cfg.mcpServers) { return 'absent' }
+    if (-not $cfg.mcpServers.PSObject.Properties[$ServerName]) { return 'absent' }
+
+    $others = @($cfg.mcpServers.PSObject.Properties.Name | Where-Object { $_ -ne $ServerName })
+    try {
+        Backup-ConfigFile $path | Out-Null
+        $cfg.mcpServers.PSObject.Properties.Remove($ServerName)
+        Write-JsonFile $path ($cfg | ConvertTo-Json -Depth 20)
+    } catch {
+        Write-Warn2 "Could not update $path - $($_.Exception.Message)"
+        return 'error'
+    }
+    if ($others.Count -gt 0) {
+        Write-Info "Kept the $($others.Count) other MCP server(s) there: $($others -join ', ')"
+    }
+    return 'removed'
 }
 
 # --- locating Assetto Corsa (needed by both install and uninstall) -------
@@ -195,28 +414,13 @@ function Resolve-AcPath {
 if ($Uninstall) {
     Write-Step "Uninstalling"
 
+    # Uninstall clears the entry from EVERY config location, not just the one
+    # the installer would have chosen as owner.
     foreach ($ClaudeConfigPath in (Get-ClaudeConfigPaths)) {
         if (-not (Test-Path -LiteralPath $ClaudeConfigPath)) { continue }
-
-        $cfg = $null
-        try {
-            $raw = Get-Content -Raw -LiteralPath $ClaudeConfigPath
-            if ($raw.Trim()) { $cfg = $raw | ConvertFrom-Json }
-        } catch {
-            Write-Warn2 "Not valid JSON, leaving it alone: $ClaudeConfigPath"
-        }
-
-        if ($cfg -and $cfg.mcpServers -and
-            $cfg.mcpServers.PSObject.Properties[$ServerName]) {
-            $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-            Copy-Item -LiteralPath $ClaudeConfigPath `
-                      -Destination "$ClaudeConfigPath.$stamp.bak"
-            $cfg.mcpServers.PSObject.Properties.Remove($ServerName)
-            Write-JsonFile $ClaudeConfigPath ($cfg | ConvertTo-Json -Depth 20)
-            Write-Ok "Removed '$ServerName' from $ClaudeConfigPath"
-        } elseif ($cfg) {
-            Write-Info "No '$ServerName' entry in $ClaudeConfigPath"
-        }
+        $status = Remove-ServerEntry $ClaudeConfigPath
+        if     ($status -eq 'removed') { Write-Ok   "Removed '$ServerName' from $ClaudeConfigPath" }
+        elseif ($status -eq 'absent')  { Write-Info "No '$ServerName' entry in $ClaudeConfigPath" }
     }
 
     $ac = Resolve-AcPath
@@ -368,12 +572,31 @@ Write-Ok "Import check passed"
 
 Write-Step "Configuring Claude Desktop"
 
-# An unpackaged build reads %APPDATA%\Claude, so create that one if it's
-# missing. Package folders are never created here - if the redirect layer
+$configCandidates = Get-ClaudeConfigCandidates
+$selection        = Select-OwnerConfig $configCandidates
+$OwnerConfigPath  = $selection.Owner.Path
+$script:OwnerConfigDir = $selection.Owner.Dir
+
+Write-Info "Claude config locations found: $($configCandidates.Count)"
+foreach ($c in $configCandidates) {
+    $tag = if ($c.IsPackage) { "MSIX $($c.PackageFamily)" } else { 'plain %APPDATA%' }
+    Write-Info "  [$tag] $($c.Path)"
+}
+Write-Ok   "This entry will live in: $OwnerConfigPath"
+Write-Info "Chosen because: $($selection.Reason)"
+if ($configCandidates.Count -gt 1) {
+    Write-Info "Any '$ServerName' entry in the other location(s) will be removed so"
+    Write-Info "only one copy of the server can ever be launched."
+}
+
+# An unpackaged build reads %APPDATA%\Claude, so create the owner directory if
+# it's missing. Package folders are never created here - if the redirect layer
 # doesn't already exist, there's no packaged build to configure.
-if (-not (Test-Path -LiteralPath $ClaudeConfigDir)) {
-    New-Item -ItemType Directory -Force -Path $ClaudeConfigDir | Out-Null
-    Write-Info "Created $ClaudeConfigDir"
+# ([IO.Directory]::CreateDirectory, not New-Item: New-Item has no -LiteralPath
+# and its -Path globs, which mangles paths containing [ ].)
+if (-not (Test-Path -LiteralPath $script:OwnerConfigDir)) {
+    [void][System.IO.Directory]::CreateDirectory($script:OwnerConfigDir)
+    Write-Info "Created $($script:OwnerConfigDir)"
 }
 
 # Absolute python path, not bare "python": Claude Desktop launches MCP
@@ -383,76 +606,89 @@ $entry = [pscustomobject]@{
     args    = @('-m', 'ac_race_engineer.server')
 }
 
-$configTargets = Get-ClaudeConfigPaths
-if ($configTargets.Count -gt 1) {
-    Write-Info "Found $($configTargets.Count) Claude config locations (MSIX-packaged build detected); writing to all."
-}
-
 $written  = @()
 $failures = @()
 
-foreach ($ClaudeConfigPath in $configTargets) {
-    $config = $null
-    if (Test-Path -LiteralPath $ClaudeConfigPath) {
-        $raw = Get-Content -Raw -LiteralPath $ClaudeConfigPath
-        if ($raw.Trim()) {
-            try {
-                $config = $raw | ConvertFrom-Json
-            } catch {
-                $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-                Copy-Item -LiteralPath $ClaudeConfigPath `
-                          -Destination "$ClaudeConfigPath.corrupt-$stamp.bak"
-                Write-Warn2 "Not valid JSON; saved as .corrupt-$stamp.bak and starting fresh: $ClaudeConfigPath"
-                $config = $null
-            }
-        }
-        if ($config) {
+# --- the owner config gets the entry ------------------------------------
+$config  = $null
+$rawOld  = $null
+if (Test-Path -LiteralPath $OwnerConfigPath) {
+    $rawOld = Get-Content -Raw -LiteralPath $OwnerConfigPath
+    if ($rawOld -and $rawOld.Trim()) {
+        try {
+            $config = $rawOld | ConvertFrom-Json
+        } catch {
             $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-            Copy-Item -LiteralPath $ClaudeConfigPath `
-                      -Destination "$ClaudeConfigPath.$stamp.bak"
-            Write-Info "Backed up $ClaudeConfigPath to .$stamp.bak"
+            Copy-Item -LiteralPath $OwnerConfigPath `
+                      -Destination "$OwnerConfigPath.corrupt-$stamp.bak"
+            Remove-OldBackups $OwnerConfigPath
+            Write-Warn2 "Not valid JSON; saved as .corrupt-$stamp.bak and starting fresh: $OwnerConfigPath"
+            $config = $null
         }
-    }
-
-    if (-not $config) { $config = [pscustomobject]@{} }
-
-    if (-not $config.PSObject.Properties['mcpServers']) {
-        $config | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{})
-    }
-    if ($null -eq $config.mcpServers) {
-        $config.mcpServers = [pscustomobject]@{}
-    }
-
-    $existingNames = @($config.mcpServers.PSObject.Properties.Name)
-    if ($existingNames -contains $ServerName) {
-        $config.mcpServers.$ServerName = $entry
-    } else {
-        $config.mcpServers | Add-Member -NotePropertyName $ServerName -NotePropertyValue $entry
-    }
-
-    try {
-        Write-JsonFile $ClaudeConfigPath ($config | ConvertTo-Json -Depth 20)
-        Write-Ok "Wrote $ClaudeConfigPath"
-        $written += $ClaudeConfigPath
-
-        $others = @($existingNames | Where-Object { $_ -ne $ServerName })
-        if ($others.Count -gt 0) {
-            Write-Info "Preserved $($others.Count) other MCP server(s): $($others -join ', ')"
-        }
-        # Everything outside mcpServers (window prefs, cowork paths, ...) is
-        # carried through by round-tripping the whole object, not rebuilt.
-        $otherKeys = @($config.PSObject.Properties.Name | Where-Object { $_ -ne 'mcpServers' })
-        if ($otherKeys.Count -gt 0) {
-            Write-Info "Preserved other settings: $($otherKeys -join ', ')"
-        }
-    } catch {
-        $failures += "$ClaudeConfigPath - $($_.Exception.Message)"
-        Write-Warn2 "Could not write $ClaudeConfigPath"
     }
 }
 
+if (-not $config) { $config = [pscustomobject]@{} }
+
+if (-not $config.PSObject.Properties['mcpServers']) {
+    $config | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{})
+}
+if ($null -eq $config.mcpServers) {
+    $config.mcpServers = [pscustomobject]@{}
+}
+
+$existingNames = @($config.mcpServers.PSObject.Properties.Name)
+if ($existingNames -contains $ServerName) {
+    $config.mcpServers.$ServerName = $entry
+} else {
+    $config.mcpServers | Add-Member -NotePropertyName $ServerName -NotePropertyValue $entry
+}
+
+$newText = $config | ConvertTo-Json -Depth 20
+
+if ($null -ne $rawOld -and $rawOld -eq $newText) {
+    Write-Ok "Already up to date, left unchanged: $OwnerConfigPath"
+    $written += $OwnerConfigPath
+} else {
+    try {
+        if ($rawOld -and $rawOld.Trim()) {
+            $bak = Backup-ConfigFile $OwnerConfigPath
+            Write-Info "Backed up to $(Split-Path -Leaf $bak)"
+        }
+        Write-JsonFile $OwnerConfigPath $newText
+        Write-Ok "Wrote $OwnerConfigPath"
+        $written += $OwnerConfigPath
+    } catch {
+        $failures += "$OwnerConfigPath - $($_.Exception.Message)"
+        Write-Warn2 "Could not write $OwnerConfigPath"
+    }
+}
+
+if ($written.Count -gt 0) {
+    $others = @($existingNames | Where-Object { $_ -ne $ServerName })
+    if ($others.Count -gt 0) {
+        Write-Info "Preserved $($others.Count) other MCP server(s): $($others -join ', ')"
+    }
+    # Everything outside mcpServers (window prefs, cowork paths, ...) is
+    # carried through by round-tripping the whole object, not rebuilt.
+    $otherKeys = @($config.PSObject.Properties.Name | Where-Object { $_ -ne 'mcpServers' })
+    if ($otherKeys.Count -gt 0) {
+        Write-Info "Preserved other settings: $($otherKeys -join ', ')"
+    }
+}
+
+# --- every other config must NOT have the entry -------------------------
+# Two configs carrying it means two Claude surfaces each spawning their own
+# server process, both racing for 127.0.0.1:9666 and the same database.
+foreach ($c in $configCandidates) {
+    if ($c.Path -eq $OwnerConfigPath) { continue }
+    $status = Remove-ServerEntry $c.Path
+    if     ($status -eq 'removed') { Write-Ok   "Removed the duplicate '$ServerName' entry from $($c.Path)" }
+    elseif ($status -eq 'absent')  { Write-Info "No duplicate entry in $($c.Path) (unchanged)" }
+}
+
 if ($written.Count -eq 0) {
-    Stop-WithError "Could not write any Claude Desktop config." @"
+    Stop-WithError "Could not write the Claude Desktop config." @"
   $($failures -join "`n  ")
 
   Close Claude Desktop completely (system tray icon -> Quit) and try again.
@@ -469,7 +705,9 @@ Write-Step "Preparing data directory"
 $dataDir = if ($env:AC_ENGINEER_DATA) { $env:AC_ENGINEER_DATA }
            else { Join-Path $env:USERPROFILE '.ac-race-engineer' }
 $rangesDir = Join-Path $dataDir 'ranges'
-New-Item -ItemType Directory -Force -Path $rangesDir | Out-Null
+# New-Item has no -LiteralPath and treats -Path as a wildcard pattern, so a
+# folder like "D:\Games [SSD]" would be misread. .NET takes paths literally.
+[void][System.IO.Directory]::CreateDirectory($rangesDir)
 Write-Ok "$dataDir"
 Write-Info "Car setup ranges go in: $rangesDir"
 
@@ -495,7 +733,8 @@ if (-not $SkipLuaApp) {
             Write-Warn2 "lua_app\race_engineer missing from this repo - skipping"
         } else {
             try {
-                New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+                # Literal, not wildcard: Steam libraries are often "D:\Games [SSD]".
+                [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $dest))
                 # Remove first: Copy-Item -Recurse onto an existing directory
                 # would nest it as race_engineer\race_engineer.
                 if (Test-Path -LiteralPath $dest) {
@@ -531,9 +770,12 @@ if ($script:Problems.Count -gt 0) {
     Write-Host ""
 }
 
-# Logs live next to whichever config the app actually uses, so on a Store
-# install they are NOT under %APPDATA%\Claude. Print the real paths.
-$logHint = (Get-ClaudeConfigDirs | ForEach-Object {
+# Logs live next to whichever config the app actually uses, so on a packaged
+# install they are NOT under %APPDATA%\Claude. Put the owner config's log
+# first, then any other location, since which build is running can change.
+$logDirs = @($script:OwnerConfigDir) +
+           @(Get-ClaudeConfigDirs | Where-Object { $_ -ne $script:OwnerConfigDir })
+$logHint = ($logDirs | ForEach-Object {
     "      notepad ""$(Join-Path $_ "logs\mcp-server-$ServerName.log")"""
 }) -join "`n"
 

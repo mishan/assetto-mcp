@@ -19,6 +19,43 @@ WHEELS = ("fl", "fr", "rl", "rr")
 # past this ceiling is treated as a glitch rather than as data.
 SLIP_SANE_MAX = 50.0
 
+# A lap is a stop, a spin, or a tow -- not a representative lap -- when it is
+# this much slower than the session's reference.
+#
+# Deliberately an allowance over the reference rather than a multiple of it.
+# A ratio is the wrong shape for a lap time: 1.5x a 1:54 Mugello lap is a 57
+# second margin, which no realistic incident reaches, while 1.5x an 8 minute
+# Nordschleife lap is four whole minutes. The fraction keeps long tracks
+# proportionate (more track, more places to have a moment) and the floor
+# keeps short ones from being brutal.
+OUTLIER_MARGIN_MS = 25_000
+OUTLIER_FRACTION = 0.25
+
+
+def outlier_reference(lap_times_ms) -> int | None:
+    """The lap time to judge outliers against: the fastest lap seen.
+
+    Takes every lap, not just the ones already marked valid. Deriving the
+    reference from valid laps only makes this rule a dependent of the
+    dirty-lap rule -- at a track with tight limits every lap can be dirty,
+    leaving no reference at all and disabling outlier detection for the
+    whole session.
+    """
+    times = [t for t in lap_times_ms if t and t > 0]
+    return min(times) if times else None
+
+
+def lap_is_outlier(lap_time_ms: int, reference_ms: int | None) -> bool:
+    """True if this lap is grossly slower than the session's reference.
+
+    False when there is no reference yet: the first flying lap of a session
+    has nothing to be an outlier against.
+    """
+    if not reference_ms:
+        return False
+    allowance = max(OUTLIER_MARGIN_MS, OUTLIER_FRACTION * reference_ms)
+    return lap_time_ms > reference_ms + allowance
+
 
 def _sane_slip(*values: float) -> float | None:
     """Mean of the given slip values, or None if any is a glitch.
@@ -104,11 +141,19 @@ def _corner_stats(samples, entry_idx, apex_idx, exit_idx) -> dict:
     # Keep only samples where all four wheels report believable slip, so one
     # glitched tick can't decide the corner's balance.
     slip_pairs = []
+    clean = []          # the samples those pairs came from
+    worst_dropped = 0.0
     for s in seg:
         f = _sane_slip(s["slip_fl"], s["slip_fr"])
         r = _sane_slip(s["slip_rl"], s["slip_rr"])
         if f is not None and r is not None:
             slip_pairs.append((f, r))
+            clean.append(s)
+        else:
+            worst = max(abs(s[f"slip_{w}"]) for w in WHEELS
+                        if isinstance(s[f"slip_{w}"], (int, float))
+                        and math.isfinite(s[f"slip_{w}"]))
+            worst_dropped = max(worst_dropped, worst)
     dropped = len(seg) - len(slip_pairs)
 
     if slip_pairs:
@@ -117,7 +162,12 @@ def _corner_stats(samples, entry_idx, apex_idx, exit_idx) -> dict:
     else:
         front_slip = rear_slip = None
 
-    peak_steer = max(abs(s["steer"]) for s in seg)
+    # A tick that emits wheelSlip = 30007 is not a tick to trust for steering
+    # either. Reuse the sample list the slip filter already vetted, so we
+    # can't report a peak_steer_norm of 4021 from a sample we just decided
+    # was not data. Fall back to the raw window only if nothing survived.
+    steer_src = clean or seg
+    peak_steer = max(abs(s["steer"]) for s in steer_src)
 
     # Throttle-on point after apex. Search well past the exit window:
     # drivers often reach half throttle only after the corner "ends".
@@ -145,6 +195,11 @@ def _corner_stats(samples, entry_idx, apex_idx, exit_idx) -> dict:
     }
     if dropped:
         out["slip_samples_dropped"] = dropped
+        # Magnitude, not just a count: "3 dropped" reads the same whether
+        # the filter caught three 30007s or three 51s, and only one of those
+        # says the ceiling is in the right place.
+        out["slip_dropped_peak"] = round(worst_dropped, 1)
+        out["slip_coverage_pct"] = round(100 * len(slip_pairs) / len(seg), 1)
     return out
 
 
@@ -166,6 +221,19 @@ def lap_summary(lap: dict, samples: list[dict]) -> dict:
     corners = detect_corners(samples)
     slip_balances = [c["slip_balance"] for c in corners
                      if c["slip_balance"] is not None]
+
+    # If most corners had their slip thrown away, overall_slip_balance is an
+    # average of whatever survived and should not be read as confident.
+    filtered = [c for c in corners if c.get("slip_samples_dropped")]
+    slip_quality = None
+    if corners and (len(slip_balances) < len(corners) or filtered):
+        slip_quality = {
+            "corners_with_balance": len(slip_balances),
+            "corners_total": len(corners),
+            "corners_with_dropped_samples": len(filtered),
+            "peak_dropped_slip": max(
+                (c["slip_dropped_peak"] for c in filtered), default=None),
+        }
 
     return {
         "lap_id": lap["id"],
@@ -190,8 +258,10 @@ def lap_summary(lap: dict, samples: list[dict]) -> dict:
         "tyres": tyres,
         "overall_slip_balance": round(mean(slip_balances), 3)
         if slip_balances else None,
+        "slip_quality": slip_quality,
         "balance_note": ("positive slip_balance = front slides more "
                          "(understeer); negative = rear (oversteer)"),
+        "setup": lap.get("setup_name") or None,
         "corners": corners,
     }
 

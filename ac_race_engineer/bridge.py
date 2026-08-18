@@ -5,6 +5,8 @@ on 127.0.0.1 that it polls and posts to:
 
     GET  /status  -> collector state + pending message from Claude
     POST /note    -> driver complaint tag at current track position
+    POST /rivals  -> batched opponent telemetry (AC's shared memory is
+                     ego-only, so this is the only way to see other cars)
     POST /ack     -> dismiss the currently displayed message
 
 Messages flow the other way via the send_driver_message MCP tool: Claude sets
@@ -66,6 +68,22 @@ MAX_SPEED_KMH = 1000.0
 # push into the SQLite writer in one request.
 MAX_RIVAL_BATCH = 2000
 
+# Must stay above the Lua app's own RIVAL_BUFFER_MAX (1400): the client caps
+# its buffer, so anything above that ceiling is a bug on one side or the
+# other. tests/test_rivals.py asserts the relationship rather than the value,
+# because bracketing the constant loosely is how it got sized for a single
+# grid snapshot the first time.
+RIVAL_BUFFER_MAX_CLIENT = 1400
+
+# Ceiling on a request body before we even parse it. A full 1400-sample
+# batch measures ~300KB; 4MB is generous for that and still bounded.
+MAX_BODY_BYTES = 4 * 1024 * 1024
+
+# How much of an oversized body we're willing to read and throw away so the
+# client can receive its 400 instead of a broken pipe. Past this, hanging up
+# is the right answer.
+DRAIN_LIMIT_BYTES = 64 * 1024 * 1024
+
 # Windows holds a closed listening socket in TIME_WAIT for up to four
 # minutes. Since we now refuse to share the port, our own restart can be what
 # blocks us, so keep retrying for longer than that before giving up.
@@ -81,11 +99,15 @@ class FieldError(ValueError):
     """A request field was missing, the wrong type, or out of range."""
 
 
-def _opt_float(raw) -> float | None:
-    """Best-effort float, or None. For fields that may not exist online.
+def _opt_float(raw, lo: float, hi: float) -> float | None:
+    """Best-effort float within [lo, hi], or None.
 
     Never raises: a remote car whose inputs the server doesn't transmit is
-    an expected condition, not a client error.
+    an expected condition, not a client error. But the bounds are not
+    optional. Unbounded, a client sending 1e30 produced an int SQLite
+    cannot bind, which surfaced as a 500 *and* rolled back the whole batch
+    of 1400 samples -- defeating the per-item skip whose entire purpose is
+    that one bad car must not cost the rest.
     """
     if raw is None or isinstance(raw, bool):
         return None
@@ -93,12 +115,33 @@ def _opt_float(raw) -> float | None:
         val = float(raw)
     except (TypeError, ValueError):
         return None
-    return val if math.isfinite(val) else None
+    if not math.isfinite(val) or not (lo <= val <= hi):
+        return None
+    return val
 
 
-def _opt_int(raw) -> int | None:
-    val = _opt_float(raw)
-    return int(val) if val is not None else None
+def _opt_int(raw, lo: int, hi: int) -> int | None:
+    """Best-effort int within [lo, hi], or None. Integral values only.
+
+    Truncating 3.7 to 3 would turn malformed client data into a
+    plausible-but-wrong gear or lap time, which is worse than admitting the
+    field is unknown.
+    """
+    val = _opt_float(raw, lo, hi)
+    if val is None or val != int(val):
+        return None
+    return int(val)
+
+
+# Bounds for the optional rival fields. Lap times: 24h in ms is far past
+# anything real while still being a value SQLite can hold comfortably.
+MAX_LAP_MS = 24 * 60 * 60 * 1000
+GEAR_RANGE = (-2, 12)
+
+
+def _opt_str(raw, limit: int = 64) -> str:
+    """A string field, or empty. Non-strings are dropped, not repr'd."""
+    return raw[:limit] if isinstance(raw, str) else ""
 
 
 def _req_float(body: dict, key: str, lo: float, hi: float) -> float:
@@ -157,68 +200,83 @@ class Bridge:
 
     # -- session resolution ---------------------------------------------
 
-    def active_session_id(self) -> int | None:
-        """Which session inbound driver data should be filed against.
+    def _resolve(self) -> dict:
+        """Single source of truth for "which session is live, and whose".
 
-        Prefer this process's own collector. If it isn't recording, fall
-        back to the newest session in the shared database: the app can run
-        several server instances (Desktop chat and Cowork each spawn one),
-        only one of which wins the bridge port, and it is routinely not the
-        one doing the recording. Filing against our own idle collector is
-        how driver notes ended up attached to no session at all.
+        Both what the overlay shows and where inbound data is filed come
+        from here, because the two disagreeing is worse than either being
+        wrong. They used to: status applied a staleness window and the write
+        path did not, so the overlay could report the Mugello session while
+        the same request filed the driver's note into a Monza session from
+        three days earlier.
+
+        Two rules, in order:
+
+        1. This process's collector, but only while it is actually running.
+           collector.session_id survives stop(), so trusting it unguarded
+           files data against a session that ended.
+        2. Otherwise the newest session in the shared database, and only if
+           it is recent. The app runs one server instance per client surface
+           and only one wins the bridge port, so the recording instance is
+           routinely not this one. Beyond the staleness window there is no
+           live session and inbound data has nowhere honest to go.
         """
-        if self._collector.session_id is not None:
-            return self._collector.session_id
+        c = self._collector
+        if c.running and c.session_id is not None:
+            return {"session_id": c.session_id, "running": True,
+                    "status": c.status, "laps_recorded": c.laps_recorded,
+                    "by_other": False}
+
+        idle = {"session_id": None, "running": False, "status": c.status,
+                "laps_recorded": 0, "by_other": False}
         try:
             conn = db.connect(self._db_path)
         except Exception:  # noqa: BLE001 - never take the bridge down
-            return None
+            return idle
         try:
             latest = db.latest_session(conn)
-            return latest["id"] if latest else None
-        finally:
-            conn.close()
-
-    def status_snapshot(self) -> dict:
-        """What to show the driver, across however many instances exist.
-
-        If this process is recording, report that directly. Otherwise look
-        at the shared database: another instance may well be recording, and
-        the overlay saying "connected, not recording" while laps are being
-        stored is the single most misleading thing this tool has done.
-        """
-        c = self._collector
-        if c.running:
-            return {"running": True, "status": c.status,
-                    "session_id": c.session_id,
-                    "laps_recorded": c.laps_recorded, "by_other": False}
-        try:
-            conn = db.connect(self._db_path)
         except Exception:  # noqa: BLE001
-            return {"running": False, "status": c.status,
-                    "session_id": None, "laps_recorded": 0,
-                    "by_other": False}
-        try:
-            latest = db.latest_session(conn)
+            return idle
         finally:
             conn.close()
         if not latest:
-            return {"running": False, "status": c.status,
-                    "session_id": None, "laps_recorded": 0,
-                    "by_other": False}
+            return idle
 
         # "Recent" has to be generous: a driver can sit in the garage for a
         # while between runs without the session having ended.
         age = time.time() - (latest["last_lap_at"] or latest["started_at"])
-        live = age < OTHER_INSTANCE_STALE_SECONDS
+        if age >= OTHER_INSTANCE_STALE_SECONDS:
+            return idle
         return {
-            "running": live,
-            "status": (f"recording (session {latest['id']}, other instance)"
-                       if live else c.status),
-            "session_id": latest["id"] if live else None,
+            "session_id": latest["id"],
+            "running": True,
+            "status": f"recording (session {latest['id']}, other instance)",
             "laps_recorded": latest["lap_count"],
-            "by_other": live,
+            "by_other": True,
         }
+
+    def active_session_id(self) -> int | None:
+        """Which session inbound driver data should be filed against.
+
+        None means "nothing is recording" -- and the caller must then refuse
+        the data rather than invent somewhere to put it. Storing a note
+        against a stale session is harder to notice than storing none.
+        """
+        return self._resolve()["session_id"]
+
+    def status_snapshot(self) -> dict:
+        """What to show the driver, across however many instances exist.
+
+        The overlay saying "connected, not recording" while laps are being
+        stored by another instance is the single most misleading thing this
+        tool has done, so a session found in the shared database counts.
+        """
+        r = self._resolve()
+        # Never let another instance's recording mask this one being broken.
+        if r["by_other"] and self._collector.last_error:
+            r = dict(r, status=f"{r['status']}; this instance: "
+                               f"{self._collector.status}")
+        return r
 
     # -- message slot (Claude -> driver) --------------------------------
 
@@ -265,17 +323,43 @@ class Bridge:
                 self.wfile.write(body)
 
             def _body(self) -> dict | None:
-                """Parsed JSON object body, or None if malformed.
+                """Parsed JSON object body, or None if malformed/oversized.
 
                 A non-object body (list, number, bare string) is treated as
                 malformed too: every endpoint here reads named fields.
+
+                The length is checked before reading, not after parsing: the
+                per-endpoint batch cap only limits what reaches SQLite, so
+                without this a client could still make us buffer and parse
+                an arbitrarily large body first.
                 """
                 try:
                     n = int(self.headers.get("Content-Length", 0))
+                except ValueError:
+                    return None
+                if n < 0:
+                    return None
+                if n > MAX_BODY_BYTES:
+                    # Drain before refusing. Writing the response while the
+                    # client is still sending fills the socket buffer and
+                    # the client dies with a broken pipe instead of reading
+                    # the 400 that would have told it what went wrong.
+                    self._drain(n)
+                    return None
+                try:
                     parsed = json.loads(self.rfile.read(n)) if n else {}
                 except ValueError:  # covers json.JSONDecodeError
                     return None
                 return parsed if isinstance(parsed, dict) else None
+
+            def _drain(self, n: int, chunk: int = 65536):
+                remaining = min(n, DRAIN_LIMIT_BYTES)
+                while remaining > 0:
+                    got = self.rfile.read(min(chunk, remaining))
+                    if not got:
+                        break
+                    remaining -= len(got)
+                self.close_connection = True
 
             def do_GET(self):
                 if self.path != "/status":
@@ -320,8 +404,16 @@ class Bridge:
                             conn, sid, lap_count, spline, tag, speed)
                     finally:
                         conn.close()
+                    # sid is None when nothing is recording. Store the note
+                    # anyway, against a NULL session -- the driver pressed
+                    # the button and that input is real. What must not happen
+                    # is guessing a session for it: attaching it to whatever
+                    # ran most recently is silent misattribution, and far
+                    # harder to notice than an orphan. get_driver_notes
+                    # surfaces these; the app toasts them differently.
                     return self._send(200, {"ok": True, "id": note_id,
-                                            "session_id": sid})
+                                            "session_id": sid,
+                                            "orphaned": sid is None})
 
                 if self.path == "/rivals":
                     # Batched opponent telemetry from the Lua app. Rejecting
@@ -357,12 +449,16 @@ class Bridge:
                         # Spline can read slightly outside 0..1 at the
                         # start/finish line; clamp rather than discard.
                         spline = min(max(spline, 0.0), 1.0)
+                        # Names are stored as-is only if they really are
+                        # strings; str() on a dict would persist its repr.
                         drivers.append({
                             "car_index": idx,
-                            "driver_name": str(car.get("driver_name", ""))[:64],
-                            "car_model": str(car.get("car_model", ""))[:64],
-                            "best_lap_ms": _opt_int(car.get("best_lap_ms")),
-                            "last_lap_ms": _opt_int(car.get("last_lap_ms")),
+                            "driver_name": _opt_str(car.get("driver_name")),
+                            "car_model": _opt_str(car.get("car_model")),
+                            "best_lap_ms": _opt_int(car.get("best_lap_ms"),
+                                                    0, MAX_LAP_MS),
+                            "last_lap_ms": _opt_int(car.get("last_lap_ms"),
+                                                    0, MAX_LAP_MS),
                             "lap_count": lap_count,
                         })
                         samples.append({
@@ -370,9 +466,9 @@ class Bridge:
                             "lap_count": lap_count,
                             "spline": spline,
                             "speed_kmh": speed,
-                            "gear": _opt_int(car.get("gear")),
-                            "gas": _opt_float(car.get("gas")),
-                            "brake": _opt_float(car.get("brake")),
+                            "gear": _opt_int(car.get("gear"), *GEAR_RANGE),
+                            "gas": _opt_float(car.get("gas"), 0.0, 1.0),
+                            "brake": _opt_float(car.get("brake"), 0.0, 1.0),
                         })
 
                     conn = db.connect(bridge._db_path)
@@ -443,6 +539,12 @@ class Bridge:
 
     def stop(self):
         self._bind_stop.set()
-        if self._server:
-            self._server.shutdown()
-            self._server = None
+        with self._lock:
+            server, self._server = self._server, None
+        if server:
+            server.shutdown()      # stop the accept loop
+            # And actually close the listening socket. shutdown() alone
+            # leaves it open until refcounting gets around to it, which on
+            # Windows stretches the TIME_WAIT window that -- now that we
+            # refuse to share the port -- our own restart has to wait out.
+            server.server_close()

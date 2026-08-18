@@ -8,27 +8,15 @@ time comes from graphics.iLastTime.
 import threading
 import time
 
-from . import db
+from . import analysis, db
 
 TARGET_HZ = 25  # plenty for setup work; keeps the DB small
 
-# A lap this much slower than the session's best is a stop, a spin, or a
-# tow -- not a representative lap. Generous on purpose: a scrappy lap with a
-# half-spin is still worth analysing, and marking it invalid only excludes it
-# from best-lap maths, it is still stored and still readable.
-OUTLIER_RATIO = 1.5
-
-
-def _is_outlier(lap_time_ms: int, session_best_ms: int | None) -> bool:
-    """True if this lap is grossly slower than the session's best so far.
-
-    Returns False when there is no reference yet: the first flying lap of a
-    session has nothing to be an outlier against, and guessing an absolute
-    ceiling would break on tracks like the Nordschleife.
-    """
-    if session_best_ms is None:
-        return False
-    return lap_time_ms > session_best_ms * OUTLIER_RATIO
+# The outlier rule lives in analysis so the same definition is used both
+# here (at write time) and by db.revalidate_outlier_laps (over laps stored
+# before the rule existed). Marking a lap invalid only excludes it from
+# best-lap maths -- it is still stored and still readable.
+_is_outlier = analysis.lap_is_outlier
 
 
 class Collector:
@@ -46,6 +34,7 @@ class Collector:
         self._stop = threading.Event()
         self.status = "stopped"
         self.session_id: int | None = None
+        self.last_session_id: int | None = None
         self.laps_recorded = 0
         self.last_error: str | None = None
 
@@ -65,6 +54,13 @@ class Collector:
         if self._thread:
             self._thread.join(timeout=3)
         self.status = "stopped"
+        # session_id has to be cleared, not just left behind. The bridge
+        # asks "which session should this note go to"; a leftover id means
+        # data keeps being filed against a session that has ended, which is
+        # harder to spot than filing it against none. Keep it separately for
+        # reporting, where being stale is only cosmetic.
+        self.last_session_id = self.session_id
+        self.session_id = None
 
     # ------------------------------------------------------------------
 
@@ -156,12 +152,22 @@ class Collector:
                     valid = (not lap_dirty
                              and not lap_pitted
                              and not _is_outlier(lap_time, session_best))
+                    # setup_name omitted: store_lap snapshots whatever setup
+                    # the session is currently marked as running, so there
+                    # is one source of truth rather than a cached copy here
+                    # that another instance's set_session_setup can't reach.
                     db.store_lap(self._conn, self.session_id,
                                  last_completed + 1, lap_time, valid,
                                  lap_samples)
                     self.laps_recorded += 1
-                    if valid and (session_best is None
-                                  or lap_time < session_best):
+                    # Reference for the outlier rule: fastest lap that was
+                    # actually driven, whether or not it was clean. Deriving
+                    # it from valid laps only made this rule a dependent of
+                    # the dirty-lap rule -- at a track with tight limits
+                    # every lap can be dirty, leaving no reference at all.
+                    if (not lap_pitted
+                            and (session_best is None
+                                 or lap_time < session_best)):
                         session_best = lap_time
                 last_completed = g.completedLaps
                 lap_samples = []

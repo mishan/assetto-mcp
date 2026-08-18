@@ -25,6 +25,11 @@ WHEELS = ("fl", "fr", "rl", "rr")
 
 class SPageFilePhysics(ctypes.Structure):
     _pack_ = 4
+    # These structs mirror an MSVC-compiled layout byte for byte, which is
+    # what _pack_ is for. Say so explicitly: with _pack_ set and no _layout_,
+    # CPython warns from 3.14 and makes it an error in 3.19, and this file's
+    # entire correctness rests on the layout. Inert on older versions.
+    _layout_ = "ms"
     _fields_ = [
         ("packetId", c_int32),
         ("gas", c_float),
@@ -91,6 +96,11 @@ class SPageFilePhysics(ctypes.Structure):
 
 class SPageFileGraphic(ctypes.Structure):
     _pack_ = 4
+    # These structs mirror an MSVC-compiled layout byte for byte, which is
+    # what _pack_ is for. Say so explicitly: with _pack_ set and no _layout_,
+    # CPython warns from 3.14 and makes it an error in 3.19, and this file's
+    # entire correctness rests on the layout. Inert on older versions.
+    _layout_ = "ms"
     _fields_ = [
         ("packetId", c_int32),
         ("status", c_int32),  # AC_OFF / AC_REPLAY / AC_LIVE / AC_PAUSE
@@ -125,6 +135,11 @@ class SPageFileGraphic(ctypes.Structure):
 
 class SPageFileStatic(ctypes.Structure):
     _pack_ = 4
+    # These structs mirror an MSVC-compiled layout byte for byte, which is
+    # what _pack_ is for. Say so explicitly: with _pack_ set and no _layout_,
+    # CPython warns from 3.14 and makes it an error in 3.19, and this file's
+    # entire correctness rests on the layout. Inert on older versions.
+    _layout_ = "ms"
     _fields_ = [
         ("smVersion", c_wchar * 15),
         ("acVersion", c_wchar * 15),

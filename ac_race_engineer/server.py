@@ -63,17 +63,41 @@ def start_recording() -> str:
     return _j({"status": _collector.status, "error": _collector.last_error})
 
 
+def _active_session(explicit: int | None = None) -> int | None:
+    """The session tools should read and write, across instances.
+
+    Delegates to the bridge so every entry point -- MCP tools, the in-game
+    app's notes, rival telemetry -- agrees on one answer. Resolving from
+    _collector.session_id here instead is how tools ended up reporting "no
+    active session" for a session this same process's bridge was actively
+    writing to, because the app runs one server instance per client surface
+    and only one of them is the one recording.
+    """
+    if explicit is not None:
+        return explicit
+    return _bridge.active_session_id()
+
+
 @mcp.tool()
 def recording_status() -> str:
     """Check collector state: whether it's recording, which session,
     how many laps stored so far, and any error."""
-    return _j({
+    snap = _bridge.status_snapshot()
+    out = {
         "running": _collector.running,
         "status": _collector.status,
         "session_id": _collector.session_id,
+        "active_session_id": snap["session_id"],
+        "recording_elsewhere": snap["by_other"],
         "laps_recorded": _collector.laps_recorded,
         "error": _collector.last_error,
-    })
+        "setup_name": (db.session_setup(_conn, snap["session_id"]) or None
+                       if snap["session_id"] else None),
+    }
+    migrations = db.MIGRATION_LOG.pop(str(DB_PATH), None)
+    if migrations:
+        out["database_upgraded"] = migrations
+    return _j(out)
 
 
 @mcp.tool()
@@ -85,6 +109,8 @@ def stop_recording() -> str:
 
 
 # --- live state --------------------------------------------------------
+
+AC_STATUS = {0: "off", 1: "replay", 2: "live", 3: "pause"}
 
 
 @mcp.tool()
@@ -100,7 +126,11 @@ def live_snapshot() -> str:
             "car": s.carModel,
             "track": s.track,
             "track_config": s.trackConfiguration,
-            "status": ["off", "replay", "live", "pause"][g.status],
+            # Mapped, not indexed: a partial or corrupt shared-memory read
+            # gives an out-of-range status, and an IndexError here takes the
+            # whole tool call down -- on exactly the call the driver makes
+            # to find out whether shared memory is readable at all.
+            "status": AC_STATUS.get(g.status, f"unknown ({g.status})"),
             "tyre_compound": g.tyreCompound,
             "air_temp": round(p.airTemp, 1),
             "road_temp": round(p.roadTemp, 1),
@@ -133,29 +163,48 @@ def list_sessions() -> str:
 
 
 @mcp.tool()
-def list_rivals(session_id: int | None = None) -> str:
+def list_rivals(session_id: int | None = None, limit: int = 20) -> str:
     """Opponents seen in a session, best-lap order, with how much of their
     telemetry we captured.
 
     Requires the in-game Lua app: AC's shared memory is ego-only, so
     opponent data can only reach the server via the bridge."""
-    sid = session_id if session_id is not None else _collector.session_id
+    sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
-    rivals = db.list_rivals(_conn, sid)
+    rivals = db.list_rivals(_conn, sid, limit=limit)
     if not rivals:
-        return _j({"rivals": [],
+        return _j({"session_id": sid, "rivals": [],
                    "note": "No opponent data. The in-game app must be "
                            "running and updated to push rival telemetry."})
     for r in rivals:
-        laps = db.rival_lap_counts(_conn, sid, r["car_index"])
-        # Only laps we saw nearly all of are worth comparing against.
-        r["captured_laps"] = [
-            {"lap_count": l["lap_count"], "samples": l["n"],
-             "coverage": round(l["hi"] - l["lo"], 3)}
-            for l in laps if l["n"] >= 20 and (l["hi"] - l["lo"]) > 0.8
+        laps = _well_covered_rival_laps(sid, r["car_index"])
+        # A full practice session is 25+ laps per car; listing every one for
+        # every rival ran to ~55KB of context. The engineer only ever wants
+        # the quick ones, so report the count and show the best few.
+        r["captured_lap_count"] = len(laps)
+        r["best_captured_laps"] = [
+            {"lap_count": l["lap_count"], "lap_time_ms": l["lap_time_ms"],
+             "samples": l["n"]}
+            for l in laps[:3]
         ]
     return _j({"session_id": sid, "rivals": rivals})
+
+
+def _well_covered_rival_laps(sid: int, car_index: int) -> list[dict]:
+    """Rival laps we saw enough of to compare against, quickest first.
+
+    Ordered by recorded lap time where we have one. A lap with no time sorts
+    last: without it there is no way to know whether it was a flyer or an
+    in-lap, and comparing against an unknown-pace lap is worse than useless.
+    """
+    times = db.rival_lap_times(_conn, sid, car_index)
+    laps = [dict(l, lap_time_ms=times.get(l["lap_count"]))
+            for l in db.rival_lap_counts(_conn, sid, car_index)
+            if l["n"] >= 20 and (l["hi"] - l["lo"]) > 0.8]
+    laps.sort(key=lambda l: (l["lap_time_ms"] is None,
+                             l["lap_time_ms"] or 0))
+    return laps
 
 
 @mcp.tool()
@@ -168,22 +217,39 @@ def compare_to_rival(car_index: int, lap_id: int,
     pedal inputs -- where they brake and get back on power. Use list_rivals
     to find car_index and which of their laps were captured.
 
-    rival_lap_count defaults to their best captured lap."""
-    sid = session_id if session_id is not None else _collector.session_id
+    rival_lap_count defaults to their quickest captured lap."""
+    sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
 
     lap = db.get_lap(_conn, lap_id)
     if not lap:
         return _j({"error": f"no lap with id {lap_id}"})
+    # Both laps must be from the same session, or this silently compares two
+    # different circuits corner by corner and reports it with a straight face.
+    if lap["session_id"] != sid:
+        return _j({"error": f"lap {lap_id} belongs to session "
+                            f"{lap['session_id']} ({lap['track']}), not "
+                            f"session {sid}. Rival telemetry is only "
+                            f"comparable within the session it was captured "
+                            f"in."})
 
-    laps = [l for l in db.rival_lap_counts(_conn, sid, car_index)
-            if l["n"] >= 20 and (l["hi"] - l["lo"]) > 0.8]
+    laps = _well_covered_rival_laps(sid, car_index)
     if not laps:
         return _j({"error": f"no well-covered laps captured for car "
                             f"{car_index} in session {sid}"})
+
+    chosen = None
     if rival_lap_count is None:
-        rival_lap_count = max(laps, key=lambda l: l["n"])["lap_count"]
+        chosen = laps[0]        # quickest, or longest-observed if untimed
+        rival_lap_count = chosen["lap_count"]
+    else:
+        chosen = next((l for l in laps
+                       if l["lap_count"] == rival_lap_count), None)
+        if chosen is None:
+            return _j({"error": f"lap_count {rival_lap_count} was not "
+                                f"captured well enough for car {car_index}",
+                       "available": [l["lap_count"] for l in laps]})
 
     rival_samples = db.get_rival_lap_samples(
         _conn, sid, car_index, rival_lap_count)
@@ -191,26 +257,40 @@ def compare_to_rival(car_index: int, lap_id: int,
         db.get_samples(_conn, lap_id), rival_samples)
     result["my_lap"] = {"id": lap_id,
                         "time_ms": lap["lap_time_ms"],
-                        "setup": lap.get("setup_name", "")}
+                        "setup": lap.get("setup_name") or None}
     result["rival"] = {"car_index": car_index,
-                       "lap_count": rival_lap_count}
+                       "lap_count": rival_lap_count,
+                       "lap_time_ms": chosen["lap_time_ms"]}
+    if chosen["lap_time_ms"] is None:
+        result["rival"]["caution"] = (
+            "No lap time recorded for this rival lap, so its pace is "
+            "unknown -- it could be an in-lap. Treat speed deltas as "
+            "indicative only.")
     return _j(result)
 
 
 @mcp.tool()
 def set_session_setup(setup_name: str, session_id: int | None = None) -> str:
-    """Record which setup a session is running, so laps can be attributed.
+    """Record the setup now on the car, so laps are attributed to it.
 
     AC's shared memory does not expose the setup loaded in the garage, so
     this has to be stated explicitly -- call it whenever the driver says
-    they've loaded a different setup. Defaults to the session currently
-    being recorded."""
-    sid = session_id if session_id is not None else _collector.session_id
+    they've loaded a different setup, including mid-session after a pit stop.
+
+    Laps completed from now on are tagged with this name. Laps already
+    stored keep the setup they were driven on: relabelling them would
+    destroy the A/B comparison this exists to enable."""
+    sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
     if not db.set_session_setup(_conn, sid, setup_name):
         return _j({"error": f"no session with id {sid}"})
-    return _j({"ok": True, "session_id": sid, "setup_name": setup_name})
+    already = len(db.list_laps(_conn, sid, limit=500))
+    return _j({"ok": True, "session_id": sid, "setup_name": setup_name,
+               "applies_to": "laps completed from now on",
+               "laps_already_stored": already,
+               "note": (f"{already} lap(s) already in this session keep "
+                        f"their previous setup label." if already else None)})
 
 
 @mcp.tool()
@@ -249,13 +329,28 @@ def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
 
 
 @mcp.tool()
-def get_driver_notes(session_id: int | None = None, limit: int = 50) -> str:
+def get_driver_notes(session_id: int | None = None, limit: int = 50,
+                     all_sessions: bool = False) -> str:
     """Complaint tags the driver pressed in-game while driving (understeer,
     oversteer, braking, traction, note). Each has a spline position (0..1)
     directly comparable to corner apex_pos values from lap_summary, plus the
     lap_count when pressed (current lap = lap_count + 1). Correlate these
-    with telemetry to know which corners the driver is unhappy with."""
-    return _j(db.list_notes(_conn, session_id, limit))
+    with telemetry to know which corners the driver is unhappy with.
+
+    Defaults to the active session; pass all_sessions=True for everything."""
+    sid = None if all_sessions else _active_session(session_id)
+    notes = db.list_notes(_conn, sid, limit)
+    orphans = db.count_orphan_notes(_conn)
+    out = {"session_id": sid, "notes": notes}
+    if orphans and not all_sessions:
+        # Notes pressed while nothing was recording. Stored deliberately
+        # rather than guessed into a session, but they need saying out loud
+        # or they are lost in exactly the way this was meant to stop.
+        out["orphaned_notes"] = (
+            f"{orphans} note(s) were pressed while no session was "
+            f"recording and are not attached to one. Call with "
+            f"all_sessions=True to see them.")
+    return _j(out)
 
 
 @mcp.tool()

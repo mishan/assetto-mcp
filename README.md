@@ -330,6 +330,26 @@ has no usable braking, the direction is reported as unknown and the
 bump/rebound split is withheld rather than guessed. `sign_convention` in the
 report shows the reasoning and a confidence figure.
 
+## Tests
+
+```
+python run_tests.py            everything, one line per module
+python run_tests.py -v         one line per test, with each test's output
+python run_tests.py -k damper  only tests matching a regex
+python run_tests.py --isolate  each module in its own process
+python run_tests.py --lua      syntax-check the in-game Lua app too
+python run_tests.py --list     show what would run
+```
+
+No dependencies — it runs on the gaming PC, which has Python because the
+server needs it and no reason to have anything else. `pytest tests/ -q`
+works as well and gives better assertion diffs.
+
+Everything runs without Windows or Assetto Corsa: the collector is driven
+through a fake SimInfo and the bridge is exercised over real HTTP on an
+ephemeral localhost port. `--isolate` is the mode CI uses to prove each
+module still runs on its own, since that's the path the gaming PC takes.
+
 ## Layout
 
 ```
@@ -348,6 +368,9 @@ lua_app/
     suspension_worker.lua  CSP physics worker, 333Hz damper sampling
 install-windows.ps1  one-shot Windows installer
 install-windows.bat  double-clickable wrapper for the above
+diagnose.ps1 / .bat  what-is-broken report
+run_tests.py         run and summarise the suite, no dependencies
+tests/               behaviour-named test modules + shared harness
 ```
 
 ## Notes / future ideas

@@ -398,6 +398,70 @@ def test_lua_and_python_batch_limits_agree():
           f"{B.MAX_SUSPENSION_BATCH}")
 
 
+def test_the_lua_app_assigns_no_implicit_globals():
+    """Lua creates a global on assignment to an undeclared name.
+
+    That is silent, and it bites twice: the value leaks into the shared
+    environment, and a typo or a leftover from a refactor reads back as nil
+    forever. This exact bug shipped in review -- a `suspTier` variable
+    survived the change that replaced it, was never declared and never set
+    to 'worker', so the app's capture-tier indicator would have shown the
+    degraded marker permanently no matter what was actually running.
+    """
+    try:
+        from luaparser import ast, astnodes
+    except ImportError:
+        print("  skipped: pip install luaparser")
+        return
+
+    lua_dir = Path(__file__).resolve().parents[1] / "lua_app/race_engineer"
+    # Names Lua and CSP provide. Anything assigned that isn't declared local
+    # and isn't one of these is a new global.
+    provided = {
+        "script", "windowMain", "windowSettings",       # CSP entry points
+        "ac", "ui", "web", "physics", "sim", "car",     # CSP namespaces
+        "JSON", "rgbm", "vec2", "vec3", "worker",
+        "math", "string", "table", "os", "io", "tostring", "tonumber",
+        "type", "pcall", "ipairs", "pairs", "print", "select", "setmetatable",
+    }
+
+    offenders = []
+    for path in sorted(lua_dir.glob("*.lua")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+
+        declared = set(provided)
+        for node in ast.walk(tree):
+            # `local x`, `local function f`, function params, loop vars.
+            if isinstance(node, astnodes.LocalAssign):
+                declared.update(t.id for t in node.targets
+                                if isinstance(t, astnodes.Name))
+            elif isinstance(node, astnodes.LocalFunction):
+                if isinstance(node.name, astnodes.Name):
+                    declared.add(node.name.id)
+            elif isinstance(node, (astnodes.Function, astnodes.AnonymousFunction)):
+                declared.update(a.id for a in getattr(node, "args", [])
+                                if isinstance(a, astnodes.Name))
+            elif isinstance(node, astnodes.Fornum):
+                declared.add(node.target.id)
+            elif isinstance(node, astnodes.Forin):
+                declared.update(t.id for t in node.targets
+                                if isinstance(t, astnodes.Name))
+
+        for node in ast.walk(tree):
+            if not isinstance(node, astnodes.Assign):
+                continue
+            for target in node.targets:
+                # Only bare names create globals; a.b = 1 does not.
+                if isinstance(target, astnodes.Name) and \
+                        target.id not in declared:
+                    offenders.append(f"{path.name}: {target.id}")
+
+    assert not offenders, (
+        "assignment to undeclared name(s) creates a global:\n  "
+        + "\n  ".join(sorted(set(offenders))))
+    print(f"  no implicit globals in {len(list(lua_dir.glob('*.lua')))} files")
+
+
 def test_the_shared_struct_layouts_are_identical():
     """The app and the worker map the same memory.
 
@@ -578,9 +642,58 @@ def test_batch_is_refused_when_nothing_is_recording():
             code, body = post(br.port, "/suspension",
                               {"source": "app", "samples": _lap(n=20)})
             assert code == 200 and body["ok"] is False, body
+            # No `stored` key at all. The Lua client keys its success
+            # accounting off `ok`, not off the presence of `stored` --
+            # treating a missing `stored` as success counted these as sent
+            # and showed a healthy status line over discarded data.
+            assert "stored" not in body, body
             assert conn.execute(
                 "SELECT COUNT(*) FROM suspension_samples").fetchone()[0] == 0
-            print("  nothing filed against a stale session")
+            print("  refused with ok=false and no 'stored' key")
+        finally:
+            br.stop()
+            conn.close()
+
+
+def test_concurrent_posts_do_not_lose_prune_increments():
+    """The bridge is threaded, so two tiers can post at the same moment.
+
+    `counter += 1` is a read and a write. A lost increment makes the
+    periodic sweep drift, and if collisions keep landing on the same residue
+    it can stop firing altogether -- on the highest-volume table in the
+    database.
+    """
+    import threading
+    from support import post
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "t.db"
+        conn = db.connect(path)
+        br, _ = _bridge(path, conn)
+        try:
+            posts, threads = 24, []
+            rows = _lap(n=5)
+
+            def fire(i):
+                # Distinct lap_counts so nothing is deduplicated away and
+                # every request really does write.
+                batch = [dict(s, lap_count=i) for s in rows]
+                post(br.port, "/suspension",
+                     {"source": "app", "samples": batch})
+
+            for i in range(posts):
+                t = threading.Thread(target=fire, args=(i,))
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
+
+            assert br._susp_writes == posts, (
+                f"counted {br._susp_writes} of {posts} writes -- increments "
+                f"were lost")
+            stored = conn.execute(
+                "SELECT COUNT(*) FROM suspension_samples").fetchone()[0]
+            assert stored == posts * len(rows), stored
+            print(f"  {posts} concurrent posts, all counted, {stored} rows")
         finally:
             br.stop()
             conn.close()

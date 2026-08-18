@@ -569,10 +569,22 @@ class Bridge:
                                                       samples)
                         # Highest-volume table in the database by an order
                         # of magnitude; sweep occasionally rather than never.
+                        #
+                        # This server is threaded, so two batches can land
+                        # at once -- the app posts one tier while the worker
+                        # posts the other. `+= 1` is a read and a write, and
+                        # a lost increment means the sweep drifts or, if
+                        # every collision lands on the same residue, never
+                        # fires at all. Decide under the lock, prune outside
+                        # it: a DELETE is not something to hold a lock for.
+                        due = False
                         if n:
-                            bridge._susp_writes += 1
-                            if bridge._susp_writes % SUSPENSION_PRUNE_EVERY == 0:
-                                db.prune_suspension_samples(conn, sid)
+                            with bridge._lock:
+                                bridge._susp_writes += 1
+                                due = (bridge._susp_writes
+                                       % SUSPENSION_PRUNE_EVERY == 0)
+                        if due:
+                            db.prune_suspension_samples(conn, sid)
                     finally:
                         conn.close()
                     reply = {"ok": True, "stored": n, "skipped": skipped,

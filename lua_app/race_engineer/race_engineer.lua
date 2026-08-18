@@ -403,17 +403,30 @@ local function postSuspensionBuffer(which, buffer)
         return
       end
       local ok, parsed = pcall(JSON.parse, response.body or '')
-      if ok and type(parsed) == 'table' and parsed.stored ~= nil then
-        suspSent = suspSent + (tonumber(parsed.stored) or 0)
-        -- The server nulls out-of-range fields and says which. Almost
-        -- always a units disagreement, and silent nulls would surface much
-        -- later as an empty report with no explanation.
-        if parsed.rejected_fields then
-          ac.warn('race_engineer: /suspension rejected fields: '
-            .. tostring(response.body))
-        end
-      else
-        suspSent = suspSent + #batch
+      if not ok or type(parsed) ~= 'table' then
+        -- A 200 we cannot read is not evidence anything was stored.
+        suspDropped = suspDropped + #batch
+        return
+      end
+      -- A 200 with ok=false means the server had nowhere to file this --
+      -- no session was recording. Nothing was stored, so counting it as
+      -- sent would show a healthy status line while the data went nowhere.
+      if parsed.ok == false then
+        suspDropped = suspDropped + #batch
+        suspNote = 'server not recording - suspension not stored'
+        return
+      end
+      local stored = tonumber(parsed.stored) or 0
+      suspSent = suspSent + stored
+      if #batch > stored then
+        suspDropped = suspDropped + (#batch - stored)
+      end
+      -- The server nulls out-of-range fields and says which. Almost always
+      -- a units disagreement, and silent nulls would surface much later as
+      -- an empty report with no explanation.
+      if parsed.rejected_fields then
+        ac.warn('race_engineer: /suspension rejected fields: '
+          .. tostring(response.body))
       end
     end)
   return true
@@ -525,15 +538,23 @@ local function postRivals()
           .. tostring(response.status) .. ' ' .. tostring(response.body))
         return
       end
-      -- A 200 with ok=false means the server had nowhere to file it (no
-      -- session recording), which is not the same as having stored it.
       local ok, parsed = pcall(JSON.parse, response.body or '')
-      if ok and type(parsed) == 'table' and parsed.stored ~= nil then
-        rivalSent = rivalSent + (tonumber(parsed.stored) or 0)
-        local lost = #batch - (tonumber(parsed.stored) or 0)
-        if lost > 0 then rivalDropped = rivalDropped + lost end
-      else
-        rivalSent = rivalSent + #batch
+      if not ok or type(parsed) ~= 'table' then
+        -- A 200 we cannot read is not evidence anything was stored.
+        rivalDropped = rivalDropped + #batch
+        return
+      end
+      -- A 200 with ok=false means the server had nowhere to file it -- no
+      -- session was recording -- which is not the same as having stored it.
+      -- Counting it as sent shows a healthy status line over lost data.
+      if parsed.ok == false then
+        rivalDropped = rivalDropped + #batch
+        return
+      end
+      local stored = tonumber(parsed.stored) or 0
+      rivalSent = rivalSent + stored
+      if #batch > stored then
+        rivalDropped = rivalDropped + (#batch - stored)
       end
     end)
 end
@@ -580,7 +601,7 @@ function script.update(dt)
     started = true
     local ok, err = pcall(startSuspensionWorker)
     if not ok then
-      suspTier, worker = 'app', nil
+      worker, workerProducing = nil, false
       suspNote = 'render rate only (worker probe failed)'
       ac.warn('race_engineer: suspension worker probe failed: '
         .. tostring(err))
@@ -666,9 +687,12 @@ function windowMain(dt)
   -- Which suspension tier we got. Worth showing plainly: it decides
   -- whether the damper histograms mean anything, and the driver is the
   -- only one who can see this.
+  -- workerProducing, not a separate tier variable: it only goes true once
+  -- samples have actually been drained, so the marker cannot claim 333Hz
+  -- for a worker that was started but never produced anything.
   ui.textColored(
-    (suspTier == 'worker' and '◆ ' or '◇ ') .. suspNote,
-    suspTier == 'worker' and rgbm(0.4, 0.9, 0.5, 1) or rgbm(0.8, 0.7, 0.4, 1))
+    (workerProducing and '◆ ' or '◇ ') .. suspNote,
+    workerProducing and rgbm(0.4, 0.9, 0.5, 1) or rgbm(0.8, 0.7, 0.4, 1))
   ui.separator()
 
   -- complaint buttons

@@ -3,3 +3,12 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+
+# Unpacked car data. These are derived from a car's data.acd -- for RSS and
+# other paid mods that content is licensed, not ours to redistribute. Keep
+# ranges files local.
+ranges/
+
+# diagnose.bat output: contains local usernames, absolute paths and a dump
+# of the Claude Desktop config.
+diagnose-report.txt

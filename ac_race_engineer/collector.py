@@ -8,9 +8,15 @@ time comes from graphics.iLastTime.
 import threading
 import time
 
-from . import db
+from . import analysis, db
 
 TARGET_HZ = 25  # plenty for setup work; keeps the DB small
+
+# The outlier rule lives in analysis so the same definition is used both
+# here (at write time) and by db.revalidate_outlier_laps (over laps stored
+# before the rule existed). Marking a lap invalid only excludes it from
+# best-lap maths -- it is still stored and still readable.
+_is_outlier = analysis.lap_is_outlier
 
 
 class Collector:
@@ -28,8 +34,18 @@ class Collector:
         self._stop = threading.Event()
         self.status = "stopped"
         self.session_id: int | None = None
+        self.last_session_id: int | None = None
         self.laps_recorded = 0
         self.last_error: str | None = None
+        # Observable progress. These exist so "has the collector noticed
+        # yet?" is answerable rather than something callers have to guess at
+        # with a sleep -- which is what made the test suite flaky on a
+        # loaded CI runner, and what makes a stalled collector look
+        # identical to an idle one in recording_status.
+        self.sessions_started = 0
+        self.samples_taken = 0
+        self.current_lap_dirty = False
+        self.current_lap_pitted = False
 
     @property
     def running(self) -> bool:
@@ -45,8 +61,27 @@ class Collector:
     def stop(self):
         self._stop.set()
         if self._thread:
-            self._thread.join(timeout=3)
+            # Join generously and report if it didn't take. The thread owns
+            # a SQLite connection, so returning while it is still alive
+            # means the caller can delete the database out from under it --
+            # which on Windows surfaces as an unrelated-looking
+            # NotADirectoryError from a thread nobody was watching.
+            self._thread.join(timeout=10)
+            if self._thread.is_alive():
+                self.last_error = ("collector thread did not stop within 10s;"
+                                   " its database connection is still open")
+            else:
+                self._thread = None
         self.status = "stopped"
+        # session_id has to be cleared, not just left behind. The bridge
+        # asks the collector which session inbound driver data belongs to; a
+        # leftover id means notes and rival telemetry keep being filed
+        # against a session that has ended, which is harder to spot than
+        # filing them against none. Keep it separately for reporting, where
+        # being stale is only cosmetic.
+        if self.session_id is not None:
+            self.last_session_id = self.session_id
+        self.session_id = None
 
     # ------------------------------------------------------------------
 
@@ -77,6 +112,8 @@ class Collector:
         session_started = False
         lap_samples: list[tuple] = []
         lap_dirty = False        # any tyres-out excursion this lap
+        lap_pitted = False       # driver entered the pit lane this lap
+        session_best = None      # fastest valid lap so far, for outlier check
         last_completed = None
         lap_start_wall = None
         last_packet = -1
@@ -90,9 +127,29 @@ class Collector:
                 if g.status == 0:  # AC_OFF -> back to waiting
                     session_started = False
                     last_completed = None
+                    session_best = None
                     lap_samples = []
+                    # Say so. Leaving this reading "recording (session 7)"
+                    # while AC sits in the menus is the same class of lie as
+                    # the overlay claiming nothing is being recorded.
+                    self.status = "waiting for AC to go live"
                 time.sleep(0.25)
                 continue
+
+            # Restarting a session from the in-game menu resets completedLaps
+            # without ever passing through AC_OFF, so watching only for that
+            # transition left the new run appended to the old session -- same
+            # session_id, lap numbers starting over, and two different track
+            # states averaged together. A lap counter that goes backwards can
+            # only mean a restart, so roll a fresh session on it.
+            if (session_started and last_completed is not None
+                    and g.completedLaps < last_completed):
+                session_started = False
+                last_completed = None
+                session_best = None
+                lap_samples = []
+                lap_dirty = False
+                lap_pitted = False
 
             if not session_started:
                 s = sim.static
@@ -107,7 +164,11 @@ class Collector:
                 last_completed = g.completedLaps
                 lap_samples = []
                 lap_dirty = False
+                lap_pitted = False
                 lap_start_wall = time.monotonic()
+                self.sessions_started += 1
+                self.current_lap_dirty = False
+                self.current_lap_pitted = False
                 self.status = f"recording (session {self.session_id})"
 
             # Lap boundary?
@@ -116,15 +177,41 @@ class Collector:
                 # First crossing of the line after leaving the pits produces
                 # an out-lap with no meaningful time; iLastTime is 0 then.
                 if lap_samples and lap_time > 0:
-                    valid = not lap_dirty
+                    valid = (not lap_dirty
+                             and not lap_pitted
+                             and not _is_outlier(lap_time, session_best))
+                    # setup_name omitted: store_lap snapshots whatever setup
+                    # the session is currently marked as running, so there
+                    # is one source of truth rather than a cached copy here
+                    # that another instance's set_session_setup can't reach.
                     db.store_lap(self._conn, self.session_id,
                                  last_completed + 1, lap_time, valid,
                                  lap_samples)
                     self.laps_recorded += 1
+                    # Reference for the outlier rule: fastest lap that was
+                    # actually driven, whether or not it was clean. Deriving
+                    # it from valid laps only made this rule a dependent of
+                    # the dirty-lap rule -- at a track with tight limits
+                    # every lap can be dirty, leaving no reference at all.
+                    if (not lap_pitted
+                            and (session_best is None
+                                 or lap_time < session_best)):
+                        session_best = lap_time
                 last_completed = g.completedLaps
                 lap_samples = []
                 lap_dirty = False
+                lap_pitted = False
                 lap_start_wall = time.monotonic()
+                self.current_lap_dirty = False
+                self.current_lap_pitted = False
+
+            # A lap containing a pit visit is wall-clock nonsense -- the
+            # 4:34 and 10:22 "valid" laps in testing were both stops. Note it
+            # before the sampling guard below, which skips pit-lane ticks and
+            # would otherwise hide the visit entirely.
+            if g.isInPitLane:
+                lap_pitted = True
+                self.current_lap_pitted = True
 
             # New physics tick since last sample?
             if p.packetId != last_packet and not g.isInPitLane:
@@ -132,6 +219,8 @@ class Collector:
                 t_ms = int((time.monotonic() - lap_start_wall) * 1000)
                 if p.numberOfTyresOut > 2:
                     lap_dirty = True
+                    self.current_lap_dirty = True
+                self.samples_taken += 1
                 lap_samples.append((
                     t_ms,
                     g.normalizedCarPosition,

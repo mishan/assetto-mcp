@@ -1,0 +1,26 @@
+# Normalise line endings in the repository so editing on the Windows gaming
+# PC doesn't rewrite every file. A single session that flipped the tree to
+# CRLF turned a 1,600 line change into a 3,900 line diff and reset git blame
+# for the whole project.
+#
+# Rule: LF in the repo for everything, and check out CRLF only for the files
+# Windows genuinely needs it for.
+
+* text=auto eol=lf
+
+# cmd.exe is the one thing that actually requires CRLF -- a .bat with LF
+# endings can mis-parse multi-line blocks.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# PowerShell handles LF fine, but these sit next to the .bat files and get
+# opened in Notepad by people debugging a failed install.
+*.ps1 text eol=crlf
+
+# AC reads these itself; keep them in the form the game and Content Manager
+# write them.
+*.ini text eol=crlf
+
+*.png binary
+*.dds binary
+*.acd binary

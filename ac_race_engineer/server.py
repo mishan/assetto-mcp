@@ -30,7 +30,8 @@ RANGES_DIR = DATA_DIR / "ranges"
 RANGES_DIR.mkdir(exist_ok=True)
 
 mcp = FastMCP("ac-race-engineer")
-_conn = db.connect(DATA_DIR / "telemetry.db")
+DB_PATH = DATA_DIR / "telemetry.db"
+_conn = db.connect(DB_PATH)
 
 
 def _sim_factory():
@@ -38,7 +39,13 @@ def _sim_factory():
     return SimInfo()
 
 
-_collector = Collector(_conn, _sim_factory)
+_collector = Collector(DB_PATH, _sim_factory)
+
+from .bridge import Bridge  # noqa: E402
+
+BRIDGE_PORT = int(os.environ.get("AC_ENGINEER_BRIDGE_PORT", "9666"))
+_bridge = Bridge(DB_PATH, _collector, BRIDGE_PORT)
+_bridge.start()
 
 
 def _j(obj) -> str:
@@ -152,6 +159,39 @@ def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
     return _j(analysis.compare_laps(
         a, db.get_samples(_conn, lap_id_a),
         b, db.get_samples(_conn, lap_id_b)))
+
+
+# --- in-game app bridge ------------------------------------------------
+
+
+@mcp.tool()
+def get_driver_notes(session_id: int | None = None, limit: int = 50) -> str:
+    """Complaint tags the driver pressed in-game while driving (understeer,
+    oversteer, braking, traction, note). Each has a spline position (0..1)
+    directly comparable to corner apex_pos values from lap_summary, plus the
+    lap_count when pressed (current lap = lap_count + 1). Correlate these
+    with telemetry to know which corners the driver is unhappy with."""
+    return _j(db.list_notes(_conn, session_id, limit))
+
+
+@mcp.tool()
+def send_driver_message(text: str) -> str:
+    """Show a short message on the driver's in-game Race Engineer overlay
+    (e.g. 'claude_v2 saved: softer front ARB, +0.5psi rears - pit and load
+    it'). Keep it to a sentence or two; the driver is driving. The message
+    stays up until dismissed, and is replaced by any newer message."""
+    if not _bridge or _bridge.error:
+        return _j({"error": _bridge.error if _bridge else "bridge not running"})
+    return _j({"ok": True, "message_id": _bridge.set_message(text),
+               "note": "displayed until driver dismisses it"})
+
+
+@mcp.tool()
+def bridge_status() -> str:
+    """Health of the HTTP bridge the in-game app connects to."""
+    return _j({"port": _bridge.port if _bridge else None,
+               "error": _bridge.error if _bridge else "not running",
+               "pending_message": _bridge.get_message() if _bridge else None})
 
 
 # --- setups ------------------------------------------------------------

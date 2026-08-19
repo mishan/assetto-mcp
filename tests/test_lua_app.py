@@ -17,6 +17,17 @@ from support import run_module  # noqa: E402
 
 SKIP = not lua_harness.available()
 
+# Without this, pytest collects these tests, calls lua_harness.load(), and
+# reports ImportError as an ERROR rather than a skip -- so a machine simply
+# lacking lupa looks like a broken build. pytest itself is optional here
+# (every module runs standalone for the gaming PC), hence the guarded import.
+try:
+    import pytest
+    pytestmark = pytest.mark.skipif(
+        SKIP, reason="pip install lupa to run the Lua app tests")
+except ImportError:  # pragma: no cover - standalone runner path
+    pass
+
 
 def _posted_sources(rec):
     """Which tier each POST to /suspension carried."""

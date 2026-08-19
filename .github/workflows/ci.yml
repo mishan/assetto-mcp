@@ -40,11 +40,27 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e ".[test]"
 
+      - name: Refuse to run with the Lua app tests silently skipped
+        # These skip when lupa is absent, which is right on the gaming PC
+        # and wrong in CI: a skipped suite reports green while the in-game
+        # app goes untested, and the app is where the last three bugs were.
+        # lupa is in the [test] extra, so reaching here without it means the
+        # install did not do what it claims.
+        run: |
+          python -c "import sys; sys.path.insert(0, 'tests'); import lua_harness; sys.exit(0) if lua_harness.available() else sys.exit('lupa missing: the Lua app tests would skip, which CI must not allow')"
+
       - name: Run tests
         # The suite binds ephemeral localhost ports and drives a fake
         # SimInfo, so it needs neither Assetto Corsa nor Windows-specific
-        # anything -- but it does exercise the real bridge over real HTTP.
+        # anything -- but it does exercise the real bridge over real HTTP,
+        # and a real Lua runtime for the in-game app.
         run: python -m pytest tests/ -v --durations=10
+
+      - name: Refuse to pass if nothing exercised the Lua app
+        # Belt and braces: the guard above proves lupa imports, this proves
+        # the tests that need it actually ran. A skipif marker that silently
+        # matched would otherwise look identical to success.
+        run: python -m pytest tests/test_lua_app.py -v --no-header -p no:randomly
 
       - name: Check each module also runs standalone
         # The gaming PC has Python (the server needs it) but no reason to
@@ -55,7 +71,7 @@ jobs:
         run: python run_tests.py --isolate
 
   lua:
-    name: lua syntax
+    name: lua (syntax + app behaviour)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -63,8 +79,25 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install luaparser
-        run: python -m pip install luaparser
+      - name: Install the Lua tooling
+        # luaparser parses the app; lupa runs it. Pinned as a floor rather
+        # than exactly, so a new CSP-era Lua feature is not blocked by an
+        # old parser, but a missing wheel fails here rather than silently
+        # turning the behaviour tests into skips.
+        run: python -m pip install "luaparser>=3.2" "lupa>=2.0" pytest
+
+      - name: Verify a real Lua runtime is present
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, 'tests')
+          import lua_harness
+          if not lua_harness.available():
+              sys.exit("lupa missing: the Lua app tests would skip, "
+                       "which defeats the point of this job")
+          import lupa
+          print("lua runtime:", lupa.LuaRuntime().eval("_VERSION"))
+          PY
 
       - name: Parse the in-game app
         # CSP loads this at runtime and reports failures in a debug window
@@ -72,6 +105,14 @@ jobs:
         # Same check the developer runs locally, rather than a copy of it
         # that only exists in YAML and can drift.
         run: python run_tests.py --lua-only
+
+      - name: Run the in-game app against a stubbed CSP API
+        # Syntax checking caught none of the bugs this app has shipped --
+        # they were a scheduler that disagreed with its own comment, a
+        # diagnostic that threw and disabled what it inspected, and an
+        # expression whose operator precedence made it a constant. All
+        # three needed the app to actually run.
+        run: python -m pytest tests/test_lua_app.py -v --no-header
 
   powershell:
     name: powershell (Windows PowerShell 5.1)

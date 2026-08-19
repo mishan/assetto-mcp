@@ -483,11 +483,18 @@ def test_the_lua_app_assigns_no_implicit_globals():
     to 'worker', so the app's capture-tier indicator would have shown the
     degraded marker permanently no matter what was actually running.
     """
-    try:
-        from luaparser import ast, astnodes
-    except ImportError:
-        print("  skipped: pip install luaparser")
+    # This is the only check for this bug class, so "luaparser is missing"
+    # must not read as "passed". require() raises under AC_TESTS_STRICT --
+    # CI and run_tests.py --no-skip -- and returns True on a machine that
+    # genuinely lacks it, where skipping is the right answer.
+    import lua_harness
+    if lua_harness.require("luaparser", "the implicit-globals check"):
+        # Raises for pytest and run_tests.py, prints for the bare standalone
+        # runner, which has no notion of a skip -- hence the return.
+        lua_harness.skip("pip install luaparser for the implicit-globals check")
         return
+
+    from luaparser import ast, astnodes
 
     lua_dir = Path(__file__).resolve().parents[1] / "lua_app/race_engineer"
     # Names Lua and CSP provide. Anything assigned that isn't declared local

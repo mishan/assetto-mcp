@@ -27,6 +27,12 @@ packages = ["ac_race_engineer"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# --strict-markers so a typo in a skipif marker is an error rather than a
+# marker that never matches; --strict-config likewise for this table. The
+# skip that mattered most was not a marker at all -- a test that caught
+# ImportError and returned -- so see AC_TESTS_STRICT in tests/lua_harness.py
+# for the guard that catches those.
+addopts = ["--strict-markers", "--strict-config"]
 # Tests import their shared harness as `support`, so tests/ must be on the
 # path. rootdir-relative imports alone don't achieve that under pytest's
 # default importmode.

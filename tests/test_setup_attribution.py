@@ -81,10 +81,6 @@ def test_an_explicit_setup_name_overrides_the_session_default():
         conn.close()
 
 
-if __name__ == "__main__":
-    sys.exit(1 if run_module(globals()) else 0)
-
-
 def test_blank_laps_are_filled_in_but_named_ones_are_not():
     """A blank is a gap; a name is a competing claim.
 
@@ -130,3 +126,7 @@ def test_filling_blanks_twice_is_idempotent():
         assert db.label_unattributed_laps(conn, sid, "something_else") == 0
         assert db.list_laps(conn, sid)[0]["setup_name"] == "claude_arb_v1"
         conn.close()
+
+
+if __name__ == "__main__":
+    sys.exit(1 if run_module(globals()) else 0)

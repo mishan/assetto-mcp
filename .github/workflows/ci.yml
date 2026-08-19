@@ -54,13 +54,26 @@ jobs:
         # SimInfo, so it needs neither Assetto Corsa nor Windows-specific
         # anything -- but it does exercise the real bridge over real HTTP,
         # and a real Lua runtime for the in-game app.
+        #
+        # AC_TESTS_STRICT is what stops a missing optional dependency from
+        # passing quietly: lupa and luaparser are declared in the [test]
+        # extra, so here their absence is a broken install, and the modules
+        # raise at import instead of skipping. Off by default, because on
+        # the gaming PC neither is installed and skipping is correct.
+        env:
+          AC_TESTS_STRICT: "1"
         run: python -m pytest tests/ -v --durations=10
 
       - name: Refuse to pass if nothing exercised the Lua app
-        # Belt and braces: the guard above proves lupa imports, this proves
-        # the tests that need it actually ran. A skipif marker that silently
-        # matched would otherwise look identical to success.
-        run: python -m pytest tests/test_lua_app.py -v --no-header -p no:randomly
+        # The guard above proves lupa imports; strict mode proves the module
+        # did not skip. This proves the tests themselves still exist and ran:
+        # --min-tests fails if fewer than nine of them executed, so deleting,
+        # renaming or marking them out reads as a failure rather than as a
+        # shorter green run. It was `pytest tests/test_lua_app.py`, which
+        # reported "9 skipped" and exit 0 with lupa removed.
+        env:
+          AC_TESTS_STRICT: "1"
+        run: python run_tests.py -k "^test_lua_app\." --no-skip --min-tests 9
 
       - name: Check each module also runs standalone
         # The gaming PC has Python (the server needs it) but no reason to
@@ -68,7 +81,11 @@ jobs:
         # keeps that path from rotting, and run_tests.py --isolate is the
         # same check the developer runs locally rather than a shell loop
         # that only exists in CI.
-        run: python run_tests.py --isolate
+        #
+        # --no-skip because a module that skips exits with SKIP_EXIT and
+        # would otherwise be counted as passing standalone, which is exactly
+        # how a run with no lupa reported "all 13 modules pass".
+        run: python run_tests.py --isolate --no-skip
 
   lua:
     name: lua (syntax + app behaviour)
@@ -86,7 +103,14 @@ jobs:
         # turning the behaviour tests into skips.
         run: python -m pip install "luaparser>=3.2" "lupa>=2.0" pytest
 
-      - name: Verify a real Lua runtime is present
+      - name: Verify the runtime is the Lua the game runs
+        # Not just "some Lua". CSP runs LuaJIT 2.1, which is Lua 5.1, and
+        # lupa ships 5.1 through 5.5 in the same wheel with the newest as
+        # its default. Testing on 5.5 is a false signal in both directions:
+        # `7 // 2` runs there and is a syntax error in the game, and
+        # string.format('%d', 1.5) raises there and works in the game. The
+        # harness asks for LuaJIT by name; this prints what it got, so a
+        # wheel change shows up in the log as well as in the failure.
         run: |
           python - <<'PY'
           import sys
@@ -95,8 +119,12 @@ jobs:
           if not lua_harness.available():
               sys.exit("lupa missing: the Lua app tests would skip, "
                        "which defeats the point of this job")
-          import lupa
-          print("lua runtime:", lupa.LuaRuntime().eval("_VERSION"))
+          info = lua_harness.runtime_info()
+          print("lua runtime:", info)
+          if info["module"] != lua_harness.LUAJIT_MODULE or not info["jit"]:
+              sys.exit(f"expected {lua_harness.LUAJIT_MODULE}, got {info} -- "
+                       f"the app would be tested against an interpreter it "
+                       f"never meets in the game")
           PY
 
       - name: Parse the in-game app
@@ -104,6 +132,8 @@ jobs:
         # nobody has open, so a syntax error costs a session to notice.
         # Same check the developer runs locally, rather than a copy of it
         # that only exists in YAML and can drift.
+        env:
+          AC_TESTS_STRICT: "1"
         run: python run_tests.py --lua-only
 
       - name: Run the in-game app against a stubbed CSP API
@@ -112,7 +142,25 @@ jobs:
         # diagnostic that threw and disabled what it inspected, and an
         # expression whose operator precedence made it a constant. All
         # three needed the app to actually run.
+        #
+        # Strict mode plus --min-tests: with lupa absent this used to report
+        # "9 skipped" and exit 0, which is the same green as having run.
+        env:
+          AC_TESTS_STRICT: "1"
         run: python -m pytest tests/test_lua_app.py -v --no-header
+
+      - name: Refuse to pass if the Lua tests did not actually run
+        env:
+          AC_TESTS_STRICT: "1"
+        run: python run_tests.py -k "^test_lua_app\." --no-skip --min-tests 9
+
+      - name: Check the implicit-globals check itself ran
+        # luaparser had no guard at all: tests/test_suspension.py caught
+        # ImportError, printed "skipped" and returned, which pytest counts
+        # as a pass -- for the only test covering that bug class.
+        env:
+          AC_TESTS_STRICT: "1"
+        run: python run_tests.py -k "implicit_globals" --no-skip --min-tests 1
 
   powershell:
     name: powershell (Windows PowerShell 5.1)

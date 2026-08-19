@@ -34,12 +34,25 @@ OUTLIER_FRACTION = 0.25
 # Corner detection thresholds. The fraction is of the lap's own peak lateral
 # g, so the same numbers work for a Formula car and a road car; the absolute
 # floor stops a slow lap promoting its own noise into corners.
+# Ceiling on believable lateral g, the sibling of SLIP_SANE_MAX above. No
+# car in AC sustains this; anything past it is a reset, a wall strike or a
+# physics tick straddling a teleport. It matters more here than it looks:
+# the corner threshold is a fraction of the lap's own peak, so a single
+# spiked sample raises the bar above every genuine corner on the lap.
+LAT_G_SANE_MAX = 6.0
+
 CORNER_LAT_G_FRACTION = 0.35
 CORNER_MIN_LAT_G = 0.35
 CORNER_MIN_PEAK_LAT_G = 0.5
 # At 25Hz this is half a second of sustained load -- long enough to exclude
 # a kerb strike or a twitch of correction, short enough to keep a quick chicane.
 CORNER_MIN_SAMPLES = 12
+
+# Median window for the lateral-g trace. A median removes runs shorter than
+# half its width, so this clears anything up to 7 samples -- comfortably
+# below CORNER_MIN_SAMPLES, which means it can never eat something this
+# module would have called a corner.
+LAT_G_MEDIAN_WINDOW = 15
 # Speeds within this of the minimum count as "the apex", so a flat-bottomed
 # corner puts its apex in the middle of the flat rather than at its start.
 APEX_FLAT_TOLERANCE_KMH = 0.5
@@ -85,6 +98,25 @@ def _sane_slip(*values: float) -> float | None:
     return mean(values)
 
 
+def _median_filter(values: list[float], window: int = 11) -> list[float]:
+    """Centred running median; window forced odd.
+
+    Removes impulses rather than spreading them, which is what a mean does.
+    A run shorter than half the window is replaced by its neighbours; a real
+    corner, which holds its load for far longer, passes through unchanged.
+    """
+    if window % 2 == 0:
+        window += 1
+    half = window // 2
+    n = len(values)
+    out = []
+    for i in range(n):
+        lo, hi = max(0, i - half), min(n, i + half + 1)
+        chunk = sorted(values[lo:hi])
+        out.append(chunk[len(chunk) // 2])
+    return out
+
+
 def _smooth(values: list[float], window: int = 9) -> list[float]:
     """Centered moving average; window forced odd."""
     if window % 2 == 0:
@@ -126,10 +158,45 @@ def detect_corners(samples: list[dict]) -> list[dict]:
     if len(samples) < 50:
         return []
 
-    lat = _smooth([s.get("acc_lat", 0.0) or 0.0 for s in samples], 11)
-    peak = max((abs(v) for v in lat), default=0.0)
+    # Drop implausible lateral g before anything is derived from it. AC
+    # emits the same class of spike here that it does on wheelSlip -- a
+    # reset, a wall strike, a tick straddling a teleport -- and this
+    # threshold is taken from the lap's own peak, so one bad sample raises
+    # the bar above every real corner. Measured: a six-sample 9g spike on a
+    # 1.1g road-car lap left one "corner", the artefact, with a fabricated
+    # peak_lat_g. Dropped rather than clamped, for the same reason as
+    # wheelSlip: a spike is not a hard corner, it is not data.
+    raw = [s.get("acc_lat", 0.0) or 0.0 for s in samples]
+    sane = [v if (math.isfinite(v) and abs(v) <= LAT_G_SANE_MAX) else 0.0
+            for v in raw]
+    dropped = sum(1 for a, b in zip(raw, sane) if a != b)
+
+    # Median first, then mean. A moving average does not remove an impulse,
+    # it spreads it: a six-sample spike smeared across an 11-sample window
+    # becomes a sixteen-sample run above the threshold -- longer than
+    # CORNER_MIN_SAMPLES, and so reported as a corner.
+    #
+    # A median filter removes any run shorter than half its width. Sized
+    # from CORNER_MIN_SAMPLES rather than picked: a burst too short to be a
+    # corner is, by this module's own definition, not one -- so the same
+    # number that decides what counts as a corner decides what counts as a
+    # glitch. This catches spikes of plausible magnitude too, which the
+    # LAT_G_SANE_MAX ceiling above cannot: 2g on a road car is impossible to
+    # rule out by value and obvious by duration.
+    lat = _smooth(_median_filter(sane, LAT_G_MEDIAN_WINDOW), 11)
+    # A high percentile, not the maximum. The threshold is a fraction of
+    # this, so basing it on the single largest sample lets one unusually
+    # hard moment -- or a spike small enough to pass the ceiling above, like
+    # 4g on a road car -- raise the bar above the rest of the lap. A real
+    # corner holds its load for many samples, so the 99th percentile is
+    # still a real cornering load, just not a lone one.
+    mags = sorted(abs(v) for v in lat)
+    peak = mags[int(0.99 * (len(mags) - 1))] if mags else 0.0
+    # An in-lap, or a lap spent trundling: nothing corner-shaped here. Note
+    # this is not the spin case -- a spin produces a very large lateral g,
+    # which the ceiling above deals with, not a small one.
     if peak < CORNER_MIN_PEAK_LAT_G:
-        return []          # an in-lap, or a spin: nothing corner-shaped here
+        return []
 
     # Relative to the lap's own peak so this works for a Formula car pulling
     # 3g and a road car pulling 1.1g, with an absolute floor so that a lap
@@ -185,6 +252,10 @@ def detect_corners(samples: list[dict]) -> list[dict]:
 
     for idx, c in enumerate(corners, 1):
         c["corner"] = idx
+        if dropped:
+            # Say it per corner rather than once: the caller reads corners,
+            # and a lap that needed glitch filtering is one to look at twice.
+            c["lat_g_samples_dropped"] = dropped
     return corners
 
 
@@ -531,35 +602,91 @@ def delta_by_position(lap_a: dict, samples_a: list[dict],
         return {"error": "laps do not overlap enough on track to compare",
                 "covered_pct": round(100 * covered / (fine + 1), 1)}
 
+    if segments < 1:
+        segments = 1
     step = max(1, fine // segments)
+
+    # A row spans two grid points, and the endpoints of the lap are never
+    # both covered: sampling starts just after the line and stops when
+    # completedLaps ticks over, so grid[0] and grid[200] are outside the
+    # sampled range by a sample or two. Dropping a row because an *endpoint*
+    # is uncovered discarded the first and last twentieth of every lap --
+    # including the final corner and the run to the line, which is exactly
+    # where a bad exit shows up. So each row falls back to the nearest
+    # covered points inside its own span, and says when it did.
     rows = []
     for start in range(0, fine, step):
         end = min(start + step, fine)
-        d0, d1 = delta[start], delta[end]
-        if d0 is None or d1 is None:
+        i0 = _first_covered(delta, start, end)
+        i1 = _last_covered(delta, start, end)
+        if i0 is None or i1 is None or i0 == i1:
+            # Nothing inside this span was sampled on both laps at all.
+            rows.append({
+                "from": round(start / fine, 3),
+                "to": round(end / fine, 3),
+                "gain_ms": None,
+                "cumulative_ms": None,
+                "covered": False,
+            })
             continue
-        rows.append({
+        row = {
             "from": round(start / fine, 3),
             "to": round(end / fine, 3),
-            "gain_ms": round(d1 - d0, 1),
-            "cumulative_ms": round(d1, 1),
-        })
+            "gain_ms": round(delta[i1] - delta[i0], 1),
+            "cumulative_ms": round(delta[i1], 1),
+        }
+        if i0 != start or i1 != end:
+            # Report the span actually measured rather than implying the
+            # nominal one, so a partial row cannot be read as a full one.
+            row["measured_from"] = round(i0 / fine, 3)
+            row["measured_to"] = round(i1 / fine, 3)
+        rows.append(row)
 
-    losses = sorted(rows, key=lambda r: -r["gain_ms"])[:3]
-    gains = sorted(rows, key=lambda r: r["gain_ms"])[:3]
+    timed = [r for r in rows if r["gain_ms"] is not None]
+    losses = sorted(timed, key=lambda r: -r["gain_ms"])[:3]
+    # Only rows that actually gained: taking the bottom three of the same
+    # list reported the smallest loss as the biggest gain, so a lap slower
+    # everywhere came back with three "gains" that were all losses.
+    gains = [r for r in sorted(timed, key=lambda r: r["gain_ms"])
+             if r["gain_ms"] < 0][:3]
+
+    # The rows should account for the whole gap. When they don't -- a
+    # telemetry dropout, or a span neither lap covered -- say so rather
+    # than let the reader assume the segments add up.
+    accounted = round(sum(r["gain_ms"] for r in timed), 1)
+    total = lap_b["lap_time_ms"] - lap_a["lap_time_ms"]
+    unaccounted = round(total - accounted, 1)
+
     return {
         "lap_a": {"id": lap_a["id"], "time": _fmt_time(lap_a["lap_time_ms"]),
                   "setup": lap_a.get("setup_name", "")},
         "lap_b": {"id": lap_b["id"], "time": _fmt_time(lap_b["lap_time_ms"]),
                   "setup": lap_b.get("setup_name", "")},
-        "total_delta_ms": lap_b["lap_time_ms"] - lap_a["lap_time_ms"],
+        "total_delta_ms": total,
         "note": "positive = lap_b is slower there. gain_ms is time lost in "
-                "that segment alone; cumulative_ms is the running total.",
+                "that segment alone; cumulative_ms is the running total. "
+                "A segment with gain_ms null was not sampled on both laps.",
         "track_covered_pct": round(100 * covered / (fine + 1), 1),
+        "accounted_ms": accounted,
+        "unaccounted_ms": unaccounted,
         "segments": rows,
         "worst_losses": losses,
         "biggest_gains": gains,
     }
+
+
+def _first_covered(delta: list, lo: int, hi: int) -> int | None:
+    for i in range(lo, hi + 1):
+        if delta[i] is not None:
+            return i
+    return None
+
+
+def _last_covered(delta: list, lo: int, hi: int) -> int | None:
+    for i in range(hi, lo - 1, -1):
+        if delta[i] is not None:
+            return i
+    return None
 
 
 def compare_laps(lap_a: dict, samples_a: list[dict],

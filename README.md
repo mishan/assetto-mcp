@@ -421,8 +421,15 @@ tests/               behaviour-named test modules + shared harness
 - Sampling is 25Hz — plenty for setup work while keeping the DB tiny.
   Bump `TARGET_HZ` in collector.py if you want finer traces.
 - Out-laps (no valid time) are skipped automatically.
-- Corner detection is generic (speed minima); a per-track corner-name map
-  would make Claude's advice read nicer ("T3/Variante" vs "corner at 0.34").
+- Corners are detected from lateral g, not speed minima: a fast sweeper
+  barely dents the speed trace but pulls as hard as anything on the lap, and
+  the old detector excluded it by construction. Each corner reports entry,
+  apex, exit, peak lateral g and a turn sign. The sign says which corners
+  turn the same way — it is deliberately not labelled left or right,
+  because AC does not document which sign is which, and a consistent sign is
+  more useful than a label that is right half the time.
+- A per-track corner-name map would still make advice read nicer
+  ("T3/Variante" vs "corner at 0.34").
 - Suspension capture is in — see the section above. The remaining gap is
   true damper *velocity* as a first-class channel: CSP only exposes that
   inside a per-car physics script (`script.lua` in the car's data folder,

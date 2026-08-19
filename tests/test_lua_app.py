@@ -15,7 +15,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lua_harness  # noqa: E402
 from support import run_module  # noqa: E402
 
-SKIP = not lua_harness.available()
+# Raises when AC_TESTS_STRICT is set, which is what CI and
+# run_tests.py --no-skip do: there, lupa missing is a broken install, and a
+# module that skips reports identically to one that passes. Everywhere else
+# this is just a bool and the tests skip.
+SKIP = lua_harness.require("lupa", "the Lua app tests")
 
 # Without this, pytest collects these tests, calls lua_harness.load(), and
 # reports ImportError as an ERROR rather than a skip -- so a machine simply
@@ -36,6 +40,34 @@ def _posted_sources(rec):
         if url.endswith("/suspension"):
             out.append("posted")
     return out
+
+
+def test_the_runtime_is_the_lua_the_game_runs():
+    """CSP runs LuaJIT 2.1, which is Lua 5.1 -- not whatever lupa ships newest.
+
+    lupa bundles 5.1 through 5.5 plus LuaJIT in one wheel and its default
+    LuaRuntime picks the newest. Testing on 5.5 is wrong in both directions:
+    `7 // 2` and `3 & 1` run there and are syntax errors in the game, and
+    string.format('%d', 1.5) raises there and works in the game. Without
+    this test a wheel that drops LuaJIT would quietly move the whole Lua
+    suite onto an interpreter the app never meets.
+    """
+    info = lua_harness.runtime_info()
+    assert info["module"] == lua_harness.LUAJIT_MODULE, info
+    assert info["lua_version"] == "Lua 5.1", info
+    assert info["jit"] and info["jit"].startswith("LuaJIT 2.1"), info
+
+    # The load-bearing consequence, asserted rather than assumed: 5.1 has no
+    # integer division operator, so a 5.x-ism in the app is a syntax error
+    # here exactly as it would be in the game.
+    lua = lua_harness.new_runtime()
+    try:
+        lua.eval("7 // 2")
+    except Exception:                       # noqa: BLE001 - LuaSyntaxError
+        pass
+    else:
+        raise AssertionError("'7 // 2' parsed, so this is not Lua 5.1")
+    print(f"  {info['lua_version']} on {info['jit']}")
 
 
 def test_the_app_loads_under_a_stubbed_csp():
@@ -173,6 +205,10 @@ def test_clamp_and_num_reject_nan_and_out_of_range():
 
 if __name__ == "__main__":
     if SKIP:
+        # Not 0: exiting 0 made `run_tests.py --isolate` report this module
+        # as passing when it had run nothing at all, which is how a build
+        # with no lupa in it went green. SKIP_EXIT says "ran nothing",
+        # and under AC_TESTS_STRICT the require() above has already raised.
         print("skipped - pip install lupa to run the Lua app tests")
-        sys.exit(0)
+        sys.exit(lua_harness.SKIP_EXIT)
     sys.exit(1 if run_module(globals()) else 0)

@@ -140,7 +140,7 @@ def infer_compression_sign(samples: list[dict]) -> dict:
     share = len(braking) / (len(braking) + len(free))
     if share > SIGN_MAX_BRAKING_SHARE:
         return {"sign": None, "confidence": 0.0,
-                "basis": f"{share:.0%} of usable samples are under "
+                "basis": f"{share:.0%} of usable samples are at or above "
                          f"{BRAKING_THRESHOLD:.0%} brake, too many for these "
                          f"to be braking zones; refusing to infer a sign "
                          f"from what looks like a stop-start lap"}

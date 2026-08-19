@@ -10,7 +10,17 @@ import math
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+# tests/ for `support`, and the repo root for `ac_race_engineer`. The other
+# modules get the root as a side effect of importing support, which does the
+# same insert; this one is the only file that needs to say so itself, and
+# saying it explicitly is why `python tests/test_delta_and_corners.py` works
+# from a clean interpreter with nothing installed.
+_HERE = Path(__file__).resolve().parent
+for _p in (str(_HERE.parent), str(_HERE)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from support import run_module  # noqa: E402
 
 from ac_race_engineer import analysis  # noqa: E402
 
@@ -195,17 +205,156 @@ def test_partial_overlap_is_refused():
     assert "error" in out, out
 
 
+def _flat_lap(extra_ms=0, after=0.96, n=1200):
+    """A lap where all the extra time is spent after `after`."""
+    out, t = [], 0.0
+    for i in range(n):
+        pos = i / n
+        t += 40.0 + (extra_ms / (n * (1 - after)) if pos > after else 0.0)
+        out.append({"norm_pos": pos, "t_ms": int(t), "speed_kmh": 150.0,
+                    "acc_lat": 0.1, "brake": 0.0, "gas": 1.0})
+    return out
+
+
+def test_time_lost_at_the_very_end_of_the_lap_is_reported():
+    """The failure this whole feature exists to prevent, at the boundary.
+
+    Sampling stops when completedLaps ticks over, so the last sample is
+    always short of position 1.0 -- and dropping a segment because its
+    *endpoint* was uncovered discarded the final twentieth of every lap.
+    That is the last corner and the run to the line. It reported the gap in
+    the total, then showed every segment flat, with track_covered_pct at
+    99.5 saying everything was fine.
+    """
+    sa, sb = _flat_lap(0), _flat_lap(8000)
+    la = {"id": 1, "lap_time_ms": sa[-1]["t_ms"]}
+    lb = {"id": 2, "lap_time_ms": sb[-1]["t_ms"]}
+    out = analysis.delta_by_position(la, sa, lb, sb, segments=20)
+
+    assert len(out["segments"]) == 20, len(out["segments"])
+    worst = out["worst_losses"][0]
+    assert worst["from"] >= 0.9, worst
+    assert worst["gain_ms"] > 5000, worst
+    # And the part genuinely beyond the last sample is named, not hidden.
+    assert out["unaccounted_ms"] > 0, out["unaccounted_ms"]
+    assert abs(out["accounted_ms"] + out["unaccounted_ms"]
+               - out["total_delta_ms"]) < 1.0, out
+    print(f"  {worst['gain_ms']}ms found at {worst['from']}-{worst['to']}, "
+          f"{out['unaccounted_ms']}ms beyond the last sample")
+
+
+def test_a_partial_segment_says_which_span_it_measured():
+    sa, sb = _flat_lap(0), _flat_lap(4000)
+    la = {"id": 1, "lap_time_ms": sa[-1]["t_ms"]}
+    lb = {"id": 2, "lap_time_ms": sb[-1]["t_ms"]}
+    out = analysis.delta_by_position(la, sa, lb, sb, segments=20)
+    partial = [r for r in out["segments"] if "measured_from" in r]
+    assert partial, "no segment reported a narrowed span"
+    for r in partial:
+        assert r["from"] <= r["measured_from"] <= r["measured_to"] <= r["to"]
+    print(f"  {len(partial)} segment(s) reported their measured span")
+
+
+def test_gains_are_gains_and_not_the_smallest_losses():
+    """Bottom-three of the same list reported a lap that was slower
+    everywhere as having three "biggest gains"."""
+    sa, sb = _flat_lap(0), _flat_lap(4000)
+    la = {"id": 1, "lap_time_ms": sa[-1]["t_ms"]}
+    lb = {"id": 2, "lap_time_ms": sb[-1]["t_ms"]}
+    out = analysis.delta_by_position(la, sa, lb, sb, segments=20)
+    assert out["biggest_gains"] == [], out["biggest_gains"]
+    print("  a lap slower everywhere reports no gains")
+
+
+def test_segments_argument_cannot_divide_by_zero():
+    """It reaches this straight from an MCP tool argument."""
+    sa, sb = _flat_lap(0), _flat_lap(1000)
+    la = {"id": 1, "lap_time_ms": sa[-1]["t_ms"]}
+    lb = {"id": 2, "lap_time_ms": sb[-1]["t_ms"]}
+    for n in (0, -5):
+        out = analysis.delta_by_position(la, sa, lb, sb, segments=n)
+        assert out["segments"], n
+    print("  segments=0 and negative handled")
+
+
+# --- lateral-g glitches -------------------------------------------------
+
+
+def _corner_lap(spike=None, spike_at=600, spike_len=6, g=1.1,
+                apexes=(0.15, 0.40, 0.65, 0.90), width=0.0006):
+    out, n = [], 1200
+    for i in range(n):
+        pos = i / n
+        lat = sum(g * math.exp(-((pos - a) ** 2) / width) for a in apexes)
+        speed = 200 - 60 * abs(lat)
+        if spike is not None and spike_at <= i < spike_at + spike_len:
+            lat = spike
+        out.append({"norm_pos": pos, "t_ms": i * 40, "speed_kmh": speed,
+                    "acc_lat": lat, "brake": 0.0, "gas": 1.0,
+                    "steer": 0.2, "gear": 4,
+                    "slip_fl": 1.0, "slip_fr": 1.0,
+                    "slip_rl": 0.5, "slip_rr": 0.5})
+    return out
+
+
+def test_a_lateral_g_spike_does_not_become_a_corner():
+    """One glitched sample used to decide the whole lap.
+
+    The threshold is a fraction of the lap's own peak lateral g, so a spike
+    raises the bar above every real corner: a six-sample 9g artefact on a
+    1.1g road-car lap left exactly one "corner" -- the artefact -- with a
+    fabricated peak_lat_g. Smaller spikes were reported as an extra corner.
+    """
+    baseline = len(analysis.detect_corners(_corner_lap()))
+    assert baseline == 4, baseline
+    for spike in (2.0, 3.0, 4.5, 9.0, 30.0, float("inf"), float("nan")):
+        got = len(analysis.detect_corners(_corner_lap(spike)))
+        assert got == baseline, f"{spike}g spike gave {got} corners"
+    print(f"  {baseline} corners found regardless of spike magnitude")
+
+
+def test_an_impossible_reading_is_rejected_however_long_it_lasts():
+    """The two defences cover different failures and both are needed.
+
+    The median filter removes anything shorter than a corner, whatever its
+    magnitude. It cannot remove a *sustained* bad reading -- a stuck channel
+    after a reset -- because by duration that looks exactly like a corner.
+    That is what the magnitude ceiling is for: no car in AC pulls 50g, so a
+    long run of it is broken telemetry, not the hardest corner of the lap.
+    Without the ceiling it would set the threshold and hide every real one.
+    """
+    long_run = analysis.CORNER_MIN_SAMPLES * 3
+    clean = len(analysis.detect_corners(_corner_lap()))
+    for bad in (50.0, 500.0, float("inf"), float("nan")):
+        got = analysis.detect_corners(_corner_lap(bad, spike_len=long_run))
+        assert len(got) == clean, f"{bad} for {long_run} samples -> {got}"
+        assert all(c["peak_lat_g"] < analysis.LAT_G_SANE_MAX for c in got)
+    print(f"  a {long_run}-sample impossible reading stays out of the "
+          f"corner list")
+
+
+def test_a_real_sustained_corner_is_not_filtered_away():
+    """The filter works on duration, so it must not eat short real corners.
+
+    Anything at or above CORNER_MIN_SAMPLES is a corner by this module's own
+    definition and has to survive.
+    """
+    long_enough = len(analysis.detect_corners(
+        _corner_lap(3.0, spike_len=analysis.CORNER_MIN_SAMPLES + 4)))
+    assert long_enough == 5, long_enough
+    assert (analysis.LAT_G_MEDIAN_WINDOW // 2
+            < analysis.CORNER_MIN_SAMPLES), (
+        "the median filter is wide enough to remove a real corner")
+    print(f"  a {analysis.CORNER_MIN_SAMPLES + 4}-sample load is kept")
+
+
+def test_cars_of_every_grip_level_still_find_their_corners():
+    for g in (1.1, 1.6, 3.0):
+        corners = analysis.detect_corners(_corner_lap(g=g))
+        assert len(corners) == 4, (g, len(corners))
+        assert corners[0]["peak_lat_g"] > g * 0.8, corners[0]
+    print("  road, GT3 and formula grip levels all detected")
+
+
 if __name__ == "__main__":
-    failures = 0
-    for name, fn in sorted(globals().items()):
-        if not name.startswith("test_"):
-            continue
-        print(f"\n{name}")
-        try:
-            fn()
-            print("  PASS")
-        except AssertionError as e:
-            failures += 1
-            print(f"  FAIL: {e}")
-    print(f"\n{'all passed' if not failures else f'{failures} FAILED'}")
-    sys.exit(1 if failures else 0)
+    sys.exit(1 if run_module(globals()) else 0)

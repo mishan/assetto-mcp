@@ -63,6 +63,7 @@ local status = {
   running = false,
   text = 'connecting...',
   laps = 0,
+  sessionId = nil,   -- server's session; a change resets the setup feed
 }
 local rivalBuffer = {}
 local rivalMeta = {}       -- [car_index] = per-car fields, not per-sample
@@ -133,6 +134,31 @@ local function clamp(v, lo, hi)
   if v < lo then return lo end
   if v > hi then return hi end
   return v
+end
+
+-- What a bridge reply actually means, decided in one place.
+--
+-- Three of these handlers were written separately and three of them got the
+-- same thing wrong: a 200 carrying {ok=false} means the server had nowhere
+-- to file the data -- no session recording -- and treating it as delivered
+-- shows a healthy status line over data that went nowhere. HTTP said yes;
+-- the body said no.
+--
+-- Returns one of:
+--   'offline'  no reply at all: the bridge is down or the request failed
+--   'rejected' an HTTP error: the request was wrong, log it
+--   'refused'  200, but the server declined to store it (ok=false)
+--   'ok'       stored; second return is the parsed body
+local function classifyReply(err, response)
+  if err or not response or not response.status then return 'offline' end
+  if response.status ~= 200 then return 'rejected' end
+  local parsed_ok, parsed = pcall(JSON.parse, response.body or '')
+  if not parsed_ok or type(parsed) ~= 'table' then
+    -- A 200 we cannot read is not evidence of anything.
+    return 'offline'
+  end
+  if parsed.ok == false then return 'refused', parsed end
+  return 'ok', parsed
 end
 
 -- How many of CSP's concurrent web requests are still free. Notes ignore
@@ -738,15 +764,19 @@ local function postSetup()
                     spinners = spinners, state = state, reason = reason },
     function(err, response)
       setupBusy = false
-      if err or not response or response.status ~= 200 then
-        if response and response.status then
-          ac.warn('race_engineer: /setup rejected: '
-            .. tostring(response.status) .. ' ' .. tostring(response.body))
-        end
+      local outcome = classifyReply(err, response)
+      if outcome == 'rejected' then
+        ac.warn('race_engineer: /setup rejected: '
+          .. tostring(response.status) .. ' ' .. tostring(response.body))
+      end
+      if outcome ~= 'ok' then
+        -- Not stored. Leaving setupSent alone is what makes the next tick
+        -- retry; latching it here on a refusal was how a whole session
+        -- could end up with no setup values while the app looked fine.
+        setupNote = outcome == 'refused' and 'setup: not recording'
+          or 'setup: bridge unreachable'
         return
       end
-      -- Only remember the fingerprint once the server has taken it, so a
-      -- rejected post is retried rather than silently treated as sent.
       setupSent = fp
       setupNote = state ~= '' and ('setup: ' .. state)
         or ('setup: ' .. #spinners .. ' values')
@@ -769,6 +799,18 @@ local function poll()
     status.running = d.running or false
     status.text = d.status or ''
     status.laps = d.laps_recorded or 0
+
+    -- Setup values are stored per session on the server, so a new session
+    -- starts with none. The fingerprint only re-posts when the *values*
+    -- change, and restarting a session with the same setup loaded -- the
+    -- ordinary tuning loop -- changes nothing. Without this the new session
+    -- never receives a setup, and identify_setup answers "no live setup
+    -- values; is the in-game app running?", which is a wrong diagnosis of a
+    -- working app.
+    if d.session_id and d.session_id ~= status.sessionId then
+      status.sessionId = d.session_id
+      setupSent = nil
+    end
     if d.message and d.message.id ~= ackedId then
       message = d.message
     elseif not d.message then
@@ -938,6 +980,12 @@ function windowMain(dt)
     marker, colour = '◇ ', rgbm(0.8, 0.7, 0.4, 1)
   end
   ui.textColored(marker .. suspNote, colour)
+  -- The setup feed is what makes lap attribution and clamping work, and
+  -- the driver is the only one who can see whether it is running. It was
+  -- being written and never shown.
+  if setupNote ~= '' then
+    ui.textColored(setupNote, rgbm(0.7, 0.7, 0.7, 1))
+  end
   ui.separator()
 
   -- complaint buttons

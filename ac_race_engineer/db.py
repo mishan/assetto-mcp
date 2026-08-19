@@ -367,7 +367,11 @@ def store_setup_snapshot(conn, session_id: int, car: str,
                 " units=excluded.units, read_only=excluded.read_only,"
                 " updated_at=excluded.updated_at",
                 (car, name, s.get("label", "") or "", float(lo), float(hi),
-                 float(s.get("step") or 1),
+                 # `or 1` would turn a legitimate step of 0 into 1. Zero is
+                 # how a continuous entry reports itself, and rewriting it
+                 # as 1 invents a grid the car does not have -- which then
+                 # snaps every written value onto it.
+                 float(1 if s.get("step") is None else s["step"]),
                  s.get("display_multiplier"), s.get("show_clicks_mode"),
                  s.get("units", "") or "", int(bool(s.get("read_only"))),
                  now))
@@ -392,11 +396,38 @@ def store_setup_snapshot(conn, session_id: int, car: str,
 
 
 def setup_ranges(conn, car: str) -> dict:
-    """{SECTION: (min, max, step)} as the game reports it, or {} if unknown."""
+    """{SECTION: (min, max, step)} as the game reports it, or {} if unknown.
+
+    Read-only entries are excluded: AC reports them so the setup screen can
+    grey them out, and writing one is silently ignored. Offering them as
+    writable would produce a clamped, snapped, confidently-reported value
+    that the car never sees.
+    """
     rows = conn.execute(
         "SELECT name, min_value, max_value, step FROM setup_ranges"
-        " WHERE car = ?", (car,))
-    return {r["name"]: (r["min_value"], r["max_value"], r["step"] or 1)
+        " WHERE car = ? AND read_only = 0", (car,))
+    # `step or 1` would turn a legitimate 0 -- a continuous entry -- into a
+    # grid of 1 and snap every value onto it.
+    return {r["name"]: (r["min_value"], r["max_value"],
+                        1.0 if r["step"] is None else r["step"])
+            for r in rows}
+
+
+def setup_display(conn, car: str) -> dict:
+    """{SECTION: {units, display_multiplier, show_clicks_mode}} for a car.
+
+    Kept separate from setup_ranges because these do not clamp anything --
+    they say how a stored number appears on the setup screen. A value stored
+    as 20 can read as 20 clicks or -2.0 degrees, and a report that says
+    "wrote 20" without saying which is how a setup that looks fine and isn't
+    gets written.
+    """
+    rows = conn.execute(
+        "SELECT name, units, display_multiplier, show_clicks_mode"
+        " FROM setup_ranges WHERE car = ?", (car,))
+    return {r["name"]: {"units": r["units"] or "",
+                        "display_multiplier": r["display_multiplier"],
+                        "show_clicks_mode": r["show_clicks_mode"]}
             for r in rows}
 
 

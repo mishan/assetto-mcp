@@ -225,5 +225,139 @@ def test_setup_is_refused_when_nothing_is_recording():
             b.stop()
 
 
+def test_a_written_value_says_what_it_reads_as_on_the_setup_screen():
+    """Stored and displayed are not the same number.
+
+    Ride height is stored as a click index and camber in tenths of a degree.
+    Asking for 20mm of rod length and writing 20 *clicks* is a setup that
+    looks fine and isn't, reported as success -- which is exactly what
+    show_clicks_mode exists to prevent. Nothing is converted (the file must
+    hold the stored value), but the report has to say which is which.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        docs = root / "docs"
+        docs.mkdir()
+        rng = root / "ranges"
+        rng.mkdir()
+        report = setups.write_setup(
+            docs, rng, car="carx", track="mugello", name="v1",
+            values={"ROD_LENGTH_LF": 20, "CAMBER_LF": -32,
+                    "PRESSURE_LF": 26},
+            game_ranges={"ROD_LENGTH_LF": (0, 36, 1),
+                         "CAMBER_LF": (-36, -26, 1),
+                         "PRESSURE_LF": (15, 35, 1)},
+            display={
+                "ROD_LENGTH_LF": {"units": "", "display_multiplier": None,
+                                  "show_clicks_mode": 2},
+                "CAMBER_LF": {"units": "deg", "display_multiplier": 0.1,
+                              "show_clicks_mode": 0},
+                "PRESSURE_LF": {"units": "psi", "display_multiplier": 1,
+                                "show_clicks_mode": 0},
+            })
+
+        shown = report["displays_as"]
+        # The stored values are unchanged -- the file must hold these.
+        assert report["written"]["ROD_LENGTH_LF"] == 20
+        assert report["written"]["CAMBER_LF"] == -32
+        # But the report says what they mean.
+        assert "click" in shown["ROD_LENGTH_LF"], shown
+        assert "-3.2 deg" in shown["CAMBER_LF"], shown
+        assert "stored -32" in shown["CAMBER_LF"], shown
+        assert shown["PRESSURE_LF"] == "26 psi", shown
+        print("  ", shown)
+
+
+def test_display_conventions_of_none_zero_and_one_all_mean_as_stored():
+    """Absent, 0 and 1 are three ways of saying "no conversion".
+
+    Coalescing 0 to a multiplier would scale every value to nothing.
+    """
+    for mult in (None, 0, 1):
+        got = setups._displays_as(26, {"units": "psi",
+                                       "display_multiplier": mult,
+                                       "show_clicks_mode": 0})
+        assert got == "26 psi", (mult, got)
+    assert setups._displays_as(26, None) is None
+    assert setups._displays_as(26, {}) is None
+    print("  absent, 0 and 1 all read as stored")
+
+
+def test_identify_will_not_match_on_a_handful_of_shared_fields():
+    """A file holding only [FUEL] agrees with every setup at that fuel load.
+
+    Reporting that as an exact match is the same failure as the brake-bias
+    fingerprint this replaced: a confident answer from fields that cannot
+    separate the candidates.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        _write_setup_file(root, "car", "track", "one_field", {"FUEL": 50})
+        live = {f"ENTRY_{i}": i for i in range(20)}
+        live["FUEL"] = 50
+        got = setups.identify_setup(root, "car", "track", live)
+        assert got["match"] is None, got
+        assert got["too_few_fields_to_judge"][0]["name"] == "one_field"
+        assert "not enough to identify" in got["reason"], got["reason"]
+        print(" ", got["reason"][:60] + "...")
+
+
+def test_a_car_with_few_adjustable_entries_can_still_be_identified():
+    """The floor is a share of what exists, not a fixed count.
+
+    Two of two adjustable entries is everything there is to know; two of
+    twenty-one is a coincidence. A fixed count cannot tell those apart.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        vals = {"ARB_FRONT": 5, "ARB_REAR": 3}
+        _write_setup_file(root, "car", "track", "small", dict(vals))
+        got = setups.identify_setup(root, "car", "track", dict(vals))
+        assert got["match"] == "small", got
+        print(f"  identified on {got['compared']} of {len(vals)} entries")
+
+
+def test_a_step_of_zero_is_not_rewritten_as_one():
+    """0 is how a continuous entry reports itself.
+
+    `step or 1` turned that into a grid of 1 and snapped every value onto
+    it, which is a quiet way to write a setup nobody asked for.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        conn = db.connect(Path(d) / "t.db")
+        sid = make_session(conn)
+        db.store_setup_snapshot(conn, sid, "carx", spinners=[
+            {"name": "CONTINUOUS", "min": 0.0, "max": 10.0, "step": 0},
+            {"name": "STEPPED", "min": 0.0, "max": 10.0, "step": 2},
+            {"name": "UNSTATED", "min": 0.0, "max": 10.0},
+        ])
+        ranges = db.setup_ranges(conn, "carx")
+        assert ranges["CONTINUOUS"][2] == 0, ranges["CONTINUOUS"]
+        assert ranges["STEPPED"][2] == 2, ranges["STEPPED"]
+        # Genuinely missing still defaults to 1.
+        assert ranges["UNSTATED"][2] == 1, ranges["UNSTATED"]
+        print("  step 0 preserved, missing step defaults to 1")
+        conn.close()
+
+
+def test_read_only_entries_are_not_offered_as_writable():
+    """AC reports them so the screen can grey them out; writing one is
+    silently ignored, so offering it produces a confident report of a value
+    the car never sees."""
+    with tempfile.TemporaryDirectory() as d:
+        conn = db.connect(Path(d) / "t.db")
+        sid = make_session(conn)
+        db.store_setup_snapshot(conn, sid, "carx", spinners=[
+            {"name": "WRITABLE", "min": 0.0, "max": 10.0, "step": 1},
+            {"name": "LOCKED", "min": 0.0, "max": 10.0, "step": 1,
+             "read_only": True},
+        ])
+        ranges = db.setup_ranges(conn, "carx")
+        assert "WRITABLE" in ranges
+        assert "LOCKED" not in ranges, ranges
+        print("  read-only entry withheld from the writable ranges")
+        conn.close()
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

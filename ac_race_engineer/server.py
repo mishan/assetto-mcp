@@ -386,9 +386,17 @@ def list_laps(session_id: int | None = None, limit: int = 20) -> str:
 @mcp.tool()
 def lap_summary(lap_id: int) -> str:
     """Engineer's summary of one lap: lap time, throttle/brake/coast split,
-    tyre pressures and core temps, per-corner min speed, brake points,
-    and a front/rear slip balance metric (positive = understeer tendency,
-    negative = oversteer tendency).
+    tyre pressures and core temps, and a corner-by-corner breakdown.
+
+    Each corner carries entry_pos, apex_pos, exit_pos, min speed, brake and
+    throttle points, peak_lat_g, peak_steer_norm (a fraction of full lock,
+    not degrees), and a front/rear slip balance (positive = understeer
+    tendency, negative = oversteer).
+
+    turn_sign groups corners by direction: corners sharing a sign turn the
+    same way, which is what correlating tyre temperatures needs. It is NOT
+    left/right -- AC does not document which sign is which, so do not
+    describe a turn_sign of 1 as a right-hander.
 
     Includes a few suspension headlines when the in-game app captured them;
     call suspension_report for the full damper histograms and ride height."""
@@ -640,9 +648,14 @@ def write_setup(car: str, track: str, name: str, values_json: str,
     if not isinstance(values, dict):
         return _j({"error": "values_json must be a JSON object"})
     try:
+        # display carries units, display_multiplier and show_clicks_mode so
+        # the report can say what each written number reads as on the setup
+        # screen. Ride height stored as 20 is 20 clicks, not 20mm, and a
+        # report that doesn't say so is how a wrong setup looks right.
         return _j(setups.write_setup(
             AC_DOCS_DIR, RANGES_DIR, car, track, name, values, base_setup,
-            game_ranges=db.setup_ranges(_conn, car)))
+            game_ranges=db.setup_ranges(_conn, car),
+            display=db.setup_display(_conn, car)))
     except (ValueError, FileNotFoundError) as e:
         return _j({"error": str(e)})
 

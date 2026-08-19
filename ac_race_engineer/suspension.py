@@ -53,6 +53,16 @@ MIN_HISTOGRAM_SAMPLES = 200
 # Braking hard enough that front compression is not in doubt.
 BRAKING_THRESHOLD = 0.6
 
+# The sign inference assumes brake pedal == weight transferring forward. A
+# stationary car with the pedal held satisfies the first and none of the
+# second, and an out-lap spent sitting in the garage on the brakes supplied
+# thousands of such samples -- enough to outvote the real braking zones and
+# invert the answer, at confidence 1.0. Both the speed floor and the cap on
+# how much of a lap may be classified as braking exist to keep parked and
+# crawling samples out of it.
+SIGN_MIN_SPEED_KMH = 50.0
+SIGN_MAX_BRAKING_SHARE = 0.5
+
 
 def _finite(v) -> bool:
     return isinstance(v, (int, float)) and math.isfinite(v)
@@ -97,11 +107,18 @@ def infer_compression_sign(samples: list[dict]) -> dict:
     # nose is down but barely moving, so the rate is near zero for most of
     # the zone and only the brief onset carries the signal -- easily lost in
     # noise. The displacement holds for the whole zone.
-    braking, free = [], []
+    braking, free, slow = [], [], 0
     for s in samples:
         fl, fr = s.get("travel_fl"), s.get("travel_fr")
         brake = s.get("brake")
         if not (_finite(fl) and _finite(fr)) or not _finite(brake):
+            continue
+        # A car below this isn't transferring meaningful load, whatever the
+        # pedal says. Missing speed is treated as too slow rather than
+        # assumed fast: guessing here is what produced the inverted answer.
+        speed = s.get("speed_kmh")
+        if not _finite(speed) or speed < SIGN_MIN_SPEED_KMH:
+            slow += 1
             continue
         front = (fl + fr) / 2
         if brake >= BRAKING_THRESHOLD:
@@ -111,8 +128,22 @@ def infer_compression_sign(samples: list[dict]) -> dict:
 
     if len(braking) < 20 or len(free) < 20:
         return {"sign": None, "confidence": 0.0,
-                "basis": f"need 20 samples each side; got {len(braking)} "
-                         f"braking and {len(free)} off the brakes"}
+                "basis": f"need 20 samples each side above "
+                         f"{SIGN_MIN_SPEED_KMH:.0f}km/h; got {len(braking)} "
+                         f"braking and {len(free)} off the brakes"
+                         + (f" ({slow} discarded as too slow)" if slow else "")}
+
+    # A real lap brakes for well under half its duration. A larger share
+    # means these are not braking zones -- a stop-start out-lap, or a
+    # session spent shuffling in the pits -- and the comparison against
+    # "resting" travel is not measuring what it thinks it is.
+    share = len(braking) / (len(braking) + len(free))
+    if share > SIGN_MAX_BRAKING_SHARE:
+        return {"sign": None, "confidence": 0.0,
+                "basis": f"{share:.0%} of usable samples are at or above "
+                         f"{BRAKING_THRESHOLD:.0%} brake, too many for these "
+                         f"to be braking zones; refusing to infer a sign "
+                         f"from what looks like a stop-start lap"}
 
     med_b, med_f = median(braking), median(free)
     delta = med_b - med_f
@@ -137,7 +168,8 @@ def infer_compression_sign(samples: list[dict]) -> dict:
         "basis": (f"front axle sits {abs(delta) * 1000:.1f}mm "
                   f"{'higher' if delta > 0 else 'lower'} under "
                   f">{BRAKING_THRESHOLD:.0%} brake than off it "
-                  f"({len(braking)} vs {len(free)} samples, {agreement:.0%} "
+                  f"({len(braking)} braking vs {len(free)} free samples above "
+                  f"{SIGN_MIN_SPEED_KMH:.0f}km/h, {agreement:.0%} "
                   f"separated), so {'increasing' if sign > 0 else 'decreasing'}"
                   f" travel = compression"),
     }

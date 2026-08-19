@@ -5,8 +5,9 @@
 --   * POSTs /note when a complaint tag is pressed (button or wheel binding)
 --   * POSTs /rivals once a second (batched opponent telemetry)
 --   * POSTs /suspension once a second (travel, loads, ride height)
+--   * POSTs /setup when the setup changes (ranges and values from the game)
 --
--- CSP caps Lua apps at 2 concurrent web requests. There are four things
+-- CSP caps Lua apps at 2 concurrent web requests. There are five things
 -- that want to talk, so they take turns: sendSlots() below is the single
 -- gate, and the timers are deliberately out of phase so they don't collide
 -- every second frame. A note press wins any tie -- it is the one request
@@ -49,6 +50,9 @@ local SUSP_POST_INTERVAL = 1.0
 -- rival post (period 1.0, phase 0.5). 1.5 would have looked staggered and
 -- collided with rivals on every single second: 1.5 mod 1.0 == 0.5.
 local SUSP_POST_PHASE = 0.25
+-- Setup values only change in the pits. Slow poll, and the fingerprint
+-- check below means an unchanged setup never hits the network.
+local SETUP_POLL_INTERVAL = 3.0
 local SUSP_BUFFER_MAX = 1800             -- under the bridge's cap, ~5s at 333Hz
 local WORKER_RING = 1024                 -- must match suspension_worker.lua
 
@@ -59,6 +63,7 @@ local status = {
   running = false,
   text = 'connecting...',
   laps = 0,
+  sessionId = nil,   -- server's session; a change resets the setup feed
 }
 local rivalBuffer = {}
 local rivalMeta = {}       -- [car_index] = per-car fields, not per-sample
@@ -90,6 +95,16 @@ local suspBusy = false
 local suspDropped = 0
 local suspSent = 0
 local suspNote = 'starting'  -- shown in the app window
+-- Set when the worker was deliberately not attempted because we are online.
+-- Kept separate from suspNote so the window can render it as information
+-- rather than as a degraded state: nothing is wrong, this is the rule.
+local onlineSuppressed = false
+-- Setup snapshot state. setupSent holds the fingerprint the server has
+-- accepted, so an unchanged setup costs nothing and a rejected post retries.
+local setupBusy = false
+local setupSent = nil
+local setupNote = ''
+local setupTimer = 0
 local worker = nil           -- shared struct, once connected
 local workerReadIndex = 0
 local workerProducing = false -- only true once samples have actually arrived
@@ -121,6 +136,31 @@ local function clamp(v, lo, hi)
   return v
 end
 
+-- What a bridge reply actually means, decided in one place.
+--
+-- Three of these handlers were written separately and three of them got the
+-- same thing wrong: a 200 carrying {ok=false} means the server had nowhere
+-- to file the data -- no session recording -- and treating it as delivered
+-- shows a healthy status line over data that went nowhere. HTTP said yes;
+-- the body said no.
+--
+-- Returns one of:
+--   'offline'  no reply at all: the bridge is down or the request failed
+--   'rejected' an HTTP error: the request was wrong, log it
+--   'refused'  200, but the server declined to store it (ok=false)
+--   'ok'       stored; second return is the parsed body
+local function classifyReply(err, response)
+  if err or not response or not response.status then return 'offline' end
+  if response.status ~= 200 then return 'rejected' end
+  local parsed_ok, parsed = pcall(JSON.parse, response.body or '')
+  if not parsed_ok or type(parsed) ~= 'table' then
+    -- A 200 we cannot read is not evidence of anything.
+    return 'offline'
+  end
+  if parsed.ok == false then return 'refused', parsed end
+  return 'ok', parsed
+end
+
 -- How many of CSP's concurrent web requests are still free. Notes ignore
 -- this and always send: the driver is waiting on that one, and it is a few
 -- hundred bytes.
@@ -130,6 +170,7 @@ local function sendSlots()
   if sendBusy then used = used + 1 end
   if rivalBusy then used = used + 1 end
   if suspBusy then used = used + 1 end
+  if setupBusy then used = used + 1 end
   return MAX_CONCURRENT_REQUESTS - used
 end
 
@@ -198,7 +239,78 @@ end
 -- degrade to render-rate sampling, never take the app down -- losing the
 -- complaint tags because a damper channel was unavailable would be a poor
 -- trade.
+-- Everything we know about why a worker might be refused, gathered once and
+-- logged together. Each of these has been a plausible cause at some point
+-- and none of them is visible from the server side, so guessing from a bare
+-- "cannot start" costs a round trip to the driver every time.
+-- Every line of this is a guess about an undocumented API, so every line
+-- gets its own pcall. ac.getSim() hands back a proxy that RAISES on an
+-- unknown field rather than returning nil, so one wrong field name here
+-- takes down the whole probe -- which is precisely what happened when this
+-- was written as a straight sequence of reads: the diagnostic threw, the
+-- caller's pcall swallowed it, and the worker was never even attempted.
+-- A diagnostic that can break the thing it inspects is worse than none.
+local function ask(label, fn)
+  local ok, v = pcall(fn)
+  ac.log('  ' .. label .. ': ' ..
+    (ok and (type(v) .. ' ' .. tostring(v)) or ('unavailable (' ..
+      tostring(v) .. ')')))
+end
+
+local function logWorkerEnvironment()
+  ac.log('race_engineer: physics worker environment')
+  ask('csp version', function() return ac.getPatchVersion() end)
+  ask('csp version code', function() return ac.getPatchVersionCode() end)
+  ask('physics table', function() return type(physics) end)
+  ask('startPhysicsWorker', function()
+    return type(physics.startPhysicsWorker) end)
+  ask('getExtendedDamperTravel', function()
+    return type(physics.getExtendedDamperTravel) end)
+  ask('physics.allowed()', function() return physics.allowed() end)
+  -- Online is the gate we most suspect: CSP disables physics scripting in
+  -- multiplayer, since a script on the physics thread is a cheat vector.
+  ask('online race', function() return ac.getSim().isOnlineRace end)
+  ask('session type', function() return ac.getSim().raceSessionType end)
+  -- 'extended physics' used to be read here as sim.isNewBehaviourActive.
+  -- That field does not exist -- checked against the CSP SDK definitions,
+  -- ac.StateSim has isOnlineRace but nothing of that name -- and reading it
+  -- raised, which took the whole probe down with it. physics.allowed()
+  -- above is the real answer to the same question.
+end
+
+-- true / false / nil, where nil means we could not tell. Guarded because
+-- ac.getSim() raises on unknown fields and this app has already been broken
+-- once by assuming a field name exists.
+local function isOnlineSession()
+  local ok, v = pcall(function() return ac.getSim().isOnlineRace end)
+  if not ok or v == nil then return nil end
+  return v and true or false
+end
+
 local function startSuspensionWorker()
+  -- Belt and braces: even with every read individually guarded, the
+  -- diagnostic must never be the reason the worker doesn't start.
+  pcall(logWorkerEnvironment)
+
+  -- CSP refuses to run a script on the physics thread in multiplayer, and
+  -- it is right to: that thread decides what the car does, so a script on
+  -- it is a cheat vector. Detect the case and say so plainly instead of
+  -- reporting "Physics API not available", which reads as something being
+  -- broken when nothing is. Only an explicit true suppresses it -- if the
+  -- field is missing we still try, because being unable to tell is not a
+  -- reason to disable the feature.
+  --
+  -- Render-rate capture continues either way: ride height, wheel loads and
+  -- roll balance never needed the worker, and those work online.
+  if isOnlineSession() == true then
+    suspNote = 'multiplayer: damper capture is single-player only'
+    onlineSuppressed = true
+    ac.log('race_engineer: online session, not starting physics worker '
+      .. '(CSP disallows physics scripting in multiplayer). Ride height '
+      .. 'and load transfer still recording at render rate.')
+    return
+  end
+
   if type(physics) ~= 'table' or type(physics.startPhysicsWorker) ~= 'function' then
     suspNote = 'CSP too old for physics workers - render rate only'
     return
@@ -207,6 +319,12 @@ local function startSuspensionWorker()
   -- physics.allowed() reports whether this session permits physics
   -- scripting at all. When it is false the docs say only raycasting works,
   -- so there is no point starting a worker that can't read anything.
+  --
+  -- Deliberately only bails on an explicit false: older builds return nil
+  -- here, and treating nil as "not allowed" would disable the worker on
+  -- setups where it would have worked. The cost is that a session which
+  -- refuses workers without saying so reaches startPhysicsWorker and fails
+  -- there instead -- which is why that error is now kept and logged.
   if type(physics.allowed) == 'function' then
     local ok, allowed = pcall(physics.allowed)
     if ok and allowed == false then
@@ -245,7 +363,16 @@ local function startSuspensionWorker()
   worker.running = 0
   workerReadIndex = 0
 
-  local started = pcall(physics.startPhysicsWorker, 'suspension_worker', 0,
+  -- Keep pcall's second return: it is the only description of why the call
+  -- failed, and discarding it left the app saying "cannot start physics
+  -- worker" with no way to tell a missing script file from a wrong
+  -- signature from a session that forbids workers.
+  -- Signature is startPhysicsWorker(script, data, callback): the second
+  -- argument is data handed to the worker as `__input`, not a car index as
+  -- this code originally assumed. The 0 is harmless -- the worker ignores
+  -- it -- but the assumption was wrong and worth not passing on.
+  local started, startErr = pcall(physics.startPhysicsWorker,
+    'suspension_worker', 0,
     function(err)
       if err then
         worker, workerProducing = nil, false
@@ -255,7 +382,8 @@ local function startSuspensionWorker()
     end)
   if not started then
     worker = nil
-    suspNote = 'could not start physics worker - render rate only'
+    suspNote = 'worker start failed: ' .. tostring(startErr)
+    ac.warn('race_engineer: startPhysicsWorker failed: ' .. tostring(startErr))
     return
   end
   -- Deliberately not claiming the worker tier yet. startPhysicsWorker
@@ -432,23 +560,38 @@ local function postSuspensionBuffer(which, buffer)
   return true
 end
 
+-- Which tier gets first refusal this time round. Flipped on every post.
+local suspWorkerFirst = true
+
 local function postSuspension()
   if suspBusy or sendSlots() < 1 then return end
   if not status.running then
     suspAppBuffer, suspWorkerBuffer = {}, {}
     return
   end
-  -- Alternate so neither tier can starve the other when only one slot is
-  -- free. The worker buffer fills far faster, so it goes first.
-  if #suspWorkerBuffer > 0 then
-    local batch = suspWorkerBuffer
-    suspWorkerBuffer = {}
-    postSuspensionBuffer('worker', batch)
-  elseif #suspAppBuffer > 0 then
-    local batch = suspAppBuffer
-    suspAppBuffer = {}
-    postSuspensionBuffer('app', batch)
+
+  -- This used to be `if worker then ... elseif app then ...`, which the
+  -- comment called alternating but which is strict priority. The worker
+  -- fills at 333Hz and is drained once a second, so its buffer is
+  -- effectively never empty -- the app branch never ran. Ride height and
+  -- wheel loads come only from the app tier, so the moment a physics
+  -- worker started, the two channels that answer "is the car too low" and
+  -- "which axle takes the load transfer" silently stopped arriving, while
+  -- the status line happily reported a healthy 333Hz feed.
+  --
+  -- Alternate for real: each tier gets every other slot, and only falls
+  -- through to the other when its own buffer is empty.
+  local function flush(which)
+    local buf = (which == 'worker') and suspWorkerBuffer or suspAppBuffer
+    if #buf == 0 then return false end
+    if which == 'worker' then suspWorkerBuffer = {} else suspAppBuffer = {} end
+    return postSuspensionBuffer(which, buf)
   end
+
+  local first = suspWorkerFirst and 'worker' or 'app'
+  local second = suspWorkerFirst and 'app' or 'worker'
+  suspWorkerFirst = not suspWorkerFirst
+  if not flush(first) then flush(second) end
 end
 
 -- Snapshot every car on track. Fields that AC doesn't transmit for remote
@@ -559,6 +702,87 @@ local function postRivals()
     end)
 end
 
+-- What the game says about the setup menu.
+--
+-- ac.getSetupSpinners() reports every adjustable entry keyed by the same
+-- section names the setup files use, with its legal min/max/step and the
+-- two display conventions (displayMultiplier, showClicksMode). That is the
+-- car's own answer to questions this project previously answered by
+-- unpacking data.acd and comparing saved files against the setup screen.
+--
+-- Sent only when something changes: the values are static while driving,
+-- and the point of resampling at all is to catch a setup swapped in the
+-- pits mid-session.
+local function readSetupSpinners()
+  if type(ac.getSetupSpinners) ~= 'function' then return nil end
+  local ok, list = pcall(ac.getSetupSpinners)
+  if not ok or type(list) ~= 'table' then return nil end
+  local out = {}
+  for _, s in ipairs(list) do
+    if type(s) == 'table' and s.name then
+      out[#out + 1] = {
+        name = tostring(s.name),
+        label = s.label and tostring(s.label) or '',
+        min = num(s.min, nil), max = num(s.max, nil),
+        step = num(s.step, nil), value = num(s.value, nil),
+        displayMultiplier = num(s.displayMultiplier, nil),
+        showClicksMode = num(s.showClicksMode, nil),
+        units = s.units and tostring(s.units) or '',
+        readOnly = s.readOnly and true or false,
+      }
+    end
+  end
+  return out
+end
+
+local function setupFingerprint(spinners)
+  local parts = {}
+  for _, s in ipairs(spinners) do
+    parts[#parts + 1] = s.name .. '=' .. tostring(s.value)
+  end
+  table.sort(parts)
+  return table.concat(parts, ';')
+end
+
+local function postSetup()
+  if setupBusy or sendSlots() < 1 or not status.running then return end
+  local spinners = readSetupSpinners()
+  if not spinners or #spinners == 0 then return end
+
+  local fp = setupFingerprint(spinners)
+  if fp == setupSent then return end        -- nothing moved
+
+  local state, reason = '', ''
+  if type(ac.getCarSetupState) == 'function' then
+    local ok, s, r = pcall(ac.getCarSetupState)
+    if ok then state, reason = tostring(s or ''), tostring(r or '') end
+  end
+
+  setupBusy = true
+  web.post(BASE .. '/setup', { ['Content-Type'] = 'application/json' },
+    JSON.stringify{ car = ac.getCarID and ac.getCarID(0) or '',
+                    spinners = spinners, state = state, reason = reason },
+    function(err, response)
+      setupBusy = false
+      local outcome = classifyReply(err, response)
+      if outcome == 'rejected' then
+        ac.warn('race_engineer: /setup rejected: '
+          .. tostring(response.status) .. ' ' .. tostring(response.body))
+      end
+      if outcome ~= 'ok' then
+        -- Not stored. Leaving setupSent alone is what makes the next tick
+        -- retry; latching it here on a refusal was how a whole session
+        -- could end up with no setup values while the app looked fine.
+        setupNote = outcome == 'refused' and 'setup: not recording'
+          or 'setup: bridge unreachable'
+        return
+      end
+      setupSent = fp
+      setupNote = state ~= '' and ('setup: ' .. state)
+        or ('setup: ' .. #spinners .. ' values')
+    end)
+end
+
 local function poll()
   if pollBusy then return end
   pollBusy = true
@@ -575,6 +799,18 @@ local function poll()
     status.running = d.running or false
     status.text = d.status or ''
     status.laps = d.laps_recorded or 0
+
+    -- Setup values are stored per session on the server, so a new session
+    -- starts with none. The fingerprint only re-posts when the *values*
+    -- change, and restarting a session with the same setup loaded -- the
+    -- ordinary tuning loop -- changes nothing. Without this the new session
+    -- never receives a setup, and identify_setup answers "no live setup
+    -- values; is the in-game app running?", which is a wrong diagnosis of a
+    -- working app.
+    if d.session_id and d.session_id ~= status.sessionId then
+      status.sessionId = d.session_id
+      setupSent = nil
+    end
     if d.message and d.message.id ~= ackedId then
       message = d.message
     elseif not d.message then
@@ -658,8 +894,49 @@ function script.update(dt)
     postSuspension()
   end
 
+  -- Setup values only move in the pits, so a slow poll is plenty; the
+  -- fingerprint check means an unchanged setup costs one table build and
+  -- no request.
+  setupTimer = setupTimer - dt
+  if setupTimer <= 0 then
+    setupTimer = SETUP_POLL_INTERVAL
+    postSetup()
+  end
+
   if toastTimer > 0 then toastTimer = toastTimer - dt end
 end
+
+-- Exposed for the test harness only. Everything in this file is `local`,
+-- which is right for a CSP app -- but a local function cannot be called
+-- from outside, so the scheduling and gating logic had no way to be tested
+-- and a starvation bug lived in it undetected while the status line
+-- reported success. CSP never reads this table.
+-- Hung off CSP's own `script` table rather than declared as a global: the
+-- app forbids implicit globals and there is a test that enforces it.
+script.__test = {
+  postSuspension = function() return postSuspension() end,
+  startSuspensionWorker = function() return startSuspensionWorker() end,
+  isOnlineSession = function() return isOnlineSession() end,
+  clamp = function(...) return clamp(...) end,
+  num = function(...) return num(...) end,
+  state = function()
+    return {
+      suspNote = suspNote,
+      onlineSuppressed = onlineSuppressed,
+      workerProducing = workerProducing,
+      appBuffered = #suspAppBuffer,
+      workerBuffered = #suspWorkerBuffer,
+    }
+  end,
+  push = function(which, n)
+    local buf = (which == 'worker') and suspWorkerBuffer or suspAppBuffer
+    for _ = 1, n do buf[#buf + 1] = { t_ms = 0 } end
+  end,
+  setRunning = function(v) status.running = v end,
+  -- The real busy flag is cleared by the web callback, which a test
+  -- harness has no way to invoke.
+  clearBusy = function() suspBusy = false end,
+}
 
 function windowMain(dt)
   -- status line
@@ -690,9 +967,25 @@ function windowMain(dt)
   -- workerProducing, not a separate tier variable: it only goes true once
   -- samples have actually been drained, so the marker cannot claim 333Hz
   -- for a worker that was started but never produced anything.
-  ui.textColored(
-    (workerProducing and '◆ ' or '◇ ') .. suspNote,
-    workerProducing and rgbm(0.4, 0.9, 0.5, 1) or rgbm(0.8, 0.7, 0.4, 1))
+  -- Three states, not two. Amber is "you wanted the worker and did not get
+  -- it"; online is neither that nor success, so it gets its own neutral
+  -- marker. Colouring an expected, correct condition as a warning trains
+  -- the driver to ignore the line that matters.
+  local marker, colour
+  if workerProducing then
+    marker, colour = '◆ ', rgbm(0.4, 0.9, 0.5, 1)
+  elseif onlineSuppressed then
+    marker, colour = '○ ', rgbm(0.6, 0.7, 0.8, 1)
+  else
+    marker, colour = '◇ ', rgbm(0.8, 0.7, 0.4, 1)
+  end
+  ui.textColored(marker .. suspNote, colour)
+  -- The setup feed is what makes lap attribution and clamping work, and
+  -- the driver is the only one who can see whether it is running. It was
+  -- being written and never shown.
+  if setupNote ~= '' then
+    ui.textColored(setupNote, rgbm(0.7, 0.7, 0.7, 1))
+  end
   ui.separator()
 
   -- complaint buttons

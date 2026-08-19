@@ -86,6 +86,91 @@ def test_compression_direction_is_read_from_braking():
     print("  convention recovered in both directions")
 
 
+def _parked_on_the_brakes(n=7295, parked_samples=5905):
+    """Sitting in the garage with the pedal held down.
+
+    Reproduces a real out-lap: 7295 samples, of which 5905 read >60% brake
+    because the car was stationary with the brake on. Those are the counts
+    from the session, not a proportion of them -- the ratio is what decides
+    whether the stop-start guard or the speed gate answers first, so
+    inventing one would test a lap that never happened. The front travel
+    does not move -- there is no load transfer -- but a tiny constant offset
+    from the resting trace is enough for a median comparison to find a
+    direction and report it at full confidence.
+    """
+    rolling = max(1, n - parked_samples)
+    out = []
+    for i in range(n):
+        parked = i < parked_samples
+        out.append({
+            "lap_count": 0,
+            "t_ms": int(i * 20),
+            "spline": 0.0 if parked else (i - parked_samples) / rolling,
+            "brake": 0.9 if parked else 0.0,
+            "speed_kmh": 0.0 if parked else 120.0,
+            # Parked sits fractionally lower than rolling: the wrong sign,
+            # which is exactly what the old code latched onto.
+            "travel_fl": -0.0057 if parked else 0.0,
+            "travel_fr": -0.0057 if parked else 0.0,
+            "travel_rl": 0.0, "travel_rr": 0.0,
+            "load_fl": 4000.0, "load_fr": 4000.0,
+            "load_rl": 3000.0, "load_rr": 3000.0,
+            "ride_f": 0.050, "ride_r": 0.070, "plank_wear": 0.0,
+        })
+    return out
+
+
+def test_a_car_parked_on_the_brakes_cannot_set_the_sign():
+    """Regression: an out-lap inverted the sign at confidence 1.0.
+
+    Session 9 produced sign=-1 from the out-lap and sign=+1 from a flying
+    lap, both claiming confidence 1.0, because 'brake pressed' was taken as
+    'weight transferring forward'. Since this sign decides bump vs rebound,
+    a wrong answer is worse than no answer.
+    """
+    samples = _parked_on_the_brakes()
+    # The numbers the docstring quotes are the session's; assert them here
+    # so the fixture cannot drift away from the lap it claims to reproduce.
+    assert len(samples) == 7295
+    assert sum(1 for s in samples if s["brake"] > 0.6) == 5905
+
+    got = susp.infer_compression_sign(samples)
+    assert got["sign"] is None, got
+    assert got["confidence"] == 0.0
+    assert "slow" in got["basis"] or "km/h" in got["basis"], got["basis"]
+
+
+def test_a_stop_start_lap_is_refused_even_above_the_speed_floor():
+    """Crawling laps brake for most of their length; that isn't a braking zone."""
+    samples = []
+    for i in range(3000):
+        braking = i % 10 < 8            # 80% of the lap on the brakes
+        samples.append({
+            "lap_count": 0, "t_ms": int(i * 20), "spline": i / 3000,
+            "brake": 0.9 if braking else 0.0,
+            "speed_kmh": 60.0,          # above the floor, still not racing
+            "travel_fl": 0.004 if braking else 0.0,
+            "travel_fr": 0.004 if braking else 0.0,
+            "travel_rl": 0.0, "travel_rr": 0.0,
+            "load_fl": 4000.0, "load_fr": 4000.0,
+            "load_rl": 3000.0, "load_rr": 3000.0,
+            "ride_f": 0.050, "ride_r": 0.070, "plank_wear": 0.0,
+        })
+    got = susp.infer_compression_sign(samples)
+    assert got["sign"] is None, got
+    assert "stop-start" in got["basis"], got["basis"]
+
+
+def test_a_real_lap_still_infers_the_sign_after_the_speed_gate():
+    """The gate must not cost us the answer on laps that do have braking."""
+    for positive in (True, False):
+        got = susp.infer_compression_sign(
+            _lap(compression_is_positive=positive))
+        assert got["sign"] == (1 if positive else -1), got
+        assert got["confidence"] > 0.8, got
+        assert "km/h" in got["basis"]
+
+
 def test_bump_and_rebound_are_withheld_when_direction_is_unknown():
     """A lap with no braking cannot establish the convention.
 
@@ -408,11 +493,18 @@ def test_the_lua_app_assigns_no_implicit_globals():
     to 'worker', so the app's capture-tier indicator would have shown the
     degraded marker permanently no matter what was actually running.
     """
-    try:
-        from luaparser import ast, astnodes
-    except ImportError:
-        print("  skipped: pip install luaparser")
+    # This is the only check for this bug class, so "luaparser is missing"
+    # must not read as "passed". require() raises under AC_TESTS_STRICT --
+    # CI and run_tests.py --no-skip -- and returns True on a machine that
+    # genuinely lacks it, where skipping is the right answer.
+    import lua_harness
+    if lua_harness.require("luaparser", "the implicit-globals check"):
+        # Raises for pytest and run_tests.py, prints for the bare standalone
+        # runner, which has no notion of a skip -- hence the return.
+        lua_harness.skip("pip install luaparser for the implicit-globals check")
         return
+
+    from luaparser import ast, astnodes
 
     lua_dir = Path(__file__).resolve().parents[1] / "lua_app/race_engineer"
     # Names Lua and CSP provide. Anything assigned that isn't declared local
@@ -670,30 +762,51 @@ def test_concurrent_posts_do_not_lose_prune_increments():
         conn = db.connect(path)
         br, _ = _bridge(path, conn)
         try:
-            posts, threads = 24, []
+            attempts, threads = 24, []
             rows = _lap(n=5)
+            outcomes: list[int | None] = []
+            guard = threading.Lock()
 
             def fire(i):
                 # Distinct lap_counts so nothing is deduplicated away and
-                # every request really does write.
+                # every request that lands really does write.
                 batch = [dict(s, lap_count=i) for s in rows]
-                post(br.port, "/suspension",
-                     {"source": "app", "samples": batch})
+                try:
+                    code, _ = post(br.port, "/suspension",
+                                   {"source": "app", "samples": batch})
+                except OSError:
+                    # Firing 24 connections at once can overrun the listen
+                    # backlog and get one reset. That is the OS refusing a
+                    # connection, not the server losing a write, so it must
+                    # not be counted as either.
+                    code = None
+                with guard:
+                    outcomes.append(code)
 
-            for i in range(posts):
+            for i in range(attempts):
                 t = threading.Thread(target=fire, args=(i,))
                 threads.append(t)
                 t.start()
             for t in threads:
                 t.join()
 
-            assert br._susp_writes == posts, (
-                f"counted {br._susp_writes} of {posts} writes -- increments "
-                f"were lost")
+            landed = sum(1 for c in outcomes if c == 200)
+            # Guard against the test passing by doing nothing: if the
+            # backlog ate almost everything there was no concurrency to
+            # speak of and the assertion below proves little.
+            assert landed >= attempts // 2, (
+                f"only {landed} of {attempts} posts landed; too few to say "
+                f"anything about concurrent increments")
+            # The honest invariant: the counter matches the requests the
+            # server actually handled, not the ones the client attempted.
+            assert br._susp_writes == landed, (
+                f"counted {br._susp_writes} writes for {landed} handled "
+                f"posts -- increments were lost")
             stored = conn.execute(
                 "SELECT COUNT(*) FROM suspension_samples").fetchone()[0]
-            assert stored == posts * len(rows), stored
-            print(f"  {posts} concurrent posts, all counted, {stored} rows")
+            assert stored == landed * len(rows), stored
+            print(f"  {landed}/{attempts} posts landed, all counted, "
+                  f"{stored} rows")
         finally:
             br.stop()
             conn.close()

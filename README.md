@@ -230,17 +230,40 @@ Two things worth knowing:
   thousands). It tells you how many corners were affected and how big the
   worst spike was, so you can judge whether the balance number is trustworthy.
 
-## Setup value clamping (recommended)
+## Setup value clamping
 
 AC **silently ignores** setup values outside the ranges defined in the car's
-`setup.ini` (inside `data.acd`). To let the server clamp and snap values to
-each car's legal min/max/step:
+`setup.ini`. The server clamps and snaps to each car's legal min/max/step so
+that can't happen.
+
+**With the in-game app running, this needs no setup at all.** The app reads
+`ac.getSetupSpinners()`, which reports every adjustable entry — legal
+min/max/step, current value, units — keyed by the same section names the
+setup files use, for whatever car is loaded. Ask Claude for `setup_ranges`
+to see them.
+
+That also settles the units question. A stored value and the number on the
+setup screen aren't always the same: camber is stored as tenths of a degree,
+ride height as a click index. The game reports `display_multiplier` and
+`show_clicks_mode` per entry, so neither has to be inferred.
+
+Two further consequences:
+
+- **`identify_setup` works out which saved setup is on the car** by comparing
+  live values against your saved files. Shared memory exposes only brake bias
+  and fuel, which can't separate setups differing in ARB or camber — the
+  setup menu exposes everything, so the match is exact. Several identical
+  setups are reported as several rather than resolved by guessing.
+- **`ac.getCarSetupState()`** tells you whether AC considers the setup legal,
+  so a silently-ignored value shows up as `illegal` instead of as a change
+  that mysteriously did nothing.
+
+<details>
+<summary>Fallback: a ranges file, for when the in-game app isn't running</summary>
 
 1. In Content Manager: car page → unpack data (or use QuickBMS).
 2. Copy the car's `setup.ini` into the ranges folder, named after the car's
    folder name — e.g. `ks_mazda_mx5_cup.ini`.
-
-To open that folder (the installer already created it):
 
 ```powershell
 explorer $env:USERPROFILE\.ac-race-engineer\ranges
@@ -248,8 +271,10 @@ explorer $env:USERPROFILE\.ac-race-engineer\ranges
 
 (cmd.exe: `explorer %USERPROFILE%\.ac-race-engineer\ranges`)
 
-Without a ranges file, writes still work but come back with a warning, and you
-should sanity-check the values in the setup screen.
+Game-reported ranges always win over this file. Note that encrypted car data
+may refuse to unpack at all, which is the main reason the in-game route is
+preferred. `write_setup` reports `ranges_source` as `game`, `file` or `none`.
+</details>
 
 ## In-game app (CSP Lua)
 
@@ -315,8 +340,26 @@ band the valving lives in. A histogram built that way describes body motion,
 not dampers. Rather than quietly present one as the other, the report
 labels the tier and adds a caution when it's render-rate.
 
-The app's own window shows which tier it got (`◆` worker, `◇` app), and
-`suspension_capture_status` explains it from Claude's side.
+The app's own window shows which tier it got (`◆` worker, `○` online,
+`◇` render-rate fallback), and `suspension_capture_status` explains it from
+Claude's side.
+
+> ### Damper histograms are single-player only
+>
+> **CSP does not allow scripts on the physics thread in an online session**,
+> and that is the right call — the physics thread decides what the car does,
+> so a script running on it is a cheat vector. In multiplayer you will get
+> the `app` tier no matter what, and there is no setting that changes it.
+>
+> The app detects an online session and says so plainly rather than
+> reporting a physics API failure, because nothing is broken: this is the
+> rule working. Do damper work in a solo practice session on the same car
+> and track, then race with whatever you learned.
+>
+> **Everything else keeps working online.** Ride height, rake, wheel loads
+> and roll balance are read on the render thread and never needed the
+> worker — and those are the channels that answer "which axle takes the
+> load transfer", which is usually the question that matters.
 
 ### The sign convention
 
@@ -378,8 +421,15 @@ tests/               behaviour-named test modules + shared harness
 - Sampling is 25Hz — plenty for setup work while keeping the DB tiny.
   Bump `TARGET_HZ` in collector.py if you want finer traces.
 - Out-laps (no valid time) are skipped automatically.
-- Corner detection is generic (speed minima); a per-track corner-name map
-  would make Claude's advice read nicer ("T3/Variante" vs "corner at 0.34").
+- Corners are detected from lateral g, not speed minima: a fast sweeper
+  barely dents the speed trace but pulls as hard as anything on the lap, and
+  the old detector excluded it by construction. Each corner reports entry,
+  apex, exit, peak lateral g and a turn sign. The sign says which corners
+  turn the same way — it is deliberately not labelled left or right,
+  because AC does not document which sign is which, and a consistent sign is
+  more useful than a label that is right half the time.
+- A per-track corner-name map would still make advice read nicer
+  ("T3/Variante" vs "corner at 0.34").
 - Suspension capture is in — see the section above. The remaining gap is
   true damper *velocity* as a first-class channel: CSP only exposes that
   inside a per-car physics script (`script.lua` in the car's data folder,

@@ -17,10 +17,22 @@ present, writes go through unclamped with a warning in the result.
 """
 
 import configparser
+import math
 import re
 from pathlib import Path
 
 _NAME_RE = re.compile(r"^[\w][\w \-.]{0,60}$")
+
+# What fraction of the live setup a saved file must actually cover before
+# agreeing on all of it counts as identification. A file holding only
+# [FUEL] agrees with every setup carrying the same fuel load; calling that a
+# match is the same failure as the brake-bias fingerprint this replaced --
+# a confident answer from channels that cannot separate the candidates.
+#
+# A share rather than a count, because the count that means "thorough"
+# depends on the car: 2 of 2 adjustable entries is everything there is to
+# know, while 2 of 21 is a coincidence.
+MIN_IDENTIFY_COVERAGE = 0.5
 
 
 class SetupParseError(ValueError):
@@ -124,6 +136,92 @@ def _num(raw, default: float | None = None) -> float | None:
     return float(m.group()) if m else default
 
 
+def resolve_ranges(ranges_dir: Path, car: str,
+                   game_ranges: dict | None) -> tuple[dict | None, str]:
+    """Ranges to clamp against, and where they came from.
+
+    The game's own answer wins. ac.getSetupSpinners() reports each entry's
+    legal min/max/step for the car actually loaded, which is authoritative,
+    arrives without unpacking data.acd, and works for encrypted paid mods
+    where unpacking may not be possible at all. The hand-installed ranges
+    file stays as a fallback for when the in-game app isn't running.
+    """
+    if game_ranges:
+        return game_ranges, "game"
+    from_file = load_ranges(ranges_dir, car)
+    return from_file, ("file" if from_file else "none")
+
+
+def identify_setup(ac_docs_dir: Path, car: str, track: str,
+                   values: dict) -> dict:
+    """Which saved setup matches the values currently on the car.
+
+    Matching is on content, not on a fingerprint of a couple of observable
+    channels. Shared memory exposes only brake bias and fuel, which cannot
+    separate setups differing in ARB or camber -- precisely what gets
+    changed between runs. The values reported by the setup menu cover every
+    entry, so a match is exact.
+
+    Never guesses: several matches are reported as several, and the caller
+    is expected to ask rather than pick one.
+    """
+    if not values:
+        return {"match": None, "candidates": [], "compared": 0,
+                "reason": "no live setup values; is the in-game app running?"}
+
+    names = list_setups(ac_docs_dir, car, track)
+    # At least half of what the game reports, and never fewer than one --
+    # a car with a single adjustable entry is identified by that entry.
+    needed = max(1, math.ceil(MIN_IDENTIFY_COVERAGE * len(values)))
+    exact, near, thin = [], [], []
+    for name in names:
+        try:
+            saved = read_setup(ac_docs_dir, car, track, name)
+        except (FileNotFoundError, ValueError):
+            continue
+        saved = {k: v for k, v in saved.items()
+                 if isinstance(v, (int, float))}
+        shared = [k for k in saved if k in values]
+        if not shared:
+            continue
+        diffs = [k for k in shared if abs(saved[k] - values[k]) > 0.5]
+        if diffs:
+            if len(diffs) <= 2:
+                near.append({"name": name, "differs_in": sorted(diffs)[:4]})
+            continue
+        # Agreeing on everything compared means little when almost nothing
+        # was compared. A saved file holding only [FUEL] agrees with every
+        # setup that has the same fuel load, and would otherwise be reported
+        # as an exact match at full confidence.
+        if len(shared) < needed:
+            thin.append({"name": name, "compared": len(shared)})
+        else:
+            exact.append({"name": name, "compared": len(shared)})
+
+    out = {"candidates": [e["name"] for e in exact],
+           "compared": min((e["compared"] for e in exact), default=0),
+           "near_misses": sorted(near, key=lambda n: len(n["differs_in"]))[:3]}
+    if thin:
+        out["too_few_fields_to_judge"] = sorted(
+            thin, key=lambda t: -t["compared"])[:3]
+    if len(exact) == 1:
+        out["match"] = exact[0]["name"]
+    else:
+        out["match"] = None
+        if exact:
+            out["reason"] = (f"{len(exact)} saved setups have identical "
+                             f"values; they cannot be told apart by content")
+        elif thin:
+            out["reason"] = (
+                f"the only agreeing setups cover fewer than {needed} of the "
+                f"car's {len(values)} live entries, which is not enough to "
+                f"identify one -- agreeing on a handful of shared fields "
+                f"says little about the rest")
+        else:
+            out["reason"] = "no saved setup matches the car"
+    return out
+
+
 def load_ranges(ranges_dir: Path, car: str) -> dict | None:
     """Parse an unpacked car setup.ini into {SECTION: (min, max, step)}.
 
@@ -161,11 +259,62 @@ def load_ranges(ranges_dir: Path, car: str) -> dict | None:
     return ranges
 
 
+def _displays_as(stored: float, conv: dict | None) -> str | None:
+    """How a stored value reads on AC's setup screen, or None if unknown.
+
+    Deliberately a string, not a converted number. The stored value is what
+    the file must contain, so replacing it would be wrong; this exists so a
+    report cannot say "wrote 20" when the driver asked for 20 mm and the car
+    took 20 clicks.
+
+    None means only that nothing is known about this entry's display. It is
+    not the answer for an entry the game describes as needing no conversion
+    at all -- that entry has a display, it is just the stored number.
+    """
+    if not conv:
+        return None
+    mult = conv.get("display_multiplier")
+    units = (conv.get("units") or "").strip()
+    clicks = conv.get("show_clicks_mode")
+
+    # show_clicks_mode is not a multiplier: it says the number *is* an index
+    # into the car's positions, so there is no unit to convert to.
+    if clicks:
+        return f"{stored:g} (click index, mode {clicks})"
+    if mult in (None, 0, 1):
+        # 0 and 1 both mean "shown as stored"; 0 is how some entries report
+        # having no conversion, and coalescing it to a multiplier would
+        # scale the value to nothing.
+        #
+        # No units either just means the screen shows a bare number, which is
+        # a complete answer rather than a missing one. Returning None dropped
+        # the entry out of `displays_as` altogether -- so the report that
+        # promises to say what every written value means went quiet on
+        # exactly the entries where the answer was simplest.
+        return f"{stored:g}{(' ' + units) if units else ''}"
+    shown = stored * mult
+    return f"{shown:g}{(' ' + units) if units else ''} (stored {stored:g})"
+
+
 def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
-                name: str, values: dict, base_setup: str | None = None) -> dict:
+                name: str, values: dict, base_setup: str | None = None,
+                game_ranges: dict | None = None,
+                display: dict | None = None) -> dict:
     """Write a setup file, optionally starting from an existing one.
 
     values: {SECTION: number} for the fields to set/override.
+    game_ranges: ranges as reported by ac.getSetupSpinners(), which take
+    precedence over any hand-installed ranges file.
+    display: {SECTION: {units, display_multiplier, show_clicks_mode}} so the
+    report can say what each written number means on the setup screen.
+
+    Setup files store raw values, and the number on the screen is often a
+    different one: camber is stored in tenths of a degree, ride height as a
+    click index. Nothing here converts -- writing the stored value is
+    correct -- but a report saying "wrote 20" without saying whether that is
+    20 mm or 20 clicks is how a setup that looks fine and isn't gets
+    written. Every written entry carries `displays_as`.
+
     Returns a report of what was written, clamped, or dropped.
     """
     if not _NAME_RE.match(name):
@@ -184,13 +333,15 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
     # clamping -- but it has to be said out loud, because the whole point of
     # clamping is that AC silently ignores out-of-range values.
     ranges_problem = None
+    ranges_source = "none"
     try:
-        ranges = load_ranges(ranges_dir, car)
+        ranges, ranges_source = resolve_ranges(ranges_dir, car, game_ranges)
     except SetupParseError as e:
         ranges, ranges_problem = None, str(e)
 
     report = {"written": {}, "clamped": {}, "unknown_sections": [],
-              "ranges_available": ranges is not None}
+              "ranges_available": ranges is not None,
+              "ranges_source": ranges_source}
 
     for section, value in values.items():
         if not isinstance(value, (int, float)):
@@ -212,6 +363,9 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
             value = clamped
         merged[section] = value
         report["written"][section] = value
+        shown = _displays_as(value, (display or {}).get(section))
+        if shown:
+            report.setdefault("displays_as", {})[section] = shown
 
     cp = _parser()
     cp["CAR"] = {"MODEL": car}

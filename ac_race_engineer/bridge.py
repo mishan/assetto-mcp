@@ -46,6 +46,13 @@ class _ExclusiveHTTPServer(ThreadingHTTPServer):
 
     allow_reuse_address = False
 
+    # socketserver defaults to a listen backlog of 5. The app has four
+    # posting channels and CSP lets two be in flight, so five is enough in
+    # practice -- but a burst that overruns it is refused by the OS with a
+    # connection reset, which looks to the client exactly like the server
+    # dropping data. Cheap to make that not happen.
+    request_queue_size = 64
+
     def server_bind(self):
         if sys.platform == "win32":
             # Belt and braces: SO_EXCLUSIVEADDRUSE makes the duplicate bind

@@ -18,3 +18,4 @@ diagnose-report.txt
 # here, not ours to redistribute.
 .lua-sdk/
 ac-tracer/
+tobi-ac-tracer-csp-lua.md

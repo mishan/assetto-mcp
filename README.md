@@ -315,8 +315,26 @@ band the valving lives in. A histogram built that way describes body motion,
 not dampers. Rather than quietly present one as the other, the report
 labels the tier and adds a caution when it's render-rate.
 
-The app's own window shows which tier it got (`◆` worker, `◇` app), and
-`suspension_capture_status` explains it from Claude's side.
+The app's own window shows which tier it got (`◆` worker, `○` online,
+`◇` render-rate fallback), and `suspension_capture_status` explains it from
+Claude's side.
+
+> ### Damper histograms are single-player only
+>
+> **CSP does not allow scripts on the physics thread in an online session**,
+> and that is the right call — the physics thread decides what the car does,
+> so a script running on it is a cheat vector. In multiplayer you will get
+> the `app` tier no matter what, and there is no setting that changes it.
+>
+> The app detects an online session and says so plainly rather than
+> reporting a physics API failure, because nothing is broken: this is the
+> rule working. Do damper work in a solo practice session on the same car
+> and track, then race with whatever you learned.
+>
+> **Everything else keeps working online.** Ride height, rake, wheel loads
+> and roll balance are read on the render thread and never needed the
+> worker — and those are the channels that answer "which axle takes the
+> load transfer", which is usually the question that matters.
 
 ### The sign convention
 

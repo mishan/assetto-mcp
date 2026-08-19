@@ -31,6 +31,19 @@ SLIP_SANE_MAX = 50.0
 OUTLIER_MARGIN_MS = 25_000
 OUTLIER_FRACTION = 0.25
 
+# Corner detection thresholds. The fraction is of the lap's own peak lateral
+# g, so the same numbers work for a Formula car and a road car; the absolute
+# floor stops a slow lap promoting its own noise into corners.
+CORNER_LAT_G_FRACTION = 0.35
+CORNER_MIN_LAT_G = 0.35
+CORNER_MIN_PEAK_LAT_G = 0.5
+# At 25Hz this is half a second of sustained load -- long enough to exclude
+# a kerb strike or a twitch of correction, short enough to keep a quick chicane.
+CORNER_MIN_SAMPLES = 12
+# Speeds within this of the minimum count as "the apex", so a flat-bottomed
+# corner puts its apex in the middle of the flat rather than at its start.
+APEX_FLAT_TOLERANCE_KMH = 0.5
+
 
 def outlier_reference(lap_times_ms) -> int | None:
     """The lap time to judge outliers against: the fastest lap seen.
@@ -90,7 +103,21 @@ def _fmt_time(ms: int) -> str:
 
 
 def detect_corners(samples: list[dict]) -> list[dict]:
-    """Find corners as local minima of smoothed speed.
+    """Find corners as sustained regions of lateral acceleration.
+
+    The previous implementation looked for local minima of speed, and
+    required the apex to be below 92% of the lap's top speed. That is a
+    slow-corner detector: Mugello's Arrabbiata is taken at ~93% of top
+    speed, so it -- and every other fast sweeper, the corners that decide
+    a lap -- was excluded by construction. Time lost there showed up
+    nowhere, because the only corners on the list were the ones that were
+    never the problem.
+
+    Lateral load is what makes a corner a corner. A fast sweeper barely
+    dents the speed trace but pulls as hard as anything on the lap, so
+    that is what gets thresholded here. The apex is then the slowest point
+    inside the region, which is the same apex the old code was looking
+    for -- it just no longer has to be a global-ish minimum to be found.
 
     Returns one dict per corner with apex position, min speed, brake point,
     peak steering, and a front-vs-rear slip balance metric around the apex
@@ -99,27 +126,62 @@ def detect_corners(samples: list[dict]) -> list[dict]:
     if len(samples) < 50:
         return []
 
-    speed = _smooth([s["speed_kmh"] for s in samples], 11)
-    vmax = max(speed)
-    n = len(speed)
-    win = max(10, n // 20)  # ~5% of the lap on each side
+    lat = _smooth([s.get("acc_lat", 0.0) or 0.0 for s in samples], 11)
+    peak = max((abs(v) for v in lat), default=0.0)
+    if peak < CORNER_MIN_PEAK_LAT_G:
+        return []          # an in-lap, or a spin: nothing corner-shaped here
+
+    # Relative to the lap's own peak so this works for a Formula car pulling
+    # 3g and a road car pulling 1.1g, with an absolute floor so that a lap
+    # spent trundling doesn't promote its own noise into "corners".
+    thresh = max(peak * CORNER_LAT_G_FRACTION, CORNER_MIN_LAT_G)
+
+    # A region is contiguous samples above the threshold turning the SAME
+    # way. The sign test is what separates an esse into two corners rather
+    # than reporting one long one straddling the direction change.
+    regions: list[list[int]] = []
+    cur: list[int] = []
+    cur_sign = 0
+    for i, v in enumerate(lat):
+        sign = 1 if v > 0 else -1
+        if abs(v) >= thresh and (not cur or sign == cur_sign):
+            if not cur:
+                cur_sign = sign
+            cur.append(i)
+        else:
+            if len(cur) >= CORNER_MIN_SAMPLES:
+                regions.append(cur)
+            cur = []
+            cur_sign = 0
+            if abs(v) >= thresh:      # direction flipped: start the next one
+                cur, cur_sign = [i], sign
+    if len(cur) >= CORNER_MIN_SAMPLES:
+        regions.append(cur)
 
     corners = []
-    i = win
-    while i < n - win:
-        seg_min = min(speed[i - win:i + win + 1])
-        if speed[i] != seg_min or speed[i] >= 0.92 * vmax:
-            i += 1
-            continue
-        # Prominence vs the fastest points within the window on each side.
-        left_max = max(speed[max(0, i - win):i + 1])
-        right_max = max(speed[i:min(n, i + win + 1)])
-        if min(left_max, right_max) - speed[i] > 0.08 * vmax:
-            corners.append(_corner_stats(
-                samples, max(0, i - win), i, min(n - 1, i + win)))
-            i += win  # skip past this corner
-        else:
-            i += 1
+    for r in regions:
+        entry, exit_ = r[0], r[-1]
+        # Apex = slowest point in the region. Where the trace bottoms out
+        # flat -- a long constant-radius corner, or a coarse speed channel
+        # -- min() would return whichever tie came first, putting the apex
+        # at the entry of the flat section rather than its middle and
+        # shifting every window that hangs off it. Take the centre of the
+        # slowest band instead.
+        v_min = min(samples[j]["speed_kmh"] for j in r)
+        flat = [j for j in r
+                if samples[j]["speed_kmh"] <= v_min + APEX_FLAT_TOLERANCE_KMH]
+        apex = flat[len(flat) // 2]
+        stats = _corner_stats(samples, entry, apex, exit_)
+        seg_lat = [lat[j] for j in r]
+        signed_peak = max(seg_lat, key=abs)
+        stats["peak_lat_g"] = round(abs(signed_peak), 2)
+        # Absolute left/right needs a convention AC does not document, so
+        # report the sign instead: corners sharing a turn_sign turn the same
+        # way, which is what correlating tyre temperatures actually needs.
+        stats["turn_sign"] = 1 if signed_peak > 0 else -1
+        stats["entry_pos"] = round(samples[entry]["norm_pos"], 4)
+        stats["exit_pos"] = round(samples[exit_]["norm_pos"], 4)
+        corners.append(stats)
 
     for idx, c in enumerate(corners, 1):
         c["corner"] = idx
@@ -393,6 +455,111 @@ def compare_to_rival(my_samples: list[dict], rival_samples: list[dict],
             "brake and throttle points are unavailable for opponents. Speed "
             "by track position still shows where they gain.")
     return result
+
+
+def _time_at_positions(samples: list[dict], grid: list[float]):
+    """Elapsed lap time at each track position, or None where not covered.
+
+    norm_pos has to be forced monotonic first. A car that runs wide, spins,
+    or reverses sends it backwards, and interpolating through that produces
+    a delta trace with time flowing the wrong way -- which reads as a huge
+    phantom gain exactly where the driver lost the most.
+    """
+    pts: list[tuple[float, float]] = []
+    high = -1.0
+    for s in samples:
+        pos, t = s.get("norm_pos"), s.get("t_ms")
+        if pos is None or t is None:
+            continue
+        if not (math.isfinite(pos) and math.isfinite(t)):
+            continue
+        if pos <= high:
+            continue
+        high = pos
+        pts.append((pos, float(t)))
+    if len(pts) < 2:
+        return [None] * len(grid)
+
+    out: list[float | None] = []
+    j = 0
+    for g in grid:
+        if g < pts[0][0] or g > pts[-1][0]:
+            out.append(None)
+            continue
+        while j + 1 < len(pts) and pts[j + 1][0] < g:
+            j += 1
+        p0, t0 = pts[j]
+        p1, t1 = pts[min(j + 1, len(pts) - 1)]
+        span = p1 - p0
+        out.append(t0 if span <= 0 else t0 + (t1 - t0) * (g - p0) / span)
+    return out
+
+
+def delta_by_position(lap_a: dict, samples_a: list[dict],
+                      lap_b: dict, samples_b: list[dict],
+                      segments: int = 20) -> dict:
+    """Where one lap gained or lost time against another, by track position.
+
+    Corner metrics only describe corners. When time goes missing between
+    them -- a slower exit bleeding down a straight, a fast sweeper no
+    detector flagged -- a table of apexes cannot show it, because nothing
+    in that table covers the ground where it went.
+
+    This is the standard delta trace: cumulative time at each point on
+    track, differenced. Positive means lap_b is behind lap_a there. The
+    per-segment `gain_ms` is what to read -- the cumulative figure only
+    says the gap exists, the segment figure says where it opened.
+    """
+    fine = 200
+    grid = [i / fine for i in range(fine + 1)]
+    ta = _time_at_positions(samples_a, grid)
+    tb = _time_at_positions(samples_b, grid)
+
+    delta: list[float | None] = []
+    base = None
+    for x, y in zip(ta, tb):
+        if x is None or y is None:
+            delta.append(None)
+            continue
+        d = y - x
+        if base is None:
+            base = d          # zero the trace at the first covered point
+        delta.append(d - base)
+
+    covered = sum(1 for d in delta if d is not None)
+    if covered < fine // 2:
+        return {"error": "laps do not overlap enough on track to compare",
+                "covered_pct": round(100 * covered / (fine + 1), 1)}
+
+    step = max(1, fine // segments)
+    rows = []
+    for start in range(0, fine, step):
+        end = min(start + step, fine)
+        d0, d1 = delta[start], delta[end]
+        if d0 is None or d1 is None:
+            continue
+        rows.append({
+            "from": round(start / fine, 3),
+            "to": round(end / fine, 3),
+            "gain_ms": round(d1 - d0, 1),
+            "cumulative_ms": round(d1, 1),
+        })
+
+    losses = sorted(rows, key=lambda r: -r["gain_ms"])[:3]
+    gains = sorted(rows, key=lambda r: r["gain_ms"])[:3]
+    return {
+        "lap_a": {"id": lap_a["id"], "time": _fmt_time(lap_a["lap_time_ms"]),
+                  "setup": lap_a.get("setup_name", "")},
+        "lap_b": {"id": lap_b["id"], "time": _fmt_time(lap_b["lap_time_ms"]),
+                  "setup": lap_b.get("setup_name", "")},
+        "total_delta_ms": lap_b["lap_time_ms"] - lap_a["lap_time_ms"],
+        "note": "positive = lap_b is slower there. gain_ms is time lost in "
+                "that segment alone; cumulative_ms is the running total.",
+        "track_covered_pct": round(100 * covered / (fine + 1), 1),
+        "segments": rows,
+        "worst_losses": losses,
+        "biggest_gains": gains,
+    }
 
 
 def compare_laps(lap_a: dict, samples_a: list[dict],

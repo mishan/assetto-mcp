@@ -90,6 +90,10 @@ local suspBusy = false
 local suspDropped = 0
 local suspSent = 0
 local suspNote = 'starting'  -- shown in the app window
+-- Set when the worker was deliberately not attempted because we are online.
+-- Kept separate from suspNote so the window can render it as information
+-- rather than as a degraded state: nothing is wrong, this is the rule.
+local onlineSuppressed = false
 local worker = nil           -- shared struct, once connected
 local workerReadIndex = 0
 local workerProducing = false -- only true once samples have actually arrived
@@ -198,7 +202,75 @@ end
 -- degrade to render-rate sampling, never take the app down -- losing the
 -- complaint tags because a damper channel was unavailable would be a poor
 -- trade.
+-- Everything we know about why a worker might be refused, gathered once and
+-- logged together. Each of these has been a plausible cause at some point
+-- and none of them is visible from the server side, so guessing from a bare
+-- "cannot start" costs a round trip to the driver every time.
+-- Every line of this is a guess about an undocumented API, so every line
+-- gets its own pcall. ac.getSim() hands back a proxy that RAISES on an
+-- unknown field rather than returning nil, so one wrong field name here
+-- takes down the whole probe -- which is precisely what happened when this
+-- was written as a straight sequence of reads: the diagnostic threw, the
+-- caller's pcall swallowed it, and the worker was never even attempted.
+-- A diagnostic that can break the thing it inspects is worse than none.
+local function ask(label, fn)
+  local ok, v = pcall(fn)
+  ac.log('  ' .. label .. ': ' ..
+    (ok and (type(v) .. ' ' .. tostring(v)) or ('unavailable (' ..
+      tostring(v) .. ')')))
+end
+
+local function logWorkerEnvironment()
+  ac.log('race_engineer: physics worker environment')
+  ask('csp version', function() return ac.getPatchVersion() end)
+  ask('csp version code', function() return ac.getPatchVersionCode() end)
+  ask('physics table', function() return type(physics) end)
+  ask('startPhysicsWorker', function()
+    return type(physics.startPhysicsWorker) end)
+  ask('getExtendedDamperTravel', function()
+    return type(physics.getExtendedDamperTravel) end)
+  ask('physics.allowed()', function() return physics.allowed() end)
+  -- Online is the gate we most suspect: CSP disables physics scripting in
+  -- multiplayer, since a script on the physics thread is a cheat vector.
+  ask('online race', function() return ac.getSim().isOnlineRace end)
+  ask('session type', function() return ac.getSim().raceSessionType end)
+  ask('extended physics', function()
+    return ac.getSim().isNewBehaviourActive end)
+end
+
+-- true / false / nil, where nil means we could not tell. Guarded because
+-- ac.getSim() raises on unknown fields and this app has already been broken
+-- once by assuming a field name exists.
+local function isOnlineSession()
+  local ok, v = pcall(function() return ac.getSim().isOnlineRace end)
+  if not ok or v == nil then return nil end
+  return v and true or false
+end
+
 local function startSuspensionWorker()
+  -- Belt and braces: even with every read individually guarded, the
+  -- diagnostic must never be the reason the worker doesn't start.
+  pcall(logWorkerEnvironment)
+
+  -- CSP refuses to run a script on the physics thread in multiplayer, and
+  -- it is right to: that thread decides what the car does, so a script on
+  -- it is a cheat vector. Detect the case and say so plainly instead of
+  -- reporting "Physics API not available", which reads as something being
+  -- broken when nothing is. Only an explicit true suppresses it -- if the
+  -- field is missing we still try, because being unable to tell is not a
+  -- reason to disable the feature.
+  --
+  -- Render-rate capture continues either way: ride height, wheel loads and
+  -- roll balance never needed the worker, and those work online.
+  if isOnlineSession() == true then
+    suspNote = 'multiplayer: damper capture is single-player only'
+    onlineSuppressed = true
+    ac.log('race_engineer: online session, not starting physics worker '
+      .. '(CSP disallows physics scripting in multiplayer). Ride height '
+      .. 'and load transfer still recording at render rate.')
+    return
+  end
+
   if type(physics) ~= 'table' or type(physics.startPhysicsWorker) ~= 'function' then
     suspNote = 'CSP too old for physics workers - render rate only'
     return
@@ -207,6 +279,12 @@ local function startSuspensionWorker()
   -- physics.allowed() reports whether this session permits physics
   -- scripting at all. When it is false the docs say only raycasting works,
   -- so there is no point starting a worker that can't read anything.
+  --
+  -- Deliberately only bails on an explicit false: older builds return nil
+  -- here, and treating nil as "not allowed" would disable the worker on
+  -- setups where it would have worked. The cost is that a session which
+  -- refuses workers without saying so reaches startPhysicsWorker and fails
+  -- there instead -- which is why that error is now kept and logged.
   if type(physics.allowed) == 'function' then
     local ok, allowed = pcall(physics.allowed)
     if ok and allowed == false then
@@ -245,7 +323,12 @@ local function startSuspensionWorker()
   worker.running = 0
   workerReadIndex = 0
 
-  local started = pcall(physics.startPhysicsWorker, 'suspension_worker', 0,
+  -- Keep pcall's second return: it is the only description of why the call
+  -- failed, and discarding it left the app saying "cannot start physics
+  -- worker" with no way to tell a missing script file from a wrong
+  -- signature from a session that forbids workers.
+  local started, startErr = pcall(physics.startPhysicsWorker,
+    'suspension_worker', 0,
     function(err)
       if err then
         worker, workerProducing = nil, false
@@ -255,7 +338,8 @@ local function startSuspensionWorker()
     end)
   if not started then
     worker = nil
-    suspNote = 'could not start physics worker - render rate only'
+    suspNote = 'worker start failed: ' .. tostring(startErr)
+    ac.warn('race_engineer: startPhysicsWorker failed: ' .. tostring(startErr))
     return
   end
   -- Deliberately not claiming the worker tier yet. startPhysicsWorker
@@ -432,23 +516,38 @@ local function postSuspensionBuffer(which, buffer)
   return true
 end
 
+-- Which tier gets first refusal this time round. Flipped on every post.
+local suspWorkerFirst = true
+
 local function postSuspension()
   if suspBusy or sendSlots() < 1 then return end
   if not status.running then
     suspAppBuffer, suspWorkerBuffer = {}, {}
     return
   end
-  -- Alternate so neither tier can starve the other when only one slot is
-  -- free. The worker buffer fills far faster, so it goes first.
-  if #suspWorkerBuffer > 0 then
-    local batch = suspWorkerBuffer
-    suspWorkerBuffer = {}
-    postSuspensionBuffer('worker', batch)
-  elseif #suspAppBuffer > 0 then
-    local batch = suspAppBuffer
-    suspAppBuffer = {}
-    postSuspensionBuffer('app', batch)
+
+  -- This used to be `if worker then ... elseif app then ...`, which the
+  -- comment called alternating but which is strict priority. The worker
+  -- fills at 333Hz and is drained once a second, so its buffer is
+  -- effectively never empty -- the app branch never ran. Ride height and
+  -- wheel loads come only from the app tier, so the moment a physics
+  -- worker started, the two channels that answer "is the car too low" and
+  -- "which axle takes the load transfer" silently stopped arriving, while
+  -- the status line happily reported a healthy 333Hz feed.
+  --
+  -- Alternate for real: each tier gets every other slot, and only falls
+  -- through to the other when its own buffer is empty.
+  local function flush(which)
+    local buf = (which == 'worker') and suspWorkerBuffer or suspAppBuffer
+    if #buf == 0 then return false end
+    if which == 'worker' then suspWorkerBuffer = {} else suspAppBuffer = {} end
+    return postSuspensionBuffer(which, buf)
   end
+
+  local first = suspWorkerFirst and 'worker' or 'app'
+  local second = suspWorkerFirst and 'app' or 'worker'
+  suspWorkerFirst = not suspWorkerFirst
+  if not flush(first) then flush(second) end
 end
 
 -- Snapshot every car on track. Fields that AC doesn't transmit for remote
@@ -661,6 +760,38 @@ function script.update(dt)
   if toastTimer > 0 then toastTimer = toastTimer - dt end
 end
 
+-- Exposed for the test harness only. Everything in this file is `local`,
+-- which is right for a CSP app -- but a local function cannot be called
+-- from outside, so the scheduling and gating logic had no way to be tested
+-- and a starvation bug lived in it undetected while the status line
+-- reported success. CSP never reads this table.
+-- Hung off CSP's own `script` table rather than declared as a global: the
+-- app forbids implicit globals and there is a test that enforces it.
+script.__test = {
+  postSuspension = function() return postSuspension() end,
+  startSuspensionWorker = function() return startSuspensionWorker() end,
+  isOnlineSession = function() return isOnlineSession() end,
+  clamp = function(...) return clamp(...) end,
+  num = function(...) return num(...) end,
+  state = function()
+    return {
+      suspNote = suspNote,
+      onlineSuppressed = onlineSuppressed,
+      workerProducing = workerProducing,
+      appBuffered = #suspAppBuffer,
+      workerBuffered = #suspWorkerBuffer,
+    }
+  end,
+  push = function(which, n)
+    local buf = (which == 'worker') and suspWorkerBuffer or suspAppBuffer
+    for _ = 1, n do buf[#buf + 1] = { t_ms = 0 } end
+  end,
+  setRunning = function(v) status.running = v end,
+  -- The real busy flag is cleared by the web callback, which a test
+  -- harness has no way to invoke.
+  clearBusy = function() suspBusy = false end,
+}
+
 function windowMain(dt)
   -- status line
   if not status.connected then
@@ -690,9 +821,19 @@ function windowMain(dt)
   -- workerProducing, not a separate tier variable: it only goes true once
   -- samples have actually been drained, so the marker cannot claim 333Hz
   -- for a worker that was started but never produced anything.
-  ui.textColored(
-    (workerProducing and '◆ ' or '◇ ') .. suspNote,
-    workerProducing and rgbm(0.4, 0.9, 0.5, 1) or rgbm(0.8, 0.7, 0.4, 1))
+  -- Three states, not two. Amber is "you wanted the worker and did not get
+  -- it"; online is neither that nor success, so it gets its own neutral
+  -- marker. Colouring an expected, correct condition as a warning trains
+  -- the driver to ignore the line that matters.
+  local marker, colour
+  if workerProducing then
+    marker, colour = '◆ ', rgbm(0.4, 0.9, 0.5, 1)
+  elseif onlineSuppressed then
+    marker, colour = '○ ', rgbm(0.6, 0.7, 0.8, 1)
+  else
+    marker, colour = '◇ ', rgbm(0.8, 0.7, 0.4, 1)
+  end
+  ui.textColored(marker .. suspNote, colour)
   ui.separator()
 
   -- complaint buttons

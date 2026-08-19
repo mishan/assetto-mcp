@@ -412,9 +412,16 @@ def suspension_capture_status() -> str:
                          "body motion rather than valving")
         out["why"] = (
             "The app tries to start a CSP physics worker for 333Hz damper "
-            "data. It falls back to render-rate sampling when physics "
-            "scripting is unavailable -- CSP gates it, and some tracks "
-            "disable it. The app's status window reports which tier it got.")
+            "data and falls back to render-rate sampling when it can't. "
+            "The usual reason is multiplayer: CSP does not allow scripts on "
+            "the physics thread in an online session, because that thread "
+            "decides what the car does. Damper histograms are therefore a "
+            "single-player feature. Ride height, wheel loads and roll "
+            "balance never used the worker and are unaffected online.")
+        out["to_get_damper_data"] = (
+            "Run the same car and track in a solo practice session. The "
+            "app's status window shows the tier: worker, online, "
+            "or render-rate fallback.")
     return _j(out)
 
 
@@ -429,6 +436,37 @@ def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
     return _j(analysis.compare_laps(
         a, db.get_samples(_conn, lap_id_a),
         b, db.get_samples(_conn, lap_id_b)))
+
+
+@mcp.tool()
+def delta_by_position(lap_id_a: int, lap_id_b: int,
+                      segments: int = 20) -> str:
+    """Where lap_b gained or lost time against lap_a, along the whole track.
+
+    The delta trace every telemetry tool shows: cumulative time differenced
+    by track position. Unlike compare_laps this covers the ground between
+    corners, so time lost on a straight, on an exit, or in a fast sweeper
+    no corner detector flagged still shows up somewhere.
+
+    Read gain_ms per segment -- that is where the gap opened. The
+    cumulative figure only tells you it exists."""
+    a, b = db.get_lap(_conn, lap_id_a), db.get_lap(_conn, lap_id_b)
+    if not a or not b:
+        return _j({"error": "one or both lap ids not found"})
+    # Layout matters as much as track: 'mugello' and 'mugello_osrw' are the
+    # same folder and different circuits, so norm_pos 0.6 is not the same
+    # corner in both. Comparing them produces a delta trace that looks
+    # entirely plausible and means nothing.
+    if (a.get("track"), a.get("track_config")) != \
+            (b.get("track"), b.get("track_config")):
+        def _name(l):
+            cfg = l.get("track_config") or "(default layout)"
+            return f"{l.get('track')}/{cfg}"
+        return _j({"error": f"different track layouts: {_name(a)} vs "
+                            f"{_name(b)}; positions are not comparable"})
+    return _j(analysis.delta_by_position(
+        a, db.get_samples(_conn, lap_id_a),
+        b, db.get_samples(_conn, lap_id_b), segments=segments))
 
 
 # --- in-game app bridge ------------------------------------------------

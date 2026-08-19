@@ -86,6 +86,81 @@ def test_compression_direction_is_read_from_braking():
     print("  convention recovered in both directions")
 
 
+def _parked_on_the_brakes(n=4000):
+    """Sitting in the garage with the pedal held down.
+
+    Reproduces a real out-lap: 7295 samples, of which 5905 read >60% brake
+    because the car was stationary with the brake on. The front travel does
+    not move -- there is no load transfer -- but a tiny constant offset from
+    the resting trace is enough for a median comparison to find a direction
+    and report it at full confidence.
+    """
+    out = []
+    for i in range(n):
+        parked = i < int(n * 0.8)
+        out.append({
+            "lap_count": 0,
+            "t_ms": int(i * 20),
+            "spline": 0.0 if parked else (i - n * 0.8) / (n * 0.2),
+            "brake": 0.9 if parked else 0.0,
+            "speed_kmh": 0.0 if parked else 120.0,
+            # Parked sits fractionally lower than rolling: the wrong sign,
+            # which is exactly what the old code latched onto.
+            "travel_fl": -0.0057 if parked else 0.0,
+            "travel_fr": -0.0057 if parked else 0.0,
+            "travel_rl": 0.0, "travel_rr": 0.0,
+            "load_fl": 4000.0, "load_fr": 4000.0,
+            "load_rl": 3000.0, "load_rr": 3000.0,
+            "ride_f": 0.050, "ride_r": 0.070, "plank_wear": 0.0,
+        })
+    return out
+
+
+def test_a_car_parked_on_the_brakes_cannot_set_the_sign():
+    """Regression: an out-lap inverted the sign at confidence 1.0.
+
+    Session 9 produced sign=-1 from the out-lap and sign=+1 from a flying
+    lap, both claiming confidence 1.0, because 'brake pressed' was taken as
+    'weight transferring forward'. Since this sign decides bump vs rebound,
+    a wrong answer is worse than no answer.
+    """
+    got = susp.infer_compression_sign(_parked_on_the_brakes())
+    assert got["sign"] is None, got
+    assert got["confidence"] == 0.0
+    assert "slow" in got["basis"] or "km/h" in got["basis"], got["basis"]
+
+
+def test_a_stop_start_lap_is_refused_even_above_the_speed_floor():
+    """Crawling laps brake for most of their length; that isn't a braking zone."""
+    samples = []
+    for i in range(3000):
+        braking = i % 10 < 8            # 80% of the lap on the brakes
+        samples.append({
+            "lap_count": 0, "t_ms": int(i * 20), "spline": i / 3000,
+            "brake": 0.9 if braking else 0.0,
+            "speed_kmh": 60.0,          # above the floor, still not racing
+            "travel_fl": 0.004 if braking else 0.0,
+            "travel_fr": 0.004 if braking else 0.0,
+            "travel_rl": 0.0, "travel_rr": 0.0,
+            "load_fl": 4000.0, "load_fr": 4000.0,
+            "load_rl": 3000.0, "load_rr": 3000.0,
+            "ride_f": 0.050, "ride_r": 0.070, "plank_wear": 0.0,
+        })
+    got = susp.infer_compression_sign(samples)
+    assert got["sign"] is None, got
+    assert "stop-start" in got["basis"], got["basis"]
+
+
+def test_a_real_lap_still_infers_the_sign_after_the_speed_gate():
+    """The gate must not cost us the answer on laps that do have braking."""
+    for positive in (True, False):
+        got = susp.infer_compression_sign(
+            _lap(compression_is_positive=positive))
+        assert got["sign"] == (1 if positive else -1), got
+        assert got["confidence"] > 0.8, got
+        assert "km/h" in got["basis"]
+
+
 def test_bump_and_rebound_are_withheld_when_direction_is_unknown():
     """A lap with no braking cannot establish the convention.
 

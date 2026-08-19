@@ -9,6 +9,11 @@ on 127.0.0.1 that it polls and posts to:
                      ego-only, so this is the only way to see other cars)
     POST /suspension -> suspension travel, wheel loads and ride height,
                      none of which stock shared memory exposes
+    POST /setup   -> the setup menu as the game reports it: every entry's
+                     legal min/max/step and current value. Retires unpacking
+                     data.acd for ranges, and identifies which saved setup is
+                     loaded -- shared memory shows only brake bias and fuel,
+                     which cannot separate setups differing in ARB or camber
     POST /ack     -> dismiss the currently displayed message
 
 Messages flow the other way via the send_driver_message MCP tool: Claude sets
@@ -46,8 +51,8 @@ class _ExclusiveHTTPServer(ThreadingHTTPServer):
 
     allow_reuse_address = False
 
-    # socketserver defaults to a listen backlog of 5. The app has four
-    # posting channels and CSP lets two be in flight, so five is enough in
+    # socketserver defaults to a listen backlog of 5. The app posts on five
+    # channels now and CSP lets two be in flight, so five is enough in
     # practice -- but a burst that overruns it is refused by the OS with a
     # connection reset, which looks to the client exactly like the server
     # dropping data. Cheap to make that not happen.
@@ -76,6 +81,15 @@ MAX_SPEED_KMH = 1000.0
 # headroom for a delayed post, while still capping what a runaway client can
 # push into the SQLite writer in one request.
 MAX_RIVAL_BATCH = 2000
+
+# A car's setup menu has tens of entries, not hundreds. Generous ceiling
+# that still bounds what one request can write.
+MAX_SETUP_SPINNERS = 300
+
+# Widest plausible magnitude for a setup value. ARB rates reach ~200,000
+# N/m, so this is loose by design; its job is only to reject values SQLite
+# cannot bind, which would otherwise fail the whole snapshot.
+SETUP_LIMIT = 1e9
 
 # Must stay above the Lua app's own RIVAL_BUFFER_MAX (1400): the client caps
 # its buffer, so anything above that ceiling is a bug on one side or the
@@ -603,6 +617,93 @@ class Bridge:
                                          "ride height are expected in "
                                          "metres.")
                     return self._send(200, reply)
+
+                if self.path == "/setup":
+                    # What ac.getSetupSpinners() reports. Ranges are the
+                    # car's own legal limits, so this retires the hand
+                    # -installed ranges file; values identify which saved
+                    # setup is actually loaded.
+                    sid = bridge.active_session_id()
+                    if sid is None:
+                        return self._send(200, {"ok": False,
+                                                "reason": "not recording"})
+                    car = str(body.get("car", ""))[:64]
+                    raw = body.get("spinners")
+                    if not car or not isinstance(raw, list):
+                        return self._send(400, {"error": "need 'car' and a "
+                                                "'spinners' list"})
+                    if len(raw) > MAX_SETUP_SPINNERS:
+                        return self._send(400, {
+                            "error": f"too many spinners "
+                                     f"(max {MAX_SETUP_SPINNERS})"})
+
+                    spinners, skipped = [], 0
+                    for s in raw:
+                        if not isinstance(s, dict) or not s.get("name"):
+                            skipped += 1
+                            continue
+                        # Bounds are wide but real: ARB rates run to ~200k
+                        # N/m, so this cannot be tight -- it exists to stop
+                        # a value SQLite cannot bind from turning one bad
+                        # entry into a 500 that discards the whole snapshot.
+                        spinners.append({
+                            "name": str(s["name"])[:64],
+                            "label": str(s.get("label", ""))[:64],
+                            "min": _opt_float(s.get("min"), -SETUP_LIMIT,
+                                              SETUP_LIMIT),
+                            "max": _opt_float(s.get("max"), -SETUP_LIMIT,
+                                              SETUP_LIMIT),
+                            "step": _opt_float(s.get("step"), 0, SETUP_LIMIT),
+                            "value": _opt_float(s.get("value"), -SETUP_LIMIT,
+                                                SETUP_LIMIT),
+                            # Optional on purpose: absent means "the game
+                            # didn't say", which must stay distinguishable
+                            # from a multiplier of 1 or 0 clicks.
+                            "display_multiplier": _opt_float(
+                                s.get("displayMultiplier"), -1e6, 1e6),
+                            "show_clicks_mode": _opt_int(
+                                s.get("showClicksMode"), 0, 16),
+                            "units": str(s.get("units", ""))[:16],
+                            "read_only": bool(s.get("readOnly")),
+                        })
+
+                    conn = db.connect(bridge._db_path)
+                    try:
+                        # `car` is the persistence key for setup_ranges, and
+                        # ranges decide how later writes are clamped and
+                        # which saved setup is identified as loaded. Taking
+                        # it from the request means one confused client --
+                        # an app left running from the previous car, a stale
+                        # carId after a session change -- can file one car's
+                        # limits under another's name, where they stay,
+                        # wrong, for every session afterwards. The session
+                        # knows its own car from shared memory, so check.
+                        session = db.get_session(conn, sid) or {}
+                        session_car = str(session.get("car") or "").strip()
+                        if session_car and \
+                                car.strip().lower() != session_car.lower():
+                            return self._send(400, {
+                                "error": f"car mismatch: this session is "
+                                         f"{session_car!r}, the request says "
+                                         f"{car!r}. Setup ranges are stored "
+                                         f"per car, so this is refused rather "
+                                         f"than filed under the wrong one."})
+                        # An unknown session car is not evidence against the
+                        # client: sessions created before the car was known
+                        # (or by a test) leave it empty, and refusing there
+                        # would lose real setup data to a blank field. The
+                        # client's value is the only one available, so take
+                        # it.
+                        car = session_car or car
+                        n = db.store_setup_snapshot(
+                            conn, sid, car, spinners,
+                            str(body.get("state", ""))[:16],
+                            str(body.get("reason", ""))[:200])
+                    finally:
+                        conn.close()
+                    return self._send(200, {"ok": True, "session_id": sid,
+                                            "car": car,
+                                            "skipped": skipped, **n})
 
                 if self.path == "/ack":
                     try:

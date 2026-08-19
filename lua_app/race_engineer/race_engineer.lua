@@ -5,8 +5,9 @@
 --   * POSTs /note when a complaint tag is pressed (button or wheel binding)
 --   * POSTs /rivals once a second (batched opponent telemetry)
 --   * POSTs /suspension once a second (travel, loads, ride height)
+--   * POSTs /setup when the setup changes (ranges and values from the game)
 --
--- CSP caps Lua apps at 2 concurrent web requests. There are four things
+-- CSP caps Lua apps at 2 concurrent web requests. There are five things
 -- that want to talk, so they take turns: sendSlots() below is the single
 -- gate, and the timers are deliberately out of phase so they don't collide
 -- every second frame. A note press wins any tie -- it is the one request
@@ -49,6 +50,9 @@ local SUSP_POST_INTERVAL = 1.0
 -- rival post (period 1.0, phase 0.5). 1.5 would have looked staggered and
 -- collided with rivals on every single second: 1.5 mod 1.0 == 0.5.
 local SUSP_POST_PHASE = 0.25
+-- Setup values only change in the pits. Slow poll, and the fingerprint
+-- check below means an unchanged setup never hits the network.
+local SETUP_POLL_INTERVAL = 3.0
 local SUSP_BUFFER_MAX = 1800             -- under the bridge's cap, ~5s at 333Hz
 local WORKER_RING = 1024                 -- must match suspension_worker.lua
 
@@ -59,6 +63,7 @@ local status = {
   running = false,
   text = 'connecting...',
   laps = 0,
+  sessionId = nil,   -- server's session; a change resets the setup feed
 }
 local rivalBuffer = {}
 local rivalMeta = {}       -- [car_index] = per-car fields, not per-sample
@@ -94,6 +99,12 @@ local suspNote = 'starting'  -- shown in the app window
 -- Kept separate from suspNote so the window can render it as information
 -- rather than as a degraded state: nothing is wrong, this is the rule.
 local onlineSuppressed = false
+-- Setup snapshot state. setupSent holds the fingerprint the server has
+-- accepted, so an unchanged setup costs nothing and a rejected post retries.
+local setupBusy = false
+local setupSent = nil
+local setupNote = ''
+local setupTimer = 0
 local worker = nil           -- shared struct, once connected
 local workerReadIndex = 0
 local workerProducing = false -- only true once samples have actually arrived
@@ -125,6 +136,31 @@ local function clamp(v, lo, hi)
   return v
 end
 
+-- What a bridge reply actually means, decided in one place.
+--
+-- Three of these handlers were written separately and three of them got the
+-- same thing wrong: a 200 carrying {ok=false} means the server had nowhere
+-- to file the data -- no session recording -- and treating it as delivered
+-- shows a healthy status line over data that went nowhere. HTTP said yes;
+-- the body said no.
+--
+-- Returns one of:
+--   'offline'  no reply at all: the bridge is down or the request failed
+--   'rejected' an HTTP error: the request was wrong, log it
+--   'refused'  200, but the server declined to store it (ok=false)
+--   'ok'       stored; second return is the parsed body
+local function classifyReply(err, response)
+  if err or not response or not response.status then return 'offline' end
+  if response.status ~= 200 then return 'rejected' end
+  local parsed_ok, parsed = pcall(JSON.parse, response.body or '')
+  if not parsed_ok or type(parsed) ~= 'table' then
+    -- A 200 we cannot read is not evidence of anything.
+    return 'offline'
+  end
+  if parsed.ok == false then return 'refused', parsed end
+  return 'ok', parsed
+end
+
 -- How many of CSP's concurrent web requests are still free. Notes ignore
 -- this and always send: the driver is waiting on that one, and it is a few
 -- hundred bytes.
@@ -134,6 +170,7 @@ local function sendSlots()
   if sendBusy then used = used + 1 end
   if rivalBusy then used = used + 1 end
   if suspBusy then used = used + 1 end
+  if setupBusy then used = used + 1 end
   return MAX_CONCURRENT_REQUESTS - used
 end
 
@@ -234,8 +271,11 @@ local function logWorkerEnvironment()
   -- multiplayer, since a script on the physics thread is a cheat vector.
   ask('online race', function() return ac.getSim().isOnlineRace end)
   ask('session type', function() return ac.getSim().raceSessionType end)
-  ask('extended physics', function()
-    return ac.getSim().isNewBehaviourActive end)
+  -- 'extended physics' used to be read here as sim.isNewBehaviourActive.
+  -- That field does not exist -- checked against the CSP SDK definitions,
+  -- ac.StateSim has isOnlineRace but nothing of that name -- and reading it
+  -- raised, which took the whole probe down with it. physics.allowed()
+  -- above is the real answer to the same question.
 end
 
 -- true / false / nil, where nil means we could not tell. Guarded because
@@ -327,6 +367,10 @@ local function startSuspensionWorker()
   -- failed, and discarding it left the app saying "cannot start physics
   -- worker" with no way to tell a missing script file from a wrong
   -- signature from a session that forbids workers.
+  -- Signature is startPhysicsWorker(script, data, callback): the second
+  -- argument is data handed to the worker as `__input`, not a car index as
+  -- this code originally assumed. The 0 is harmless -- the worker ignores
+  -- it -- but the assumption was wrong and worth not passing on.
   local started, startErr = pcall(physics.startPhysicsWorker,
     'suspension_worker', 0,
     function(err)
@@ -658,6 +702,87 @@ local function postRivals()
     end)
 end
 
+-- What the game says about the setup menu.
+--
+-- ac.getSetupSpinners() reports every adjustable entry keyed by the same
+-- section names the setup files use, with its legal min/max/step and the
+-- two display conventions (displayMultiplier, showClicksMode). That is the
+-- car's own answer to questions this project previously answered by
+-- unpacking data.acd and comparing saved files against the setup screen.
+--
+-- Sent only when something changes: the values are static while driving,
+-- and the point of resampling at all is to catch a setup swapped in the
+-- pits mid-session.
+local function readSetupSpinners()
+  if type(ac.getSetupSpinners) ~= 'function' then return nil end
+  local ok, list = pcall(ac.getSetupSpinners)
+  if not ok or type(list) ~= 'table' then return nil end
+  local out = {}
+  for _, s in ipairs(list) do
+    if type(s) == 'table' and s.name then
+      out[#out + 1] = {
+        name = tostring(s.name),
+        label = s.label and tostring(s.label) or '',
+        min = num(s.min, nil), max = num(s.max, nil),
+        step = num(s.step, nil), value = num(s.value, nil),
+        displayMultiplier = num(s.displayMultiplier, nil),
+        showClicksMode = num(s.showClicksMode, nil),
+        units = s.units and tostring(s.units) or '',
+        readOnly = s.readOnly and true or false,
+      }
+    end
+  end
+  return out
+end
+
+local function setupFingerprint(spinners)
+  local parts = {}
+  for _, s in ipairs(spinners) do
+    parts[#parts + 1] = s.name .. '=' .. tostring(s.value)
+  end
+  table.sort(parts)
+  return table.concat(parts, ';')
+end
+
+local function postSetup()
+  if setupBusy or sendSlots() < 1 or not status.running then return end
+  local spinners = readSetupSpinners()
+  if not spinners or #spinners == 0 then return end
+
+  local fp = setupFingerprint(spinners)
+  if fp == setupSent then return end        -- nothing moved
+
+  local state, reason = '', ''
+  if type(ac.getCarSetupState) == 'function' then
+    local ok, s, r = pcall(ac.getCarSetupState)
+    if ok then state, reason = tostring(s or ''), tostring(r or '') end
+  end
+
+  setupBusy = true
+  web.post(BASE .. '/setup', { ['Content-Type'] = 'application/json' },
+    JSON.stringify{ car = ac.getCarID and ac.getCarID(0) or '',
+                    spinners = spinners, state = state, reason = reason },
+    function(err, response)
+      setupBusy = false
+      local outcome = classifyReply(err, response)
+      if outcome == 'rejected' then
+        ac.warn('race_engineer: /setup rejected: '
+          .. tostring(response.status) .. ' ' .. tostring(response.body))
+      end
+      if outcome ~= 'ok' then
+        -- Not stored. Leaving setupSent alone is what makes the next tick
+        -- retry; latching it here on a refusal was how a whole session
+        -- could end up with no setup values while the app looked fine.
+        setupNote = outcome == 'refused' and 'setup: not recording'
+          or 'setup: bridge unreachable'
+        return
+      end
+      setupSent = fp
+      setupNote = state ~= '' and ('setup: ' .. state)
+        or ('setup: ' .. #spinners .. ' values')
+    end)
+end
+
 local function poll()
   if pollBusy then return end
   pollBusy = true
@@ -674,6 +799,18 @@ local function poll()
     status.running = d.running or false
     status.text = d.status or ''
     status.laps = d.laps_recorded or 0
+
+    -- Setup values are stored per session on the server, so a new session
+    -- starts with none. The fingerprint only re-posts when the *values*
+    -- change, and restarting a session with the same setup loaded -- the
+    -- ordinary tuning loop -- changes nothing. Without this the new session
+    -- never receives a setup, and identify_setup answers "no live setup
+    -- values; is the in-game app running?", which is a wrong diagnosis of a
+    -- working app.
+    if d.session_id and d.session_id ~= status.sessionId then
+      status.sessionId = d.session_id
+      setupSent = nil
+    end
     if d.message and d.message.id ~= ackedId then
       message = d.message
     elseif not d.message then
@@ -757,6 +894,15 @@ function script.update(dt)
     postSuspension()
   end
 
+  -- Setup values only move in the pits, so a slow poll is plenty; the
+  -- fingerprint check means an unchanged setup costs one table build and
+  -- no request.
+  setupTimer = setupTimer - dt
+  if setupTimer <= 0 then
+    setupTimer = SETUP_POLL_INTERVAL
+    postSetup()
+  end
+
   if toastTimer > 0 then toastTimer = toastTimer - dt end
 end
 
@@ -834,6 +980,12 @@ function windowMain(dt)
     marker, colour = '◇ ', rgbm(0.8, 0.7, 0.4, 1)
   end
   ui.textColored(marker .. suspNote, colour)
+  -- The setup feed is what makes lap attribution and clamping work, and
+  -- the driver is the only one who can see whether it is running. It was
+  -- being written and never shown.
+  if setupNote ~= '' then
+    ui.textColored(setupNote, rgbm(0.7, 0.7, 0.7, 1))
+  end
   ui.separator()
 
   -- complaint buttons

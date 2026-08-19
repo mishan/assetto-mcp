@@ -270,7 +270,71 @@ def compare_to_rival(car_index: int, lap_id: int,
 
 
 @mcp.tool()
-def set_session_setup(setup_name: str, session_id: int | None = None) -> str:
+def identify_setup(session_id: int | None = None) -> str:
+    """Work out which saved setup is currently on the car.
+
+    Compares the live values the in-game app reports from the setup menu
+    against every saved setup for this car and track. The comparison is on
+    content across every adjustable entry, so setups differing only in ARB
+    or camber are told apart -- which shared memory alone cannot do, since
+    it exposes brake bias and fuel and nothing else.
+
+    Returns a single match, or the candidates when several are identical.
+    Also reports the car's setup legality, since AC will accept a setup and
+    then ignore values outside the legal range."""
+    sid = _active_session(session_id)
+    if sid is None:
+        return _j({"error": "no active session; pass session_id explicitly"})
+    session = db.get_session(_conn, sid)
+    if not session:
+        return _j({"error": f"no session with id {sid}"})
+
+    values = db.setup_values(_conn, sid)
+    out = setups.identify_setup(
+        AC_DOCS_DIR, session["car"],
+        session.get("track_config") or session["track"], values)
+    out["session_id"] = sid
+    out["live_values"] = len(values)
+    state = db.setup_state(_conn, sid)
+    if state:
+        out["setup_state"] = state["state"]
+        if state.get("reason"):
+            out["setup_state_reason"] = state["reason"]
+    if not values:
+        out["what_to_check"] = (
+            "The in-game app posts setup values from ac.getSetupSpinners(). "
+            "No values means the app isn't running, or is an older version.")
+    return _j(out)
+
+
+@mcp.tool()
+def setup_ranges(car: str | None = None) -> str:
+    """The car's legal setup ranges, as the game itself reports them.
+
+    Each entry carries min, max and step in the units the setup *file*
+    uses, plus display_multiplier and show_clicks_mode -- the two
+    conventions that make a stored value differ from what the setup screen
+    shows. Camber stored as tenths of a degree and ride height stored as a
+    click index are both explained by these fields.
+
+    Populated by the in-game app; no need to unpack data.acd."""
+    if car is None:
+        sid = _active_session(None)
+        session = db.get_session(_conn, sid) if sid else None
+        if not session:
+            return _j({"error": "no active session; pass car explicitly"})
+        car = session["car"]
+    rows = db.setup_range_details(_conn, car)
+    if not rows:
+        return _j({"car": car, "ranges": [],
+                   "note": "nothing stored yet -- the in-game app posts "
+                           "these once it sees the setup menu."})
+    return _j({"car": car, "count": len(rows), "ranges": rows})
+
+
+@mcp.tool()
+def set_session_setup(setup_name: str, session_id: int | None = None,
+                      fill_unattributed: bool = True) -> str:
     """Record the setup now on the car, so laps are attributed to it.
 
     AC's shared memory does not expose the setup loaded in the garage, so
@@ -278,19 +342,38 @@ def set_session_setup(setup_name: str, session_id: int | None = None) -> str:
     they've loaded a different setup, including mid-session after a pit stop.
 
     Laps completed from now on are tagged with this name. Laps already
-    stored keep the setup they were driven on: relabelling them would
-    destroy the A/B comparison this exists to enable."""
+    stored under a *different* setup keep it -- relabelling those would
+    destroy the A/B comparison this exists to enable. Laps stored with no
+    setup at all are filled in, since a blank is a gap rather than a
+    competing claim, and telling us after a run is the normal case.
+
+    Pass fill_unattributed=False to leave even the blanks alone."""
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
     if not db.set_session_setup(_conn, sid, setup_name):
         return _j({"error": f"no session with id {sid}"})
-    already = len(db.list_laps(_conn, sid, limit=500))
-    return _j({"ok": True, "session_id": sid, "setup_name": setup_name,
-               "applies_to": "laps completed from now on",
-               "laps_already_stored": already,
-               "note": (f"{already} lap(s) already in this session keep "
-                        f"their previous setup label." if already else None)})
+
+    laps = db.list_laps(_conn, sid, limit=500)
+    blank = [l for l in laps if not (l.get("setup_name") or "")]
+    labelled_now = 0
+    if fill_unattributed and blank:
+        labelled_now = db.label_unattributed_laps(_conn, sid, setup_name)
+
+    kept = [l for l in laps
+            if (l.get("setup_name") or "") not in ("", setup_name)]
+    out = {"ok": True, "session_id": sid, "setup_name": setup_name,
+           "applies_to": "laps completed from now on",
+           "laps_already_stored": len(laps),
+           "laps_labelled_now": labelled_now}
+    if kept:
+        out["left_alone"] = sorted({l["setup_name"] for l in kept})
+        out["note"] = (f"{len(kept)} lap(s) already carry a different setup "
+                       f"and were not touched.")
+    elif labelled_now:
+        out["note"] = (f"{labelled_now} previously unattributed lap(s) in "
+                       f"this session are now labelled {setup_name}.")
+    return _j(out)
 
 
 @mcp.tool()
@@ -420,9 +503,16 @@ def suspension_capture_status() -> str:
                          "body motion rather than valving")
         out["why"] = (
             "The app tries to start a CSP physics worker for 333Hz damper "
-            "data. It falls back to render-rate sampling when physics "
-            "scripting is unavailable -- CSP gates it, and some tracks "
-            "disable it. The app's status window reports which tier it got.")
+            "data and falls back to render-rate sampling when it can't. "
+            "The usual reason is multiplayer: CSP does not allow scripts on "
+            "the physics thread in an online session, because that thread "
+            "decides what the car does. Damper histograms are therefore a "
+            "single-player feature. Ride height, wheel loads and roll "
+            "balance never used the worker and are unaffected online.")
+        out["to_get_damper_data"] = (
+            "Run the same car and track in a solo practice session. The "
+            "app's status window shows the tier: worker, online, "
+            "or render-rate fallback.")
     return _j(out)
 
 
@@ -562,8 +652,14 @@ def write_setup(car: str, track: str, name: str, values_json: str,
     if not isinstance(values, dict):
         return _j({"error": "values_json must be a JSON object"})
     try:
+        # display carries units, display_multiplier and show_clicks_mode so
+        # the report can say what each written number reads as on the setup
+        # screen. Ride height stored as 20 is 20 clicks, not 20mm, and a
+        # report that doesn't say so is how a wrong setup looks right.
         return _j(setups.write_setup(
-            AC_DOCS_DIR, RANGES_DIR, car, track, name, values, base_setup))
+            AC_DOCS_DIR, RANGES_DIR, car, track, name, values, base_setup,
+            game_ranges=db.setup_ranges(_conn, car),
+            display=db.setup_display(_conn, car)))
     except (ValueError, FileNotFoundError) as e:
         return _j({"error": str(e)})
 

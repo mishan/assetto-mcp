@@ -124,6 +124,70 @@ def _num(raw, default: float | None = None) -> float | None:
     return float(m.group()) if m else default
 
 
+def resolve_ranges(ranges_dir: Path, car: str,
+                   game_ranges: dict | None) -> tuple[dict | None, str]:
+    """Ranges to clamp against, and where they came from.
+
+    The game's own answer wins. ac.getSetupSpinners() reports each entry's
+    legal min/max/step for the car actually loaded, which is authoritative,
+    arrives without unpacking data.acd, and works for encrypted paid mods
+    where unpacking may not be possible at all. The hand-installed ranges
+    file stays as a fallback for when the in-game app isn't running.
+    """
+    if game_ranges:
+        return game_ranges, "game"
+    from_file = load_ranges(ranges_dir, car)
+    return from_file, ("file" if from_file else "none")
+
+
+def identify_setup(ac_docs_dir: Path, car: str, track: str,
+                   values: dict) -> dict:
+    """Which saved setup matches the values currently on the car.
+
+    Matching is on content, not on a fingerprint of a couple of observable
+    channels. Shared memory exposes only brake bias and fuel, which cannot
+    separate setups differing in ARB or camber -- precisely what gets
+    changed between runs. The values reported by the setup menu cover every
+    entry, so a match is exact.
+
+    Never guesses: several matches are reported as several, and the caller
+    is expected to ask rather than pick one.
+    """
+    if not values:
+        return {"match": None, "candidates": [], "compared": 0,
+                "reason": "no live setup values; is the in-game app running?"}
+
+    names = list_setups(ac_docs_dir, car, track)
+    exact, near = [], []
+    for name in names:
+        try:
+            saved = read_setup(ac_docs_dir, car, track, name)
+        except (FileNotFoundError, ValueError):
+            continue
+        saved = {k: v for k, v in saved.items()
+                 if isinstance(v, (int, float))}
+        shared = [k for k in saved if k in values]
+        if not shared:
+            continue
+        diffs = [k for k in shared if abs(saved[k] - values[k]) > 0.5]
+        if not diffs:
+            exact.append({"name": name, "compared": len(shared)})
+        elif len(diffs) <= 2:
+            near.append({"name": name, "differs_in": sorted(diffs)[:4]})
+
+    out = {"candidates": [e["name"] for e in exact],
+           "compared": max((e["compared"] for e in exact), default=0),
+           "near_misses": sorted(near, key=lambda n: len(n["differs_in"]))[:3]}
+    if len(exact) == 1:
+        out["match"] = exact[0]["name"]
+    else:
+        out["match"] = None
+        out["reason"] = ("no saved setup matches the car" if not exact else
+                         f"{len(exact)} saved setups have identical values; "
+                         f"they cannot be told apart by content")
+    return out
+
+
 def load_ranges(ranges_dir: Path, car: str) -> dict | None:
     """Parse an unpacked car setup.ini into {SECTION: (min, max, step)}.
 
@@ -162,10 +226,13 @@ def load_ranges(ranges_dir: Path, car: str) -> dict | None:
 
 
 def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
-                name: str, values: dict, base_setup: str | None = None) -> dict:
+                name: str, values: dict, base_setup: str | None = None,
+                game_ranges: dict | None = None) -> dict:
     """Write a setup file, optionally starting from an existing one.
 
     values: {SECTION: number} for the fields to set/override.
+    game_ranges: ranges as reported by ac.getSetupSpinners(), which take
+    precedence over any hand-installed ranges file.
     Returns a report of what was written, clamped, or dropped.
     """
     if not _NAME_RE.match(name):
@@ -184,13 +251,15 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
     # clamping -- but it has to be said out loud, because the whole point of
     # clamping is that AC silently ignores out-of-range values.
     ranges_problem = None
+    ranges_source = "none"
     try:
-        ranges = load_ranges(ranges_dir, car)
+        ranges, ranges_source = resolve_ranges(ranges_dir, car, game_ranges)
     except SetupParseError as e:
         ranges, ranges_problem = None, str(e)
 
     report = {"written": {}, "clamped": {}, "unknown_sections": [],
-              "ranges_available": ranges is not None}
+              "ranges_available": ranges is not None,
+              "ranges_source": ranges_source}
 
     for section, value in values.items():
         if not isinstance(value, (int, float)):

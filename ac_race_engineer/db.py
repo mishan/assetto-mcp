@@ -133,6 +133,46 @@ CREATE TABLE IF NOT EXISTS suspension_samples (
 CREATE INDEX IF NOT EXISTS idx_suspension_lap
     ON suspension_samples(session_id, lap_count);
 
+-- What the game itself says about the setup menu, pushed by the Lua app
+-- from ac.getSetupSpinners().
+--
+-- This replaces unpacking data.acd by hand: the ranges are per car, come
+-- from the running game, and arrive for encrypted paid mods too. It also
+-- ends the units guesswork -- display_multiplier and show_clicks_mode are
+-- the two conventions we previously reverse-engineered by comparing a
+-- saved file against what the setup screen displayed.
+CREATE TABLE IF NOT EXISTS setup_ranges (
+    car TEXT NOT NULL,
+    name TEXT NOT NULL,             -- matches the setup INI section name
+    label TEXT NOT NULL DEFAULT '',
+    min_value REAL NOT NULL,
+    max_value REAL NOT NULL,
+    step REAL NOT NULL DEFAULT 1,
+    display_multiplier REAL,        -- stored value * this = what the UI shows
+    show_clicks_mode INTEGER,       -- non-zero: the UI shows a click index
+    units TEXT NOT NULL DEFAULT '',
+    read_only INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (car, name)
+);
+
+-- The values actually on the car, so a loaded setup can be identified by
+-- content rather than guessed at. Per session, replaced when they change.
+CREATE TABLE IF NOT EXISTS setup_values (
+    session_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    value REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (session_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS setup_state (
+    session_id INTEGER PRIMARY KEY,
+    state TEXT NOT NULL DEFAULT '',   -- legal / illegal / validating
+    reason TEXT NOT NULL DEFAULT '',
+    updated_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS rival_laps (
     session_id INTEGER NOT NULL,
     car_index INTEGER NOT NULL,
@@ -289,6 +329,94 @@ def create_session(conn, *, car, track, track_config, tyre_compound,
     )
     conn.commit()
     return cur.lastrowid
+
+
+def get_session(conn, session_id: int) -> dict | None:
+    r = conn.execute("SELECT * FROM sessions WHERE id = ?",
+                     (session_id,)).fetchone()
+    return dict(r) if r else None
+
+
+def store_setup_snapshot(conn, session_id: int, car: str,
+                         spinners: list[dict], state: str = "",
+                         reason: str = "") -> dict:
+    """Record what the game says about the setup menu right now.
+
+    Ranges are keyed on the car alone -- they are a property of the car,
+    not of a session -- while values belong to the session, because that is
+    what identifies which setup was loaded for these laps.
+    """
+    now = time.time()
+    ranges, values = 0, 0
+    for s in spinners:
+        name = s.get("name")
+        if not name:
+            continue
+        lo, hi = s.get("min"), s.get("max")
+        if lo is not None and hi is not None:
+            conn.execute(
+                "INSERT INTO setup_ranges (car, name, label, min_value,"
+                " max_value, step, display_multiplier, show_clicks_mode,"
+                " units, read_only, updated_at)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?)"
+                " ON CONFLICT(car, name) DO UPDATE SET"
+                " label=excluded.label, min_value=excluded.min_value,"
+                " max_value=excluded.max_value, step=excluded.step,"
+                " display_multiplier=excluded.display_multiplier,"
+                " show_clicks_mode=excluded.show_clicks_mode,"
+                " units=excluded.units, read_only=excluded.read_only,"
+                " updated_at=excluded.updated_at",
+                (car, name, s.get("label", "") or "", float(lo), float(hi),
+                 float(s.get("step") or 1),
+                 s.get("display_multiplier"), s.get("show_clicks_mode"),
+                 s.get("units", "") or "", int(bool(s.get("read_only"))),
+                 now))
+            ranges += 1
+        if s.get("value") is not None:
+            conn.execute(
+                "INSERT INTO setup_values (session_id, name, value,"
+                " updated_at) VALUES (?,?,?,?)"
+                " ON CONFLICT(session_id, name) DO UPDATE SET"
+                " value=excluded.value, updated_at=excluded.updated_at",
+                (session_id, name, float(s["value"]), now))
+            values += 1
+    if state:
+        conn.execute(
+            "INSERT INTO setup_state (session_id, state, reason, updated_at)"
+            " VALUES (?,?,?,?)"
+            " ON CONFLICT(session_id) DO UPDATE SET state=excluded.state,"
+            " reason=excluded.reason, updated_at=excluded.updated_at",
+            (session_id, state, reason or "", now))
+    conn.commit()
+    return {"ranges": ranges, "values": values}
+
+
+def setup_ranges(conn, car: str) -> dict:
+    """{SECTION: (min, max, step)} as the game reports it, or {} if unknown."""
+    rows = conn.execute(
+        "SELECT name, min_value, max_value, step FROM setup_ranges"
+        " WHERE car = ?", (car,))
+    return {r["name"]: (r["min_value"], r["max_value"], r["step"] or 1)
+            for r in rows}
+
+
+def setup_range_details(conn, car: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM setup_ranges WHERE car = ? ORDER BY name", (car,))
+    return [dict(r) for r in rows]
+
+
+def setup_values(conn, session_id: int) -> dict:
+    rows = conn.execute(
+        "SELECT name, value FROM setup_values WHERE session_id = ?",
+        (session_id,))
+    return {r["name"]: r["value"] for r in rows}
+
+
+def setup_state(conn, session_id: int) -> dict | None:
+    r = conn.execute("SELECT * FROM setup_state WHERE session_id = ?",
+                     (session_id,)).fetchone()
+    return dict(r) if r else None
 
 
 def latest_session(conn) -> dict | None:

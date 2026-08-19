@@ -270,6 +270,69 @@ def compare_to_rival(car_index: int, lap_id: int,
 
 
 @mcp.tool()
+def identify_setup(session_id: int | None = None) -> str:
+    """Work out which saved setup is currently on the car.
+
+    Compares the live values the in-game app reports from the setup menu
+    against every saved setup for this car and track. The comparison is on
+    content across every adjustable entry, so setups differing only in ARB
+    or camber are told apart -- which shared memory alone cannot do, since
+    it exposes brake bias and fuel and nothing else.
+
+    Returns a single match, or the candidates when several are identical.
+    Also reports the car's setup legality, since AC will accept a setup and
+    then ignore values outside the legal range."""
+    sid = _active_session(session_id)
+    if sid is None:
+        return _j({"error": "no active session; pass session_id explicitly"})
+    session = db.get_session(_conn, sid)
+    if not session:
+        return _j({"error": f"no session with id {sid}"})
+
+    values = db.setup_values(_conn, sid)
+    out = setups.identify_setup(
+        AC_DOCS_DIR, session["car"],
+        session.get("track_config") or session["track"], values)
+    out["session_id"] = sid
+    out["live_values"] = len(values)
+    state = db.setup_state(_conn, sid)
+    if state:
+        out["setup_state"] = state["state"]
+        if state.get("reason"):
+            out["setup_state_reason"] = state["reason"]
+    if not values:
+        out["what_to_check"] = (
+            "The in-game app posts setup values from ac.getSetupSpinners(). "
+            "No values means the app isn't running, or is an older version.")
+    return _j(out)
+
+
+@mcp.tool()
+def setup_ranges(car: str | None = None) -> str:
+    """The car's legal setup ranges, as the game itself reports them.
+
+    Each entry carries min, max and step in the units the setup *file*
+    uses, plus display_multiplier and show_clicks_mode -- the two
+    conventions that make a stored value differ from what the setup screen
+    shows. Camber stored as tenths of a degree and ride height stored as a
+    click index are both explained by these fields.
+
+    Populated by the in-game app; no need to unpack data.acd."""
+    if car is None:
+        sid = _active_session(None)
+        session = db.get_session(_conn, sid) if sid else None
+        if not session:
+            return _j({"error": "no active session; pass car explicitly"})
+        car = session["car"]
+    rows = db.setup_range_details(_conn, car)
+    if not rows:
+        return _j({"car": car, "ranges": [],
+                   "note": "nothing stored yet -- the in-game app posts "
+                           "these once it sees the setup menu."})
+    return _j({"car": car, "count": len(rows), "ranges": rows})
+
+
+@mcp.tool()
 def set_session_setup(setup_name: str, session_id: int | None = None,
                       fill_unattributed: bool = True) -> str:
     """Record the setup now on the car, so laps are attributed to it.
@@ -578,7 +641,8 @@ def write_setup(car: str, track: str, name: str, values_json: str,
         return _j({"error": "values_json must be a JSON object"})
     try:
         return _j(setups.write_setup(
-            AC_DOCS_DIR, RANGES_DIR, car, track, name, values, base_setup))
+            AC_DOCS_DIR, RANGES_DIR, car, track, name, values, base_setup,
+            game_ranges=db.setup_ranges(_conn, car)))
     except (ValueError, FileNotFoundError) as e:
         return _j({"error": str(e)})
 

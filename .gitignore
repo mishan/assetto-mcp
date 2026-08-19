@@ -12,3 +12,9 @@ ranges/
 # diagnose.bat output: contains local usernames, absolute paths and a dump
 # of the Claude Desktop config.
 diagnose-report.txt
+
+# Vendored CSP references, kept locally for lookups. Ilja's shipped SDK
+# definitions and tobi/ac-tracer are other people's code -- useful to read
+# here, not ours to redistribute.
+.lua-sdk/
+ac-tracer/

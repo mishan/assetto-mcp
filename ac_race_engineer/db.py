@@ -327,6 +327,24 @@ def set_session_setup(conn, session_id: int, setup_name: str) -> bool:
     return cur.rowcount > 0
 
 
+def label_unattributed_laps(conn, session_id: int, setup_name: str) -> int:
+    """Fill in the setup for laps that have none. Returns how many.
+
+    The no-rewriting rule above is about not overwriting a *known* setup
+    with a different one. A lap labelled '' is not a competing claim, it is
+    a gap -- the usual cause being that the driver told us which setup they
+    were on after the run rather than before. Filling a blank completes a
+    comparison; overwriting a name would destroy one, and this still
+    refuses to do that.
+    """
+    cur = conn.execute(
+        "UPDATE laps SET setup_name = ?"
+        " WHERE session_id = ? AND (setup_name IS NULL OR setup_name = '')",
+        (setup_name, session_id))
+    conn.commit()
+    return cur.rowcount
+
+
 def session_setup(conn, session_id: int) -> str:
     r = conn.execute("SELECT setup_name FROM sessions WHERE id = ?",
                      (session_id,)).fetchone()

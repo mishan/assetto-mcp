@@ -83,3 +83,50 @@ def test_an_explicit_setup_name_overrides_the_session_default():
 
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)
+
+
+def test_blank_laps_are_filled_in_but_named_ones_are_not():
+    """A blank is a gap; a name is a competing claim.
+
+    Telling the tool which setup you were on *after* a run is the normal
+    case -- five laps of claude_arb_v1 were stored unattributed for exactly
+    that reason. Filling those completes a comparison. Overwriting a lap
+    that already names a different setup would destroy one, which is why
+    the two cases are not treated alike.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        conn = db.connect(Path(d) / "t.db")
+        sid = make_session(conn)
+
+        # Three laps with no setup recorded, then two on a known one.
+        for n in range(1, 4):
+            db.store_lap(conn, sid, n, 113000 + n, True, [])
+        db.set_session_setup(conn, sid, "claude_camber_v2")
+        for n in (4, 5):
+            db.store_lap(conn, sid, n, 113500 + n, True,
+                         [], setup_name="claude_camber_v2")
+
+        filled = db.label_unattributed_laps(conn, sid, "claude_arb_v1")
+        assert filled == 3, filled
+
+        labels = {}
+        for lap in db.list_laps(conn, sid):
+            labels[lap["lap_number"]] = lap["setup_name"] or ""
+        assert labels[1] == "claude_arb_v1", labels
+        assert labels[3] == "claude_arb_v1", labels
+        assert labels[4] == "claude_camber_v2", "must not overwrite a name"
+        assert labels[5] == "claude_camber_v2", "must not overwrite a name"
+        print(f"  filled {filled} blanks, left 2 named laps alone")
+        conn.close()
+
+
+def test_filling_blanks_twice_is_idempotent():
+    with tempfile.TemporaryDirectory() as d:
+        conn = db.connect(Path(d) / "t.db")
+        sid = make_session(conn)
+        db.store_lap(conn, sid, 1, 113000, True, [])
+        assert db.label_unattributed_laps(conn, sid, "claude_arb_v1") == 1
+        # Second call finds nothing blank, and must not relabel its own work.
+        assert db.label_unattributed_laps(conn, sid, "something_else") == 0
+        assert db.list_laps(conn, sid)[0]["setup_name"] == "claude_arb_v1"
+        conn.close()

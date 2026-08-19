@@ -220,7 +220,41 @@ local function ask(label, fn)
       tostring(v) .. ')')))
 end
 
+-- Is there any route to the loaded setup's name?
+--
+-- Shared memory exposes only brake bias and fuel of a setup, which cannot
+-- tell six of this project's seven Mugello setups apart -- ARB, camber and
+-- wing are all invisible, and those are exactly what gets changed. So the
+-- name has to be stated by the driver unless CSP knows it.
+--
+-- Enumerated rather than guessed: naming candidate functions and testing
+-- them proves only that the names we thought of are absent. Listing what is
+-- actually there answers the question either way, and costs one log block
+-- once per session.
+local function logSetupApiCandidates()
+  ac.log('race_engineer: setup-name API probe')
+  local found = 0
+  for _, tbl in ipairs({{'ac', ac}, {'physics', physics}}) do
+    local name, t = tbl[1], tbl[2]
+    if type(t) == 'table' then
+      local ok = pcall(function()
+        for k, v in pairs(t) do
+          if type(k) == 'string' and k:lower():find('setup') then
+            found = found + 1
+            ac.log('  ' .. name .. '.' .. k .. ' : ' .. type(v))
+          end
+        end
+      end)
+      if not ok then ac.log('  ' .. name .. ': not enumerable') end
+    end
+  end
+  if found == 0 then
+    ac.log('  nothing setup-related exposed; the driver must state it')
+  end
+end
+
 local function logWorkerEnvironment()
+  pcall(logSetupApiCandidates)
   ac.log('race_engineer: physics worker environment')
   ask('csp version', function() return ac.getPatchVersion() end)
   ask('csp version code', function() return ac.getPatchVersionCode() end)

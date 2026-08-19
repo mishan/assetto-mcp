@@ -270,7 +270,8 @@ def compare_to_rival(car_index: int, lap_id: int,
 
 
 @mcp.tool()
-def set_session_setup(setup_name: str, session_id: int | None = None) -> str:
+def set_session_setup(setup_name: str, session_id: int | None = None,
+                      fill_unattributed: bool = True) -> str:
     """Record the setup now on the car, so laps are attributed to it.
 
     AC's shared memory does not expose the setup loaded in the garage, so
@@ -278,19 +279,38 @@ def set_session_setup(setup_name: str, session_id: int | None = None) -> str:
     they've loaded a different setup, including mid-session after a pit stop.
 
     Laps completed from now on are tagged with this name. Laps already
-    stored keep the setup they were driven on: relabelling them would
-    destroy the A/B comparison this exists to enable."""
+    stored under a *different* setup keep it -- relabelling those would
+    destroy the A/B comparison this exists to enable. Laps stored with no
+    setup at all are filled in, since a blank is a gap rather than a
+    competing claim, and telling us after a run is the normal case.
+
+    Pass fill_unattributed=False to leave even the blanks alone."""
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
     if not db.set_session_setup(_conn, sid, setup_name):
         return _j({"error": f"no session with id {sid}"})
-    already = len(db.list_laps(_conn, sid, limit=500))
-    return _j({"ok": True, "session_id": sid, "setup_name": setup_name,
-               "applies_to": "laps completed from now on",
-               "laps_already_stored": already,
-               "note": (f"{already} lap(s) already in this session keep "
-                        f"their previous setup label." if already else None)})
+
+    laps = db.list_laps(_conn, sid, limit=500)
+    blank = [l for l in laps if not (l.get("setup_name") or "")]
+    labelled_now = 0
+    if fill_unattributed and blank:
+        labelled_now = db.label_unattributed_laps(_conn, sid, setup_name)
+
+    kept = [l for l in laps
+            if (l.get("setup_name") or "") not in ("", setup_name)]
+    out = {"ok": True, "session_id": sid, "setup_name": setup_name,
+           "applies_to": "laps completed from now on",
+           "laps_already_stored": len(laps),
+           "laps_labelled_now": labelled_now}
+    if kept:
+        out["left_alone"] = sorted({l["setup_name"] for l in kept})
+        out["note"] = (f"{len(kept)} lap(s) already carry a different setup "
+                       f"and were not touched.")
+    elif labelled_now:
+        out["note"] = (f"{labelled_now} previously unattributed lap(s) in "
+                       f"this session are now labelled {setup_name}.")
+    return _j(out)
 
 
 @mcp.tool()

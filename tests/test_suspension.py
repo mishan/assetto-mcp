@@ -745,30 +745,51 @@ def test_concurrent_posts_do_not_lose_prune_increments():
         conn = db.connect(path)
         br, _ = _bridge(path, conn)
         try:
-            posts, threads = 24, []
+            attempts, threads = 24, []
             rows = _lap(n=5)
+            outcomes: list[int | None] = []
+            guard = threading.Lock()
 
             def fire(i):
                 # Distinct lap_counts so nothing is deduplicated away and
-                # every request really does write.
+                # every request that lands really does write.
                 batch = [dict(s, lap_count=i) for s in rows]
-                post(br.port, "/suspension",
-                     {"source": "app", "samples": batch})
+                try:
+                    code, _ = post(br.port, "/suspension",
+                                   {"source": "app", "samples": batch})
+                except OSError:
+                    # Firing 24 connections at once can overrun the listen
+                    # backlog and get one reset. That is the OS refusing a
+                    # connection, not the server losing a write, so it must
+                    # not be counted as either.
+                    code = None
+                with guard:
+                    outcomes.append(code)
 
-            for i in range(posts):
+            for i in range(attempts):
                 t = threading.Thread(target=fire, args=(i,))
                 threads.append(t)
                 t.start()
             for t in threads:
                 t.join()
 
-            assert br._susp_writes == posts, (
-                f"counted {br._susp_writes} of {posts} writes -- increments "
-                f"were lost")
+            landed = sum(1 for c in outcomes if c == 200)
+            # Guard against the test passing by doing nothing: if the
+            # backlog ate almost everything there was no concurrency to
+            # speak of and the assertion below proves little.
+            assert landed >= attempts // 2, (
+                f"only {landed} of {attempts} posts landed; too few to say "
+                f"anything about concurrent increments")
+            # The honest invariant: the counter matches the requests the
+            # server actually handled, not the ones the client attempted.
+            assert br._susp_writes == landed, (
+                f"counted {br._susp_writes} writes for {landed} handled "
+                f"posts -- increments were lost")
             stored = conn.execute(
                 "SELECT COUNT(*) FROM suspension_samples").fetchone()[0]
-            assert stored == posts * len(rows), stored
-            print(f"  {posts} concurrent posts, all counted, {stored} rows")
+            assert stored == landed * len(rows), stored
+            print(f"  {landed}/{attempts} posts landed, all counted, "
+                  f"{stored} rows")
         finally:
             br.stop()
             conn.close()

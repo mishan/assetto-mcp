@@ -303,9 +303,17 @@ def list_laps(session_id: int | None = None, limit: int = 20) -> str:
 @mcp.tool()
 def lap_summary(lap_id: int) -> str:
     """Engineer's summary of one lap: lap time, throttle/brake/coast split,
-    tyre pressures and core temps, per-corner min speed, brake points,
-    and a front/rear slip balance metric (positive = understeer tendency,
-    negative = oversteer tendency).
+    tyre pressures and core temps, and a corner-by-corner breakdown.
+
+    Each corner carries entry_pos, apex_pos, exit_pos, min speed, brake and
+    throttle points, peak_lat_g, peak_steer_norm (a fraction of full lock,
+    not degrees), and a front/rear slip balance (positive = understeer
+    tendency, negative = oversteer).
+
+    turn_sign groups corners by direction: corners sharing a sign turn the
+    same way, which is what correlating tyre temperatures needs. It is NOT
+    left/right -- AC does not document which sign is which, so do not
+    describe a turn_sign of 1 as a right-hander.
 
     Includes a few suspension headlines when the in-game app captured them;
     call suspension_report for the full damper histograms and ride height."""
@@ -429,6 +437,41 @@ def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
     return _j(analysis.compare_laps(
         a, db.get_samples(_conn, lap_id_a),
         b, db.get_samples(_conn, lap_id_b)))
+
+
+@mcp.tool()
+def delta_by_position(lap_id_a: int, lap_id_b: int,
+                      segments: int = 20) -> str:
+    """Where lap_b gained or lost time against lap_a, along the whole track.
+
+    The delta trace every telemetry tool shows: cumulative time differenced
+    by track position. Unlike compare_laps this covers the ground between
+    corners, so time lost on a straight, on an exit, or in a fast sweeper
+    no corner detector flagged still shows up somewhere.
+
+    Read gain_ms per segment -- that is where the gap opened. The
+    cumulative figure only tells you it exists.
+
+    `segments` is how many rows the track is divided into, up to 200 (the
+    resolution of the underlying position grid); a larger request comes back
+    clamped, with segments_requested saying what was asked for."""
+    a, b = db.get_lap(_conn, lap_id_a), db.get_lap(_conn, lap_id_b)
+    if not a or not b:
+        return _j({"error": "one or both lap ids not found"})
+    # Layout matters as much as track: 'mugello' and 'mugello_osrw' are the
+    # same folder and different circuits, so norm_pos 0.6 is not the same
+    # corner in both. Comparing them produces a delta trace that looks
+    # entirely plausible and means nothing.
+    if (a.get("track"), a.get("track_config")) != \
+            (b.get("track"), b.get("track_config")):
+        def _name(l):
+            cfg = l.get("track_config") or "(default layout)"
+            return f"{l.get('track')}/{cfg}"
+        return _j({"error": f"different track layouts: {_name(a)} vs "
+                            f"{_name(b)}; positions are not comparable"})
+    return _j(analysis.delta_by_position(
+        a, db.get_samples(_conn, lap_id_a),
+        b, db.get_samples(_conn, lap_id_b), segments=segments))
 
 
 # --- in-game app bridge ------------------------------------------------

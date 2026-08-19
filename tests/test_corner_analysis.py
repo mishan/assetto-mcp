@@ -32,7 +32,7 @@ def _corner(spike_at=None, spike=None):
 def test_a_single_spike_does_not_decide_the_corners_balance():
     spike = {"slip_fl": 30007.881, "slip_fr": 1.4,
              "slip_rl": 0.5, "slip_rr": 0.5}
-    stats = analysis._corner_stats(_corner(8, spike), 0, 8, 15)
+    stats = analysis._corner_stats(_corner(8, spike), 8, 15)
     assert stats["slip_samples_dropped"] == 1
     assert abs(stats["front_slip"] - 1.4) < 0.001, stats["front_slip"]
     assert abs(stats["slip_balance"] - 0.9) < 0.001, stats["slip_balance"]
@@ -74,7 +74,7 @@ def test_how_much_was_thrown_away_is_reported():
     evidence for whether it is.
     """
     spike = dict(CLEAN, slip_fl=30007.881, steer=4021.5)
-    stats = analysis._corner_stats(_corner(8, spike), 0, 8, 15)
+    stats = analysis._corner_stats(_corner(8, spike), 8, 15)
     assert stats["slip_samples_dropped"] == 1
     assert stats["slip_dropped_peak"] == 30007.9, stats
     assert stats["slip_coverage_pct"] == 93.8, stats
@@ -88,7 +88,7 @@ def test_steering_comes_from_the_samples_the_filter_kept():
     not-data contradicts the field's own -1..1 definition.
     """
     spike = dict(CLEAN, slip_fl=30007.881, steer=4021.5)
-    stats = analysis._corner_stats(_corner(8, spike), 0, 8, 15)
+    stats = analysis._corner_stats(_corner(8, spike), 8, 15)
     assert stats["peak_steer_norm"] == 0.5, stats
     print("  glitched steer excluded:", stats["peak_steer_norm"])
 
@@ -98,7 +98,7 @@ def test_steer_is_reported_as_a_fraction_of_lock():
 
     The old peak_steer_deg name invited reading it as half a degree.
     """
-    stats = analysis._corner_stats(_corner(), 0, 8, 15)
+    stats = analysis._corner_stats(_corner(), 8, 15)
     assert "peak_steer_deg" not in stats
     assert stats["peak_steer_norm"] == 0.5
     print("  peak_steer_norm =", stats["peak_steer_norm"])

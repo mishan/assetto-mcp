@@ -533,6 +533,132 @@ def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
         b, db.get_samples(_conn, lap_id_b)))
 
 
+def _live_fuel_facts() -> tuple[dict, str | None]:
+    """Tank size and fuel rate straight from shared memory, or why not.
+
+    Only consulted when the session does not already know them. AC is
+    running whenever this tool is useful, and these two are static-page
+    constants, so reading them here beats waiting for a value that only
+    arrives if the in-game app happens to be installed.
+    """
+    try:
+        from .sim_info import fuel_facts
+        return fuel_facts(), None
+    except Exception as e:  # AC not running, or not Windows
+        return {}, f"{type(e).__name__}: {e}"
+
+
+def _fuel_basis(sid: int, session: dict) -> tuple[dict, dict]:
+    """Tank capacity and fuel rate for a session, and where each came from.
+
+    Two things answer "how big is the tank" and they are not interchangeable.
+    The car's FUEL setup range is a property of the car: it lives in
+    setup_ranges, and is re-derivable from there with AC shut. static.maxFuel
+    is a property of the session and is gone the moment the game is.
+
+    sessions.max_fuel_litres is the second of those -- its schema comment says
+    so -- so only a value that actually came off the static page is written
+    there. Storing a range-derived tank in it bought nothing, because the
+    ranges are still in the same database on the next call, and cost the
+    provenance: the number came back out later labelled "the game's maxFuel",
+    a source it had never been near.
+    """
+    tank, tank_source = db.tank_litres(_conn, session["car"])
+    if tank is None and session.get("max_fuel_litres"):
+        tank, tank_source = session["max_fuel_litres"], "the game's maxFuel"
+    rate = session.get("fuel_rate")
+    rate_source = "the game's fuel-usage assist" if rate is not None else None
+
+    why = None
+    if tank is None or rate is None:
+        live, why = _live_fuel_facts()
+        live_tank = live.get("max_fuel_litres")
+        if tank is None and live_tank:
+            tank, tank_source = live_tank, "the game's maxFuel"
+        if rate is None and live.get("fuel_rate") is not None:
+            rate = live["fuel_rate"]
+            rate_source = "the game's fuel-usage assist"
+        if live.get("fuel_rate_unusable") is not None:
+            why = (f"the game reported a fuel-usage multiplier of "
+                   f"{live['fuel_rate_unusable']}, which cannot be one")
+        try:
+            # Remember what shared memory said, so the next call does not
+            # depend on AC still being open and a later plan cannot silently
+            # disagree with this one. What shared memory said and nothing
+            # else: `tank` may be the car's setup range, which this column
+            # does not mean and setup_ranges can answer again anyway.
+            db.set_fuel_basis(_conn, sid, max_fuel_litres=live_tank,
+                              fuel_rate=rate)
+        except ValueError:
+            pass
+
+    return ({"tank": tank, "rate": rate},
+            {"tank_source": tank_source, "rate_source": rate_source,
+             "why_not": why})
+
+
+@mcp.tool()
+def fuel_plan(race_laps: int, stops: int = 1,
+              session_id: int | None = None) -> str:
+    """Fuel for a race distance, and the stint splits.
+
+    Uses the track length and the car's own km_per_liter, both read from
+    the game by the in-game app -- so it works at any circuit without
+    anyone looking a number up. Tank size comes from the car's setup
+    ranges, or from shared memory when the game reports the fuel entry as
+    one the driver cannot change.
+
+    stops is a floor, not an instruction: a distance needing three stops is
+    planned with three however few were asked for, and says so. Reports
+    whether a stop is forced by fuel, which is worth knowing before
+    planning around a no-stop run that was never available."""
+    # The MCP argument is annotated int, which is a description of the tool
+    # rather than a guarantee about the call. A negative or fractional stop
+    # count used to fall through into a silently coerced plan.
+    for name, value in (("race_laps", race_laps), ("stops", stops)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                or value != int(value):
+            return _j({"error": f"{name} must be a whole number, "
+                                f"got {value!r}"})
+    race_laps, stops = int(race_laps), int(stops)
+    if race_laps < 1:
+        return _j({"error": "race_laps must be at least 1"})
+    if stops < 0:
+        return _j({"error": f"stops cannot be negative, got {stops}"})
+
+    sid = _active_session(session_id)
+    if sid is None:
+        return _j({"error": "no active session; pass session_id explicitly"})
+    session = db.get_session(_conn, sid)
+    if not session:
+        return _j({"error": f"no session with id {sid}"})
+
+    basis, source = _fuel_basis(sid, session)
+    out = analysis.fuel_plan(
+        race_laps, session.get("km_per_liter"),
+        session.get("track_length_m"), tank_litres=basis["tank"],
+        stops=stops, fuel_rate=basis["rate"])
+    out["session_id"] = sid
+    out["track"] = session["track"]
+    out["car"] = session["car"]
+    if basis["tank"] is not None:
+        out["tank_litres_source"] = source["tank_source"]
+    else:
+        out["what_to_check"] = (
+            "Tank capacity is unknown, so no stop verdict was possible. It "
+            "comes from the car's FUEL setup entry once the in-game app has "
+            "seen the setup menu, or from shared memory while AC is running"
+            + (f". Reading it here failed: {source['why_not']}"
+               if source["why_not"] else "."))
+    if basis["rate"] is not None:
+        out["fuel_rate_source"] = source["rate_source"]
+    elif source["why_not"] and basis["tank"] is not None:
+        # Only when it is not already the headline above: one cause,
+        # reported once.
+        out["fuel_rate_not_read"] = source["why_not"]
+    return _j(out)
+
+
 @mcp.tool()
 def compare_runs(baseline_laps: str, candidate_laps: str,
                  include_invalid: bool = False) -> str:

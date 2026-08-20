@@ -1,4 +1,4 @@
-"""In-game Lua app behaviour, run against a stubbed CSP API.
+"""In-game Lua app behavior, run against a stubbed CSP API.
 
 Syntax-checking the app caught nothing, because none of the bugs it has
 shipped were syntax errors. They were a scheduler whose comment disagreed

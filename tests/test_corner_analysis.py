@@ -43,7 +43,7 @@ def test_glitched_samples_are_dropped_never_clamped():
     """Substituting the ceiling would be inventing data.
 
     A wheelSlip of 30007 doesn't mean "slid a lot", it means the sample
-    isn't describing tyre behaviour at all.
+    isn't describing tyre behavior at all.
     """
     assert analysis._sane_slip(30007.881, 1.4) is None
     assert analysis._sane_slip(float("inf"), 1.0) is None
@@ -94,7 +94,7 @@ def test_steering_comes_from_the_samples_the_filter_kept():
 
 
 def test_steer_is_reported_as_a_fraction_of_lock():
-    """AC normalises steerAngle to -1..1, so 0.5 is half lock.
+    """AC normalizes steerAngle to -1..1, so 0.5 is half lock.
 
     The old peak_steer_deg name invited reading it as half a degree.
     """

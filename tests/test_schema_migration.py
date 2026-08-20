@@ -74,6 +74,32 @@ def test_an_existing_database_gains_the_new_columns():
         conn.close()
 
 
+def test_laps_stored_before_v4_are_marked_complete():
+    """v4 adds laps.complete, and nothing pinned either half of that.
+
+    Before v4 a lap only reached the database by crossing the line, so every
+    row already there is complete by definition. Two ways that goes wrong on
+    a real user's database and on no test: the ALTER never runs, so every
+    query mentioning complete fails outright; or the column arrives
+    defaulting to 0 and a season of finished laps reads back as abandoned.
+    The column is asserted here as well as the value it backfills.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "old.db"
+        # The last one is invalid -- an off-track lap still reached the
+        # line, so complete has to be independent of valid.
+        _v0_database(path, [(114054, 1), (115000, 1), (113800, 0)])
+
+        conn = db.connect(path)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(laps)")}
+        assert "complete" in cols, cols
+        flags = [r["complete"] for r in conn.execute(
+            "SELECT complete FROM laps ORDER BY lap_number")]
+        assert flags == [1, 1, 1], flags
+        print("  laps.complete added; 3 pre-existing laps marked complete")
+        conn.close()
+
+
 def test_laps_stored_before_the_outlier_rule_are_rechecked():
     """The 10:22 lap is still in the user's database, still marked valid.
 

@@ -203,6 +203,29 @@ class _Page:
             pass
 
 
+def page_is_live(static) -> bool:
+    """Has AC actually written this static page, or is it freshly zeroed?
+
+    Split out so it can be tested off Windows, where SimInfo refuses to
+    construct at all and this condition is therefore unreachable.
+
+    smVersion is the shared-memory layout version. AC writes it once when
+    the session starts and it is never blank in a running game, so an empty
+    string means nobody has written here -- which is exactly what Windows
+    hands back for a mapping it created on our behalf.
+    """
+    return bool(getattr(static, "smVersion", "").strip())
+
+
+class SharedMemoryUnavailable(RuntimeError):
+    """AC's shared memory could not be read as a running session.
+
+    A RuntimeError so existing `except RuntimeError` paths keep working --
+    the not-on-Windows refusal below already raised one, and callers that
+    treated that as "no live data" should treat this the same way.
+    """
+
+
 class SimInfo:
     """Handle to all three AC shared memory pages."""
 
@@ -215,6 +238,26 @@ class SimInfo:
         self._physics = _Page("Local\\acpmf_physics", SPageFilePhysics)
         self._graphics = _Page("Local\\acpmf_graphics", SPageFileGraphic)
         self._static = _Page("Local\\acpmf_static", SPageFileStatic)
+
+        # Opening the mapping is not evidence that AC is running.
+        #
+        # mmap.mmap(-1, size, tag) on Windows *creates* a page-file-backed
+        # mapping when nothing owns that name, and only attaches to AC's if
+        # it already exists. With the game closed every read therefore
+        # succeeds and returns zeros -- which is not an error anywhere, it
+        # is a car with no fuel, no tyres and a session that burns nothing.
+        # aidFuelRate came back as 0.0, the fuel planner read it as a
+        # legitimate "0% fuel usage" league setting, and produced a plan
+        # that needed no fuel at all.
+        #
+        # On Linux the constructor above refuses outright, so this only
+        # ever bit Windows -- the one platform this actually runs on.
+        if not page_is_live(self._static.data):
+            self.close()
+            raise SharedMemoryUnavailable(
+                "Assetto Corsa's shared memory is empty -- the game does "
+                "not appear to be running. (The mapping opened, but Windows "
+                "creates it on demand, so that proves nothing.)")
 
     @property
     def physics(self) -> SPageFilePhysics:
@@ -232,3 +275,44 @@ class SimInfo:
         self._physics.close()
         self._graphics.close()
         self._static.close()
+
+
+# AC reports the fuel-usage assist as a multiplier, 1.0 being 100%. Anything
+# past this is not one -- a misread page, or a percentage that was never
+# converted -- and scaling a whole fuel plan by 100 without noticing is far
+# worse than reporting the rate as unknown, so out-of-range values are
+# handed back raw for the caller to report rather than used.
+MAX_FUEL_RATE = 10.0
+
+
+def fuel_facts() -> dict:
+    """Tank capacity and the session's fuel-usage multiplier.
+
+    Both sit on the static page and neither had ever been read. maxFuel is
+    the answer when the game reports the car's FUEL setup entry as
+    read-only, which is otherwise the difference between a fuel plan that
+    says whether a stop is forced and one that does not mention stopping.
+    aidFuelRate is the multiplier a league session changes: at 50% or 200%
+    every liter-per-lap figure moves by that factor.
+
+    Keys are absent rather than guessed when the game gives a value that
+    cannot be one, and `fuel_rate` of 0 is a real setting -- a session that
+    burns nothing -- so callers must test it against None, not for truth.
+    """
+    sim = SimInfo()
+    try:
+        s = sim.static
+        out: dict = {}
+        if s.maxFuel and s.maxFuel > 0:
+            out["max_fuel_liters"] = round(float(s.maxFuel), 2)
+        rate = float(s.aidFuelRate)
+        if 0 <= rate <= MAX_FUEL_RATE:
+            out["fuel_rate"] = rate
+        else:
+            out["fuel_rate_unusable"] = rate
+        return out
+    finally:
+        # Release the ctypes view before closing the mapping, as
+        # live_snapshot does: from_buffer() keeps an export on the mmap.
+        s = None
+        sim.close()

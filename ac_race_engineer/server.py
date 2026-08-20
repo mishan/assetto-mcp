@@ -290,9 +290,13 @@ def identify_setup(session_id: int | None = None) -> str:
         return _j({"error": f"no session with id {sid}"})
 
     values = db.setup_values(_conn, sid)
+    # Both names, because neither is reliably the folder on disk: at some
+    # circuits track_config is the whole id ("mugello_osrw") and at others
+    # the bare layout ("layout_moto"), where the folder is `track`.
     out = setups.identify_setup(
         AC_DOCS_DIR, session["car"],
-        session.get("track_config") or session["track"], values)
+        session.get("track_config") or session["track"], values,
+        track_folder=session["track"])
     out["session_id"] = sid
     out["live_values"] = len(values)
     state = db.setup_state(_conn, sid)
@@ -527,6 +531,310 @@ def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
     return _j(analysis.compare_laps(
         a, db.get_samples(_conn, lap_id_a),
         b, db.get_samples(_conn, lap_id_b)))
+
+
+def _live_fuel_facts() -> tuple[dict, str | None]:
+    """Tank size and fuel rate straight from shared memory, or why not.
+
+    Only consulted when the session does not already know them. AC is
+    running whenever this tool is useful, and these two are static-page
+    constants, so reading them here beats waiting for a value that only
+    arrives if the in-game app happens to be installed.
+    """
+    try:
+        from .sim_info import fuel_facts
+        return fuel_facts(), None
+    except Exception as e:  # AC not running, or not Windows
+        return {}, f"{type(e).__name__}: {e}"
+
+
+def _fuel_basis(sid: int, session: dict) -> tuple[dict, dict]:
+    """Tank capacity and fuel rate for a session, and where each came from.
+
+    Two things answer "how big is the tank" and they are not interchangeable.
+    The car's FUEL setup range is a property of the car: it lives in
+    setup_ranges, and is re-derivable from there with AC shut. static.maxFuel
+    is a property of the session and is gone the moment the game is.
+
+    sessions.max_fuel_liters is the second of those -- its schema comment says
+    so -- so only a value that actually came off the static page is written
+    there. Storing a range-derived tank in it bought nothing, because the
+    ranges are still in the same database on the next call, and cost the
+    provenance: the number came back out later labelled "the game's maxFuel",
+    a source it had never been near.
+    """
+    tank, tank_source = db.tank_liters(_conn, session["car"])
+    if tank is None and session.get("max_fuel_liters"):
+        tank, tank_source = session["max_fuel_liters"], "the game's maxFuel"
+    rate = session.get("fuel_rate")
+    rate_source = "the game's fuel-usage assist" if rate is not None else None
+
+    why = None
+    if tank is None or rate is None:
+        live, why = _live_fuel_facts()
+        live_tank = live.get("max_fuel_liters")
+        if tank is None and live_tank:
+            tank, tank_source = live_tank, "the game's maxFuel"
+        if rate is None and live.get("fuel_rate") is not None:
+            rate = live["fuel_rate"]
+            rate_source = "the game's fuel-usage assist"
+        if live.get("fuel_rate_unusable") is not None:
+            why = (f"the game reported a fuel-usage multiplier of "
+                   f"{live['fuel_rate_unusable']}, which cannot be one")
+        try:
+            # Remember what shared memory said, so the next call does not
+            # depend on AC still being open and a later plan cannot silently
+            # disagree with this one. What shared memory said and nothing
+            # else: `tank` may be the car's setup range, which this column
+            # does not mean and setup_ranges can answer again anyway.
+            db.set_fuel_basis(_conn, sid, max_fuel_liters=live_tank,
+                              fuel_rate=rate)
+        except ValueError:
+            pass
+
+    return ({"tank": tank, "rate": rate},
+            {"tank_source": tank_source, "rate_source": rate_source,
+             "why_not": why})
+
+
+@mcp.tool()
+def fuel_plan(race_laps: int, stops: int = 1,
+              session_id: int | None = None) -> str:
+    """Fuel for a race distance, and the stint splits.
+
+    Uses the track length and the car's own km_per_liter, both read from
+    the game by the in-game app -- so it works at any circuit without
+    anyone looking a number up. Tank size comes from the car's setup
+    ranges, or from shared memory when the game reports the fuel entry as
+    one the driver cannot change.
+
+    stops is a floor, not an instruction: a distance needing three stops is
+    planned with three however few were asked for, and says so. Reports
+    whether a stop is forced by fuel, which is worth knowing before
+    planning around a no-stop run that was never available."""
+    # The MCP argument is annotated int, which is a description of the tool
+    # rather than a guarantee about the call. A negative or fractional stop
+    # count used to fall through into a silently coerced plan.
+    for name, value in (("race_laps", race_laps), ("stops", stops)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                or value != int(value):
+            return _j({"error": f"{name} must be a whole number, "
+                                f"got {value!r}"})
+    race_laps, stops = int(race_laps), int(stops)
+    if race_laps < 1:
+        return _j({"error": "race_laps must be at least 1"})
+    if stops < 0:
+        return _j({"error": f"stops cannot be negative, got {stops}"})
+
+    sid = _active_session(session_id)
+    if sid is None:
+        return _j({"error": "no active session; pass session_id explicitly"})
+    session = db.get_session(_conn, sid)
+    if not session:
+        return _j({"error": f"no session with id {sid}"})
+
+    basis, source = _fuel_basis(sid, session)
+    out = analysis.fuel_plan(
+        race_laps, session.get("km_per_liter"),
+        session.get("track_length_m"), tank_liters=basis["tank"],
+        stops=stops, fuel_rate=basis["rate"])
+    out["session_id"] = sid
+    out["track"] = session["track"]
+    out["car"] = session["car"]
+    if basis["tank"] is not None:
+        out["tank_liters_source"] = source["tank_source"]
+    else:
+        out["what_to_check"] = (
+            "Tank capacity is unknown, so no stop verdict was possible. It "
+            "comes from the car's FUEL setup entry once the in-game app has "
+            "seen the setup menu, or from shared memory while AC is running"
+            + (f". Reading it here failed: {source['why_not']}"
+               if source["why_not"] else "."))
+    if basis["rate"] is not None:
+        out["fuel_rate_source"] = source["rate_source"]
+    elif source["why_not"] and basis["tank"] is not None:
+        # Only when it is not already the headline above: one cause,
+        # reported once.
+        out["fuel_rate_not_read"] = source["why_not"]
+    return _j(out)
+
+
+@mcp.tool()
+def compare_runs(baseline_laps: str, candidate_laps: str,
+                 include_invalid: bool = False) -> str:
+    """Did a setup change actually do anything, given lap-to-lap noise?
+
+    Pass two comma-separated lists of lap ids -- the laps before a change
+    and the laps after. Every metric is judged against the driver's own
+    within-run spread rather than a fixed threshold, so a small run says
+    "within noise" instead of inviting a conclusion it cannot support.
+
+    The metrics are one family, corrected together: read
+    `p_value_adjusted` against 0.05 rather than each metric's own
+    `p_value`. Up to eight are tested, not always eight -- a channel the
+    laps never carried is not tested and is not counted, and suspension is
+    the one that does not arrive from shared memory alone -- so read
+    `tests_in_family` in the payload for the number the correction was
+    actually made at. Only a metric may be described as having moved.
+
+    `corner_leads` is EXPLORATORY and asserts nothing. Those p-values are
+    uncorrected, roughly 5% of unchanged corner tests come back "worth a
+    look", and 77.6% of fifteen-corner runs with nothing changed at all
+    carried at least one. A lead says where to look when a metric moved;
+    it is not a finding on its own, and must not be reported as one.
+
+    Read `resolution` alongside any "within noise" answer: it is the
+    smallest change those laps could have detected about half the time. A
+    large resolution means the run was too short, not that the change did
+    nothing, and `power` says how likely the change actually measured was
+    to be caught at all. "Suggestive" is the third answer: the metric
+    cleared 95% on its own but not the corrected level, which means run it
+    again with more laps rather than that nothing happened.
+
+    Both sides must be the same car at the same track and layout, and laps
+    that were invalidated or abandoned before the line are dropped and
+    named. include_invalid=True keeps them, which is almost always wrong:
+    an abandoned lap's time is wall-clock elapsed, not a lap time.
+
+    What a "within noise" is worth, measured against this driver's own
+    spread and unaffected by how many corners the circuit has. A 2.2-point
+    front load transfer change -- a rear anti-roll bar, against 0.3 of
+    lap-to-lap noise -- is caught 29% of the time at two laps a side and
+    97% at three. A 500ms lap gain, against a 0.25s spread, is caught 3%
+    at two laps, 11% at three, 39% at five and 77% at eight. So two laps a
+    side is a real test on a quiet channel and no test at all on lap time,
+    three is the realistic minimum, and a null lap-time answer from under
+    five or six laps is not evidence the change did nothing. That is not
+    this tool being strict, it is what a lap time is worth as an
+    instrument."""
+    def ids(raw):
+        out = []
+        for part in str(raw).split(","):
+            # Strip before the emptiness check, not after: a trailing
+            # separator leaves a part that is whitespace rather than empty
+            # ("1,2,\n" from a wrapped list), which is truthy, so it reached
+            # int() and raised "not a lap id: '\n'" on a list that was
+            # perfectly readable. Stripping here also makes removing spaces
+            # up front redundant -- and removing them was itself wrong, since
+            # it turned "1 2" into the lap id 12 rather than saying it could
+            # not read it.
+            part = part.strip()
+            if part:
+                try:
+                    out.append(int(part))
+                except ValueError:
+                    raise ValueError(f"not a lap id: {part!r}")
+        return out
+
+    try:
+        a_ids, b_ids = ids(baseline_laps), ids(candidate_laps)
+    except ValueError as e:
+        return _j({"error": str(e)})
+    if not a_ids or not b_ids:
+        return _j({"error": "need lap ids on both sides"})
+
+    def fetch(lap_ids):
+        out = []
+        for lid in lap_ids:
+            lap = db.get_lap(_conn, lid)
+            if not lap:
+                raise ValueError(f"no lap with id {lid}")
+            out.append(lap)
+        return out
+
+    try:
+        base_laps, cand_laps = fetch(a_ids), fetch(b_ids)
+    except ValueError as e:
+        return _j({"error": str(e)})
+
+    # Track, layout and car, before anything is measured. norm_pos 0.6 is a
+    # different corner at a different circuit and a different one again on
+    # another layout of the same one, and lap times from two cars are not on
+    # the same scale at all -- a Suzuka MX-5 run against a Mugello F4 run
+    # came back "moved", -37.3s, stated as confidently as a real result. The
+    # payload never said which track or car either side was, so there was
+    # nothing in it to notice the mistake by.
+    def where(lap):
+        cfg = lap.get("track_config") or ""
+        return (lap.get("track") or "?") + (f"/{cfg}" if cfg else "")
+
+    def what(laps):
+        return sorted({f"{where(l)} in {l.get('car') or '?'}" for l in laps})
+
+    a_what, b_what = what(base_laps), what(cand_laps)
+    if len(set(a_what + b_what)) > 1:
+        return _j({"error": "these laps are not comparable: baseline is "
+                            f"{', '.join(a_what)}, candidate is "
+                            f"{', '.join(b_what)}. Track position, lap time "
+                            f"and tyre behavior only mean the same thing "
+                            f"within one car at one layout."})
+
+    # Invalid and abandoned laps, dropped by name. Both flags were sitting
+    # in the row unread: one off-track lap in a 3v3 with a true 500ms gain
+    # turned it into "within noise", change -1620ms; one lap abandoned
+    # before the line -- whose stored lap_time_ms is wall-clock elapsed, not
+    # a lap time -- turned it into "within noise", change +17630ms.
+    dropped = []
+
+    def usable(lap, side):
+        why = []
+        if not lap.get("complete", 1):
+            why.append("abandoned before the line, so its time is elapsed "
+                       "wall clock rather than a lap time")
+        if not lap.get("valid"):
+            why.append("invalidated -- off track or a cut")
+        if not why:
+            return True
+        dropped.append({"lap_id": lap["id"], "side": side,
+                        "lap_number": lap.get("lap_number"),
+                        "reason": "; ".join(why)})
+        return False
+
+    def summaries(laps, side):
+        out = []
+        for lap in laps:
+            if not include_invalid and not usable(lap, side):
+                continue
+            s = analysis.lap_summary(lap, db.get_samples(_conn, lap["id"]))
+            if "error" in s:
+                dropped.append({"lap_id": lap["id"], "side": side,
+                                "lap_number": lap.get("lap_number"),
+                                "reason": "no telemetry samples stored"})
+                continue
+            # Front load transfer lives in the suspension block and is the
+            # quietest channel we have, so it is worth the extra query --
+            # it resolves changes lap time cannot see.
+            susp = db.get_suspension_samples(_conn, lap["session_id"],
+                                             lap["lap_number"] - 1)
+            if susp:
+                compact = suspension.compact(suspension.summarise(susp))
+                if compact:
+                    s["suspension"] = compact
+            out.append(s)
+        return out
+
+    base = summaries(base_laps, "baseline")
+    cand = summaries(cand_laps, "candidate")
+    if not base or not cand:
+        return _j({"error": "no usable laps left on "
+                            + ("both sides" if not base and not cand else
+                               "the baseline side" if not base else
+                               "the candidate side")
+                            + " after dropping invalid and abandoned laps",
+                   "excluded_laps": dropped})
+
+    out = analysis.compare_runs(base, cand)
+    out["track"] = where(base_laps[0])
+    out["car"] = base_laps[0].get("car")
+    if dropped:
+        out["excluded_laps"] = dropped
+    if include_invalid:
+        out["warning"] = ("include_invalid=True: invalid and abandoned laps "
+                          "were kept, and an abandoned lap's time is elapsed "
+                          "wall clock, not a lap time")
+    out["baseline_setups"] = sorted({s.get("setup") or "" for s in base})
+    out["candidate_setups"] = sorted({s.get("setup") or "" for s in cand})
+    return _j(out)
 
 
 @mcp.tool()

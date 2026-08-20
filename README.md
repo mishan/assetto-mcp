@@ -413,7 +413,7 @@ install-windows.ps1  one-shot Windows installer
 install-windows.bat  double-clickable wrapper for the above
 diagnose.ps1 / .bat  what-is-broken report
 run_tests.py         run and summarise the suite, no dependencies
-tests/               behaviour-named test modules + shared harness
+tests/               behavior-named test modules + shared harness
 ```
 
 ## Notes / future ideas

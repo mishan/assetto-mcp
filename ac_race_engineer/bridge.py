@@ -526,7 +526,7 @@ class Bridge:
                     if source not in ("app", "worker"):
                         return self._send(400, {
                             "error": "'source' must be 'app' or 'worker' -- "
-                                     "the tier decides which analyses are "
+                                     "the tier decides which analyzes are "
                                      "honest to run on the data"})
                     raw = body.get("samples")
                     if not isinstance(raw, list):
@@ -539,8 +539,8 @@ class Bridge:
 
                     samples, skipped = [], 0
                     # Out-of-range optional fields become NULL, which is
-                    # correct but invisible: if the client sent millimetres
-                    # where metres were expected, every travel field would
+                    # correct but invisible: if the client sent millimeters
+                    # where meters were expected, every travel field would
                     # silently vanish and the report would come back empty
                     # with no explanation. Count them so it reads as a units
                     # problem rather than a mystery.
@@ -573,7 +573,7 @@ class Bridge:
                         row["speed_kmh"] = opt(s, "speed_kmh", 0.0,
                                                MAX_SPEED_KMH)
                         for w in ("fl", "fr", "rl", "rr"):
-                            # Travel in metres. A metre of suspension travel
+                            # Travel in meters. A meter of suspension travel
                             # is not a car, it is a bad read.
                             row[f"travel_{w}"] = opt(s, f"travel_{w}",
                                                      -1.0, 1.0)
@@ -615,7 +615,7 @@ class Bridge:
                         reply["hint"] = ("Fields out of their expected range "
                                          "were stored as null. Travel and "
                                          "ride height are expected in "
-                                         "metres.")
+                                         "meters.")
                     return self._send(200, reply)
 
                 if self.path == "/setup":
@@ -699,11 +699,19 @@ class Bridge:
                             conn, sid, car, spinners,
                             str(body.get("state", ""))[:16],
                             str(body.get("reason", ""))[:200])
+                        # Fuel basis rides along rather than getting its own
+                        # endpoint: it is read from the same place, once per
+                        # session, and two numbers do not justify protocol.
+                        fuel = db.set_fuel_basis(
+                            conn, sid,
+                            _opt_float(body.get("track_length_m"),
+                                       100, 100_000),
+                            _opt_float(body.get("km_per_liter"), 0.1, 100))
                     finally:
                         conn.close()
                     return self._send(200, {"ok": True, "session_id": sid,
-                                            "car": car,
-                                            "skipped": skipped, **n})
+                                            "car": car, "skipped": skipped,
+                                            "fuel_basis": bool(fuel), **n})
 
                 if self.path == "/ack":
                     try:

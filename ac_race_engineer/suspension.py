@@ -22,7 +22,7 @@ bump/rebound split is withheld.
 (60-144Hz) and differentiated, the high-speed band is aliased into nonsense.
 Samples therefore carry the tier that produced them, and anything derived
 from render-rate data is labelled as body motion rather than damper
-behaviour. See SOURCE_* below.
+behavior. See SOURCE_* below.
 """
 
 import math
@@ -33,11 +33,11 @@ FRONT = ("fl", "fr")
 REAR = ("rl", "rr")
 
 # Where a batch of samples came from. The distinction is not cosmetic: it
-# decides which analyses are honest to run.
+# decides which analyzes are honest to run.
 SOURCE_APP = "app"          # render rate, ~60-144Hz, aliased above ~30Hz
 SOURCE_WORKER = "worker"    # CSP physics worker, 333Hz, true damper rate
 
-# Above this, a render-rate sample stream cannot describe damper behaviour.
+# Above this, a render-rate sample stream cannot describe damper behavior.
 # Nyquist for a 60Hz stream is 30Hz; real damper content runs well past that.
 APP_TIER_MAX_USEFUL_HZ = 30.0
 
@@ -363,7 +363,7 @@ def ride_height_report(samples: list[dict], buckets: int = 20) -> dict:
 
 
 def _spread(values: list[float]) -> dict:
-    """Summarise a distance channel in mm. Inputs are metres."""
+    """Summarise a distance channel in mm. Inputs are meters."""
     mm = [v * 1000.0 for v in values]
     mm.sort()
     return {

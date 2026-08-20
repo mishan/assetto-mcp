@@ -14,7 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import (complete_lap, enter_pits, leave_pits,  # noqa: E402
-                     make_session, run_collector, run_module, tick)
+                     make_session, run_collector, run_module, tick,
+                     wait_for)
 
 from ac_race_engineer import analysis, db  # noqa: E402
 from ac_race_engineer.collector import _is_outlier  # noqa: E402
@@ -131,6 +132,70 @@ def test_invalid_laps_are_excluded_from_best_but_still_listed():
         assert len(db.list_laps(conn, sid)) == 2
         print("  invalid lap kept and readable, excluded from best_ms")
         conn.close()
+
+
+def test_an_abandoned_lap_is_kept_marked_incomplete():
+    """A crash teleports the car back without the lap counter advancing.
+
+    Those samples used to be dropped, so the lap a driver most wants to see
+    -- the one that ended in the barrier -- was the only one guaranteed not
+    to be recorded. It is now stored with complete=0 so it can never be
+    mistaken for a real lap time.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "t.db"
+
+        def drive_then_crash(sim, col):
+            # tick() advances norm_pos by 0.1 a step, so start low enough
+            # that four of them do not wrap past the line on their own.
+            sim.graphics.normalizedCarPosition = 0.30
+            tick(sim, col, n=4)                          # now ~0.70
+            sim.graphics.normalizedCarPosition = 0.05    # teleported to pits
+            wait_for(lambda: col.abandoned_laps >= 1,
+                     "the abandoned lap to be stored")
+
+        col = run_collector([
+            lambda s, c: (tick(s, c), complete_lap(s, c, 113000)),
+            drive_then_crash,
+        ], path)
+        assert col.abandoned_laps == 1, col.abandoned_laps
+
+        conn = db.connect(path)
+        laps = sorted(db.list_laps(conn), key=lambda r: r["id"])
+        done = [l for l in laps if l["complete"]]
+        gone = [l for l in laps if not l["complete"]]
+        assert len(gone) == 1, laps
+        assert gone[0]["valid"] == 0, "an unfinished lap is never valid"
+        assert db.get_samples(conn, gone[0]["id"]), \
+            "the whole point is that its samples survive"
+        assert any(l["lap_time_ms"] == 113000 for l in done)
+        print(f"  kept the abandoned lap with "
+              f"{len(db.get_samples(conn, gone[0]['id']))} samples")
+        conn.close()
+
+
+def test_crossing_the_line_is_not_mistaken_for_a_teleport():
+    """norm_pos goes ~1.0 -> ~0.0 every lap; that must not look abandoned.
+
+    The lap counter and the position wrap do not land on the same tick, so
+    an early version produced a phantom 400ms 'abandoned lap' at the start
+    of every single lap.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "t.db"
+
+        def lap(sim, col):
+            sim.graphics.normalizedCarPosition = 0.98
+            tick(sim, col, n=3)
+            complete_lap(sim, col, 113500)
+            sim.graphics.normalizedCarPosition = 0.01
+            tick(sim, col, n=3)
+
+        col = run_collector([lap, lap, lap], path)
+        assert col.abandoned_laps == 0, (
+            f"{col.abandoned_laps} normal line crossing(s) recorded as "
+            f"abandoned laps")
+        print("  3 line crossings, 0 false abandonments")
 
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -28,7 +28,22 @@ CREATE TABLE IF NOT EXISTS sessions (
     tyre_compound TEXT NOT NULL DEFAULT '',
     air_temp REAL,
     road_temp REAL,
-    setup_name TEXT NOT NULL DEFAULT ''
+    setup_name TEXT NOT NULL DEFAULT '',
+    -- Enough to compute fuel per lap without being told the track. Length
+    -- comes from the AI spline; km_per_liter from the car's own
+    -- fuel_cons.ini, read through CSP so an encrypted data.acd is no
+    -- obstacle. Nullable: both arrive from the in-game app, and a missing
+    -- basis must read as unknown rather than as a plausible default.
+    track_length_m REAL,
+    km_per_liter REAL,
+    -- Tank capacity and AC's fuel-usage multiplier, both from the static
+    -- shared memory page. The multiplier is the one a league changes: at
+    -- 50% or 200% every fuel figure moves by that factor, and nothing read
+    -- it, so a plan for a 200% session was quietly half the fuel needed.
+    -- 1.0 is 100%; 0 is a real setting and not the same as unknown, which
+    -- is why every read of these goes through IS NULL rather than falsy.
+    max_fuel_liters REAL,
+    fuel_rate REAL
 );
 
 -- setup_name is per-lap, not per-session: the tuning loop changes setup in
@@ -41,7 +56,13 @@ CREATE TABLE IF NOT EXISTS laps (
     lap_time_ms INTEGER NOT NULL,
     valid INTEGER NOT NULL DEFAULT 1,
     completed_at REAL NOT NULL,
-    setup_name TEXT NOT NULL DEFAULT ''
+    setup_name TEXT NOT NULL DEFAULT '',
+    -- 0 for a lap that never reached the finish line: a crash, a reset to
+    -- the pits, or recording stopped mid-lap. Those samples used to be
+    -- discarded, which meant the single most interesting lap of a session
+    -- -- the one that ended in the barrier -- was the only one guaranteed
+    -- not to be recorded.
+    complete INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS samples (
@@ -266,6 +287,47 @@ def _migrate(conn) -> list[str]:
     # the next person can see the version was accounted for rather than
     # skipped.
 
+    if version < 4:
+        # v4: laps.complete, so an abandoned lap can be stored rather than
+        # thrown away. Existing rows all reached the line by definition.
+        if "complete" not in _columns(conn, "laps"):
+            conn.execute("ALTER TABLE laps ADD COLUMN"
+                         " complete INTEGER NOT NULL DEFAULT 1")
+            log.append("laps.complete added; existing laps marked complete")
+
+    if version < 5:
+        # v5: the fuel basis, so liters per lap stops being a hand
+        # calculation that has to be redone for every track.
+        for col in ("track_length_m", "km_per_liter"):
+            if col not in _columns(conn, "sessions"):
+                conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} REAL")
+                log.append(f"sessions.{col} added")
+
+    if version < 6:
+        # v6: the rest of the fuel basis. Tank capacity so a car whose FUEL
+        # entry the game reports as read-only still has a known tank, and
+        # AC's fuel-usage multiplier, which decides whether a stop is needed
+        # and which nothing had ever read.
+        for col in ("max_fuel_liters", "fuel_rate"):
+            if col not in _columns(conn, "sessions"):
+                conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} REAL")
+                log.append(f"sessions.{col} added")
+
+    if version < 7:
+        # v7: max_fuel_litres -> max_fuel_liters. AC spells it LITER in the
+        # car's own fuel_cons.ini (KM_PER_LITER), so the rest of the project
+        # follows the game rather than the author.
+        #
+        # A rename rather than a fresh column: v6 shipped on a branch that
+        # was already run against a real database, so the data is there
+        # under the old name and dropping it would lose a tank capacity
+        # nobody can re-derive without the game open.
+        cols = _columns(conn, "sessions")
+        if "max_fuel_litres" in cols and "max_fuel_liters" not in cols:
+            conn.execute("ALTER TABLE sessions"
+                         " RENAME COLUMN max_fuel_litres TO max_fuel_liters")
+            log.append("sessions.max_fuel_litres renamed to max_fuel_liters")
+
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     return log
@@ -395,6 +457,117 @@ def store_setup_snapshot(conn, session_id: int, car: str,
     return {"ranges": ranges, "values": values}
 
 
+def _fuel_number(name: str, value, low: float, high: float,
+                 zero_is_absent: bool = False) -> float | None:
+    """Coerce a fuel-basis value, or say why it is not one. None stays None.
+
+    The range checks used to live only in the bridge, so this function was
+    safe exactly as long as HTTP was the only way in. Called directly with a
+    numeric string -- which is what a config file, a test, or another tool
+    hands you -- it raised `'>' not supported between instances of 'str' and
+    'int'` from a comparison three lines down, naming neither the argument
+    nor the caller's mistake.
+
+    zero_is_absent exempts 0 from the range check for the fields where it has
+    always meant "not supplied" and the caller drops it. Without it, raising
+    the floor off zero would turn that documented no-op into a refusal.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a number, got {value!r}")
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a number, got {value!r}") from None
+    if zero_is_absent and num == 0:
+        return num
+    if not low <= num <= high:  # NaN fails this too
+        raise ValueError(
+            f"{name} must be between {low:g} and {high:g}, got {value!r}")
+    return num
+
+
+def set_fuel_basis(conn, session_id: int, track_length_m=None,
+                   km_per_liter=None, max_fuel_liters=None,
+                   fuel_rate=None) -> bool:
+    """Record what fuel per lap can be derived from. Ignores missing values.
+
+    Deliberately partial: the track length may arrive while the car's
+    consumption figure does not, and overwriting a known value with None
+    would lose it. Absence is not an update.
+
+    fuel_rate is AC's fuel-usage multiplier, 1.0 for 100%. It is the one
+    value here where 0 is meaningful -- a session that burns no fuel is a
+    setting people use -- so it is tested against None rather than for
+    truth, and a 0 is stored.
+
+    The floors come from analysis, which is where fuel_plan checks the same
+    three. A lower bound of 0 let through a track half a meter long, a car
+    doing half a meter to the liter and a tank of a thousandth of a liter:
+    all stored happily, all refused by fuel_plan later, so a session could
+    carry a basis that was guaranteed to fail whenever anyone used it. The
+    refusal belongs at the write, where the caller who supplied the number is
+    still on the stack.
+    """
+    # Zero is exempt from the floor and dropped below: it has always meant
+    # "not supplied" for these three, and turning that into a refusal would
+    # reject callers this is not aimed at.
+    track_length_m = _fuel_number("track_length_m", track_length_m,
+                                  analysis.MIN_TRACK_LENGTH_M, 1_000_000,
+                                  zero_is_absent=True)
+    km_per_liter = _fuel_number("km_per_liter", km_per_liter,
+                                analysis.MIN_KM_PER_LITER, 1000,
+                                zero_is_absent=True)
+    max_fuel_liters = _fuel_number("max_fuel_liters", max_fuel_liters,
+                                   analysis.MIN_TANK_LITERS, 100_000,
+                                   zero_is_absent=True)
+    fuel_rate = _fuel_number("fuel_rate", fuel_rate, 0, analysis.MAX_FUEL_RATE)
+
+    sets, args = [], []
+    for col, value in (("track_length_m", track_length_m),
+                       ("km_per_liter", km_per_liter),
+                       ("max_fuel_liters", max_fuel_liters),
+                       ("fuel_rate", fuel_rate)):
+        if value is None:
+            continue
+        # 0 is absent for a length or a consumption figure -- both are
+        # nonsense at zero -- and present for the multiplier.
+        if not value and col != "fuel_rate":
+            continue
+        sets.append(f"{col} = ?")
+        args.append(value)
+    if not sets:
+        return False
+    args.append(session_id)
+    cur = conn.execute(
+        f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?", args)
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def tank_liters(conn, car: str) -> tuple[float | None, str]:
+    """Tank capacity for a car, and where it was read from.
+
+    Deliberately not setup_ranges(), which excludes read_only entries
+    because writing one is silently ignored. That is right for writing a
+    setup and wrong for asking how big the tank is: a car whose fuel load
+    the game will not let you change still has a tank, and filtering it out
+    took tank_liters, stop_required_for_fuel and the note out of the fuel
+    plan altogether -- while leaving a two-stint plan behind, which reads as
+    a stop that was reasoned about.
+    """
+    row = conn.execute(
+        "SELECT max_value, read_only FROM setup_ranges"
+        " WHERE car = ? AND name = 'FUEL'", (car,)).fetchone()
+    if row and row["max_value"]:
+        return (row["max_value"],
+                "the car's FUEL setup range"
+                + (" (which the game reports as read-only)"
+                   if row["read_only"] else ""))
+    return None, "not known"
+
+
 def setup_ranges(conn, car: str) -> dict:
     """{SECTION: (min, max, step)} as the game reports it, or {} if unknown.
 
@@ -512,8 +685,21 @@ def session_setup(conn, session_id: int) -> str:
 
 def store_lap(conn, session_id: int, lap_number: int, lap_time_ms: int,
               valid: bool, samples: list[tuple],
-              setup_name: str | None = None) -> int:
-    """Store a completed lap and its samples.
+              setup_name: str | None = None, complete: bool = True) -> int:
+    """Store a lap and its samples, whether or not it reached the line.
+
+    complete=False is for a lap abandoned mid-way -- a crash, a reset to the
+    pits, recording stopped. Those used to be discarded, which made the one
+    lap a driver most wants to look at the only one guaranteed not to be
+    recorded.
+
+    lap_time_ms does not mean the same thing for those. A complete lap
+    carries the game's official time; an incomplete one carries wall-clock
+    milliseconds since the lap started, which is not a lap time and is not
+    comparable to one. Anything ranking or averaging times has to exclude
+    incomplete laps by name: a lap abandoned before the line turned a run
+    comparison into "within noise, change +17630ms" purely by being read as
+    though it were a lap.
 
     setup_name defaults to whatever set_session_setup last recorded for this
     session -- a snapshot taken at store time, not a live join. That is the
@@ -524,9 +710,9 @@ def store_lap(conn, session_id: int, lap_number: int, lap_time_ms: int,
         setup_name = session_setup(conn, session_id)
     cur = conn.execute(
         "INSERT INTO laps (session_id, lap_number, lap_time_ms, valid,"
-        " completed_at, setup_name) VALUES (?,?,?,?,?,?)",
+        " completed_at, setup_name, complete) VALUES (?,?,?,?,?,?,?)",
         (session_id, lap_number, lap_time_ms, int(valid), time.time(),
-         setup_name or ""),
+         setup_name or "", int(complete)),
     )
     lap_id = cur.lastrowid
     placeholders = ",".join("?" * len(SAMPLE_COLUMNS))
@@ -595,11 +781,27 @@ def store_rival_batch(conn, session_id, drivers: list[dict],
     """
     now = time.time()
 
+    # Merge per field rather than letting the last entry win outright.
+    #
+    # Last-write-wins was correct for lap_count, which rides on every
+    # sample, and wrong for everything else. The Lua app stamps the driver
+    # name, car model and lap times onto the *first* sample of each car per
+    # batch -- carrying them on all ten samples a second doubled the JSON it
+    # serialises on the render thread -- so every later entry holds blanks.
+    # Taking the last one therefore overwrote every real value with an empty
+    # string or a null, which is why a whole race produced rival rows with
+    # no names and no lap times.
+    #
+    # Merging keeps "freshest wins" where a field actually repeats, without
+    # letting an absent field erase a present one.
     by_car: dict[int, dict] = {}
     for d in drivers:
-        # Last write wins: entries arrive in sample order, so this keeps the
-        # freshest lap counters within the batch.
-        by_car[d["car_index"]] = d
+        merged = by_car.setdefault(d["car_index"], {})
+        for key, value in d.items():
+            if value is None or value == "":
+                continue          # absence is not an update
+            merged[key] = value
+        merged["car_index"] = d["car_index"]
 
     for car_index, d in by_car.items():
         prev = conn.execute(

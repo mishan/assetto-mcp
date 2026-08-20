@@ -271,7 +271,7 @@ local function logWorkerEnvironment()
   -- multiplayer, since a script on the physics thread is a cheat vector.
   ask('online race', function() return ac.getSim().isOnlineRace end)
   ask('session type', function() return ac.getSim().raceSessionType end)
-  -- 'extended physics' used to be read here as sim.isNewBehaviourActive.
+  -- 'extended physics' used to be read here as sim.isNewBehaviorActive.
   -- That field does not exist -- checked against the CSP SDK definitions,
   -- ac.StateSim has isOnlineRace but nothing of that name -- and reading it
   -- raised, which took the whole probe down with it. physics.allowed()
@@ -735,6 +735,35 @@ local function readSetupSpinners()
   return out
 end
 
+-- Everything needed to work out fuel per lap, read from the game rather
+-- than looked up.
+--
+-- KM_PER_LITER lives in the car's fuel_cons.ini inside data.acd. That file
+-- is encrypted for paid mods, and getting at it previously meant decrypting
+-- the archive by hand -- which worked once, for one car, and produced a
+-- number nobody could check. ac.INIConfig.carData() reads it directly:
+-- CSP already holds the key.
+--
+-- trackLengthM comes from the AI spline, so it is the length the game
+-- itself believes in rather than whatever a layout is nominally called.
+-- Between them the server computes liters per lap for any car and track
+-- without being told anything.
+local function readFuelBasis()
+  local out = {}
+  pcall(function()
+    local m = ac.getSim().trackLengthM
+    if type(m) == 'number' and m > 0 then out.track_length_m = m end
+  end)
+  pcall(function()
+    local ini = ac.INIConfig.carData(0, 'fuel_cons.ini')
+    local v = ini and ini:get('FUEL_EVAL', 'KM_PER_LITER', 0)
+    if type(v) == 'table' then v = v[1] end
+    v = tonumber(v)
+    if v and v > 0 then out.km_per_liter = v end
+  end)
+  return out
+end
+
 local function setupFingerprint(spinners)
   local parts = {}
   for _, s in ipairs(spinners) do
@@ -758,10 +787,14 @@ local function postSetup()
     if ok then state, reason = tostring(s or ''), tostring(r or '') end
   end
 
+  local fuel = readFuelBasis()
+
   setupBusy = true
   web.post(BASE .. '/setup', { ['Content-Type'] = 'application/json' },
     JSON.stringify{ car = ac.getCarID and ac.getCarID(0) or '',
-                    spinners = spinners, state = state, reason = reason },
+                    spinners = spinners, state = state, reason = reason,
+                    track_length_m = fuel.track_length_m,
+                    km_per_liter = fuel.km_per_liter },
     function(err, response)
       setupBusy = false
       local outcome = classifyReply(err, response)
@@ -969,17 +1002,17 @@ function windowMain(dt)
   -- for a worker that was started but never produced anything.
   -- Three states, not two. Amber is "you wanted the worker and did not get
   -- it"; online is neither that nor success, so it gets its own neutral
-  -- marker. Colouring an expected, correct condition as a warning trains
+  -- marker. Coloring an expected, correct condition as a warning trains
   -- the driver to ignore the line that matters.
-  local marker, colour
+  local marker, color
   if workerProducing then
-    marker, colour = '◆ ', rgbm(0.4, 0.9, 0.5, 1)
+    marker, color = '◆ ', rgbm(0.4, 0.9, 0.5, 1)
   elseif onlineSuppressed then
-    marker, colour = '○ ', rgbm(0.6, 0.7, 0.8, 1)
+    marker, color = '○ ', rgbm(0.6, 0.7, 0.8, 1)
   else
-    marker, colour = '◇ ', rgbm(0.8, 0.7, 0.4, 1)
+    marker, color = '◇ ', rgbm(0.8, 0.7, 0.4, 1)
   end
-  ui.textColored(marker .. suspNote, colour)
+  ui.textColored(marker .. suspNote, color)
   -- The setup feed is what makes lap attribution and clamping work, and
   -- the driver is the only one who can see whether it is running. It was
   -- being written and never shown.

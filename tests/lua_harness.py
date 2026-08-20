@@ -182,7 +182,7 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
     # Resolved here rather than at module scope: the module has to be
     # importable without lupa so `require` can decide between skipping and
     # failing. It has to be the same binding new_runtime() used, too --
-    # lupa.lua_type() does not recognise tables belonging to a sibling
+    # lupa.lua_type() does not recognize tables belonging to a sibling
     # interpreter, so the top-level lupa reports LuaJIT's tables as None.
     lupa_module = runtime_module()
 

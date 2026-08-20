@@ -97,7 +97,7 @@ def _sane_slip(*values: float) -> float | None:
     """Mean of the given slip values, or None if any is a glitch.
 
     Returns None rather than clamping: a spike means the sample is not
-    describing real tyre behaviour, so silently substituting 50.0 would be
+    describing real tyre behavior, so silently substituting 50.0 would be
     inventing data. Callers drop the whole sample instead.
     """
     for v in values:
@@ -109,7 +109,7 @@ def _sane_slip(*values: float) -> float | None:
 
 
 def _median_filter(values: list[float], window: int = 11) -> list[float]:
-    """Centred running median; window forced odd.
+    """Centerd running median; window forced odd.
 
     Removes impulses rather than spreading them, which is what a mean does.
     A run shorter than half the window is replaced by its neighbours; a real
@@ -248,7 +248,7 @@ def detect_corners(samples: list[dict]) -> list[dict]:
         # flat -- a long constant-radius corner, or a coarse speed channel
         # -- min() would return whichever tie came first, putting the apex
         # at the entry of the flat section rather than its middle and
-        # shifting every window that hangs off it. Take the centre of the
+        # shifting every window that hangs off it. Take the center of the
         # slowest band instead.
         v_min = min(samples[j]["speed_kmh"] for j in r)
         flat = [j for j in r
@@ -1144,15 +1144,15 @@ MAX_FUEL_RATE = 10.0
 #
 #   MIN_TRACK_LENGTH_M  the shortest real circuit. Kart tracks start around
 #                       600 m and the shortest car circuits are over a
-#                       kilometre, so 100 m -- shorter than a pit lane -- is
+#                       kilometer, so 100 m -- shorter than a pit lane -- is
 #                       not a lap of anywhere.
 #   MIN_KM_PER_LITER    the thirstiest plausible car. A turbo-era F1 car or a
 #                       Group C prototype does roughly 1.5 km/L flat out, so
-#                       0.1 km/L is ten litres per kilometre: nothing burns
+#                       0.1 km/L is ten liters per kilometer: nothing burns
 #                       that.
-#   MIN_TANK_LITRES     the smallest real fuel tank. A kart holds about 8 L
+#   MIN_TANK_LITERS     the smallest real fuel tank. A kart holds about 8 L
 #                       and the smallest cars here are in the tens, so a tank
-#                       under a litre is a misread number, not a car.
+#                       under a liter is a misread number, not a car.
 #
 # db.set_fuel_basis refuses against these same three, so there is no band
 # where a basis can be stored and then rejected here a session later. The
@@ -1160,7 +1160,7 @@ MAX_FUEL_RATE = 10.0
 # which is where two of the three come from.
 MIN_TRACK_LENGTH_M = 100.0
 MIN_KM_PER_LITER = 0.1
-MIN_TANK_LITRES = 1.0
+MIN_TANK_LITERS = 1.0
 
 
 def _fuel_input_error(name, value, low, high, integer=False) -> str | None:
@@ -1168,7 +1168,7 @@ def _fuel_input_error(name, value, low, high, integer=False) -> str | None:
 
     fuel_plan is reachable from an MCP tool argument, and every one of these
     used to fall straight through into arithmetic: km_per_liter=-2.18 came
-    back as litres_per_lap -2.406, a non-integer stop count raised a
+    back as liters_per_lap -2.406, a non-integer stop count raised a
     TypeError out of range(), and a stop count above the lap count produced
     stints of zero laps. None of it is reachable through the in-game app,
     all of it is reachable by any other caller, and a plan built on a
@@ -1186,7 +1186,7 @@ def _fuel_input_error(name, value, low, high, integer=False) -> str | None:
 
 
 def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
-              tank_litres: float | None = None, stops: int = 1,
+              tank_liters: float | None = None, stops: int = 1,
               margin_laps: float = 0.6,
               fuel_rate: float | None = None) -> dict:
     """Fuel for a race distance, and whether a stop is forced.
@@ -1229,9 +1229,9 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
                              MIN_KM_PER_LITER, 1000)
            or _fuel_input_error("track_length_m", track_length_m,
                                 MIN_TRACK_LENGTH_M, 1e6)
-           or (tank_litres is not None
-               and _fuel_input_error("tank_litres", tank_litres,
-                                     MIN_TANK_LITRES, 100_000))
+           or (tank_liters is not None
+               and _fuel_input_error("tank_liters", tank_liters,
+                                     MIN_TANK_LITERS, 100_000))
            or (fuel_rate is not None
                and _fuel_input_error("fuel_rate", fuel_rate, 0,
                                      MAX_FUEL_RATE)))
@@ -1248,17 +1248,17 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
     rate = 1.0 if fuel_rate is None else float(fuel_rate)
     per_lap = (track_length_m / 1000.0) / km_per_liter * rate
     out = {
-        "litres_per_lap": round(per_lap, 3),
+        "liters_per_lap": round(per_lap, 3),
         "race_laps": race_laps,
         "margin_laps": margin_laps,
         # Two totals rather than one, named for what they are. The margin
         # belongs in the number that gets put in the car; the distance on
         # its own is what to compare against someone else's arithmetic.
-        "total_litres": round(per_lap * (race_laps + margin_laps), 1),
-        "distance_litres": round(per_lap * race_laps, 1),
+        "total_liters": round(per_lap * (race_laps + margin_laps), 1),
+        "distance_liters": round(per_lap * race_laps, 1),
         "totals_include_margin": (
-            f"total_litres and laps_per_tank carry the {margin_laps:g}-lap "
-            f"margin; distance_litres and laps_per_tank_dry are the distance "
+            f"total_liters and laps_per_tank carry the {margin_laps:g}-lap "
+            f"margin; distance_liters and laps_per_tank_dry are the distance "
             f"alone. The margin covers a burn rate above the nominal figure "
             f"-- traffic, a restart -- and not a formation lap, which is a "
             f"whole lap more."),
@@ -1280,19 +1280,19 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
         out["note"] = ("fuel usage is set to 0% for this session, so nothing "
                        "is burned and no stop can be forced by fuel")
         out["stints"] = [{"stint": 1, "laps": race_laps,
-                          "start_with_litres": 0.0}]
+                          "start_with_liters": 0.0}]
         return out
 
     stints = stops + 1
-    if tank_litres:
-        dry = tank_litres / per_lap                 # laps to the last drop
+    if tank_liters:
+        dry = tank_liters / per_lap                 # laps to the last drop
         usable = dry - margin_laps                  # laps with the margin kept
-        out["tank_litres"] = tank_litres
+        out["tank_liters"] = tank_liters
         out["laps_per_tank"] = round(usable, 1)
         out["laps_per_tank_dry"] = round(dry, 1)
         if usable < 1:
             out["error"] = (
-                f"a full tank ({tank_litres:g} L) does not cover one lap "
+                f"a full tank ({tank_liters:g} L) does not cover one lap "
                 f"plus the {margin_laps:g}-lap margin at {per_lap:.3f} L/lap, "
                 f"so there is no stint plan to give")
             out["stop_required_for_fuel"] = True
@@ -1343,26 +1343,26 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
         entry = {
             "stint": i + 1,
             "laps": laps,
-            "start_with_litres" if i == 0 else "add_litres": round(add, 1),
+            "start_with_liters" if i == 0 else "add_liters": round(add, 1),
         }
-        if tank_litres and carried + add > tank_litres + 1e-9:
+        if tank_liters and carried + add > tank_liters + 1e-9:
             entry["cannot_be_fuelled"] = (
                 f"this stint needs {carried + add:.1f} L on board and the "
-                f"tank holds {tank_litres:g} L, so {laps} laps cannot be "
+                f"tank holds {tank_liters:g} L, so {laps} laps cannot be "
                 f"driven in one stint")
         # Deliberately unclamped, both here and in what carries forward. The
         # old max(0.0, ...) hid a deficit and then costed the next stint as
         # if the previous one had finished normally.
         carried = carried + add - per_lap * laps
-        entry["spare_at_end_litres"] = round(carried, 1)
+        entry["spare_at_end_liters"] = round(carried, 1)
         plan.append(entry)
     out["stints"] = plan
-    if not tank_litres:
+    if not tank_liters:
         # Nothing is known about the tank, so nothing can be said about
         # whether the distance fits in it. Saying that is not the same as
         # dropping the three keys and leaving a two-stint plan behind,
         # which reads as a stop that was reasoned about.
-        out["tank_litres"] = None
+        out["tank_liters"] = None
         out["stop_required_for_fuel"] = None
         out["note"] = (
             "tank capacity is unknown, so whether a stop is forced by fuel "
@@ -1564,12 +1564,12 @@ def _corner_clusters(laps: list[dict], tolerance: float) -> list[list[tuple]]:
     """Group one run's corner observations into pieces of road.
 
     Bucketing positions with round(pos / tol) * tol fails three ways at
-    once, all of them measured: apexes at 0.0299 and 0.0301 -- a metre apart
+    once, all of them measured: apexes at 0.0299 and 0.0301 -- a meter apart
     -- land in different buckets and each corner comes back n=2 from 3 laps; a
     bucket 105m wide swallows two genuine corners, so n=6 from 3 laps
     inflates df from 4 to 10 on samples that are not independent and the
     "corner" is the mean of a hairpin and a kink; and the reported position
-    is the bucket centre, up to half a bucket from any real apex.
+    is the bucket center, up to half a bucket from any real apex.
 
     So: group by proximity, then split any group holding two corners from
     the same lap at its widest internal gap. A car passes an apex once a

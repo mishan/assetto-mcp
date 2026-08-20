@@ -526,7 +526,7 @@ class Bridge:
                     if source not in ("app", "worker"):
                         return self._send(400, {
                             "error": "'source' must be 'app' or 'worker' -- "
-                                     "the tier decides which analyses are "
+                                     "the tier decides which analyzes are "
                                      "honest to run on the data"})
                     raw = body.get("samples")
                     if not isinstance(raw, list):
@@ -539,8 +539,8 @@ class Bridge:
 
                     samples, skipped = [], 0
                     # Out-of-range optional fields become NULL, which is
-                    # correct but invisible: if the client sent millimetres
-                    # where metres were expected, every travel field would
+                    # correct but invisible: if the client sent millimeters
+                    # where meters were expected, every travel field would
                     # silently vanish and the report would come back empty
                     # with no explanation. Count them so it reads as a units
                     # problem rather than a mystery.
@@ -573,7 +573,7 @@ class Bridge:
                         row["speed_kmh"] = opt(s, "speed_kmh", 0.0,
                                                MAX_SPEED_KMH)
                         for w in ("fl", "fr", "rl", "rr"):
-                            # Travel in metres. A metre of suspension travel
+                            # Travel in meters. A meter of suspension travel
                             # is not a car, it is a bad read.
                             row[f"travel_{w}"] = opt(s, f"travel_{w}",
                                                      -1.0, 1.0)
@@ -615,7 +615,7 @@ class Bridge:
                         reply["hint"] = ("Fields out of their expected range "
                                          "were stored as null. Travel and "
                                          "ride height are expected in "
-                                         "metres.")
+                                         "meters.")
                     return self._send(200, reply)
 
                 if self.path == "/setup":

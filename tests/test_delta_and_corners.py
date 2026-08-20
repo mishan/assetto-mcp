@@ -32,7 +32,7 @@ def _lap(n=1200, lap_ms=113000, corners=((0.15, 0.05, 2.4),
          slow_from=None, slow_to=None, slow_factor=1.0):
     """A synthetic lap: four corners, optionally slower over one stretch.
 
-    `corners` is (centre, half_width, peak_lat_g). The third is deliberately
+    `corners` is (center, half_width, peak_lat_g). The third is deliberately
     a fast sweeper -- wide, high lateral g, only a shallow speed dip -- which
     is the shape the old speed-minima detector could not see.
     """

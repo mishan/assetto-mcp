@@ -597,7 +597,7 @@ def test_out_of_range_fields_are_reported_not_just_nulled():
         conn = db.connect(path)
         br, _ = _bridge(path, conn)
         try:
-            # Millimetres where metres were expected: every travel field is
+            # Millimeters where meters were expected: every travel field is
             # out of range, so every one becomes null.
             rows = [dict(s, travel_fl=s["travel_fl"] * 1000,
                          travel_fr=s["travel_fr"] * 1000)
@@ -608,7 +608,7 @@ def test_out_of_range_fields_are_reported_not_just_nulled():
             assert code == 200, body
             assert body["stored"] == 30
             assert body["rejected_fields"]["travel_fl"] == 30, body
-            assert "metres" in body["hint"]
+            assert "meters" in body["hint"]
             print("  rejected fields reported:", body["rejected_fields"])
         finally:
             br.stop()
@@ -664,14 +664,14 @@ def test_samples_survive_the_round_trip_through_http():
             out = susp.summarise(stored, "worker")
             assert out["dampers"]["available"] is True
             assert out["dampers"]["sign_convention"]["sign"] == 1
-            print("  600 samples posted, stored and analysed")
+            print("  600 samples posted, stored and analyzed")
         finally:
             br.stop()
             conn.close()
 
 
 def test_bad_source_is_refused():
-    """The tier decides which analyses are honest, so it cannot be guessed."""
+    """The tier decides which analyzes are honest, so it cannot be guessed."""
     from support import post
     with tempfile.TemporaryDirectory() as d:
         path = Path(d) / "t.db"

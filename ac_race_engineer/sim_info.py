@@ -293,7 +293,7 @@ def fuel_facts() -> dict:
     read-only, which is otherwise the difference between a fuel plan that
     says whether a stop is forced and one that does not mention stopping.
     aidFuelRate is the multiplier a league session changes: at 50% or 200%
-    every litre-per-lap figure moves by that factor.
+    every liter-per-lap figure moves by that factor.
 
     Keys are absent rather than guessed when the game gives a value that
     cannot be one, and `fuel_rate` of 0 is a real setting -- a session that
@@ -304,7 +304,7 @@ def fuel_facts() -> dict:
         s = sim.static
         out: dict = {}
         if s.maxFuel and s.maxFuel > 0:
-            out["max_fuel_litres"] = round(float(s.maxFuel), 2)
+            out["max_fuel_liters"] = round(float(s.maxFuel), 2)
         rate = float(s.aidFuelRate)
         if 0 <= rate <= MAX_FUEL_RATE:
             out["fuel_rate"] = rate

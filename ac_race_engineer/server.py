@@ -556,23 +556,23 @@ def _fuel_basis(sid: int, session: dict) -> tuple[dict, dict]:
     setup_ranges, and is re-derivable from there with AC shut. static.maxFuel
     is a property of the session and is gone the moment the game is.
 
-    sessions.max_fuel_litres is the second of those -- its schema comment says
+    sessions.max_fuel_liters is the second of those -- its schema comment says
     so -- so only a value that actually came off the static page is written
     there. Storing a range-derived tank in it bought nothing, because the
     ranges are still in the same database on the next call, and cost the
     provenance: the number came back out later labelled "the game's maxFuel",
     a source it had never been near.
     """
-    tank, tank_source = db.tank_litres(_conn, session["car"])
-    if tank is None and session.get("max_fuel_litres"):
-        tank, tank_source = session["max_fuel_litres"], "the game's maxFuel"
+    tank, tank_source = db.tank_liters(_conn, session["car"])
+    if tank is None and session.get("max_fuel_liters"):
+        tank, tank_source = session["max_fuel_liters"], "the game's maxFuel"
     rate = session.get("fuel_rate")
     rate_source = "the game's fuel-usage assist" if rate is not None else None
 
     why = None
     if tank is None or rate is None:
         live, why = _live_fuel_facts()
-        live_tank = live.get("max_fuel_litres")
+        live_tank = live.get("max_fuel_liters")
         if tank is None and live_tank:
             tank, tank_source = live_tank, "the game's maxFuel"
         if rate is None and live.get("fuel_rate") is not None:
@@ -587,7 +587,7 @@ def _fuel_basis(sid: int, session: dict) -> tuple[dict, dict]:
             # disagree with this one. What shared memory said and nothing
             # else: `tank` may be the car's setup range, which this column
             # does not mean and setup_ranges can answer again anyway.
-            db.set_fuel_basis(_conn, sid, max_fuel_litres=live_tank,
+            db.set_fuel_basis(_conn, sid, max_fuel_liters=live_tank,
                               fuel_rate=rate)
         except ValueError:
             pass
@@ -636,13 +636,13 @@ def fuel_plan(race_laps: int, stops: int = 1,
     basis, source = _fuel_basis(sid, session)
     out = analysis.fuel_plan(
         race_laps, session.get("km_per_liter"),
-        session.get("track_length_m"), tank_litres=basis["tank"],
+        session.get("track_length_m"), tank_liters=basis["tank"],
         stops=stops, fuel_rate=basis["rate"])
     out["session_id"] = sid
     out["track"] = session["track"]
     out["car"] = session["car"]
     if basis["tank"] is not None:
-        out["tank_litres_source"] = source["tank_source"]
+        out["tank_liters_source"] = source["tank_source"]
     else:
         out["what_to_check"] = (
             "Tank capacity is unknown, so no stop verdict was possible. It "
@@ -766,7 +766,7 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
         return _j({"error": "these laps are not comparable: baseline is "
                             f"{', '.join(a_what)}, candidate is "
                             f"{', '.join(b_what)}. Track position, lap time "
-                            f"and tyre behaviour only mean the same thing "
+                            f"and tyre behavior only mean the same thing "
                             f"within one car at one layout."})
 
     # Invalid and abandoned laps, dropped by name. Both flags were sitting

@@ -26,7 +26,7 @@ ABANDON_JUMP = 0.25
 # jump larger than any teleport. completedLaps normally advances on the same
 # tick and the check below is skipped -- but not always, and one tick of lag
 # was enough to manufacture a phantom 400ms "abandoned lap" at the start of
-# every lap. Recognise the wrap by its shape instead of trusting the counter
+# every lap. Recognize the wrap by its shape instead of trusting the counter
 # to arrive first. The cost is that a teleport from the last 10% of the lap
 # is missed, which is far better than inventing one every lap.
 WRAP_HIGH = 0.9

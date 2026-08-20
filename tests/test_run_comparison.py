@@ -531,7 +531,7 @@ def test_corners_are_matched_by_position_not_by_index():
     print(f"  flagged {sorted(flagged)} and left the unchanged corner alone")
 
 
-def test_apexes_a_metre_apart_are_the_same_corner():
+def test_apexes_a_meter_apart_are_the_same_corner():
     """0.0299, 0.0300 and 0.0301 are one corner, not two.
 
     Bucketing with round(pos / 0.02) * 0.02 put 0.0299 in one bucket and the
@@ -557,7 +557,7 @@ def test_apexes_a_metre_apart_are_the_same_corner():
         assert not out["corners_in_one_run_only"], (base, out)
         paired, _, _ = analysis._compare_corners(laps, run(base), 0.01)
         assert paired[0]["tests"][0]["baseline_n"] == 3, (base, paired)
-        # The apex reported is a real one, not a bucket centre 52m from any.
+        # The apex reported is a real one, not a bucket center 52m from any.
         assert abs(paired[0]["apex_pos"] - base) < 0.0005, (base, paired[0])
     print("  three laps, one corner, n=3, wherever on track it sits")
 

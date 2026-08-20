@@ -16,7 +16,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- it, so a plan for a 200% session was quietly half the fuel needed.
     -- 1.0 is 100%; 0 is a real setting and not the same as unknown, which
     -- is why every read of these goes through IS NULL rather than falsy.
-    max_fuel_litres REAL,
+    max_fuel_liters REAL,
     fuel_rate REAL
 );
 
@@ -296,7 +296,7 @@ def _migrate(conn) -> list[str]:
             log.append("laps.complete added; existing laps marked complete")
 
     if version < 5:
-        # v5: the fuel basis, so litres per lap stops being a hand
+        # v5: the fuel basis, so liters per lap stops being a hand
         # calculation that has to be redone for every track.
         for col in ("track_length_m", "km_per_liter"):
             if col not in _columns(conn, "sessions"):
@@ -308,10 +308,25 @@ def _migrate(conn) -> list[str]:
         # entry the game reports as read-only still has a known tank, and
         # AC's fuel-usage multiplier, which decides whether a stop is needed
         # and which nothing had ever read.
-        for col in ("max_fuel_litres", "fuel_rate"):
+        for col in ("max_fuel_liters", "fuel_rate"):
             if col not in _columns(conn, "sessions"):
                 conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} REAL")
                 log.append(f"sessions.{col} added")
+
+    if version < 7:
+        # v7: max_fuel_litres -> max_fuel_liters. AC spells it LITER in the
+        # car's own fuel_cons.ini (KM_PER_LITER), so the rest of the project
+        # follows the game rather than the author.
+        #
+        # A rename rather than a fresh column: v6 shipped on a branch that
+        # was already run against a real database, so the data is there
+        # under the old name and dropping it would lose a tank capacity
+        # nobody can re-derive without the game open.
+        cols = _columns(conn, "sessions")
+        if "max_fuel_litres" in cols and "max_fuel_liters" not in cols:
+            conn.execute("ALTER TABLE sessions"
+                         " RENAME COLUMN max_fuel_litres TO max_fuel_liters")
+            log.append("sessions.max_fuel_litres renamed to max_fuel_liters")
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
@@ -474,7 +489,7 @@ def _fuel_number(name: str, value, low: float, high: float,
 
 
 def set_fuel_basis(conn, session_id: int, track_length_m=None,
-                   km_per_liter=None, max_fuel_litres=None,
+                   km_per_liter=None, max_fuel_liters=None,
                    fuel_rate=None) -> bool:
     """Record what fuel per lap can be derived from. Ignores missing values.
 
@@ -488,8 +503,8 @@ def set_fuel_basis(conn, session_id: int, track_length_m=None,
     truth, and a 0 is stored.
 
     The floors come from analysis, which is where fuel_plan checks the same
-    three. A lower bound of 0 let through a track half a metre long, a car
-    doing half a metre to the litre and a tank of a thousandth of a litre:
+    three. A lower bound of 0 let through a track half a meter long, a car
+    doing half a meter to the liter and a tank of a thousandth of a liter:
     all stored happily, all refused by fuel_plan later, so a session could
     carry a basis that was guaranteed to fail whenever anyone used it. The
     refusal belongs at the write, where the caller who supplied the number is
@@ -504,15 +519,15 @@ def set_fuel_basis(conn, session_id: int, track_length_m=None,
     km_per_liter = _fuel_number("km_per_liter", km_per_liter,
                                 analysis.MIN_KM_PER_LITER, 1000,
                                 zero_is_absent=True)
-    max_fuel_litres = _fuel_number("max_fuel_litres", max_fuel_litres,
-                                   analysis.MIN_TANK_LITRES, 100_000,
+    max_fuel_liters = _fuel_number("max_fuel_liters", max_fuel_liters,
+                                   analysis.MIN_TANK_LITERS, 100_000,
                                    zero_is_absent=True)
     fuel_rate = _fuel_number("fuel_rate", fuel_rate, 0, analysis.MAX_FUEL_RATE)
 
     sets, args = [], []
     for col, value in (("track_length_m", track_length_m),
                        ("km_per_liter", km_per_liter),
-                       ("max_fuel_litres", max_fuel_litres),
+                       ("max_fuel_liters", max_fuel_liters),
                        ("fuel_rate", fuel_rate)):
         if value is None:
             continue
@@ -531,14 +546,14 @@ def set_fuel_basis(conn, session_id: int, track_length_m=None,
     return cur.rowcount > 0
 
 
-def tank_litres(conn, car: str) -> tuple[float | None, str]:
+def tank_liters(conn, car: str) -> tuple[float | None, str]:
     """Tank capacity for a car, and where it was read from.
 
     Deliberately not setup_ranges(), which excludes read_only entries
     because writing one is silently ignored. That is right for writing a
     setup and wrong for asking how big the tank is: a car whose fuel load
     the game will not let you change still has a tank, and filtering it out
-    took tank_litres, stop_required_for_fuel and the note out of the fuel
+    took tank_liters, stop_required_for_fuel and the note out of the fuel
     plan altogether -- while leaving a two-stint plan behind, which reads as
     a stop that was reasoned about.
     """

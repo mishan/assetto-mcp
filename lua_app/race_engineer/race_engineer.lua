@@ -271,7 +271,7 @@ local function logWorkerEnvironment()
   -- multiplayer, since a script on the physics thread is a cheat vector.
   ask('online race', function() return ac.getSim().isOnlineRace end)
   ask('session type', function() return ac.getSim().raceSessionType end)
-  -- 'extended physics' used to be read here as sim.isNewBehaviourActive.
+  -- 'extended physics' used to be read here as sim.isNewBehaviorActive.
   -- That field does not exist -- checked against the CSP SDK definitions,
   -- ac.StateSim has isOnlineRace but nothing of that name -- and reading it
   -- raised, which took the whole probe down with it. physics.allowed()
@@ -746,7 +746,7 @@ end
 --
 -- trackLengthM comes from the AI spline, so it is the length the game
 -- itself believes in rather than whatever a layout is nominally called.
--- Between them the server computes litres per lap for any car and track
+-- Between them the server computes liters per lap for any car and track
 -- without being told anything.
 local function readFuelBasis()
   local out = {}
@@ -1002,17 +1002,17 @@ function windowMain(dt)
   -- for a worker that was started but never produced anything.
   -- Three states, not two. Amber is "you wanted the worker and did not get
   -- it"; online is neither that nor success, so it gets its own neutral
-  -- marker. Colouring an expected, correct condition as a warning trains
+  -- marker. Coloring an expected, correct condition as a warning trains
   -- the driver to ignore the line that matters.
-  local marker, colour
+  local marker, color
   if workerProducing then
-    marker, colour = '◆ ', rgbm(0.4, 0.9, 0.5, 1)
+    marker, color = '◆ ', rgbm(0.4, 0.9, 0.5, 1)
   elseif onlineSuppressed then
-    marker, colour = '○ ', rgbm(0.6, 0.7, 0.8, 1)
+    marker, color = '○ ', rgbm(0.6, 0.7, 0.8, 1)
   else
-    marker, colour = '◇ ', rgbm(0.8, 0.7, 0.4, 1)
+    marker, color = '◇ ', rgbm(0.8, 0.7, 0.4, 1)
   end
-  ui.textColored(marker .. suspNote, colour)
+  ui.textColored(marker .. suspNote, color)
   -- The setup feed is what makes lap attribution and clamping work, and
   -- the driver is the only one who can see whether it is running. It was
   -- being written and never shown.

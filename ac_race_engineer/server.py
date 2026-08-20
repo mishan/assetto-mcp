@@ -530,6 +530,37 @@ def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
 
 
 @mcp.tool()
+def fuel_plan(race_laps: int, stops: int = 1,
+              session_id: int | None = None) -> str:
+    """Fuel for a race distance, and the stint splits.
+
+    Uses the track length and the car's own km_per_liter, both read from
+    the game by the in-game app -- so it works at any circuit without
+    anyone looking a number up. Tank size comes from the car's setup
+    ranges, which is where the game reports it.
+
+    Reports whether a stop is forced by fuel, which is worth knowing before
+    planning around a no-stop run that was never available."""
+    sid = _active_session(session_id)
+    if sid is None:
+        return _j({"error": "no active session; pass session_id explicitly"})
+    session = db.get_session(_conn, sid)
+    if not session:
+        return _j({"error": f"no session with id {sid}"})
+
+    ranges = db.setup_ranges(_conn, session["car"])
+    tank = ranges.get("FUEL", (None, None, None))[1]
+
+    out = analysis.fuel_plan(
+        race_laps, session.get("km_per_liter"),
+        session.get("track_length_m"), tank_litres=tank, stops=stops)
+    out["session_id"] = sid
+    out["track"] = session["track"]
+    out["car"] = session["car"]
+    return _j(out)
+
+
+@mcp.tool()
 def compare_runs(baseline_laps: str, candidate_laps: str) -> str:
     """Did a setup change actually do anything, given lap-to-lap noise?
 

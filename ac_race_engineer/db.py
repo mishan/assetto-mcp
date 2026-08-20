@@ -16,7 +16,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -28,7 +28,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     tyre_compound TEXT NOT NULL DEFAULT '',
     air_temp REAL,
     road_temp REAL,
-    setup_name TEXT NOT NULL DEFAULT ''
+    setup_name TEXT NOT NULL DEFAULT '',
+    -- Enough to compute fuel per lap without being told the track. Length
+    -- comes from the AI spline; km_per_liter from the car's own
+    -- fuel_cons.ini, read through CSP so an encrypted data.acd is no
+    -- obstacle. Nullable: both arrive from the in-game app, and a missing
+    -- basis must read as unknown rather than as a plausible default.
+    track_length_m REAL,
+    km_per_liter REAL
 );
 
 -- setup_name is per-lap, not per-session: the tuning loop changes setup in
@@ -280,6 +287,14 @@ def _migrate(conn) -> list[str]:
                          " complete INTEGER NOT NULL DEFAULT 1")
             log.append("laps.complete added; existing laps marked complete")
 
+    if version < 5:
+        # v5: the fuel basis, so litres per lap stops being a hand
+        # calculation that has to be redone for every track.
+        for col in ("track_length_m", "km_per_liter"):
+            if col not in _columns(conn, "sessions"):
+                conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} REAL")
+                log.append(f"sessions.{col} added")
+
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     return log
@@ -407,6 +422,30 @@ def store_setup_snapshot(conn, session_id: int, car: str,
             (session_id, state, reason or "", now))
     conn.commit()
     return {"ranges": ranges, "values": values}
+
+
+def set_fuel_basis(conn, session_id: int, track_length_m=None,
+                   km_per_liter=None) -> bool:
+    """Record what fuel per lap can be derived from. Ignores missing values.
+
+    Deliberately partial: the track length may arrive while the car's
+    consumption figure does not, and overwriting a known value with None
+    would lose it. Absence is not an update.
+    """
+    sets, args = [], []
+    if track_length_m and track_length_m > 0:
+        sets.append("track_length_m = ?")
+        args.append(float(track_length_m))
+    if km_per_liter and km_per_liter > 0:
+        sets.append("km_per_liter = ?")
+        args.append(float(km_per_liter))
+    if not sets:
+        return False
+    args.append(session_id)
+    cur = conn.execute(
+        f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?", args)
+    conn.commit()
+    return cur.rowcount > 0
 
 
 def setup_ranges(conn, car: str) -> dict:

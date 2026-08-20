@@ -735,6 +735,35 @@ local function readSetupSpinners()
   return out
 end
 
+-- Everything needed to work out fuel per lap, read from the game rather
+-- than looked up.
+--
+-- KM_PER_LITER lives in the car's fuel_cons.ini inside data.acd. That file
+-- is encrypted for paid mods, and getting at it previously meant decrypting
+-- the archive by hand -- which worked once, for one car, and produced a
+-- number nobody could check. ac.INIConfig.carData() reads it directly:
+-- CSP already holds the key.
+--
+-- trackLengthM comes from the AI spline, so it is the length the game
+-- itself believes in rather than whatever a layout is nominally called.
+-- Between them the server computes litres per lap for any car and track
+-- without being told anything.
+local function readFuelBasis()
+  local out = {}
+  pcall(function()
+    local m = ac.getSim().trackLengthM
+    if type(m) == 'number' and m > 0 then out.track_length_m = m end
+  end)
+  pcall(function()
+    local ini = ac.INIConfig.carData(0, 'fuel_cons.ini')
+    local v = ini and ini:get('FUEL_EVAL', 'KM_PER_LITER', 0)
+    if type(v) == 'table' then v = v[1] end
+    v = tonumber(v)
+    if v and v > 0 then out.km_per_liter = v end
+  end)
+  return out
+end
+
 local function setupFingerprint(spinners)
   local parts = {}
   for _, s in ipairs(spinners) do
@@ -758,10 +787,14 @@ local function postSetup()
     if ok then state, reason = tostring(s or ''), tostring(r or '') end
   end
 
+  local fuel = readFuelBasis()
+
   setupBusy = true
   web.post(BASE .. '/setup', { ['Content-Type'] = 'application/json' },
     JSON.stringify{ car = ac.getCarID and ac.getCarID(0) or '',
-                    spinners = spinners, state = state, reason = reason },
+                    spinners = spinners, state = state, reason = reason,
+                    track_length_m = fuel.track_length_m,
+                    km_per_liter = fuel.km_per_liter },
     function(err, response)
       setupBusy = false
       local outcome = classifyReply(err, response)

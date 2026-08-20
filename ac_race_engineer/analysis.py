@@ -831,6 +831,73 @@ def _verdict(base, cand, floor):
     return out
 
 
+def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
+              tank_litres: float | None = None, stops: int = 1,
+              margin_laps: float = 0.6) -> dict:
+    """Fuel for a race distance, and whether a stop is forced.
+
+    Every number here was worked out by hand for Mugello, twice, from a
+    KM_PER_LITER decrypted out of data.acd and a track length looked up
+    rather than measured. Both now arrive from the game, so this holds for
+    any car and any circuit without being told anything.
+
+    margin_laps is deliberately fractional: arriving at the flag with two
+    thirds of a lap in hand costs about 0.02s a lap in weight and covers a
+    burn rate slightly above the nominal, which racing in traffic produces.
+    """
+    if race_laps < 1:
+        return {"error": "race_laps must be at least 1"}
+    if not km_per_liter or not track_length_m:
+        return {"error": "no fuel basis recorded for this session; the "
+                         "in-game app supplies track length and the car's "
+                         "km_per_liter"}
+
+    per_lap = (track_length_m / 1000.0) / km_per_liter
+    total = per_lap * race_laps
+    out = {
+        "litres_per_lap": round(per_lap, 3),
+        "race_laps": race_laps,
+        "total_litres": round(total, 1),
+        "track_length_km": round(track_length_m / 1000.0, 3),
+        "km_per_liter": km_per_liter,
+    }
+
+    if tank_litres:
+        out["tank_litres"] = tank_litres
+        laps_per_tank = tank_litres / per_lap
+        out["laps_per_tank"] = round(laps_per_tank, 1)
+        forced = total > tank_litres
+        out["stop_required_for_fuel"] = forced
+        out["note"] = (
+            f"a full tank covers {laps_per_tank:.1f} laps of {race_laps} -- "
+            f"the stop is mandatory, not tactical"
+            if forced else
+            f"a full tank covers {laps_per_tank:.1f} laps, so the distance "
+            f"can be run without stopping for fuel")
+
+    # An even split makes the longest stint as short as possible, which is
+    # what matters when the limit is tyre life rather than fuel.
+    stints = max(1, stops + 1)
+    base = race_laps // stints
+    stint_laps = [base + (1 if i < race_laps % stints else 0)
+                  for i in range(stints)]
+    plan, carried = [], 0.0
+    for i, laps in enumerate(stint_laps):
+        need = per_lap * (laps + margin_laps)
+        if tank_litres:
+            need = min(need, tank_litres)
+        add = max(0.0, need - carried)
+        plan.append({
+            "stint": i + 1,
+            "laps": laps,
+            "start_with_litres" if i == 0 else "add_litres": round(add, 1),
+            "spare_at_end_litres": round(carried + add - per_lap * laps, 1),
+        })
+        carried = max(0.0, carried + add - per_lap * laps)
+    out["stints"] = plan
+    return out
+
+
 def compare_runs(baseline: list[dict], candidate: list[dict],
                  corner_tolerance: float = 0.02) -> dict:
     """Did a setup change do anything, given how repeatable the driver is?

@@ -530,6 +530,67 @@ def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
 
 
 @mcp.tool()
+def compare_runs(baseline_laps: str, candidate_laps: str) -> str:
+    """Did a setup change actually do anything, given lap-to-lap noise?
+
+    Pass two comma-separated lists of lap ids -- the laps before a change
+    and the laps after. Every metric is judged against the driver's own
+    within-run spread rather than a fixed threshold, so a small run says
+    "within noise" instead of inviting a conclusion it cannot support.
+
+    Read `resolution` alongside any "within noise" answer: it is the
+    smallest change those laps could have detected. A large resolution
+    means the run was too short, not that the change did nothing.
+
+    Two laps a side is enough for a large effect on a quiet channel like
+    front load transfer, and not enough for a subtle one on lap time."""
+    def ids(raw):
+        out = []
+        for part in str(raw).replace(" ", "").split(","):
+            if part:
+                try:
+                    out.append(int(part))
+                except ValueError:
+                    raise ValueError(f"not a lap id: {part!r}")
+        return out
+
+    try:
+        a_ids, b_ids = ids(baseline_laps), ids(candidate_laps)
+    except ValueError as e:
+        return _j({"error": str(e)})
+    if not a_ids or not b_ids:
+        return _j({"error": "need lap ids on both sides"})
+
+    def summaries(lap_ids):
+        out = []
+        for lid in lap_ids:
+            lap = db.get_lap(_conn, lid)
+            if not lap:
+                raise ValueError(f"no lap with id {lid}")
+            s = analysis.lap_summary(lap, db.get_samples(_conn, lid))
+            # Front load transfer lives in the suspension block and is the
+            # quietest channel we have, so it is worth the extra query --
+            # it resolves changes lap time cannot see.
+            susp = db.get_suspension_samples(_conn, lap["session_id"],
+                                             lap["lap_number"] - 1)
+            if susp:
+                compact = suspension.compact(suspension.summarise(susp))
+                if compact:
+                    s["suspension"] = compact
+            out.append(s)
+        return out
+
+    try:
+        base, cand = summaries(a_ids), summaries(b_ids)
+    except ValueError as e:
+        return _j({"error": str(e)})
+    out = analysis.compare_runs(base, cand)
+    out["baseline_setups"] = sorted({s.get("setup") or "" for s in base})
+    out["candidate_setups"] = sorted({s.get("setup") or "" for s in cand})
+    return _j(out)
+
+
+@mcp.tool()
 def delta_by_position(lap_id_a: int, lap_id_b: int,
                       segments: int = 20) -> str:
     """Where lap_b gained or lost time against lap_a, along the whole track.

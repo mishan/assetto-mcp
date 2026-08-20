@@ -752,6 +752,155 @@ def _last_covered(delta: list, lo: int, hi: int) -> int | None:
     return None
 
 
+# Two-tailed t for 95%, by degrees of freedom. Small samples are punished
+# hard on purpose: with two laps a side (df=2) the multiplier is 4.30, so
+# only a large effect clears the band. That is the honest answer to "can I
+# test a change in two laps" -- yes for a big one, no for a subtle one, and
+# the number says which rather than leaving it to be guessed.
+_T95 = {1: 12.71, 2: 4.30, 3: 3.18, 4: 2.78, 5: 2.57, 6: 2.45, 7: 2.36,
+        8: 2.31, 9: 2.26, 10: 2.23, 12: 2.18, 15: 2.13, 20: 2.09, 30: 2.04}
+
+
+def _t_crit(df: int) -> float:
+    if df < 1:
+        return float("inf")
+    for k in sorted(_T95):
+        if df <= k:
+            return _T95[k]
+    return 1.96
+
+
+# What to pull out of a lap summary, and how much of a change is worth
+# reporting at all. `floor` guards against a run that happens to be very
+# repeatable declaring a physically meaningless difference significant.
+RUN_METRICS = [
+    ("lap_time_ms", "lap time", ("lap_time_ms",), 1.0, "ms"),
+    ("slip_balance", "slip balance", ("overall_slip_balance",), 0.02, ""),
+    ("front_load_transfer_pct", "front load transfer",
+     ("suspension", "front_load_transfer_pct"), 0.1, "%"),
+    ("fl_core_temp", "front-left core temp",
+     ("tyres", "fl", "core_temp_avg"), 0.2, "C"),
+    ("fl_pressure_end", "front-left end pressure",
+     ("tyres", "fl", "pressure_end"), 0.05, "psi"),
+    ("top_speed_kmh", "top speed", ("top_speed_kmh",), 0.3, "km/h"),
+    ("peak_lat_g", "peak lateral g", ("peak_lat_g",), 0.02, "g"),
+    ("coasting_pct", "coasting", ("time_coasting_pct",), 0.2, "%"),
+]
+
+
+def _dig(d: dict, path):
+    for key in path:
+        if not isinstance(d, dict):
+            return None
+        d = d.get(key)
+    return d if isinstance(d, (int, float)) else None
+
+
+def _stats(values):
+    n = len(values)
+    if n == 0:
+        return 0, None, None
+    mean = sum(values) / n
+    if n < 2:
+        return n, mean, None
+    var = sum((v - mean) ** 2 for v in values) / (n - 1)
+    return n, mean, math.sqrt(var)
+
+
+def _verdict(base, cand, floor):
+    """Did it move further than this driver's own repeatability?"""
+    n1, m1, s1 = _stats(base)
+    n2, m2, s2 = _stats(cand)
+    out = {"baseline_n": n1, "candidate_n": n2}
+    if n1 == 0 or n2 == 0:
+        return {**out, "verdict": "not measured"}
+    out["baseline"] = round(m1, 3)
+    out["candidate"] = round(m2, 3)
+    out["change"] = round(m2 - m1, 3)
+    if n1 < 2 or n2 < 2:
+        return {**out, "verdict": "need at least 2 laps a side to see noise"}
+
+    # Pooled within-run spread: how much this metric moves when nothing
+    # changed. That is the yardstick, not any absolute threshold.
+    df = n1 + n2 - 2
+    pooled_var = ((n1 - 1) * s1 ** 2 + (n2 - 1) * s2 ** 2) / df
+    se = math.sqrt(pooled_var) * math.sqrt(1 / n1 + 1 / n2)
+    band = max(_t_crit(df) * se, floor)
+    out["noise_band"] = round(band, 3)
+    out["verdict"] = ("moved" if abs(m2 - m1) > band else "within noise")
+    return out
+
+
+def compare_runs(baseline: list[dict], candidate: list[dict],
+                 corner_tolerance: float = 0.02) -> dict:
+    """Did a setup change do anything, given how repeatable the driver is?
+
+    Lap time is the noisiest instrument on the car. Measured spread across
+    four laps of an unchanged setup runs 0.3-0.6s, so a change worth less
+    than roughly half a second cannot be seen in a short run however
+    carefully it is driven -- while front load transfer moved 2.2 points
+    for a rear bar change against under 0.3 of noise. Same run, same laps,
+    an order of magnitude difference in what each channel can resolve.
+
+    So every metric is judged against its own within-run spread rather than
+    against a fixed threshold, and `resolution` reports the smallest change
+    the run could have detected. A "within noise" answer with a large
+    resolution means the run was too short, not that the change did nothing.
+    """
+    if not baseline or not candidate:
+        return {"error": "need laps on both sides of the comparison"}
+
+    metrics = {}
+    for key, label, path, floor, units in RUN_METRICS:
+        b = [v for v in (_dig(l, path) for l in baseline) if v is not None]
+        c = [v for v in (_dig(l, path) for l in candidate) if v is not None]
+        r = _verdict(b, c, floor)
+        r["label"] = label
+        if units:
+            r["units"] = units
+        if "noise_band" in r:
+            r["resolution"] = r["noise_band"]
+        metrics[key] = r
+
+    # Corners, matched by track position rather than by index: the detector
+    # can find a different number of corners on different laps, so corner 3
+    # is not reliably the same piece of road twice.
+    def by_bucket(laps, field):
+        out: dict[float, list[float]] = {}
+        for lap in laps:
+            for c in lap.get("corners") or []:
+                pos, val = c.get("apex_pos"), c.get(field)
+                if pos is None or val is None:
+                    continue
+                out.setdefault(round(pos / corner_tolerance) * corner_tolerance,
+                               []).append(val)
+        return out
+
+    corners = []
+    b_bal, c_bal = by_bucket(baseline, "slip_balance"), \
+        by_bucket(candidate, "slip_balance")
+    b_spd, c_spd = by_bucket(baseline, "min_speed_kmh"), \
+        by_bucket(candidate, "min_speed_kmh")
+    for pos in sorted(set(b_bal) & set(c_bal)):
+        bal = _verdict(b_bal[pos], c_bal[pos], 0.05)
+        spd = _verdict(b_spd.get(pos, []), c_spd.get(pos, []), 0.5)
+        if bal.get("verdict") == "moved" or spd.get("verdict") == "moved":
+            corners.append({"apex_pos": round(pos, 3),
+                            "slip_balance": bal, "min_speed_kmh": spd})
+
+    moved = [m["label"] for m in metrics.values() if m.get("verdict") == "moved"]
+    return {
+        "baseline_laps": len(baseline),
+        "candidate_laps": len(candidate),
+        "metrics": metrics,
+        "corners_that_moved": corners,
+        "summary": (f"{len(moved)} metric(s) moved beyond this driver's own "
+                    f"lap-to-lap spread: {', '.join(moved)}" if moved else
+                    "nothing moved beyond noise; check each metric's "
+                    "resolution before concluding the change did nothing"),
+    }
+
+
 def compare_laps(lap_a: dict, samples_a: list[dict],
                  lap_b: dict, samples_b: list[dict]) -> dict:
     """Corner-by-corner comparison of two laps, matched by track position."""

@@ -561,7 +561,8 @@ def fuel_plan(race_laps: int, stops: int = 1,
 
 
 @mcp.tool()
-def compare_runs(baseline_laps: str, candidate_laps: str) -> str:
+def compare_runs(baseline_laps: str, candidate_laps: str,
+                 include_invalid: bool = False) -> str:
     """Did a setup change actually do anything, given lap-to-lap noise?
 
     Pass two comma-separated lists of lap ids -- the laps before a change
@@ -569,12 +570,40 @@ def compare_runs(baseline_laps: str, candidate_laps: str) -> str:
     within-run spread rather than a fixed threshold, so a small run says
     "within noise" instead of inviting a conclusion it cannot support.
 
-    Read `resolution` alongside any "within noise" answer: it is the
-    smallest change those laps could have detected. A large resolution
-    means the run was too short, not that the change did nothing.
+    The eight metrics are one family, corrected together: read
+    `p_value_adjusted` against 0.05 rather than each metric's own
+    `p_value`. Only a metric may be described as having moved.
 
-    Two laps a side is enough for a large effect on a quiet channel like
-    front load transfer, and not enough for a subtle one on lap time."""
+    `corner_leads` is EXPLORATORY and asserts nothing. Those p-values are
+    uncorrected, roughly 5% of unchanged corner tests come back "worth a
+    look", and 77.6% of fifteen-corner runs with nothing changed at all
+    carried at least one. A lead says where to look when a metric moved;
+    it is not a finding on its own, and must not be reported as one.
+
+    Read `resolution` alongside any "within noise" answer: it is the
+    smallest change those laps could have detected about half the time. A
+    large resolution means the run was too short, not that the change did
+    nothing, and `power` says how likely the change actually measured was
+    to be caught at all. "Suggestive" is the third answer: the metric
+    cleared 95% on its own but not the corrected level, which means run it
+    again with more laps rather than that nothing happened.
+
+    Both sides must be the same car at the same track and layout, and laps
+    that were invalidated or abandoned before the line are dropped and
+    named. include_invalid=True keeps them, which is almost always wrong:
+    an abandoned lap's time is wall-clock elapsed, not a lap time.
+
+    What a "within noise" is worth, measured against this driver's own
+    spread and unaffected by how many corners the circuit has. A 2.2-point
+    front load transfer change -- a rear anti-roll bar, against 0.3 of
+    lap-to-lap noise -- is caught 29% of the time at two laps a side and
+    97% at three. A 500ms lap gain, against a 0.25s spread, is caught 3%
+    at two laps, 11% at three, 39% at five and 77% at eight. So two laps a
+    side is a real test on a quiet channel and no test at all on lap time,
+    three is the realistic minimum, and a null lap-time answer from under
+    five or six laps is not evidence the change did nothing. That is not
+    this tool being strict, it is what a lap time is worth as an
+    instrument."""
     def ids(raw):
         out = []
         for part in str(raw).replace(" ", "").split(","):
@@ -592,13 +621,74 @@ def compare_runs(baseline_laps: str, candidate_laps: str) -> str:
     if not a_ids or not b_ids:
         return _j({"error": "need lap ids on both sides"})
 
-    def summaries(lap_ids):
+    def fetch(lap_ids):
         out = []
         for lid in lap_ids:
             lap = db.get_lap(_conn, lid)
             if not lap:
                 raise ValueError(f"no lap with id {lid}")
-            s = analysis.lap_summary(lap, db.get_samples(_conn, lid))
+            out.append(lap)
+        return out
+
+    try:
+        base_laps, cand_laps = fetch(a_ids), fetch(b_ids)
+    except ValueError as e:
+        return _j({"error": str(e)})
+
+    # Track, layout and car, before anything is measured. norm_pos 0.6 is a
+    # different corner at a different circuit and a different one again on
+    # another layout of the same one, and lap times from two cars are not on
+    # the same scale at all -- a Suzuka MX-5 run against a Mugello F4 run
+    # came back "moved", -37.3s, stated as confidently as a real result. The
+    # payload never said which track or car either side was, so there was
+    # nothing in it to notice the mistake by.
+    def where(lap):
+        cfg = lap.get("track_config") or ""
+        return (lap.get("track") or "?") + (f"/{cfg}" if cfg else "")
+
+    def what(laps):
+        return sorted({f"{where(l)} in {l.get('car') or '?'}" for l in laps})
+
+    a_what, b_what = what(base_laps), what(cand_laps)
+    if len(set(a_what + b_what)) > 1:
+        return _j({"error": "these laps are not comparable: baseline is "
+                            f"{', '.join(a_what)}, candidate is "
+                            f"{', '.join(b_what)}. Track position, lap time "
+                            f"and tyre behaviour only mean the same thing "
+                            f"within one car at one layout."})
+
+    # Invalid and abandoned laps, dropped by name. Both flags were sitting
+    # in the row unread: one off-track lap in a 3v3 with a true 500ms gain
+    # turned it into "within noise", change -1620ms; one lap abandoned
+    # before the line -- whose stored lap_time_ms is wall-clock elapsed, not
+    # a lap time -- turned it into "within noise", change +17630ms.
+    dropped = []
+
+    def usable(lap, side):
+        why = []
+        if not lap.get("complete", 1):
+            why.append("abandoned before the line, so its time is elapsed "
+                       "wall clock rather than a lap time")
+        if not lap.get("valid"):
+            why.append("invalidated -- off track or a cut")
+        if not why:
+            return True
+        dropped.append({"lap_id": lap["id"], "side": side,
+                        "lap_number": lap.get("lap_number"),
+                        "reason": "; ".join(why)})
+        return False
+
+    def summaries(laps, side):
+        out = []
+        for lap in laps:
+            if not include_invalid and not usable(lap, side):
+                continue
+            s = analysis.lap_summary(lap, db.get_samples(_conn, lap["id"]))
+            if "error" in s:
+                dropped.append({"lap_id": lap["id"], "side": side,
+                                "lap_number": lap.get("lap_number"),
+                                "reason": "no telemetry samples stored"})
+                continue
             # Front load transfer lives in the suspension block and is the
             # quietest channel we have, so it is worth the extra query --
             # it resolves changes lap time cannot see.
@@ -611,11 +701,25 @@ def compare_runs(baseline_laps: str, candidate_laps: str) -> str:
             out.append(s)
         return out
 
-    try:
-        base, cand = summaries(a_ids), summaries(b_ids)
-    except ValueError as e:
-        return _j({"error": str(e)})
+    base = summaries(base_laps, "baseline")
+    cand = summaries(cand_laps, "candidate")
+    if not base or not cand:
+        return _j({"error": "no usable laps left on "
+                            + ("both sides" if not base and not cand else
+                               "the baseline side" if not base else
+                               "the candidate side")
+                            + " after dropping invalid and abandoned laps",
+                   "excluded_laps": dropped})
+
     out = analysis.compare_runs(base, cand)
+    out["track"] = where(base_laps[0])
+    out["car"] = base_laps[0].get("car")
+    if dropped:
+        out["excluded_laps"] = dropped
+    if include_invalid:
+        out["warning"] = ("include_invalid=True: invalid and abandoned laps "
+                          "were kept, and an abandoned lap's time is elapsed "
+                          "wall clock, not a lap time")
     out["baseline_setups"] = sorted({s.get("setup") or "" for s in base})
     out["candidate_setups"] = sorted({s.get("setup") or "" for s in cand})
     return _j(out)

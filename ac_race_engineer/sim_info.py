@@ -203,6 +203,29 @@ class _Page:
             pass
 
 
+def page_is_live(static) -> bool:
+    """Has AC actually written this static page, or is it freshly zeroed?
+
+    Split out so it can be tested off Windows, where SimInfo refuses to
+    construct at all and this condition is therefore unreachable.
+
+    smVersion is the shared-memory layout version. AC writes it once when
+    the session starts and it is never blank in a running game, so an empty
+    string means nobody has written here -- which is exactly what Windows
+    hands back for a mapping it created on our behalf.
+    """
+    return bool(getattr(static, "smVersion", "").strip())
+
+
+class SharedMemoryUnavailable(RuntimeError):
+    """AC's shared memory could not be read as a running session.
+
+    A RuntimeError so existing `except RuntimeError` paths keep working --
+    the not-on-Windows refusal below already raised one, and callers that
+    treated that as "no live data" should treat this the same way.
+    """
+
+
 class SimInfo:
     """Handle to all three AC shared memory pages."""
 
@@ -215,6 +238,26 @@ class SimInfo:
         self._physics = _Page("Local\\acpmf_physics", SPageFilePhysics)
         self._graphics = _Page("Local\\acpmf_graphics", SPageFileGraphic)
         self._static = _Page("Local\\acpmf_static", SPageFileStatic)
+
+        # Opening the mapping is not evidence that AC is running.
+        #
+        # mmap.mmap(-1, size, tag) on Windows *creates* a page-file-backed
+        # mapping when nothing owns that name, and only attaches to AC's if
+        # it already exists. With the game closed every read therefore
+        # succeeds and returns zeros -- which is not an error anywhere, it
+        # is a car with no fuel, no tyres and a session that burns nothing.
+        # aidFuelRate came back as 0.0, the fuel planner read it as a
+        # legitimate "0% fuel usage" league setting, and produced a plan
+        # that needed no fuel at all.
+        #
+        # On Linux the constructor above refuses outright, so this only
+        # ever bit Windows -- the one platform this actually runs on.
+        if not page_is_live(self._static.data):
+            self.close()
+            raise SharedMemoryUnavailable(
+                "Assetto Corsa's shared memory is empty -- the game does "
+                "not appear to be running. (The mapping opened, but Windows "
+                "creates it on demand, so that proves nothing.)")
 
     @property
     def physics(self) -> SPageFilePhysics:

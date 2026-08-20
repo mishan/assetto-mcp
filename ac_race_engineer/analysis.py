@@ -1126,9 +1126,40 @@ def _report(entry):
     return entry
 
 
+# AC's fuel-usage assist, as a multiplier: 1.0 is 100%, 0.5 the half-rate
+# setting a league runs to make a long race a no-stopper, 0 a practice
+# session that burns nothing. Bounded because anything past this is not a
+# multiplier -- it is a misread page, or a percentage nobody converted --
+# and quietly multiplying every figure here by 100 is worse than refusing.
+MAX_FUEL_RATE = 10.0
+
+
+def _fuel_input_error(name, value, low, high, integer=False) -> str | None:
+    """Why `value` is not a usable number for `name`, or None if it is.
+
+    fuel_plan is reachable from an MCP tool argument, and every one of these
+    used to fall straight through into arithmetic: km_per_liter=-2.18 came
+    back as litres_per_lap -2.406, a non-integer stop count raised a
+    TypeError out of range(), and a stop count above the lap count produced
+    stints of zero laps. None of it is reachable through the in-game app,
+    all of it is reachable by any other caller, and a plan built on a
+    negative burn rate is indistinguishable from a good one until it is
+    driven.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return f"{name} must be a number, got {value!r}"
+    if integer and value != int(value):
+        return f"{name} must be a whole number, got {value!r}"
+    # NaN fails this too: every comparison against it is False.
+    if not low <= value <= high:
+        return f"{name} must be between {low:g} and {high:g}, got {value!r}"
+    return None
+
+
 def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
               tank_litres: float | None = None, stops: int = 1,
-              margin_laps: float = 0.6) -> dict:
+              margin_laps: float = 0.6,
+              fuel_rate: float | None = None) -> dict:
     """Fuel for a race distance, and whether a stop is forced.
 
     Every number here was worked out by hand for Mugello, twice, from a
@@ -1139,57 +1170,170 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
     margin_laps is deliberately fractional: arriving at the flag with two
     thirds of a lap in hand costs about 0.02s a lap in weight and covers a
     burn rate slightly above the nominal, which racing in traffic produces.
+    It is applied to the totals and to the no-stop verdict as well as to the
+    stints. Deciding "no stop needed" at exactly total == tank, from a
+    function whose own stints ask for 0.6 lap more than that, told drivers
+    the distance was reachable on a plan that arrives at the flag dry.
+
+    The stop count is a floor, not an instruction. Asking for one stop over
+    a distance needing three used to return two stints, "the stop" singular,
+    and a negative number in a field called spare -- a plan that cannot be
+    driven, presented as a plan.
+
+    fuel_rate is AC's fuel-usage multiplier. None means it was not reported,
+    which is said in the payload rather than assumed away: at 200% every
+    figure here is half what the car needs.
     """
-    if race_laps < 1:
-        return {"error": "race_laps must be at least 1"}
+    bad = (_fuel_input_error("race_laps", race_laps, 1, 100_000, integer=True)
+           or _fuel_input_error("stops", stops, 0, 1000, integer=True)
+           or _fuel_input_error("margin_laps", margin_laps, 0, 100))
+    if bad:
+        return {"error": bad}
     if not km_per_liter or not track_length_m:
         return {"error": "no fuel basis recorded for this session; the "
                          "in-game app supplies track length and the car's "
                          "km_per_liter"}
+    bad = (_fuel_input_error("km_per_liter", km_per_liter, 0.001, 1000)
+           or _fuel_input_error("track_length_m", track_length_m, 1, 1e6)
+           or (tank_litres is not None
+               and _fuel_input_error("tank_litres", tank_litres, 0.001,
+                                     100_000))
+           or (fuel_rate is not None
+               and _fuel_input_error("fuel_rate", fuel_rate, 0,
+                                     MAX_FUEL_RATE)))
+    if bad:
+        return {"error": bad}
+    if stops >= race_laps:
+        return {"error": f"{stops} stops means {stops + 1} stints over "
+                         f"{race_laps} laps, and a stint of no laps is not a "
+                         f"stint"}
 
-    per_lap = (track_length_m / 1000.0) / km_per_liter
-    total = per_lap * race_laps
+    # 22.0 laps and 1.0 stops are whole numbers that arithmetic below would
+    # otherwise carry into a range() call and a lap count of 11.0.
+    race_laps, stops = int(race_laps), int(stops)
+    rate = 1.0 if fuel_rate is None else float(fuel_rate)
+    per_lap = (track_length_m / 1000.0) / km_per_liter * rate
     out = {
         "litres_per_lap": round(per_lap, 3),
         "race_laps": race_laps,
-        "total_litres": round(total, 1),
+        "margin_laps": margin_laps,
+        # Two totals rather than one, named for what they are. The margin
+        # belongs in the number that gets put in the car; the distance on
+        # its own is what to compare against someone else's arithmetic.
+        "total_litres": round(per_lap * (race_laps + margin_laps), 1),
+        "distance_litres": round(per_lap * race_laps, 1),
+        "totals_include_margin": (
+            f"total_litres and laps_per_tank carry the {margin_laps:g}-lap "
+            f"margin; distance_litres and laps_per_tank_dry are the distance "
+            f"alone. The margin covers a burn rate above the nominal figure "
+            f"-- traffic, a restart -- and not a formation lap, which is a "
+            f"whole lap more."),
         "track_length_km": round(track_length_m / 1000.0, 3),
         "km_per_liter": km_per_liter,
+        "fuel_rate_pct": None if fuel_rate is None else round(rate * 100, 1),
     }
+    if fuel_rate is None:
+        out["fuel_rate_unknown"] = (
+            "AC's fuel-usage multiplier was not reported, so every figure "
+            "here assumes 100%. A 50% session needs half of this and a 200% "
+            "session twice it, which is usually the thing that decides "
+            "whether a stop is needed at all.")
 
+    if per_lap <= 0:
+        # A real setting, and the one case where the rest of this is a
+        # division by zero rather than a plan.
+        out["stop_required_for_fuel"] = False
+        out["note"] = ("fuel usage is set to 0% for this session, so nothing "
+                       "is burned and no stop can be forced by fuel")
+        out["stints"] = [{"stint": 1, "laps": race_laps,
+                          "start_with_litres": 0.0}]
+        return out
+
+    stints = stops + 1
     if tank_litres:
+        dry = tank_litres / per_lap                 # laps to the last drop
+        usable = dry - margin_laps                  # laps with the margin kept
         out["tank_litres"] = tank_litres
-        laps_per_tank = tank_litres / per_lap
-        out["laps_per_tank"] = round(laps_per_tank, 1)
-        forced = total > tank_litres
+        out["laps_per_tank"] = round(usable, 1)
+        out["laps_per_tank_dry"] = round(dry, 1)
+        if usable < 1:
+            out["error"] = (
+                f"a full tank ({tank_litres:g} L) does not cover one lap "
+                f"plus the {margin_laps:g}-lap margin at {per_lap:.3f} L/lap, "
+                f"so there is no stint plan to give")
+            out["stop_required_for_fuel"] = True
+            return out
+
+        longest = int(math.floor(usable))            # laps one stint can hold
+        needed_stints = math.ceil(race_laps / longest)
+        forced = needed_stints > 1
         out["stop_required_for_fuel"] = forced
+        out["minimum_stops"] = needed_stints - 1
         out["note"] = (
-            f"a full tank covers {laps_per_tank:.1f} laps of {race_laps} -- "
-            f"the stop is mandatory, not tactical"
+            f"a full tank covers {usable:.1f} laps of {race_laps} with the "
+            f"margin intact ({dry:.1f} to the last drop), so "
+            + (f"{needed_stints - 1} stops are mandatory, not tactical"
+               if needed_stints > 2 else
+               "the stop is mandatory, not tactical")
             if forced else
-            f"a full tank covers {laps_per_tank:.1f} laps, so the distance "
-            f"can be run without stopping for fuel")
+            f"a full tank covers {usable:.1f} laps with the margin intact, "
+            f"so the distance can be run without stopping for fuel")
+
+        if stints < needed_stints:
+            # Never the caller's number when the caller's number cannot be
+            # driven. Clamping each stint to the tank instead, which is what
+            # this did, produced a two-stint plan for a three-stop race whose
+            # only symptom was a negative number in a field called spare.
+            out["stops_requested"] = stops
+            out["stops_planned"] = needed_stints - 1
+            out["stops_note"] = (
+                f"{stops} stop{'' if stops == 1 else 's'} cannot cover "
+                f"{race_laps} laps: a tank reaches {longest} laps with the "
+                f"margin intact, so at least {needed_stints - 1} "
+                f"{'is' if needed_stints == 2 else 'are'} required. Planned "
+                f"with {needed_stints - 1}.")
+            stints = needed_stints
 
     # An even split makes the longest stint as short as possible, which is
     # what matters when the limit is tyre life rather than fuel.
-    stints = max(1, stops + 1)
     base = race_laps // stints
     stint_laps = [base + (1 if i < race_laps % stints else 0)
                   for i in range(stints)]
     plan, carried = [], 0.0
     for i, laps in enumerate(stint_laps):
+        # Fuel goes in at a stop and never comes out, so a stint that starts
+        # with more than it needs adds nothing -- but it is never short of
+        # what it needs, and nothing is clamped to the tank here.
         need = per_lap * (laps + margin_laps)
-        if tank_litres:
-            need = min(need, tank_litres)
         add = max(0.0, need - carried)
-        plan.append({
+        entry = {
             "stint": i + 1,
             "laps": laps,
             "start_with_litres" if i == 0 else "add_litres": round(add, 1),
-            "spare_at_end_litres": round(carried + add - per_lap * laps, 1),
-        })
-        carried = max(0.0, carried + add - per_lap * laps)
+        }
+        if tank_litres and carried + add > tank_litres + 1e-9:
+            entry["cannot_be_fuelled"] = (
+                f"this stint needs {carried + add:.1f} L on board and the "
+                f"tank holds {tank_litres:g} L, so {laps} laps cannot be "
+                f"driven in one stint")
+        # Deliberately unclamped, both here and in what carries forward. The
+        # old max(0.0, ...) hid a deficit and then costed the next stint as
+        # if the previous one had finished normally.
+        carried = carried + add - per_lap * laps
+        entry["spare_at_end_litres"] = round(carried, 1)
+        plan.append(entry)
     out["stints"] = plan
+    if not tank_litres:
+        # Nothing is known about the tank, so nothing can be said about
+        # whether the distance fits in it. Saying that is not the same as
+        # dropping the three keys and leaving a two-stint plan behind,
+        # which reads as a stop that was reasoned about.
+        out["tank_litres"] = None
+        out["stop_required_for_fuel"] = None
+        out["note"] = (
+            "tank capacity is unknown, so whether a stop is forced by fuel "
+            "could not be worked out. The stints below split the distance as "
+            "asked and have not been checked against a tank.")
     return out
 
 

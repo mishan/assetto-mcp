@@ -290,9 +290,13 @@ def identify_setup(session_id: int | None = None) -> str:
         return _j({"error": f"no session with id {sid}"})
 
     values = db.setup_values(_conn, sid)
+    # Both names, because neither is reliably the folder on disk: at some
+    # circuits track_config is the whole id ("mugello_osrw") and at others
+    # the bare layout ("layout_moto"), where the folder is `track`.
     out = setups.identify_setup(
         AC_DOCS_DIR, session["car"],
-        session.get("track_config") or session["track"], values)
+        session.get("track_config") or session["track"], values,
+        track_folder=session["track"])
     out["session_id"] = sid
     out["live_values"] = len(values)
     state = db.setup_state(_conn, sid)
@@ -529,6 +533,54 @@ def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
         b, db.get_samples(_conn, lap_id_b)))
 
 
+def _live_fuel_facts() -> tuple[dict, str | None]:
+    """Tank size and fuel rate straight from shared memory, or why not.
+
+    Only consulted when the session does not already know them. AC is
+    running whenever this tool is useful, and these two are static-page
+    constants, so reading them here beats waiting for a value that only
+    arrives if the in-game app happens to be installed.
+    """
+    try:
+        from .sim_info import fuel_facts
+        return fuel_facts(), None
+    except Exception as e:  # AC not running, or not Windows
+        return {}, f"{type(e).__name__}: {e}"
+
+
+def _fuel_basis(sid: int, session: dict) -> tuple[dict, dict]:
+    """Tank capacity and fuel rate for a session, and where each came from."""
+    tank, tank_source = db.tank_litres(_conn, session["car"])
+    if tank is None and session.get("max_fuel_litres"):
+        tank, tank_source = session["max_fuel_litres"], "the game's maxFuel"
+    rate = session.get("fuel_rate")
+    rate_source = "the game's fuel-usage assist" if rate is not None else None
+
+    why = None
+    if tank is None or rate is None:
+        live, why = _live_fuel_facts()
+        if tank is None and live.get("max_fuel_litres"):
+            tank, tank_source = live["max_fuel_litres"], "the game's maxFuel"
+        if rate is None and live.get("fuel_rate") is not None:
+            rate = live["fuel_rate"]
+            rate_source = "the game's fuel-usage assist"
+        if live.get("fuel_rate_unusable") is not None:
+            why = (f"the game reported a fuel-usage multiplier of "
+                   f"{live['fuel_rate_unusable']}, which cannot be one")
+        try:
+            # Remember them on the session so the next call does not depend
+            # on AC still being open, and so a later plan cannot silently
+            # disagree with this one.
+            db.set_fuel_basis(_conn, sid, max_fuel_litres=tank,
+                              fuel_rate=rate)
+        except ValueError:
+            pass
+
+    return ({"tank": tank, "rate": rate},
+            {"tank_source": tank_source, "rate_source": rate_source,
+             "why_not": why})
+
+
 @mcp.tool()
 def fuel_plan(race_laps: int, stops: int = 1,
               session_id: int | None = None) -> str:
@@ -537,10 +589,27 @@ def fuel_plan(race_laps: int, stops: int = 1,
     Uses the track length and the car's own km_per_liter, both read from
     the game by the in-game app -- so it works at any circuit without
     anyone looking a number up. Tank size comes from the car's setup
-    ranges, which is where the game reports it.
+    ranges, or from shared memory when the game reports the fuel entry as
+    one the driver cannot change.
 
-    Reports whether a stop is forced by fuel, which is worth knowing before
+    stops is a floor, not an instruction: a distance needing three stops is
+    planned with three however few were asked for, and says so. Reports
+    whether a stop is forced by fuel, which is worth knowing before
     planning around a no-stop run that was never available."""
+    # The MCP argument is annotated int, which is a description of the tool
+    # rather than a guarantee about the call. A negative or fractional stop
+    # count used to fall through into a silently coerced plan.
+    for name, value in (("race_laps", race_laps), ("stops", stops)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                or value != int(value):
+            return _j({"error": f"{name} must be a whole number, "
+                                f"got {value!r}"})
+    race_laps, stops = int(race_laps), int(stops)
+    if race_laps < 1:
+        return _j({"error": "race_laps must be at least 1"})
+    if stops < 0:
+        return _j({"error": f"stops cannot be negative, got {stops}"})
+
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
@@ -548,15 +617,29 @@ def fuel_plan(race_laps: int, stops: int = 1,
     if not session:
         return _j({"error": f"no session with id {sid}"})
 
-    ranges = db.setup_ranges(_conn, session["car"])
-    tank = ranges.get("FUEL", (None, None, None))[1]
-
+    basis, source = _fuel_basis(sid, session)
     out = analysis.fuel_plan(
         race_laps, session.get("km_per_liter"),
-        session.get("track_length_m"), tank_litres=tank, stops=stops)
+        session.get("track_length_m"), tank_litres=basis["tank"],
+        stops=stops, fuel_rate=basis["rate"])
     out["session_id"] = sid
     out["track"] = session["track"]
     out["car"] = session["car"]
+    if basis["tank"] is not None:
+        out["tank_litres_source"] = source["tank_source"]
+    else:
+        out["what_to_check"] = (
+            "Tank capacity is unknown, so no stop verdict was possible. It "
+            "comes from the car's FUEL setup entry once the in-game app has "
+            "seen the setup menu, or from shared memory while AC is running"
+            + (f". Reading it here failed: {source['why_not']}"
+               if source["why_not"] else "."))
+    if basis["rate"] is not None:
+        out["fuel_rate_source"] = source["rate_source"]
+    elif source["why_not"] and basis["tank"] is not None:
+        # Only when it is not already the headline above: one cause,
+        # reported once.
+        out["fuel_rate_not_read"] = source["why_not"]
     return _j(out)
 
 

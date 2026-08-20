@@ -93,20 +93,92 @@ def setups_root(ac_docs_dir: Path) -> Path:
     return ac_docs_dir / "setups"
 
 
-def list_setups(ac_docs_dir: Path, car: str, track: str) -> list[str]:
+def setup_dir(ac_docs_dir: Path, car: str, track: str,
+              loose: bool = True) -> Path | None:
+    """The folder holding this car's setups for this track, if there is one.
+
+    Returns the real directory rather than the name it was asked for. A
+    loose match can land on a folder called something else entirely, and
+    every caller then has to read from *that* -- listing one folder and
+    reading from another is how identification once searched a directory it
+    could not open and reported finding nothing.
+    """
     d = setups_root(ac_docs_dir) / car / track
-    if not d.is_dir():
-        # AC uses plain track dir for default layout, "track/layout" dirs
-        # otherwise; try a loose match so callers don't have to know.
-        parent = setups_root(ac_docs_dir) / car
-        if parent.is_dir():
-            hits = [p for p in parent.iterdir()
-                    if p.is_dir() and p.name.startswith(track)]
-            if len(hits) == 1:
-                d = hits[0]
-    if not d.is_dir():
-        return []
-    return sorted(p.stem for p in d.glob("*.ini"))
+    if d.is_dir():
+        return d
+    if not loose:
+        return None
+    # AC uses plain track dir for default layout, "track/layout" dirs
+    # otherwise; try a loose match so callers don't have to know.
+    parent = setups_root(ac_docs_dir) / car
+    if parent.is_dir():
+        hits = [p for p in parent.iterdir()
+                if p.is_dir() and p.name.startswith(track)]
+        if len(hits) == 1:
+            return hits[0]
+    return None
+
+
+def list_setups(ac_docs_dir: Path, car: str, track: str) -> list[str]:
+    d = setup_dir(ac_docs_dir, car, track)
+    return sorted(p.stem for p in d.glob("*.ini")) if d else []
+
+
+def _track_candidates(track: str) -> list[str]:
+    """A track id, then the same id with trailing suffixes stripped.
+
+    AC ids come in two shapes: `<track>_<layout>` for what the original game
+    shipped ("mugello_osrw"), and `<vendor>_<track>[_<layout>]` for
+    everything since ("ks_nordschleife_endurance"). Taking the text before
+    the FIRST underscore reads the second shape as its vendor tag -- "ks",
+    which is not a folder in any install -- so that fallback only ever
+    resolved the first shape, and the first shape is the one circuit it was
+    developed against.
+
+    Stripping the LAST suffix instead walks ks_barcelona_layout_moto ->
+    ks_barcelona_layout -> ks_barcelona -> ks, reaching the real folder in a
+    step or two whichever shape the id has.
+
+    The bare vendor tag is left at the end of the list rather than filtered
+    out, because _resolve_track_dir matches every shortened candidate
+    EXACTLY. "ks" as a prefix would match whichever ks_ folder that car
+    happens to have setups in -- reading another circuit's setups and
+    reporting a confident match -- while "ks" as a folder name exists
+    nowhere, so an exact match can never accept it. Screening by a list of
+    known vendor tags would need maintaining for every mod pack; requiring
+    the folder to actually be called that does not, and it protects
+    "mugello" and "spa", which are single segments and real folders.
+    """
+    parts = [p for p in track.split("_") if p]
+    return ["_".join(parts[:i]) for i in range(len(parts), 0, -1)]
+
+
+def _resolve_track_dir(ac_docs_dir: Path, car: str,
+                       *tracks: str) -> tuple[str, list[str]]:
+    """Pick the setup folder for the first track id that has one.
+
+    Takes several ids because a session reports the layout two ways and
+    neither is reliably the folder name: `trackConfiguration` is the whole
+    id at some circuits ("mugello_osrw") and the bare layout at others
+    ("layout_moto"), while `track` is the folder for the latter and too
+    generic for the former.
+    """
+    tried: list[str] = []
+    for track in tracks:
+        for i, cand in enumerate(_track_candidates(track or "")):
+            if cand in tried:
+                continue
+            tried.append(cand)
+            # The full id gets the loose, starts-with match -- that is what
+            # finds a "track/layout" folder from a plain track name. The
+            # shortened ones do not: see _track_candidates.
+            d = setup_dir(ac_docs_dir, car, cand, loose=(i == 0))
+            if d is None:
+                continue
+            names = sorted(p.stem for p in d.glob("*.ini"))
+            if names:
+                return d.name, names
+    return (tracks[0] if tracks else ""), []
 
 
 def read_setup(ac_docs_dir: Path, car: str, track: str, name: str) -> dict:
@@ -153,7 +225,7 @@ def resolve_ranges(ranges_dir: Path, car: str,
 
 
 def identify_setup(ac_docs_dir: Path, car: str, track: str,
-                   values: dict) -> dict:
+                   values: dict, track_folder: str | None = None) -> dict:
     """Which saved setup matches the values currently on the car.
 
     Matching is on content, not on a fingerprint of a couple of observable
@@ -164,25 +236,23 @@ def identify_setup(ac_docs_dir: Path, car: str, track: str,
 
     Never guesses: several matches are reported as several, and the caller
     is expected to ask rather than pick one.
+
+    track is whatever the session calls the layout; track_folder is the
+    plain track name when the session knows it separately. Which of the two
+    is the folder on disk varies by circuit, so both are tried.
     """
     if not values:
         return {"match": None, "candidates": [], "compared": 0,
                 "reason": "no live setup values; is the in-game app running?"}
 
-    # Sessions report a layout id ('mugello_osrw') while setups are filed
-    # under the track folder ('mugello'). list_setups matches a directory
-    # that STARTS WITH what it is given, which is the wrong direction for a
-    # layout id, so fall back to the part before the underscore.
-    #
-    # The resolved folder has to be used for reading as well as listing:
-    # fixing only the listing left every read_setup() raising
-    # FileNotFoundError and being skipped, so identification still found
-    # nothing while looking like it had searched.
-    track_dir = track
-    names = list_setups(ac_docs_dir, car, track_dir)
-    if not names and "_" in track:
-        track_dir = track.split("_", 1)[0]
-        names = list_setups(ac_docs_dir, car, track_dir)
+    # Sessions report a layout id ('mugello_osrw', 'ks_silverstone_gp')
+    # while setups are filed under the track folder. The resolved folder has
+    # to be used for reading as well as listing: fixing only the listing
+    # left every read_setup() raising FileNotFoundError and being skipped,
+    # so identification still found nothing while looking like it had
+    # searched.
+    track_dir, names = _resolve_track_dir(ac_docs_dir, car, track,
+                                          track_folder or "")
     # At least half of what the game reports, and never fewer than one --
     # a car with a single adjustable entry is identified by that entry.
     needed = max(1, math.ceil(MIN_IDENTIFY_COVERAGE * len(values)))
@@ -213,7 +283,16 @@ def identify_setup(ac_docs_dir: Path, car: str, track: str,
 
     out = {"candidates": [e["name"] for e in exact],
            "compared": min((e["compared"] for e in exact), default=0),
-           "near_misses": sorted(near, key=lambda n: len(n["differs_in"]))[:3]}
+           "near_misses": sorted(near, key=lambda n: len(n["differs_in"]))[:3],
+           # Always reported, and reported even when nothing matched. A
+           # fallback that quietly reads a different track's setups looks
+           # exactly like one that read the right folder, and the answer it
+           # gives is a setup name with no way to tell where it came from.
+           "track_dir": track_dir or None}
+    if track_dir and track_dir != track:
+        out["track_dir_note"] = (
+            f"the session reports the layout as {track!r}, which is not a "
+            f"setup folder; read {track_dir!r} instead")
     if thin:
         out["too_few_fields_to_judge"] = sorted(
             thin, key=lambda t: -t["compared"])[:3]
@@ -230,6 +309,16 @@ def identify_setup(ac_docs_dir: Path, car: str, track: str,
                 f"car's {len(values)} live entries, which is not enough to "
                 f"identify one -- agreeing on a handful of shared fields "
                 f"says little about the rest")
+        elif not names:
+            # Distinct from "nothing matched": one says the saved setups
+            # disagree with the car, the other that there were none to read.
+            # They call for opposite next steps, and answering both with
+            # "no saved setup matches the car" is what made a broken folder
+            # lookup look like a genuine result.
+            out["reason"] = (
+                f"no setup folder for {car!r} at {track!r} -- nothing was "
+                f"there to compare against, which is not the same as nothing "
+                f"matching")
         else:
             out["reason"] = "no saved setup matches the car"
     return out

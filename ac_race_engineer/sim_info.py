@@ -232,3 +232,44 @@ class SimInfo:
         self._physics.close()
         self._graphics.close()
         self._static.close()
+
+
+# AC reports the fuel-usage assist as a multiplier, 1.0 being 100%. Anything
+# past this is not one -- a misread page, or a percentage that was never
+# converted -- and scaling a whole fuel plan by 100 without noticing is far
+# worse than reporting the rate as unknown, so out-of-range values are
+# handed back raw for the caller to report rather than used.
+MAX_FUEL_RATE = 10.0
+
+
+def fuel_facts() -> dict:
+    """Tank capacity and the session's fuel-usage multiplier.
+
+    Both sit on the static page and neither had ever been read. maxFuel is
+    the answer when the game reports the car's FUEL setup entry as
+    read-only, which is otherwise the difference between a fuel plan that
+    says whether a stop is forced and one that does not mention stopping.
+    aidFuelRate is the multiplier a league session changes: at 50% or 200%
+    every litre-per-lap figure moves by that factor.
+
+    Keys are absent rather than guessed when the game gives a value that
+    cannot be one, and `fuel_rate` of 0 is a real setting -- a session that
+    burns nothing -- so callers must test it against None, not for truth.
+    """
+    sim = SimInfo()
+    try:
+        s = sim.static
+        out: dict = {}
+        if s.maxFuel and s.maxFuel > 0:
+            out["max_fuel_litres"] = round(float(s.maxFuel), 2)
+        rate = float(s.aidFuelRate)
+        if 0 <= rate <= MAX_FUEL_RATE:
+            out["fuel_rate"] = rate
+        else:
+            out["fuel_rate_unusable"] = rate
+        return out
+    finally:
+        # Release the ctypes view before closing the mapping, as
+        # live_snapshot does: from_buffer() keeps an export on the mmap.
+        s = None
+        sim.close()

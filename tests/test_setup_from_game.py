@@ -427,5 +427,29 @@ def test_read_only_entries_are_not_offered_as_writable():
         conn.close()
 
 
+def test_identify_falls_back_from_a_layout_id_to_the_track_folder():
+    """Sessions report track_config like 'mugello_osrw'; setups live under
+    'mugello'. list_setups matches directories that START WITH what it is
+    given, which is the wrong direction for a layout id -- so identifying a
+    setup returned nothing at all while 30 live values sat there unused.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        vals = {"ARB_FRONT": 126607, "ARB_REAR": 47839}
+        _write_setup_file(root, "rss_formula_rss_4", "mugello",
+                          "claude_arb_v1", vals)
+
+        # The layout id, as a session actually reports it.
+        got = setups.identify_setup(root, "rss_formula_rss_4",
+                                    "mugello_osrw", dict(vals))
+        assert got["match"] == "claude_arb_v1", got
+
+        # And the plain folder name still works.
+        got = setups.identify_setup(root, "rss_formula_rss_4", "mugello",
+                                    dict(vals))
+        assert got["match"] == "claude_arb_v1", got
+        print("  layout id and track folder both resolve")
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

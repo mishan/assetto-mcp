@@ -169,14 +169,27 @@ def identify_setup(ac_docs_dir: Path, car: str, track: str,
         return {"match": None, "candidates": [], "compared": 0,
                 "reason": "no live setup values; is the in-game app running?"}
 
-    names = list_setups(ac_docs_dir, car, track)
+    # Sessions report a layout id ('mugello_osrw') while setups are filed
+    # under the track folder ('mugello'). list_setups matches a directory
+    # that STARTS WITH what it is given, which is the wrong direction for a
+    # layout id, so fall back to the part before the underscore.
+    #
+    # The resolved folder has to be used for reading as well as listing:
+    # fixing only the listing left every read_setup() raising
+    # FileNotFoundError and being skipped, so identification still found
+    # nothing while looking like it had searched.
+    track_dir = track
+    names = list_setups(ac_docs_dir, car, track_dir)
+    if not names and "_" in track:
+        track_dir = track.split("_", 1)[0]
+        names = list_setups(ac_docs_dir, car, track_dir)
     # At least half of what the game reports, and never fewer than one --
     # a car with a single adjustable entry is identified by that entry.
     needed = max(1, math.ceil(MIN_IDENTIFY_COVERAGE * len(values)))
     exact, near, thin = [], [], []
     for name in names:
         try:
-            saved = read_setup(ac_docs_dir, car, track, name)
+            saved = read_setup(ac_docs_dir, car, track_dir, name)
         except (FileNotFoundError, ValueError):
             continue
         saved = {k: v for k, v in saved.items()

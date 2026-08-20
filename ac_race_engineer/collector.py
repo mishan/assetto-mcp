@@ -12,6 +12,26 @@ from . import analysis, db
 
 TARGET_HZ = 25  # plenty for setup work; keeps the DB small
 
+# A backwards jump in track position this large, with the lap counter not
+# advancing, is a teleport: a reset to the pits, a retirement, or the car
+# being returned after a crash. Comfortably above the noise in
+# normalizedCarPosition. A legitimate line crossing is a bigger jump still,
+# and usually advances completedLaps on the same tick, so it usually never
+# reaches this check -- usually, because the counter can lag the position by
+# a tick. That is what the wrap window below is for; this threshold on its
+# own does not rule a line crossing out.
+ABANDON_JUMP = 0.25
+
+# Crossing the line sends norm_pos from ~1.0 to ~0.0, which is a backwards
+# jump larger than any teleport. completedLaps normally advances on the same
+# tick and the check below is skipped -- but not always, and one tick of lag
+# was enough to manufacture a phantom 400ms "abandoned lap" at the start of
+# every lap. Recognise the wrap by its shape instead of trusting the counter
+# to arrive first. The cost is that a teleport from the last 10% of the lap
+# is missed, which is far better than inventing one every lap.
+WRAP_HIGH = 0.9
+WRAP_LOW = 0.1
+
 # The outlier rule lives in analysis so the same definition is used both
 # here (at write time) and by db.revalidate_outlier_laps (over laps stored
 # before the rule existed). Marking a lap invalid only excludes it from
@@ -36,6 +56,7 @@ class Collector:
         self.session_id: int | None = None
         self.last_session_id: int | None = None
         self.laps_recorded = 0
+        self.abandoned_laps = 0
         self.last_error: str | None = None
         # Observable progress. These exist so "has the collector noticed
         # yet?" is answerable rather than something callers have to guess at
@@ -117,6 +138,7 @@ class Collector:
         last_completed = None
         lap_start_wall = None
         last_packet = -1
+        last_pos = None
 
         while not self._stop.is_set():
             g = sim.graphics
@@ -162,6 +184,7 @@ class Collector:
                 )
                 session_started = True
                 last_completed = g.completedLaps
+                last_pos = None
                 lap_samples = []
                 lap_dirty = False
                 lap_pitted = False
@@ -202,8 +225,47 @@ class Collector:
                 lap_dirty = False
                 lap_pitted = False
                 lap_start_wall = time.monotonic()
+                # Forget the previous position too. The lap counter and the
+                # position wrap do not land on the same tick, so keeping
+                # ~0.98 here and meeting ~0.01 next time round looks exactly
+                # like a teleport -- and clearing lap_samples alone did not
+                # prevent it, because a sample or two arrives in between.
+                last_pos = None
                 self.current_lap_dirty = False
                 self.current_lap_pitted = False
+
+            # Did the car leave the lap without finishing it?
+            #
+            # A crash, a retirement, or a reset to the pits teleports the car
+            # backwards down the spline without completedLaps advancing. The
+            # samples were simply dropped, so the one lap a driver most wants
+            # to look at -- the one that ended in the barrier -- was the only
+            # one guaranteed not to be stored. Keep it, marked incomplete.
+            #
+            # Crossing the line also sends norm_pos from ~1.0 to ~0.0. It
+            # usually advances completedLaps first, which resets lap_samples
+            # above and settles the matter -- but when the counter lags a
+            # tick it does not, so it is the wrap window just below, not the
+            # reset above, that keeps a line crossing out of this check.
+            pos = g.normalizedCarPosition
+            wrapped = (last_pos is not None
+                       and last_pos > WRAP_HIGH and pos < WRAP_LOW)
+            if (lap_samples and last_pos is not None and not wrapped
+                    and not g.isInPitLane
+                    and last_pos - pos > ABANDON_JUMP):
+                elapsed = int((time.monotonic() - lap_start_wall) * 1000)
+                db.store_lap(self._conn, self.session_id,
+                             last_completed + 1, elapsed, False,
+                             lap_samples, complete=False)
+                self.laps_recorded += 1
+                self.abandoned_laps += 1
+                lap_samples = []
+                lap_dirty = False
+                lap_pitted = False
+                lap_start_wall = time.monotonic()
+                self.current_lap_dirty = False
+                self.current_lap_pitted = False
+            last_pos = pos
 
             # A lap containing a pit visit is wall-clock nonsense -- the
             # 4:34 and 10:22 "valid" laps in testing were both stops. Note it

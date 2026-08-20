@@ -307,5 +307,45 @@ def test_partial_coverage_is_surfaced():
     print(f"  coverage reported as {result['track_coverage_pct']}%")
 
 
+def test_metadata_on_the_first_sample_is_not_erased_by_later_ones():
+    """A whole race produced rival rows with no names and no lap times.
+
+    The Lua app stamps driver name, car model and lap times onto the FIRST
+    sample of each car in a batch -- carrying them on all ten samples a
+    second doubled the JSON it serialises on the render thread. The server
+    collapsed the batch to one row per car with last-write-wins, so every
+    later entry's blanks overwrote the real values.
+
+    Merging per field keeps freshest-wins for lap_count, which really does
+    ride on every sample, without letting an absent field erase a present
+    one.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        conn = db.connect(Path(d) / "t.db")
+        sid = make_session(conn)
+
+        drivers = [
+            {"car_index": 1, "driver_name": "Ben B",
+             "car_model": "rss_formula_rss_4", "best_lap_ms": 112100,
+             "last_lap_ms": 112400, "lap_count": 5},
+            {"car_index": 1, "driver_name": "", "car_model": "",
+             "best_lap_ms": None, "last_lap_ms": None, "lap_count": 5},
+            {"car_index": 1, "driver_name": "", "car_model": "",
+             "best_lap_ms": None, "last_lap_ms": None, "lap_count": 6},
+        ]
+        db.store_rival_batch(conn, sid, drivers, [
+            {"car_index": 1, "lap_count": 6, "spline": 0.5,
+             "speed_kmh": 180.0}])
+
+        r = db.list_rivals(conn, sid)[0]
+        assert r["driver_name"] == "Ben B", r["driver_name"]
+        assert r["car_model"] == "rss_formula_rss_4", r["car_model"]
+        assert r["best_lap_ms"] == 112100, r["best_lap_ms"]
+        assert r["lap_count"] == 6, "the newest lap counter must still win"
+        print(f"  kept {r['driver_name']!r} and best {r['best_lap_ms']}ms "
+              f"while lap_count advanced to {r['lap_count']}")
+        conn.close()
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

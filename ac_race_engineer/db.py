@@ -16,7 +16,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -41,7 +41,13 @@ CREATE TABLE IF NOT EXISTS laps (
     lap_time_ms INTEGER NOT NULL,
     valid INTEGER NOT NULL DEFAULT 1,
     completed_at REAL NOT NULL,
-    setup_name TEXT NOT NULL DEFAULT ''
+    setup_name TEXT NOT NULL DEFAULT '',
+    -- 0 for a lap that never reached the finish line: a crash, a reset to
+    -- the pits, or recording stopped mid-lap. Those samples used to be
+    -- discarded, which meant the single most interesting lap of a session
+    -- -- the one that ended in the barrier -- was the only one guaranteed
+    -- not to be recorded.
+    complete INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS samples (
@@ -265,6 +271,14 @@ def _migrate(conn) -> list[str]:
     # EXISTS below covers it, so there is no ALTER step here. Recorded so
     # the next person can see the version was accounted for rather than
     # skipped.
+
+    if version < 4:
+        # v4: laps.complete, so an abandoned lap can be stored rather than
+        # thrown away. Existing rows all reached the line by definition.
+        if "complete" not in _columns(conn, "laps"):
+            conn.execute("ALTER TABLE laps ADD COLUMN"
+                         " complete INTEGER NOT NULL DEFAULT 1")
+            log.append("laps.complete added; existing laps marked complete")
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
@@ -512,7 +526,7 @@ def session_setup(conn, session_id: int) -> str:
 
 def store_lap(conn, session_id: int, lap_number: int, lap_time_ms: int,
               valid: bool, samples: list[tuple],
-              setup_name: str | None = None) -> int:
+              setup_name: str | None = None, complete: bool = True) -> int:
     """Store a completed lap and its samples.
 
     setup_name defaults to whatever set_session_setup last recorded for this
@@ -524,9 +538,9 @@ def store_lap(conn, session_id: int, lap_number: int, lap_time_ms: int,
         setup_name = session_setup(conn, session_id)
     cur = conn.execute(
         "INSERT INTO laps (session_id, lap_number, lap_time_ms, valid,"
-        " completed_at, setup_name) VALUES (?,?,?,?,?,?)",
+        " completed_at, setup_name, complete) VALUES (?,?,?,?,?,?,?)",
         (session_id, lap_number, lap_time_ms, int(valid), time.time(),
-         setup_name or ""),
+         setup_name or "", int(complete)),
     )
     lap_id = cur.lastrowid
     placeholders = ",".join("?" * len(SAMPLE_COLUMNS))
@@ -595,11 +609,27 @@ def store_rival_batch(conn, session_id, drivers: list[dict],
     """
     now = time.time()
 
+    # Merge per field rather than letting the last entry win outright.
+    #
+    # Last-write-wins was correct for lap_count, which rides on every
+    # sample, and wrong for everything else. The Lua app stamps the driver
+    # name, car model and lap times onto the *first* sample of each car per
+    # batch -- carrying them on all ten samples a second doubled the JSON it
+    # serialises on the render thread -- so every later entry holds blanks.
+    # Taking the last one therefore overwrote every real value with an empty
+    # string or a null, which is why a whole race produced rival rows with
+    # no names and no lap times.
+    #
+    # Merging keeps "freshest wins" where a field actually repeats, without
+    # letting an absent field erase a present one.
     by_car: dict[int, dict] = {}
     for d in drivers:
-        # Last write wins: entries arrive in sample order, so this keeps the
-        # freshest lap counters within the batch.
-        by_car[d["car_index"]] = d
+        merged = by_car.setdefault(d["car_index"], {})
+        for key, value in d.items():
+            if value is None or value == "":
+                continue          # absence is not an update
+            merged[key] = value
+        merged["car_index"] = d["car_index"]
 
     for car_index, d in by_car.items():
         prev = conn.execute(

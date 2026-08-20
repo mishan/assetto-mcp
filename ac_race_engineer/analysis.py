@@ -752,6 +752,664 @@ def _last_covered(delta: list, lo: int, hi: int) -> int | None:
     return None
 
 
+# --- Student's t, computed rather than looked up -----------------------
+#
+# This was a fourteen-entry table of 95% critical values with a lookup that
+# rounded an untabulated df UP to the next key, so df=21 was judged at
+# df=20's 2.09 and anything past df=30 at 1.96 -- always the smaller
+# multiplier, always erring toward calling a change real. That is the wrong
+# direction for a tool whose entire job is refusing to overclaim.
+#
+# The table also could not express any confidence level other than 95%,
+# which is the thing that had to change: one run asks eight questions of the
+# same laps, so each one is judged at 0.05/8 or thereabouts, and there is no
+# table of those. A p-value function answers at any level.
+#
+# The regularised incomplete beta is all that is needed, and math.lgamma
+# makes it about forty lines of standard library. No numpy, no scipy: the
+# gaming PC gets a stock Python and nothing else. Checked against
+# scipy.stats.t across df 1..40 and t 0..8, worst absolute disagreement
+# 2.8e-14; the critical values against scipy.stats.t.isf, worst relative
+# disagreement 7.3e-15.
+
+
+def _betacf(a: float, b: float, x: float) -> float:
+    """Continued fraction for the incomplete beta (Lentz's method)."""
+    maxit, eps, tiny = 400, 3e-16, 1e-300
+    qab, qap, qam = a + b, a + 1.0, a - 1.0
+    c, d = 1.0, 1.0 - qab * x / qap
+    if abs(d) < tiny:
+        d = tiny
+    d = 1.0 / d
+    h = d
+    for m in range(1, maxit + 1):
+        m2 = 2 * m
+        for num in (m * (b - m) * x / ((qam + m2) * (a + m2)),
+                    -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))):
+            d = 1.0 + num * d
+            if abs(d) < tiny:
+                d = tiny
+            c = 1.0 + num / c
+            if abs(c) < tiny:
+                c = tiny
+            d = 1.0 / d
+            step = d * c
+            h *= step
+        if abs(step - 1.0) < eps:
+            break
+    return h
+
+
+def _betainc(a: float, b: float, x: float) -> float:
+    """Regularised incomplete beta I_x(a, b)."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    front = math.exp(math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+                     + a * math.log(x) + b * math.log1p(-x))
+    # The continued fraction converges quickly on only one side of this
+    # point, so the far side is evaluated through the symmetry instead.
+    if x < (a + 1.0) / (a + b + 2.0):
+        return front * _betacf(a, b, x) / a
+    return 1.0 - front * _betacf(b, a, 1.0 - x) / b
+
+
+def _t_p_value(t: float, df: int) -> float:
+    """Two-tailed p for a t statistic: P(|T| >= |t|) under no difference."""
+    if df < 1:
+        return 1.0
+    t = abs(t)
+    if not math.isfinite(t):
+        return 0.0
+    return _betainc(df / 2.0, 0.5, df / (df + t * t))
+
+
+def _t_crit(df: int, alpha: float) -> float:
+    """The |t| a two-tailed test at level `alpha` has to clear."""
+    if df < 1 or alpha <= 0.0:
+        return float("inf")
+    if alpha >= 1.0:
+        return 0.0
+    lo, hi = 0.0, 2.0
+    while _t_p_value(hi, df) > alpha:      # p falls monotonically in t
+        lo, hi = hi, hi * 2.0
+        if hi > 1e300:
+            return float("inf")
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if mid <= lo or mid >= hi:
+            break
+        if _t_p_value(mid, df) > alpha:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def _phi(z: float) -> float:
+    return 0.5 * math.erfc(-z / math.sqrt(2.0))
+
+
+def _t_power(delta: float, df: int, t_crit: float, steps: int = 200) -> float:
+    """Chance a true difference of `delta` standard errors gets flagged.
+
+    `resolution` alone is misleading: it is the detection threshold, so a
+    real change exactly that size is called out about half the time -- 56%
+    at df=4, measured. This is what puts a number on it for the difference a
+    run actually measured: a noncentral t tail, integrated over the sampling
+    distribution of the pooled spread rather than pretending that spread is
+    known. Checked against scipy.stats.nct for df 2..40 at several levels,
+    worst absolute disagreement 3.7e-7.
+    """
+    if df < 1 or not math.isfinite(t_crit):
+        return 0.0
+    delta = abs(delta)
+    top = 1.0 + 14.0 / math.sqrt(df)       # covers the chi density's mass
+    logc = (-(df / 2.0) * math.log(2.0) - math.lgamma(df / 2.0)
+            + math.log(2.0 * df))
+
+    def f(u):                              # u = s/sigma
+        if u <= 0.0:
+            return 0.0
+        lg = (logc + (df / 2.0 - 1.0) * math.log(df * u * u)
+              - df * u * u / 2.0 + math.log(u))
+        g = math.exp(lg) if lg > -700 else 0.0
+        return g * (_phi(delta - t_crit * u) + _phi(-t_crit * u - delta))
+
+    # Two panels. When the threshold is strict the rejection region collapses
+    # into a sliver near u=0, and a single evenly spaced rule walks straight
+    # past it -- that error reached 1e-2, which is visible in a reported
+    # figure.
+    split = min(top, max(4.0, delta + 4.0) / t_crit)
+    total = 0.0
+    for lo, hi in ((0.0, split), (split, top)):
+        if hi <= lo:
+            continue
+        h = (hi - lo) / steps
+        acc = 0.0
+        for i in range(steps + 1):
+            w = 1 if i in (0, steps) else (4 if i % 2 else 2)
+            acc += w * f(lo + i * h)
+        total += acc * h / 3.0
+    return min(1.0, max(0.0, total))
+
+
+def _sig(x: float, digits: int = 3) -> float:
+    """Round to significant figures: p-values are useless rounded to 3dp."""
+    if not x or not math.isfinite(x):
+        return x
+    return round(x, -int(math.floor(math.log10(abs(x)))) + digits - 1)
+
+
+# What to pull out of a lap summary, and how much of a change is worth
+# reporting at all. `floor` guards against a run that happens to be very
+# repeatable declaring a physically meaningless difference significant.
+RUN_METRICS = [
+    ("lap_time_ms", "lap time", ("lap_time_ms",), 1.0, "ms"),
+    ("slip_balance", "slip balance", ("overall_slip_balance",), 0.02, ""),
+    ("front_load_transfer_pct", "front load transfer",
+     ("suspension", "front_load_transfer_pct"), 0.1, "%"),
+    ("fl_core_temp", "front-left core temp",
+     ("tyres", "fl", "core_temp_avg"), 0.2, "C"),
+    ("fl_pressure_end", "front-left end pressure",
+     ("tyres", "fl", "pressure_end"), 0.05, "psi"),
+    ("top_speed_kmh", "top speed", ("top_speed_kmh",), 0.3, "km/h"),
+    ("peak_lat_g", "peak lateral g", ("peak_lat_g",), 0.02, "g"),
+    ("coasting_pct", "coasting", ("time_coasting_pct",), 0.2, "%"),
+]
+
+
+def _dig(d: dict, path):
+    for key in path:
+        if not isinstance(d, dict):
+            return None
+        d = d.get(key)
+    return d if isinstance(d, (int, float)) else None
+
+
+def _stats(values):
+    n = len(values)
+    if n == 0:
+        return 0, None, None
+    mean = sum(values) / n
+    if n < 2:
+        return n, mean, None
+    var = sum((v - mean) ** 2 for v in values) / (n - 1)
+    return n, mean, math.sqrt(var)
+
+
+# Family-wise confidence. The confirmatory family is RUN_METRICS and
+# nothing else, so this is the chance of ANY false "moved" among the
+# metrics, and it does not change with how many corners the circuit has.
+FAMILY_ALPHA = 0.05
+
+# Key holding a test's raw ingredients until the whole family is known. It
+# is stripped before the payload goes out -- a verdict cannot be reached
+# metric by metric any more, so the measurement and the judgement have to be
+# separate passes.
+_TEST = "_test"
+
+# Clears 95% on its own, does not clear the corrected level. Reporting this
+# as "within noise" throws away the one part of a null answer that is
+# actionable: "no evidence" and "not enough laps yet" call for opposite
+# next steps, and only one of them is worth running the test again for.
+SUGGESTIVE = "suggestive -- clears 95% alone, not after correction"
+
+# How many corners the exploratory list carries. Fifteen corners on two
+# channels is thirty tests, and a payload that prints all of them buries
+# the eight that were actually judged.
+CORNER_LEADS_SHOWN = 6
+
+
+def _measure(base, cand, floor):
+    """Measure one channel. The verdict waits until the family is known.
+
+    Splitting this out is the whole point: judging each metric the moment it
+    was measured is what made a run of 38 questions answer "something moved"
+    82.5% of the time with nothing changed. Nothing here decides anything --
+    that is _holm for a confirmatory test and _explore for an exploratory
+    one, and neither can run until every question has been asked.
+    """
+    n1, m1, s1 = _stats(base)
+    n2, m2, s2 = _stats(cand)
+    out = {"baseline_n": n1, "candidate_n": n2}
+    if n1 == 0 or n2 == 0:
+        return {**out, "verdict": "not measured"}
+    out["baseline"] = round(m1, 3)
+    out["candidate"] = round(m2, 3)
+    out["change"] = round(m2 - m1, 3)
+    if n1 < 2 or n2 < 2:
+        return {**out, "verdict": "need at least 2 laps a side to see noise"}
+
+    # Pooled within-run spread: how much this metric moves when nothing
+    # changed. That is the yardstick, not any absolute threshold.
+    df = n1 + n2 - 2
+    pooled_var = ((n1 - 1) * s1 ** 2 + (n2 - 1) * s2 ** 2) / df
+    se = math.sqrt(pooled_var) * math.sqrt(1 / n1 + 1 / n2)
+    diff = m2 - m1
+    # Two runs that each repeated exactly is not evidence of anything on its
+    # own -- t is infinite for any difference at all -- which is exactly the
+    # case the floor below exists to catch.
+    t = (0.0 if not diff else math.inf * (1 if diff > 0 else -1)) \
+        if se <= 0 else diff / se
+    out[_TEST] = {"df": df, "se": se, "t": t, "diff": diff, "floor": floor,
+                  "sd": math.sqrt(pooled_var), "p": _t_p_value(t, df)}
+    return out
+
+
+def _effect(t) -> float:
+    """The change in units of the channel's own lap-to-lap spread.
+
+    Ranks corners against each other, which p cannot do across channels
+    measured on different numbers of laps, and which the raw change cannot
+    do across channels measured in different units. A run that repeated
+    exactly has no spread to divide by and sorts first.
+    """
+    if t["sd"] <= 0:
+        return math.inf if t["diff"] else 0.0
+    return abs(t["diff"]) / t["sd"]
+
+
+def _holm(entries, alpha=FAMILY_ALPHA):
+    """Holm-Bonferroni across the confirmatory family, then decide.
+
+    The family is the run metrics, and only those. Everything here is a
+    trade between two ways of being wrong, and both of them were measured
+    on this project's own figures -- a 0.25s lap-time spread, a rear
+    anti-roll bar moving front load transfer 2.2 points against under 0.3
+    of noise -- at a fifteen-corner circuit.
+
+    Judging each of 38 tests at 95% on its own and reporting whatever
+    cleared: the per-test false-positive rate was a correct 5%, and the
+    chance of a null run naming something that had "moved beyond this
+    driver's own lap-to-lap spread" was 82.5%. Four runs in five, and the
+    summary line stated it as fact.
+
+    Correcting across all 38 fixed that -- 4.8% -- and cost more than it
+    bought. At alpha/38 a real 2.2-point load transfer change was caught 7%
+    of the time at two laps a side and 70% at three; a real 500ms lap gain,
+    3% at three laps a side. A two-lap test on a quiet channel is the
+    premise of this whole tool, and 7% is not a test, it is a coin weighted
+    against finding anything. An 82.5% false-positive rate traded for a 93%
+    false-negative rate on the headline case is not an improvement.
+
+    What inflated 8 into 38 was the corners, and the corners are not
+    hypotheses. They answer "where did it change", which only has an answer
+    once something changed; they are diagnostic detail on the metrics, not
+    38 independent claims. So they are exploratory (see _explore): measured,
+    ranked, reported with an uncorrected p and no verdict, and not counted
+    in the family. The confirmatory family stays at 8 however many corners
+    the track has, which is the other half of the point -- Suzuka must not
+    be a stricter test of a rear bar change than a corner-free oval.
+
+    Measured on the design that shipped, over 2500 null runs at fifteen
+    corners: the chance of a false confirmatory "moved" anywhere in the
+    payload is 5.0%. At alpha/8 the load transfer change is caught 29% of
+    the time at two laps a side and 97% at three, and the 500ms lap gain
+    11% at three laps and 39% at five. Lap time is still a poor instrument;
+    it is just no longer a poor instrument made worse by the corner count.
+
+    Holm rather than plain Bonferroni because it is uniformly more powerful
+    at the same guarantee, and power is scarce here: these are two- and
+    three-lap runs. Sorted ascending, test i is judged at alpha/(m-i), and
+    the step-down is expressed as an adjusted p-value so each metric can
+    still carry its own evidence.
+    """
+    m = len(entries)
+    running = 0.0
+    for rank, e in enumerate(sorted(entries, key=lambda x: x[_TEST]["p"])):
+        t = e[_TEST]
+        running = max(running, min(1.0, (m - rank) * t["p"]))
+        t["p_adj"] = running
+        # The level this one test is really being held to, defined so that
+        # "p below it" and "Holm rejects" are the same statement. That
+        # identity is what lets `resolution` be reported in the metric's own
+        # units from the same alpha the verdict came from, rather than the
+        # two being computed separately and drifting apart.
+        t["alpha_used"] = (alpha / m if t["p"] <= 0
+                           else min(alpha, alpha * t["p"] / running))
+        real = abs(t["diff"]) > t["floor"]
+        e["verdict"] = ("moved" if real and running <= alpha
+                        else SUGGESTIVE if real and t["p"] <= alpha
+                        else "within noise")
+
+
+def _explore(entries, alpha=FAMILY_ALPHA):
+    """Judge an exploratory test on its own, uncorrected, and say so.
+
+    No correction, because these are not members of the family and nothing
+    in the payload asserts them: `lead` says where to look next, and the
+    word "moved" is reserved for the confirmatory metrics. The price is
+    stated rather than paid quietly: 5% of quiet corner tests come back as
+    a lead, and over 2500 null runs at fifteen corners 77.6% of payloads
+    carried at least one. A lead standing alone under eight metrics that
+    all read "within noise" is most likely one of those, which is why the
+    payload says so in the same breath as the lead.
+
+    `resolution` and `power` here come from the uncorrected 95%, which is
+    the level the lead was picked at, so they mean the same thing they mean
+    on a metric: what this corner could have resolved, and how likely the
+    difference it actually measured was to stand out.
+    """
+    for e in entries:
+        t = e[_TEST]
+        t["alpha_used"] = alpha
+        t["p_adj"] = None
+        e["lead"] = ("worth a look" if abs(t["diff"]) > t["floor"]
+                     and t["p"] <= alpha else "quiet")
+
+
+def _report(entry):
+    """Fill in the numbers behind a verdict, for a test being published.
+
+    Split from _holm because the critical value and the power cost a
+    bisection and an integration apiece, and a fifteen-corner run measures
+    38 tests to publish eight metrics plus a handful of leads.
+    """
+    t = entry.pop(_TEST, None)
+    if t is None:
+        return entry
+    crit = _t_crit(t["df"], t["alpha_used"])
+    entry["resolution"] = round(max(crit * t["se"], t["floor"]), 3)
+    # An exploratory p is named for what it is rather than carrying a
+    # footnote: nothing corrected it, and `p_value` next to `p_value` on a
+    # metric would read as the same number judged the same way.
+    if t["p_adj"] is None:
+        entry["p_value_uncorrected"] = _sig(t["p"])
+    else:
+        entry["p_value"] = _sig(t["p"])
+        entry["p_value_adjusted"] = _sig(t["p_adj"])
+    if t["se"] > 0:
+        entry["power"] = round(
+            _t_power(abs(t["diff"]) / t["se"], t["df"], crit), 2)
+    return entry
+
+
+def compare_runs(baseline: list[dict], candidate: list[dict],
+                 corner_tolerance: float = 0.01) -> dict:
+    """Did a setup change do anything, given how repeatable the driver is?
+
+    Lap time is the noisiest instrument on the car. Measured spread across
+    four laps of an unchanged setup runs 0.3-0.6s, so a change worth less
+    than roughly half a second cannot be seen in a short run however
+    carefully it is driven -- while front load transfer moved 2.2 points
+    for a rear bar change against under 0.3 of noise. Same run, same laps,
+    an order of magnitude difference in what each channel can resolve.
+
+    So every metric is judged against its own within-run spread rather than
+    against a fixed threshold, and `resolution` reports the smallest change
+    the run could have detected -- about half the time, which is what a
+    detection threshold means and what `power` puts a number on.
+
+    The metrics are one family, judged together (see _holm); asking them at
+    95% each and reporting whatever cleared found something in 82.5% of runs
+    where nothing had been changed. Up to eight of them, not eight: the
+    family is built from the metrics these laps actually carried, so a run
+    recorded without suspension data is corrected across fewer, and
+    `tests_in_family` in the payload is the real count rather than a
+    constant this docstring can promise. The corners are not in
+    that family. They say where a change landed, not whether one happened,
+    and counting them made the correction depend on the circuit -- 38 tests
+    at Mugello, at which a real 2.2-point load transfer change was caught 7%
+    of the time in two laps a side. They are reported as leads instead:
+    uncorrected, ranked by effect size, asserted by nothing.
+
+    What that is worth, at alpha/8 against this project's own measured
+    noise. A 2.2-point load transfer change (0.3 of spread): caught 29% of
+    the time at two laps a side, 97% at three. A 500ms lap gain (0.25s of
+    spread): 3% at two laps, 11% at three, 39% at five, 77% at eight. A
+    "within noise" on lap time from a short run means almost nothing, and
+    `resolution` and `power` are there to say so in the metric's own units.
+
+    corner_tolerance is how far an apex may wander between laps and still
+    be the same corner: 0.01 of a lap, about 50m at Mugello. It used to be
+    0.02, used as a bucket width rather than a tolerance, which is 105m
+    there -- wide enough to average a hairpin together with the kink after
+    it and call the result one corner.
+    """
+    if not baseline or not candidate:
+        return {"error": "need laps on both sides of the comparison"}
+
+    metrics = {}
+    for key, label, path, floor, units in RUN_METRICS:
+        b = [v for v in (_dig(l, path) for l in baseline) if v is not None]
+        c = [v for v in (_dig(l, path) for l in candidate) if v is not None]
+        r = _measure(b, c, floor)
+        r["label"] = label
+        if units:
+            r["units"] = units
+        metrics[key] = r
+
+    corners, unmatched, compared = _compare_corners(
+        baseline, candidate, corner_tolerance)
+
+    # The confirmatory family: the metrics, and nothing else. Corners are
+    # measured the same way and judged separately, because "where did it
+    # change" is not another answer to "did anything change" -- and because
+    # a family that grows with the corner count makes the same setup change
+    # harder to confirm at Suzuka than at Monza, which is nonsense.
+    family = [e for e in metrics.values() if _TEST in e]
+    _holm(family)
+    leads = [t for c in corners for t in c["tests"] if _TEST in t]
+    _explore(leads)
+
+    moved = [m["label"] for m in metrics.values()
+             if m.get("verdict") == "moved"]
+    suggestive = [m["label"] for m in metrics.values()
+                  if m.get("verdict") == SUGGESTIVE]
+    flagged = sum(1 for c in corners
+                  if any(t.get("lead") == "worth a look" for t in c["tests"]))
+
+    for entry in metrics.values():
+        _report(entry)
+
+    # Ranked by effect size rather than filtered by significance: an
+    # exploratory list that only shows what cleared 95% is a significance
+    # filter wearing a different name, and reads as a finding.
+    ranked = sorted(corners, key=lambda c: -max(
+        [_effect(t[_TEST]) for t in c["tests"] if _TEST in t] or [-1.0]))
+    shown = ranked[:CORNER_LEADS_SHOWN]
+    for c in shown:
+        for t in c["tests"]:
+            if _TEST in t:
+                size = _effect(t[_TEST])
+                # A run that repeated exactly divides by zero spread; the
+                # floor and the p-value still judge it, so the rank is
+                # infinite but the reported number is honestly absent.
+                t["effect_size"] = _sig(size, 2) if math.isfinite(size) \
+                    else None
+            _report(t)
+
+    # This is the line a model quotes, so it asserts the confirmatory
+    # family and nothing else. It used to be built from the metrics alone
+    # while a corner list sat underneath it saying the opposite; now the
+    # corners are in it, and are in it as leads.
+    if moved:
+        head = (f"moved beyond this driver's own lap-to-lap spread, out of "
+                f"{len(family)} metrics judged together -- "
+                f"{', '.join(moved)}")
+    else:
+        head = (f"nothing moved beyond noise across {len(family)} metrics "
+                f"judged together; check each metric's resolution and power "
+                f"before concluding the change did nothing rather than that "
+                f"the run was too short")
+    if suggestive:
+        head += (f". Suggestive but not confirmed, and worth more laps: "
+                 f"{', '.join(suggestive)}")
+    if flagged:
+        where = ", ".join(f"{c['apex_pos']:.3f}" for c in
+                          [c for c in ranked
+                           if any(t.get("lead") == "worth a look"
+                                  for t in c["tests"])][:4])
+        head += (f". Separately, {flagged} corner(s) stand out as "
+                 f"exploratory leads (apex {where}) -- uncorrected, not "
+                 f"findings, and about 5% of quiet corners do this")
+    summary = head
+
+    leads_note = (
+        f"EXPLORATORY, not findings. {compared} corner(s) were compared on "
+        f"up to two channels each; the {len(shown)} with the largest effect "
+        f"size are listed, largest first, and {flagged} of all those "
+        f"compared cleared an uncorrected 95%. These p-values are NOT "
+        f"corrected for how many corners were looked at, so roughly 5% of "
+        f"unchanged corner tests come back 'worth a look' and 77.6% of "
+        f"fifteen-corner runs with nothing changed at all carried at least "
+        f"one. A lead says where to look when a metric moved; standing "
+        f"alone under metrics that all read 'within noise', the likeliest "
+        f"explanation is that 5%. effect_size is the change in units of "
+        f"that corner's own lap-to-lap spread."
+        if compared else
+        "no corners were matched between these two runs, so there is "
+        "nothing to look at corner by corner")
+
+    return {
+        "baseline_laps": len(baseline),
+        "candidate_laps": len(candidate),
+        "metrics": metrics,
+        "corners_compared": compared,
+        "corner_leads": [
+            {"apex_pos": round(c["apex_pos"], 4),
+             **{t["channel"]: {k: v for k, v in t.items()
+                               if k not in ("channel", _TEST)}
+                for t in c["tests"]}}
+            for c in shown],
+        "corner_leads_note": leads_note,
+        "corners_in_one_run_only": unmatched[:12],
+        "multiple_comparisons": {
+            "method": "holm-bonferroni",
+            "family": "the run metrics; corner tests are exploratory",
+            "tests_in_family": len(family),
+            "exploratory_tests_not_in_family": len(leads),
+            "family_confidence": f"{100 * (1 - FAMILY_ALPHA):.0f}%",
+            "strictest_threshold": _sig(FAMILY_ALPHA / len(family))
+            if family else None,
+            "note": f"{len(family)} metrics were tested on this one pair of "
+                    f"runs. Judged at 95% each and read as one answer, that "
+                    f"flags something far more often than 5%, so they are "
+                    f"corrected together: the chance of ANY false 'moved' "
+                    f"among them is 5%. Read p_value_adjusted against 0.05. "
+                    f"resolution comes from the same corrected level as the "
+                    f"verdict rather than from an uncorrected 95%. A verdict "
+                    f"of '{SUGGESTIVE}' means p cleared 0.05 alone but not "
+                    f"the corrected level -- that is 'not enough laps yet', "
+                    f"not 'no evidence'. The {len(leads)} corner tests are "
+                    f"NOT in the family and assert nothing; see "
+                    f"corner_leads_note.",
+        },
+        "resolution_note": "resolution is the smallest change these laps "
+                           "could detect about half the time -- a real change "
+                           "that size clears it on roughly one run in two, so "
+                           "a change has to be comfortably larger to be seen "
+                           "reliably. `power` is the chance of flagging a "
+                           "change the size actually measured. Where a "
+                           "resolution is a round number it is that metric's "
+                           "floor for a physically meaningful change rather "
+                           "than a statistic.",
+        "summary": summary,
+    }
+
+
+# How much of a change is worth reporting at all on a corner channel, the
+# corner-level sibling of the floors in RUN_METRICS.
+CORNER_CHANNELS = [("slip_balance", 0.05), ("min_speed_kmh", 0.5)]
+
+
+def _corner_clusters(laps: list[dict], tolerance: float) -> list[list[tuple]]:
+    """Group one run's corner observations into pieces of road.
+
+    Bucketing positions with round(pos / tol) * tol fails three ways at
+    once, all of them measured: apexes at 0.0299 and 0.0301 -- a metre apart
+    -- land in different buckets and each corner comes back n=2 from 3 laps; a
+    bucket 105m wide swallows two genuine corners, so n=6 from 3 laps
+    inflates df from 4 to 10 on samples that are not independent and the
+    "corner" is the mean of a hairpin and a kink; and the reported position
+    is the bucket centre, up to half a bucket from any real apex.
+
+    So: group by proximity, then split any group holding two corners from
+    the same lap at its widest internal gap. A car passes an apex once a
+    lap, so a duplicate is proof two corners were pooled -- which caps every
+    cluster at one observation per lap and keeps df honest by construction.
+    """
+    obs = []
+    for i, lap in enumerate(laps):
+        for c in lap.get("corners") or []:
+            pos = c.get("apex_pos")
+            if isinstance(pos, (int, float)):
+                obs.append((float(pos), i, c))
+    obs.sort(key=lambda o: o[0])
+
+    groups, cur = [], []
+    for o in obs:
+        if cur and o[0] - cur[-1][0] > tolerance:
+            groups.append(cur)
+            cur = []
+        cur.append(o)
+    if cur:
+        groups.append(cur)
+
+    out, queue = [], groups
+    while queue:
+        g = queue.pop()
+        seen = [o[1] for o in g]
+        if len(g) < 2 or len(set(seen)) == len(seen):
+            out.append(g)
+            continue
+        _, k = max((g[i + 1][0] - g[i][0], i) for i in range(len(g) - 1))
+        queue += [g[:k + 1], g[k + 1:]]
+    return sorted(out, key=lambda g: g[0][0])
+
+
+def _compare_corners(baseline, candidate, tolerance):
+    """Pair each baseline corner with one candidate corner, and test both."""
+    b_groups = _corner_clusters(baseline, tolerance)
+    c_groups = _corner_clusters(candidate, tolerance)
+    b_pos = [mean(o[0] for o in g) for g in b_groups]
+    c_pos = [mean(o[0] for o in g) for g in c_groups]
+
+    # Nearest first, one-to-one. Taking each baseline corner's nearest
+    # candidate independently lets two baseline corners claim the same one.
+    taken_b, taken_c, pairs = set(), set(), []
+    for _, i, j in sorted((abs(x - y), i, j)
+                          for i, x in enumerate(b_pos)
+                          for j, y in enumerate(c_pos)
+                          if abs(x - y) <= tolerance):
+        if i in taken_b or j in taken_c:
+            continue
+        taken_b.add(i)
+        taken_c.add(j)
+        pairs.append((i, j))
+
+    corners = []
+    for i, j in sorted(pairs, key=lambda p: b_pos[p[0]]):
+        tests = []
+        for field, floor in CORNER_CHANNELS:
+            b = [o[2][field] for o in b_groups[i]
+                 if isinstance(o[2].get(field), (int, float))]
+            c = [o[2][field] for o in c_groups[j]
+                 if isinstance(o[2].get(field), (int, float))]
+            # A corner is comparable on whichever channels it has. Requiring
+            # slip balance -- which detect_corners drops whenever the slip
+            # samples look like glitches -- threw away corners whose minimum
+            # speed had moved 15 km/h on every lap.
+            if not b or not c:
+                continue
+            entry = _measure(b, c, floor)
+            entry["channel"] = field
+            tests.append(entry)
+        if tests:
+            corners.append({"apex_pos": (b_pos[i] + c_pos[j]) / 2,
+                            "tests": tests})
+
+    # A corner the detector found on only one side is not evidence of
+    # nothing; it used to be dropped without a word.
+    unmatched = ([{"side": "baseline", "apex_pos": round(p, 4)}
+                  for k, p in enumerate(b_pos) if k not in taken_b]
+                 + [{"side": "candidate", "apex_pos": round(p, 4)}
+                    for k, p in enumerate(c_pos) if k not in taken_c])
+    return corners, unmatched, len(corners)
+
+
 def compare_laps(lap_a: dict, samples_a: list[dict],
                  lap_b: dict, samples_b: list[dict]) -> dict:
     """Corner-by-corner comparison of two laps, matched by track position."""

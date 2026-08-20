@@ -427,5 +427,144 @@ def test_read_only_entries_are_not_offered_as_writable():
         conn.close()
 
 
+def test_identify_falls_back_from_a_layout_id_to_the_track_folder():
+    """Sessions report track_config like 'mugello_osrw'; setups live under
+    'mugello'. list_setups matches directories that START WITH what it is
+    given, which is the wrong direction for a layout id -- so identifying a
+    setup returned nothing at all while 30 live values sat there unused.
+
+    Every AC id but the handful the original game shipped is
+    `<vendor>_<track>[_<layout>]`, so taking the text before the first
+    underscore resolved to "ks" -- a folder that exists nowhere. The one
+    shape it did work for is the one circuit it was developed against.
+    """
+    vals = {"ARB_FRONT": 126607, "ARB_REAR": 47839}
+    # folder on disk, what the session calls the layout, plain track name
+    shapes = [
+        ("mugello", "mugello_osrw", ""),
+        ("ks_nordschleife", "ks_nordschleife_endurance", ""),
+        ("ks_silverstone", "ks_silverstone_international", ""),
+        ("ks_barcelona", "ks_barcelona_layout_moto", ""),
+        # trackConfiguration is the bare layout at some circuits, where the
+        # folder is the session's `track` instead and no amount of stripping
+        # the layout id reaches it.
+        ("ks_barcelona", "layout_moto", "ks_barcelona"),
+        # And the plain folder name still works, with and without a layout
+        # directory sitting next to it.
+        ("mugello", "mugello", ""),
+    ]
+    for folder, layout, plain in shapes:
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            _write_setup_file(root, "rss_formula_rss_4", folder,
+                              "claude_arb_v1", vals)
+            got = setups.identify_setup(root, "rss_formula_rss_4", layout,
+                                        dict(vals),
+                                        track_folder=plain or None)
+            assert got["match"] == "claude_arb_v1", (layout, got)
+            # Which folder was actually read is part of the answer: a
+            # fallback landing on another circuit's setups looks exactly
+            # like one that found the right folder.
+            assert got["track_dir"] == folder, (layout, got)
+            if folder != layout:
+                assert folder in got["track_dir_note"], got
+            print(f"  {layout:28s} -> {got['track_dir']}")
+
+
+def test_a_vendor_prefix_is_never_resolved_to_another_circuit():
+    """Stripping suffixes ends at "ks", which must not match a ks_ folder.
+
+    list_setups matches directories that start with what it is given, so a
+    bare vendor tag would resolve to whichever Kunos track that car happens
+    to have setups for -- and identification would report a confident match
+    on another circuit's file. Shortened candidates are matched exactly, so
+    "ks" only resolves if a folder is literally called that.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        vals = {"ARB_FRONT": 126607, "ARB_REAR": 47839}
+        _write_setup_file(root, "car", "ks_nordschleife", "nords", vals)
+        got = setups.identify_setup(root, "car", "ks_monza_junior", dict(vals))
+        assert got["match"] is None, got
+        assert got["candidates"] == [], got
+        # And it says there was nothing to read, rather than reporting the
+        # car's setups as not matching.
+        assert "no setup folder" in got["reason"], got["reason"]
+        print(" ", got["reason"])
+
+
+def test_the_folder_read_is_the_folder_listed():
+    """Listing one directory and reading from another finds nothing.
+
+    The loose match resolves a plain track name onto a layout folder, and
+    every read then went to the name it was asked for -- FileNotFoundError,
+    skipped, "no saved setup matches the car" from a search that never
+    opened a file.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        vals = {"ARB_FRONT": 126607, "ARB_REAR": 47839}
+        _write_setup_file(root, "car", "spa_2020", "v1", vals)
+        got = setups.identify_setup(root, "car", "spa", dict(vals))
+        assert got["track_dir"] == "spa_2020", got
+        assert got["match"] == "v1", got
+        print("  'spa' listed and read 'spa_2020'")
+
+
+def test_track_dir_names_only_a_folder_that_was_really_there():
+    """track_dir used to echo back the id it was asked for on failure.
+
+    Three states, and the first two were reported identically:
+
+        no folder anywhere    -> track_dir 'ks_nowhere_special'
+        folder exists, empty  -> track_dir 'mugello'
+        folder with setups    -> track_dir 'mugello'
+
+    The first is a wrong track id or an install that was never found; the
+    second is a real folder with nothing saved in it yet. One is fixed by
+    correcting the lookup, the other by saving a setup, and the field that
+    is supposed to say which folder was read named a directory that does
+    not exist on disk.
+    """
+    vals = {"ARB_FRONT": 126607, "ARB_REAR": 47839}
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        # 1. Nothing at all: not even a car directory.
+        got = setups.identify_setup(root, "car", "ks_nowhere_special",
+                                    dict(vals))
+        assert got["track_dir"] is None, got
+        assert got["match"] is None, got
+        assert "no setup folder" in got["reason"], got["reason"]
+        # And nothing claims a folder was read in place of the one asked for.
+        assert "track_dir_note" not in got, got
+        print("  no folder        -> track_dir", got["track_dir"])
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        # 2. The folder is there, and holds no setups.
+        (root / "setups" / "car" / "mugello").mkdir(parents=True)
+        got = setups.identify_setup(root, "car", "mugello_osrw", dict(vals),
+                                    track_folder="mugello")
+        assert got["track_dir"] == "mugello", got
+        assert got["match"] is None, got
+        assert "holds no setups" in got["reason"], got["reason"]
+        # It was found, not read, so it must not be reported as read.
+        assert "track_dir_note" not in got, got
+        print("  empty folder     -> track_dir", got["track_dir"])
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        # 3. The same folder with a setup in it: the answer is unchanged.
+        _write_setup_file(root, "car", "mugello", "claude_arb_v1", vals)
+        got = setups.identify_setup(root, "car", "mugello_osrw", dict(vals),
+                                    track_folder="mugello")
+        assert got["track_dir"] == "mugello", got
+        assert got["match"] == "claude_arb_v1", got
+        assert "mugello" in got["track_dir_note"], got
+        print("  folder + setups  -> track_dir", got["track_dir"],
+              "match", got["match"])
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

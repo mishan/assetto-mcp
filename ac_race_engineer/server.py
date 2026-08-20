@@ -290,9 +290,13 @@ def identify_setup(session_id: int | None = None) -> str:
         return _j({"error": f"no session with id {sid}"})
 
     values = db.setup_values(_conn, sid)
+    # Both names, because neither is reliably the folder on disk: at some
+    # circuits track_config is the whole id ("mugello_osrw") and at others
+    # the bare layout ("layout_moto"), where the folder is `track`.
     out = setups.identify_setup(
         AC_DOCS_DIR, session["car"],
-        session.get("track_config") or session["track"], values)
+        session.get("track_config") or session["track"], values,
+        track_folder=session["track"])
     out["session_id"] = sid
     out["live_values"] = len(values)
     state = db.setup_state(_conn, sid)

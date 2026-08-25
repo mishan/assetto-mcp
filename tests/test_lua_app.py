@@ -205,6 +205,63 @@ def test_clamp_and_num_reject_nan_and_out_of_range():
     assert api.num(3.5, 7) == 3.5
 
 
+def test_the_overlay_calls_out_laps_driven_but_not_stored():
+    """The failure the driver actually hit, seen from the car.
+
+    The overlay rendered whatever /status said, which made it exactly as
+    trustworthy as the server. When the server was wrong -- an empty session
+    asserting itself as recording -- the driver had a green light through
+    seven laps that were never stored, and no way to check from the car.
+
+    car.lapCount belongs to the game, not to us. Laps finishing while none
+    are stored is a contradiction the app can see on its own.
+    """
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+
+    # One lap down, nothing stored: could be an out-lap, which is skipped
+    # by design. Not yet a complaint.
+    api.setLapCount(1)
+    api.setLaps(0)
+    assert api.recordingHealth()[0] != "not-storing", api.recordingHealth()
+
+    # Two finished laps and still nothing stored is not explicable.
+    api.setLapCount(7)
+    state, detail = api.recordingHealth()
+    assert state == "not-storing", state
+    assert "7 laps driven" in detail and "0 stored" in detail, detail
+    print(f"  7 driven / 0 stored -> {state!r}: {detail!r}")
+
+
+def test_storing_laps_reads_as_recording():
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setLapCount(7)
+    api.setLaps(6)
+    assert api.recordingHealth()[0] == "recording", api.recordingHealth()
+
+
+def test_a_driver_who_has_not_finished_a_lap_is_not_a_failure():
+    """Out-lap, or the first lap in progress: nothing is wrong yet."""
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setLapCount(0)
+    api.setLaps(0)
+    assert api.recordingHealth()[0] == "recording", api.recordingHealth()
+
+
+def test_an_offline_bridge_is_reported_as_offline_not_as_data_loss():
+    """Two different problems, and conflating them sends you after the
+    wrong one: the bridge being down is not the collector being stopped."""
+    lua, api, rec = lua_harness.load()
+    api.setConnected(False)
+    api.setLapCount(7)
+    api.setLaps(0)
+    assert api.recordingHealth()[0] == "offline", api.recordingHealth()
+
+
 if __name__ == "__main__":
     if SKIP:
         # Not 0: exiting 0 made `run_tests.py --isolate` report this module

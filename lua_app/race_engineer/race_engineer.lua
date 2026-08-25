@@ -816,6 +816,35 @@ local function postSetup()
     end)
 end
 
+-- Is what the server claims consistent with what the driver has done?
+--
+-- The overlay used to render whatever /status said. That made it exactly as
+-- trustworthy as the server, and when the server was wrong -- an empty
+-- session asserting itself as "recording, other instance" -- the driver had
+-- a green light through seven laps that were never stored, with no way to
+-- check it from the car.
+--
+-- The app can check. car.lapCount is the driver's own completed laps, owned
+-- by the game and not by us. If laps are being finished and none are
+-- landing, that is a contradiction the app can see on its own, and it is
+-- worth more than any status string the server sends.
+--
+-- Deliberately conservative. The lap in progress is not stored yet, and an
+-- out-lap has no time so it is skipped by design: a shortfall of one or two
+-- is normal. Two finished laps with nothing stored at all is not.
+local LAPS_BEFORE_STORAGE_EXPECTED = 2
+
+local function recordingHealth()
+  if not status.connected then return 'offline', '' end
+  local done = math.floor(num(car and car.lapCount, 0))
+  if done >= LAPS_BEFORE_STORAGE_EXPECTED and (status.laps or 0) == 0 then
+    return 'not-storing',
+      string.format('%d laps driven, 0 stored - tell Claude to start '
+                    .. 'recording', done)
+  end
+  return status.running and 'recording' or 'idle', ''
+end
+
 local function poll()
   if pollBusy then return end
   pollBusy = true
@@ -969,12 +998,23 @@ script.__test = {
   -- The real busy flag is cleared by the web callback, which a test
   -- harness has no way to invoke.
   clearBusy = function() suspBusy = false end,
+  recordingHealth = function() return recordingHealth() end,
+  setLaps = function(n) status.laps = n end,
+  setConnected = function(v) status.connected = v end,
+  setLapCount = function(n) car.lapCount = n end,
 }
 
 function windowMain(dt)
   -- status line
+  local health, detail = recordingHealth()
   if not status.connected then
     ui.textColored('● bridge offline', rgbm(1, 0.3, 0.3, 1))
+  elseif health == 'not-storing' then
+    -- The driver has finished laps and none of them landed. Loud, because
+    -- the alternative is what actually happened: a green indicator, seven
+    -- laps at Suzuka, and nothing kept.
+    ui.textColored('● NOT STORING LAPS', rgbm(1, 0.3, 0.3, 1))
+    ui.textColored(detail, rgbm(1, 0.6, 0.3, 1))
   elseif status.running then
     ui.textColored('● recording', rgbm(0.3, 1, 0.3, 1))
     ui.sameLine()

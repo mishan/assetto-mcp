@@ -131,6 +131,14 @@ BIND_RETRY_SECONDS = 300.0
 # recording this". Generous: a driver can sit in the garage between runs.
 OTHER_INSTANCE_STALE_SECONDS = 900.0
 
+# How long a session that has stored NO laps may still claim to be
+# recording. A row is created the instant a collector starts and its
+# started_at never moves, so without a tighter bound an empty session
+# asserts itself for the full window above -- which is how seven laps went
+# unrecorded behind a green indicator. A real instance produces a lap well
+# inside this.
+EMPTY_SESSION_GRACE_SECONDS = 180.0
+
 
 class FieldError(ValueError):
     """A request field was missing, the wrong type, or out of range."""
@@ -280,10 +288,25 @@ class Bridge:
         if not latest:
             return idle
 
-        # "Recent" has to be generous: a driver can sit in the garage for a
-        # while between runs without the session having ended.
-        age = time.time() - (latest["last_lap_at"] or latest["started_at"])
-        if age >= OTHER_INSTANCE_STALE_SECONDS:
+        # "Recent" has to be generous for a session that is producing laps:
+        # a driver can sit in the garage a while between runs.
+        #
+        # It must not be generous for one that has produced none. A session
+        # row is created the moment a collector starts, and started_at never
+        # advances -- so an empty session that never recorded anything read
+        # as "recording, other instance" for a full fifteen minutes. That is
+        # exactly what happened while seven laps at Suzuka went unrecorded
+        # behind a green indicator, and the driver had no way to check it.
+        #
+        # A genuine other instance produces laps within a few minutes. One
+        # that has not is not recording, whatever its row says.
+        if latest["last_lap_at"]:
+            age = time.time() - latest["last_lap_at"]
+            limit = OTHER_INSTANCE_STALE_SECONDS
+        else:
+            age = time.time() - latest["started_at"]
+            limit = EMPTY_SESSION_GRACE_SECONDS
+        if age >= limit:
             return idle
         return {
             "session_id": latest["id"],

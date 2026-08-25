@@ -145,5 +145,60 @@ def test_orphaned_notes_are_countable():
         conn.close()
 
 
+def test_an_empty_session_stops_claiming_to_record():
+    """Seven laps at Suzuka went unrecorded behind a green indicator.
+
+    A session row is created the instant a collector starts, and its
+    started_at never advances. The staleness check read that timestamp when
+    no laps existed, so an empty session -- one whose collector had failed
+    to start at all -- asserted itself as "recording, other instance" for a
+    full fifteen minutes while the driver drove.
+
+    A real instance produces a lap well inside the grace period. One that
+    has produced none, and started minutes ago, is not recording.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "t.db"
+        conn = db.connect(path)
+        sid = make_session(conn)          # no laps stored, ever
+        col = FakeCollector(session_id=None)
+        col.running = False
+        br = B.Bridge(path, col, port=0)
+
+        # Freshly created: still plausibly another instance warming up.
+        assert br.status_snapshot()["running"] is True
+
+        age_session(conn, sid, B.EMPTY_SESSION_GRACE_SECONDS + 30)
+        after = br.status_snapshot()
+        assert after["running"] is False, after
+        assert after["session_id"] is None, after
+        # And nothing may be filed against it either.
+        assert br.active_session_id() is None
+        print(f"  empty session at +{B.EMPTY_SESSION_GRACE_SECONDS + 30:.0f}s "
+              f"-> {after['running']}, id {after['session_id']}")
+        conn.close()
+
+
+def test_a_session_that_is_producing_laps_keeps_the_generous_window():
+    """The tighter bound must not evict a driver sitting in the garage."""
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "t.db"
+        conn = db.connect(path)
+        sid = make_session(conn)
+        db.store_lap(conn, sid, 1, 113000, True, [])
+        col = FakeCollector(session_id=None)
+        col.running = False
+        br = B.Bridge(path, col, port=0)
+
+        # Older than the empty-session grace, far inside the lap window.
+        age_session(conn, sid, B.EMPTY_SESSION_GRACE_SECONDS + 120)
+        snap = br.status_snapshot()
+        assert snap["running"] is True, snap
+        assert snap["session_id"] == sid and snap["by_other"] is True, snap
+        print(f"  session with a stored lap at "
+              f"+{B.EMPTY_SESSION_GRACE_SECONDS + 120:.0f}s -> still live")
+        conn.close()
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

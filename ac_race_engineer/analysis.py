@@ -7,7 +7,7 @@ Pure Python on purpose - no numpy dependency to install on the gaming PC.
 """
 
 import math
-from statistics import mean
+from statistics import mean, median
 
 WHEELS = ("fl", "fr", "rl", "rr")
 
@@ -144,7 +144,81 @@ def _fmt_time(ms: int) -> str:
     return f"{ms // 60000}:{(ms % 60000) / 1000:06.3f}"
 
 
-def detect_corners(samples: list[dict]) -> list[dict]:
+def _lat_g_trace(samples: list[dict]) -> tuple[list[float], int]:
+    """The smoothed lateral-g trace, and how many samples were dropped.
+
+    Split out of detect_corners so the cornering load can be measured
+    without committing to a threshold -- lat_g_reference needs the trace
+    from several laps before any of them can be thresholded.
+    """
+    # Drop implausible lateral g before anything is derived from it. AC
+    # emits the same class of spike here that it does on wheelSlip -- a
+    # reset, a wall strike, a tick straddling a teleport -- and the
+    # threshold is a fraction of a measured peak, so one bad sample raises
+    # the bar above every real corner. Measured: a six-sample 9g spike on a
+    # 1.1g road-car lap left one "corner", the artefact, with a fabricated
+    # peak_lat_g. Dropped rather than clamped, for the same reason as
+    # wheelSlip: a spike is not a hard corner, it is not data.
+    raw = [s.get("acc_lat", 0.0) or 0.0 for s in samples]
+    sane = [v if (math.isfinite(v) and abs(v) <= LAT_G_SANE_MAX) else 0.0
+            for v in raw]
+    dropped = sum(1 for a, b in zip(raw, sane) if a != b)
+
+    # Median first, then mean. A moving average does not remove an impulse,
+    # it spreads it: a six-sample spike smeared across an 11-sample window
+    # becomes a sixteen-sample run above the threshold -- longer than
+    # CORNER_MIN_SAMPLES, and so reported as a corner.
+    #
+    # A median filter removes any run shorter than half its width. Sized
+    # from CORNER_MIN_SAMPLES rather than picked: a burst too short to be a
+    # corner is, by this module's own definition, not one -- so the same
+    # number that decides what counts as a corner decides what counts as a
+    # glitch. This catches spikes of plausible magnitude too, which the
+    # LAT_G_SANE_MAX ceiling above cannot: 2g on a road car is impossible to
+    # rule out by value and obvious by duration.
+    return _smooth(_median_filter(sane, LAT_G_MEDIAN_WINDOW), 11), dropped
+
+
+def _lat_g_peak(lat: list[float]) -> float:
+    """The lap's cornering load: a high percentile, not the maximum.
+
+    The threshold is a fraction of this, so basing it on the single largest
+    sample lets one unusually hard moment -- or a spike small enough to pass
+    the ceiling in _lat_g_trace, like 4g on a road car -- raise the bar above
+    the rest of the lap. A real corner holds its load for many samples, so
+    the 99th percentile is still a real cornering load, just not a lone one.
+    """
+    mags = sorted(abs(v) for v in lat)
+    return mags[int(0.99 * (len(mags) - 1))] if mags else 0.0
+
+
+def lat_g_reference(sample_sets) -> float | None:
+    """One cornering load for a set of laps, to detect corners against.
+
+    Pass every lap that is going to be compared. Returns None when none of
+    them carries enough lateral load to have corners at all, which leaves
+    detect_corners on its per-lap fallback.
+
+    The median rather than the mean or the max: one scrappy lap with a big
+    correction on it, or one lap driven far harder than the rest, should not
+    move the bar for the whole run. The median of five laps is unmoved by
+    either.
+    """
+    peaks = []
+    for samples in sample_sets:
+        if not samples or len(samples) < 50:
+            continue
+        lat, _ = _lat_g_trace(samples)
+        peak = _lat_g_peak(lat)
+        # An in-lap contributes nothing: including its near-zero peak would
+        # drag the reference down and promote noise on every other lap.
+        if peak >= CORNER_MIN_PEAK_LAT_G:
+            peaks.append(peak)
+    return median(peaks) if peaks else None
+
+
+def detect_corners(samples: list[dict],
+                   reference_peak_g: float | None = None) -> list[dict]:
     """Find corners as sustained regions of lateral acceleration.
 
     The previous implementation looked for local minima of speed, and
@@ -168,49 +242,38 @@ def detect_corners(samples: list[dict]) -> list[dict]:
     if len(samples) < 50:
         return []
 
-    # Drop implausible lateral g before anything is derived from it. AC
-    # emits the same class of spike here that it does on wheelSlip -- a
-    # reset, a wall strike, a tick straddling a teleport -- and this
-    # threshold is taken from the lap's own peak, so one bad sample raises
-    # the bar above every real corner. Measured: a six-sample 9g spike on a
-    # 1.1g road-car lap left one "corner", the artefact, with a fabricated
-    # peak_lat_g. Dropped rather than clamped, for the same reason as
-    # wheelSlip: a spike is not a hard corner, it is not data.
-    raw = [s.get("acc_lat", 0.0) or 0.0 for s in samples]
-    sane = [v if (math.isfinite(v) and abs(v) <= LAT_G_SANE_MAX) else 0.0
-            for v in raw]
-    dropped = sum(1 for a, b in zip(raw, sane) if a != b)
-
-    # Median first, then mean. A moving average does not remove an impulse,
-    # it spreads it: a six-sample spike smeared across an 11-sample window
-    # becomes a sixteen-sample run above the threshold -- longer than
-    # CORNER_MIN_SAMPLES, and so reported as a corner.
-    #
-    # A median filter removes any run shorter than half its width. Sized
-    # from CORNER_MIN_SAMPLES rather than picked: a burst too short to be a
-    # corner is, by this module's own definition, not one -- so the same
-    # number that decides what counts as a corner decides what counts as a
-    # glitch. This catches spikes of plausible magnitude too, which the
-    # LAT_G_SANE_MAX ceiling above cannot: 2g on a road car is impossible to
-    # rule out by value and obvious by duration.
-    lat = _smooth(_median_filter(sane, LAT_G_MEDIAN_WINDOW), 11)
-    # A high percentile, not the maximum. The threshold is a fraction of
-    # this, so basing it on the single largest sample lets one unusually
-    # hard moment -- or a spike small enough to pass the ceiling above, like
-    # 4g on a road car -- raise the bar above the rest of the lap. A real
-    # corner holds its load for many samples, so the 99th percentile is
-    # still a real cornering load, just not a lone one.
-    mags = sorted(abs(v) for v in lat)
-    peak = mags[int(0.99 * (len(mags) - 1))] if mags else 0.0
+    lat, dropped = _lat_g_trace(samples)
+    own_peak = _lat_g_peak(lat)
     # An in-lap, or a lap spent trundling: nothing corner-shaped here. Note
     # this is not the spin case -- a spin produces a very large lateral g,
-    # which the ceiling above deals with, not a small one.
-    if peak < CORNER_MIN_PEAK_LAT_G:
+    # which the ceiling in _lat_g_trace deals with, not a small one.
+    #
+    # Judged on the lap's own load and never on the shared reference: a lap
+    # spent limping round is cornerless whatever the rest of the run did,
+    # and a reference borrowed from four quick laps would otherwise conjure
+    # corners out of its noise.
+    if own_peak < CORNER_MIN_PEAK_LAT_G:
         return []
 
-    # Relative to the lap's own peak so this works for a Formula car pulling
+    # Relative to a cornering load, so this works for a Formula car pulling
     # 3g and a road car pulling 1.1g, with an absolute floor so that a lap
     # spent trundling doesn't promote its own noise into "corners".
+    #
+    # Whose cornering load is the whole question. Taking each lap's own peak
+    # made the bar a property of how hard that particular lap was driven:
+    # across one Suzuka run peak_lat_g ran 2.78 to 3.42, moving the
+    # threshold by 23% and taking every corner near it in and out of
+    # existence. Seven corners of seventeen were found on only one side of a
+    # comparison. That is worse than untidy -- a corner missing from a lap
+    # is not compared on that lap at all, and the corners nearest the
+    # threshold are the marginal, low-load ones a setup change is most
+    # likely to move. The evidence went missing exactly where it mattered.
+    #
+    # So the caller passes one reference for every lap it means to compare,
+    # and each lap is measured against the same bar. A lap analysed on its
+    # own still falls back to its own peak, which is the best available
+    # answer when there is nothing to compare it to.
+    peak = reference_peak_g if reference_peak_g else own_peak
     thresh = max(peak * CORNER_LAT_G_FRACTION, CORNER_MIN_LAT_G)
 
     # A region is contiguous samples above the threshold turning the SAME
@@ -389,8 +452,15 @@ def _corner_stats(samples, apex_idx, exit_idx, brake_floor_idx=0) -> dict:
     return out
 
 
-def lap_summary(lap: dict, samples: list[dict]) -> dict:
-    """Everything an engineer needs to know about one lap, in ~1KB."""
+def lap_summary(lap: dict, samples: list[dict],
+                reference_peak_g: float | None = None) -> dict:
+    """Everything an engineer needs to know about one lap, in ~1KB.
+
+    reference_peak_g comes from lat_g_reference over every lap being looked
+    at together. Omit it for a lap read on its own; pass it whenever two
+    summaries are going to be compared, or the two corner lists are drawn
+    against different bars and need not contain the same corners.
+    """
     if not samples:
         return {"error": "no samples for this lap"}
 
@@ -404,7 +474,7 @@ def lap_summary(lap: dict, samples: list[dict]) -> dict:
             "core_temp_avg": round(mean(s[f"core_{w}"] for s in samples), 1),
         }
 
-    corners = detect_corners(samples)
+    corners = detect_corners(samples, reference_peak_g)
     slip_balances = [c["slip_balance"] for c in corners
                      if c["slip_balance"] is not None]
 
@@ -1658,8 +1728,14 @@ def _compare_corners(baseline, candidate, tolerance):
 def compare_laps(lap_a: dict, samples_a: list[dict],
                  lap_b: dict, samples_b: list[dict]) -> dict:
     """Corner-by-corner comparison of two laps, matched by track position."""
-    ca = detect_corners(samples_a)
-    cb = detect_corners(samples_b)
+    # One bar for both laps. Detecting each against its own peak meant the
+    # harder-driven lap dropped its marginal corners, and a corner missing
+    # from one side simply does not appear in the comparison -- so the two
+    # laps were being compared on whichever corners they happened to agree
+    # existed.
+    ref = lat_g_reference([samples_a, samples_b])
+    ca = detect_corners(samples_a, ref)
+    cb = detect_corners(samples_b, ref)
 
     matched = []
     for c in ca:

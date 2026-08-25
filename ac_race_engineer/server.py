@@ -790,17 +790,42 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
                         "reason": "; ".join(why)})
         return False
 
-    def summaries(laps, side):
+    def loaded(laps, side):
+        """Usable laps paired with their samples, in one pass.
+
+        Separate from summarising because the corner-detection threshold has
+        to be computed across every lap in the comparison before any single
+        lap can be summarised.
+        """
         out = []
         for lap in laps:
             if not include_invalid and not usable(lap, side):
                 continue
-            s = analysis.lap_summary(lap, db.get_samples(_conn, lap["id"]))
-            if "error" in s:
+            samples = db.get_samples(_conn, lap["id"])
+            if not samples:
                 dropped.append({"lap_id": lap["id"], "side": side,
                                 "lap_number": lap.get("lap_number"),
                                 "reason": "no telemetry samples stored"})
                 continue
+            out.append((lap, samples))
+        return out
+
+    base_loaded = loaded(base_laps, "baseline")
+    cand_loaded = loaded(cand_laps, "candidate")
+
+    # One bar for every lap on both sides, fixed before anything is
+    # measured against it. Detecting corners per lap made the threshold a
+    # property of how hard each lap was driven, so the harder ones quietly
+    # dropped their lightest corners -- and a corner found on only one side
+    # is not compared at all. Deriving it from both sides together is what
+    # makes it a property of the comparison rather than of either run, so
+    # neither side can move the bar the other is judged against.
+    ref = analysis.lat_g_reference([s for _, s in base_loaded + cand_loaded])
+
+    def summaries(pairs, side):
+        out = []
+        for lap, samples in pairs:
+            s = analysis.lap_summary(lap, samples, ref)
             # Front load transfer lives in the suspension block and is the
             # quietest channel we have, so it is worth the extra query --
             # it resolves changes lap time cannot see.
@@ -813,8 +838,8 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
             out.append(s)
         return out
 
-    base = summaries(base_laps, "baseline")
-    cand = summaries(cand_laps, "candidate")
+    base = summaries(base_loaded, "baseline")
+    cand = summaries(cand_loaded, "candidate")
     if not base or not cand:
         return _j({"error": "no usable laps left on "
                             + ("both sides" if not base and not cand else
@@ -824,6 +849,16 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
                    "excluded_laps": dropped})
 
     out = analysis.compare_runs(base, cand)
+    if ref:
+        # Reported because it decides which corners exist. A comparison
+        # whose corner list looks wrong is answerable now: this is the bar
+        # every lap was held to.
+        out["corner_detection"] = {
+            "lat_g_reference": round(ref, 3),
+            "note": "one lateral-g reference across every lap on both "
+                    "sides, so corner membership does not depend on how "
+                    "hard an individual lap was driven",
+        }
     out["track"] = where(base_laps[0])
     out["car"] = base_laps[0].get("car")
     if dropped:

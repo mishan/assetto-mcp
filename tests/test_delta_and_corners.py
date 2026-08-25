@@ -487,5 +487,118 @@ def test_cars_of_every_grip_level_still_find_their_corners():
     print("  road, GT3 and formula grip levels all detected")
 
 
+# --- the threshold must not depend on how hard the lap was driven -------
+#
+# The bug these were written for, seen from the car: comparing five Suzuka
+# laps against two, seven corners of seventeen were reported as found on
+# only one side. The threshold is a fraction of the lap's own 99th-
+# percentile lateral g, and across that run peak_lat_g ran 2.78 to 3.42 --
+# a 23% swing in the bar, which took every corner near it in and out of
+# existence. A corner absent from a lap is not compared on that lap, and
+# the corners nearest the threshold are the light ones, which is where a
+# roll-stiffness change shows up first.
+
+
+def _pair_of_efforts():
+    """The same circuit driven at two intensities.
+
+    Identical corners but for the third, which is harder on one lap. That
+    alone moves a per-lap threshold enough to change which of the *other*
+    corners clear it.
+    """
+    shape = ((0.15, 0.05, 2.4), (0.45, 0.04, 1.2), (0.88, 0.05, 2.2))
+    easy = _lap(corners=shape + ((0.70, 0.08, 2.6),))
+    hard = _lap(corners=shape + ((0.70, 0.08, 3.6),))
+    return easy, hard
+
+
+def test_a_shared_reference_finds_the_same_corners_on_both_laps():
+    """The fix, stated as the property that has to hold.
+
+    Not "the light corner survives" -- that depends on where the constants
+    sit. The invariant is that two laps of the same circuit yield the same
+    corners, so a comparison between them is drawn on all of them.
+
+    This is what fails if reference_peak_g is ignored, which is the mutation
+    that reverts the fix while leaving every other test passing.
+    """
+    easy, hard = _pair_of_efforts()
+
+    solo_easy = len(analysis.detect_corners(easy))
+    solo_hard = len(analysis.detect_corners(hard))
+    assert solo_easy != solo_hard, (
+        "premise gone: these laps no longer disagree per-lap, so this test "
+        f"is not exercising the bug ({solo_easy} vs {solo_hard})")
+
+    ref = analysis.lat_g_reference([easy, hard])
+    a = [c["apex_pos"] for c in analysis.detect_corners(easy, ref)]
+    b = [c["apex_pos"] for c in analysis.detect_corners(hard, ref)]
+    assert len(a) == len(b), (a, b)
+    for x, y in zip(a, b):
+        assert abs(x - y) < 0.02, (a, b)
+    print(f"  per-lap: {solo_easy} vs {solo_hard} corners. "
+          f"shared reference {ref:.2f}g: {len(a)} vs {len(b)}")
+
+
+def test_compare_laps_holds_both_laps_to_one_bar():
+    """End to end, because the reference is only useful if it is threaded.
+
+    detect_corners taking the argument means nothing if compare_laps still
+    calls it twice with nothing.
+    """
+    easy, hard = _pair_of_efforts()
+    out = analysis.compare_laps(_meta(1, 113000), easy,
+                                _meta(2, 113480), hard)
+    assert len(out["corners"]) == 4, out["corners"]
+    print(f"  {len(out['corners'])} corners matched across efforts")
+
+
+def test_one_wild_lap_does_not_move_the_reference():
+    """Median, not mean or max.
+
+    One lap with a big correction on it, or one lap driven far harder than
+    the rest, must not raise the bar for the whole run -- that would be the
+    original bug with extra steps, since the run's marginal corners would
+    vanish from every lap at once instead of from one.
+    """
+    normal = [_lap() for _ in range(4)]
+    wild = _lap(corners=((0.15, 0.05, 5.5), (0.45, 0.04, 1.2),
+                         (0.70, 0.08, 2.8), (0.88, 0.05, 2.2)))
+    without = analysis.lat_g_reference(normal)
+    with_ = analysis.lat_g_reference(normal + [wild])
+    assert abs(with_ - without) < 0.05, (without, with_)
+    print(f"  {without:.2f}g -> {with_:.2f}g with a 5.5g lap in the set")
+
+
+def test_an_inlap_neither_moves_the_reference_nor_gains_corners():
+    """A borrowed threshold must not conjure corners out of a flat lap.
+
+    The reference makes the bar lower for a quiet lap, which is the point --
+    but a lap with no cornering load at all has no corners regardless, and
+    promoting its noise would be worse than the bug being fixed. The guard
+    is on the lap's own peak and must stay there.
+    """
+    flat = _lap(corners=())
+    ref = analysis.lat_g_reference([_lap(), _lap(), flat])
+    assert ref is not None and ref > 1.0, ref
+    assert analysis.detect_corners(flat, ref) == []
+    # And it contributed nothing: dropping it leaves the same reference.
+    assert analysis.lat_g_reference([_lap(), _lap()]) == ref
+    print(f"  reference {ref:.2f}g, flat lap still has 0 corners")
+
+
+def test_no_reference_when_nothing_corners():
+    """None, not zero: callers fall back to per-lap rather than to no bar."""
+    assert analysis.lat_g_reference([_lap(corners=()),
+                                     _lap(corners=())]) is None
+    assert analysis.lat_g_reference([]) is None
+
+
+def test_a_lap_read_on_its_own_is_unchanged():
+    """The single-lap path has no run to borrow from and must not regress."""
+    assert (len(analysis.detect_corners(_lap(), None))
+            == len(analysis.detect_corners(_lap())) == 4)
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

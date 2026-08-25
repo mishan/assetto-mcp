@@ -424,6 +424,53 @@ def _displays_as(stored: float, conv: dict | None) -> str | None:
     return f"{shown:g}{(' ' + units) if units else ''} (stored {stored:g})"
 
 
+def legal_values(lo: float, hi: float, step: float) -> list[float]:
+    """Every value this entry can actually reach on the setup screen.
+
+    AC does not snap to a grid. It adds or subtracts step from wherever the
+    spinner already is and clamps at the ends, so the reachable set depends
+    on which way you arrived and is not `lo + n*step`.
+
+    Driver-observed on the RSS Formula 4's rear wheel rate, lo 53, hi 88,
+    step 17. Counting up: 53, 70, 87, then 87+17 clamped to 88. Counting
+    back down from 88: 71, 54, then 53. Six reachable values, of which a
+    grid anchored at lo can express three.
+
+    This is not pedantry. She runs 54. Asked to write 54 the old snapping
+    returned 53 and reported it as clamping -- the correct value, declared
+    illegal and quietly replaced by a 2% softer spring. The same offset
+    ladders exist on the front anti-roll bar, where her 126607 is the
+    descending value and 126608 the ascending one; a one-step reduction
+    landed on 117358 when 117357 was available and exact.
+    """
+    if step <= 0 or hi < lo:
+        return []
+    out = set()
+    v = lo
+    while v < hi:
+        out.add(round(v, 6))
+        v += step
+    out.add(round(hi, 6))
+    v = hi
+    while v > lo:
+        out.add(round(v, 6))
+        v -= step
+    out.add(round(lo, 6))
+    return sorted(x for x in out if lo <= x <= hi)
+
+
+def snap(value: float, lo: float, hi: float, step: float) -> float:
+    """The reachable value nearest what was asked for.
+
+    Ties go to the lower value, so a request exactly between two rungs is
+    answered the same way twice rather than depending on set ordering.
+    """
+    options = legal_values(lo, hi, step)
+    if not options:
+        return min(max(value, lo), hi)
+    return min(options, key=lambda x: (abs(x - value), x))
+
+
 def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
                 name: str, values: dict, base_setup: str | None = None,
                 game_ranges: dict | None = None,
@@ -481,10 +528,10 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
                 report["unknown_sections"].append(section)
                 continue
             lo, hi, step = ranges[section]
-            clamped = min(max(value, lo), hi)
-            # Snap to the car's step grid so the in-game UI shows it exactly.
-            if step > 0:
-                clamped = lo + round((clamped - lo) / step) * step
+            # Snap to a value the setup screen can actually reach, which is
+            # not the same as a grid anchored at the minimum -- see
+            # legal_values for why the car has two offset ladders.
+            clamped = snap(min(max(value, lo), hi), lo, hi, step)
             if clamped != value:
                 report["clamped"][section] = {"requested": value,
                                               "written": clamped}

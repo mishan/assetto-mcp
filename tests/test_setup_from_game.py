@@ -146,9 +146,14 @@ def test_write_setup_clamps_against_game_ranges():
             game_ranges={"ARB_REAR": (25459, 88127, 4476),
                          "CAMBER_LF": (-36, -26, 1)})
         assert out["ranges_source"] == "game", out
-        assert out["written"]["ARB_REAR"] == 88123, out["written"]
+        # 88127, not 88123. The rear bar's range is not a whole number of
+        # steps -- the ascending ladder from 25459 stops at 88123 -- so a
+        # grid anchored at the minimum could not express the car's own
+        # maximum, and asking for the stiffest bar returned one notch
+        # softer. AC clamps at the end, so the maximum is reachable.
+        assert out["written"]["ARB_REAR"] == 88127, out["written"]
         assert out["written"]["CAMBER_LF"] == -30, out["written"]
-        print(f"  clamped to {out['written']['ARB_REAR']} from the game's max")
+        print(f"  clamped to {out['written']['ARB_REAR']}, the game's max")
 
 
 def test_identify_finds_the_one_matching_setup():

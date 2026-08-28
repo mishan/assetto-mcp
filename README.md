@@ -1,4 +1,4 @@
-# ac-race-engineer
+# assetto-mcp
 
 MCP server that turns Claude into a race engineer for original Assetto Corsa.
 It reads AC's shared memory telemetry, stores laps in SQLite, reduces them to

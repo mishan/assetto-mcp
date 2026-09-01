@@ -204,6 +204,7 @@ def test_a_short_array_is_not_recorded_as_a_partial_reading():
         sim = FakeSim()
         sim.physics.tyreWear = [99.5, 99.4, 99.2]      # three, not four
         sim.physics.carDamage = [0.0, 1.0]             # two, not five
+        sim.graphics.carCoordinates = [100.0, 5.0]     # two, not three
 
         script = [
             lambda s, c: tick(s, c),
@@ -216,12 +217,15 @@ def test_a_short_array_is_not_recorded_as_a_partial_reading():
         conn = db.connect(path)
         try:
             row = conn.execute(
-                "SELECT wear_fl, wear_rr, damage, pitch FROM samples"
-            ).fetchone()
+                "SELECT wear_fl, wear_rr, damage, pos_x, pos_z, pitch"
+                " FROM samples").fetchone()
         finally:
             conn.close()
         assert row["wear_fl"] is None and row["wear_rr"] is None, tuple(row)
         assert row["damage"] is None, tuple(row)
+        # Position too: an x with no z is not a place, so a short
+        # carCoordinates is absent rather than partially recorded.
+        assert row["pos_x"] is None and row["pos_z"] is None, tuple(row)
         # And the lap still recorded, with everything else intact.
         assert row["pitch"] == 0.01, tuple(row)
         print("  short arrays stored as NULL; the lap recorded anyway")

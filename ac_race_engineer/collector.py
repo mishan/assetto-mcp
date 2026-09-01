@@ -52,6 +52,7 @@ _is_outlier = analysis.lap_is_outlier
 # rather than one nullable field.
 WHEELS_PER_CAR = 4
 DAMAGE_ZONES = 5
+WORLD_AXES = 3
 
 
 def _seq(p, field: str, n: int) -> tuple | None:
@@ -418,10 +419,14 @@ class Collector:
                 # None rather than 0 -- for a coordinate, zero is a claim
                 # that the car was at the track origin, which is a place on
                 # the map.
-                coords = getattr(g, "carCoordinates", None)
-                pos_x, pos_y, pos_z = (
-                    (coords[0], coords[1], coords[2]) if coords is not None
-                    else (None, None, None))
+                #
+                # Through _seq for the same reason tyre wear and damage are:
+                # a field that exists but is short raises IndexError here, in
+                # the sampling loop, which ends the session rather than
+                # losing one column. Position is the one where a partial read
+                # would also be meaningless -- an x with no z is not a place.
+                pos_x, pos_y, pos_z = _seq(g, "carCoordinates",
+                                           WORLD_AXES) or (None, None, None)
                 lap_samples.append((
                     t_ms,
                     g.normalizedCarPosition,

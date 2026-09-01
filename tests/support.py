@@ -226,10 +226,13 @@ def tick(sim, col, n=6):
             sim.graphics.normalizedCarPosition + 0.1) % 1.0
         # Move in the world too, so a recorded lap is a path. A stationary
         # coordinate would let a collector that stored the same sample every
-        # tick pass a test about storing position. Guarded because one test
-        # removes the field to stand in for an older shared-memory layout.
+        # tick pass a test about storing position. Guarded on both presence
+        # and length, because tests stand in for two different broken
+        # layouts: one with the field removed, and one where it is there but
+        # too short. The harness has to survive the same inputs the
+        # collector does, or a test of the collector fails in here instead.
         coords = getattr(sim.graphics, "carCoordinates", None)
-        if coords is not None:
+        if coords is not None and len(coords) >= 3:
             coords[0] += 12.0
             coords[2] -= 5.0
         sim.physics.packetId += 1

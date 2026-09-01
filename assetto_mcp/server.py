@@ -947,7 +947,7 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
 
     What *is* excluded is a lap whose time is not a lap time -- abandoned
     before the line, an out-lap, or a lap containing a pit stop. Those are
-    listed in `excluded` with the reason. Nothing is ever dropped silently:
+    listed in `excluded_laps` with the reason. Nothing is dropped silently:
     one off-track lap in a 3v3 with a true 500ms gain once turned this into
     "within noise, change -1620ms" without a word about why.
 

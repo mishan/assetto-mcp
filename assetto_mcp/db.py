@@ -555,6 +555,14 @@ def _migrate(conn) -> list[str]:
         # for every lap already stored, rather than defaulting them and
         # calling the history unknowable.
         added = [c for c in (
+            # `complete` belongs to v4 and is listed again here on purpose.
+            # _add_column no-ops when the column is present, and a database
+            # stamped past v4 without it does exist -- which made three
+            # separate v11 queries raise "no such column: complete", and a
+            # raise inside _migrate leaves user_version un-bumped and the
+            # database stuck below the schema forever. Guaranteeing the
+            # column once beats guarding every query that reads it.
+            ("complete", "INTEGER NOT NULL DEFAULT 1"),
             ("out_lap", "INTEGER NOT NULL DEFAULT 0"),
             ("pitted", "INTEGER NOT NULL DEFAULT 0"),
             ("outlier", "INTEGER NOT NULL DEFAULT 0"),
@@ -617,14 +625,14 @@ def _v11_preserve_old_exclusions(conn) -> list[str]:
     lap_cols = set(_columns(conn, "laps"))
     if not {"valid", "lap_time_ms", "session_id"} <= lap_cols:
         return []
-    # `complete` arrives in the v4 step, which normally runs before this one
-    # -- but a file stamped at a later version without it does exist, and a
-    # migration that raises leaves user_version un-bumped and the database
-    # stuck below the current schema permanently. Assume nothing.
+    # `complete` is guaranteed by the v11 column list above, which repeats
+    # v4's addition for exactly this reason. Checked anyway, cheaply,
+    # because everything in this function exists to keep a migration from
+    # raising and leaving the database stuck below the schema.
+    complete_expr = "complete" if "complete" in lap_cols else "1"
     excluded = conn.execute(
-        "SELECT id, session_id, lap_time_ms, valid,"
-        + (" complete" if "complete" in lap_cols else " 1 AS complete")
-        + " FROM laps WHERE valid = 0").fetchall()
+        f"SELECT id, session_id, lap_time_ms, valid, {complete_expr}"
+        f" AS complete FROM laps WHERE valid = 0").fetchall()
     if not excluded:
         return []
 
@@ -648,8 +656,9 @@ def _v11_preserve_old_exclusions(conn) -> list[str]:
     # was flagged -- same rule backfill_outliers uses.
     refs: dict = {}
     for r in conn.execute(
-            "SELECT session_id, MIN(lap_time_ms) m FROM laps"
-            " WHERE complete AND lap_time_ms > 0 GROUP BY session_id"):
+            f"SELECT session_id, MIN(lap_time_ms) m FROM laps"
+            f" WHERE {complete_expr} AND lap_time_ms > 0"
+            f" GROUP BY session_id"):
         refs[r["session_id"]] = r["m"]
 
     from .analysis import lap_is_outlier
@@ -843,7 +852,7 @@ def backfill_outliers(conn) -> int:
     for srow in conn.execute("SELECT id FROM sessions").fetchall():
         sid = srow["id"]
         laps = conn.execute(
-            "SELECT id, lap_time_ms, complete, out_lap, pitted, lap_time_ms"
+            "SELECT id, lap_time_ms, complete, out_lap, pitted"
             " FROM laps WHERE session_id = ?", (sid,)).fetchall()
         times = [r["lap_time_ms"] for r in laps
                  if r["complete"] and not r["out_lap"] and not r["pitted"]

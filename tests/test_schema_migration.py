@@ -215,6 +215,50 @@ def test_a_lap_that_really_did_cut_stays_flagged_after_the_upgrade():
         conn.close()
 
 
+def test_a_database_missing_a_column_it_should_have_still_upgrades():
+    """A file stamped past v4 without `complete`, which does exist.
+
+    The v11 pass reasons about why old laps were excluded and wants
+    `complete` for it. Guarding one query and then naming the column
+    directly in the next raised OperationalError mid-migration -- and a
+    raise inside _migrate aborts every later step AND leaves user_version
+    un-bumped, so the database is stuck below the current schema forever
+    and the server will not start at all. Nothing here may assume a column
+    it has not checked for.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "odd.db"
+        raw = sqlite3.connect(path)
+        # A v7-shaped laps table -- setup_name present, as v1 added it --
+        # with `complete` missing, and stamped past the version that would
+        # have added it so the v4 step is skipped.
+        raw.executescript(V0_SCHEMA.replace(
+            "    valid INTEGER NOT NULL DEFAULT 1, completed_at REAL NOT NULL",
+            "    valid INTEGER NOT NULL DEFAULT 1, completed_at REAL NOT NULL,"
+            " setup_name TEXT NOT NULL DEFAULT ''"))
+        raw.execute("INSERT INTO sessions (started_at, car, track)"
+                    " VALUES (?,?,?)", (time.time(), "carx", "mugello"))
+        # One excluded lap, or the pass returns before it gets that far.
+        for n, (ms, valid) in enumerate([(114054, 1), (134000, 0)], start=1):
+            raw.execute("INSERT INTO laps (session_id, lap_number,"
+                        " lap_time_ms, valid, completed_at)"
+                        " VALUES (1,?,?,?,?)", (n, ms, valid, time.time()))
+        raw.execute("PRAGMA user_version = 7")
+        raw.commit()
+        raw.close()
+
+        conn = db.connect(path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == \
+                db.SCHEMA_VERSION, "migration stopped short"
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(laps)")}
+            assert {"complete", "invalid", "pitted"} <= cols, cols
+            assert len(db.list_laps(conn, limit=None)) == 2
+            print("  a database missing `complete` upgrades cleanly")
+        finally:
+            conn.close()
+
+
 def test_migration_is_idempotent():
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "old.db"

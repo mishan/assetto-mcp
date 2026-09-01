@@ -1,0 +1,225 @@
+"""Keeping the database bounded without losing a lap.
+
+A lap costs ~0.4 MB and a driver accumulates them forever, so something has
+to give. What must not give is a lap's existence: the reference lap from
+three months ago is exactly the thing a change is measured against, and a
+season away from a circuit is precisely when the old run matters most.
+
+So nothing is deleted -- the oldest sessions' traces are decimated instead,
+and the lap keeps its time, its setup and its track-limits evidence at full
+fidelity. These tests are almost entirely about that distinction.
+"""
+
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from support import make_session, run_module  # noqa: E402
+
+from assetto_mcp import db, retention  # noqa: E402
+
+_SAMPLE = (180.0, 1.0, 0.0, 0.0, 4, 9000, 0.0, 0.0,
+           0.4, 0.4, 0.3, 0.3, 26.0, 26.0, 26.0, 26.0,
+           85.0, 85.0, 85.0, 85.0, 0.02, 0.024, 0)
+N = 800
+
+
+def _build(tmp: Path, sessions=5, laps=4):
+    conn = db.connect(tmp / "t.db")
+    for _ in range(sessions):
+        sid = make_session(conn)
+        for lap in range(1, laps + 1):
+            db.store_lap(conn, sid, lap, 113000 + lap, True,
+                         [(i * 40, i / N, *_SAMPLE) for i in range(N)])
+    conn.commit()
+    retention._reclaim(conn, [])
+    return conn, tmp / "t.db"
+
+
+def test_a_database_under_budget_is_left_completely_alone():
+    with tempfile.TemporaryDirectory() as d:
+        conn, path = _build(Path(d))
+        try:
+            before = retention.db_bytes(path)
+            r = retention.enforce_budget(conn, path, before * 10)
+            assert r["acted"] is False, r
+            assert conn.execute("SELECT COUNT(*) c FROM samples"
+                                ).fetchone()["c"] == 5 * 4 * N
+        finally:
+            conn.close()
+
+
+def test_no_lap_is_ever_deleted_however_far_over_budget():
+    with tempfile.TemporaryDirectory() as d:
+        conn, path = _build(Path(d))
+        try:
+            laps_before = conn.execute(
+                "SELECT COUNT(*) c FROM laps").fetchone()["c"]
+            retention.enforce_budget(conn, path, 1)   # absurdly small
+            laps_after = conn.execute(
+                "SELECT COUNT(*) c FROM laps").fetchone()["c"]
+            assert laps_after == laps_before == 20, (laps_before, laps_after)
+            sessions = conn.execute(
+                "SELECT COUNT(*) c FROM sessions").fetchone()["c"]
+            assert sessions == 5
+            print(f"  budget of 1 byte: {laps_after} laps still there")
+        finally:
+            conn.close()
+
+
+def test_lap_times_and_track_limits_evidence_survive_thinning():
+    with tempfile.TemporaryDirectory() as d:
+        conn, path = _build(Path(d))
+        try:
+            before = {l["id"]: (l["lap_time_ms"], l["max_tyres_out"],
+                                l["excursions"], l["invalid"])
+                      for l in db.list_laps(conn, limit=None)}
+            retention.enforce_budget(conn, path, 1)
+            after = {l["id"]: (l["lap_time_ms"], l["max_tyres_out"],
+                               l["excursions"], l["invalid"])
+                     for l in db.list_laps(conn, limit=None)}
+            assert after == before, "thinning changed a derived fact"
+        finally:
+            conn.close()
+
+
+def test_the_newest_session_is_never_thinned():
+    """It is the one being driven, and the one about to be asked about."""
+    with tempfile.TemporaryDirectory() as d:
+        conn, path = _build(Path(d))
+        try:
+            newest = conn.execute(
+                "SELECT id FROM sessions ORDER BY id DESC LIMIT 1"
+            ).fetchone()["id"]
+            retention.enforce_budget(conn, path, 1)
+            strides = [r["sample_stride"] for r in conn.execute(
+                "SELECT sample_stride FROM laps WHERE session_id = ?",
+                (newest,))]
+            assert set(strides) == {1}, strides
+            counts = [r["c"] for r in conn.execute(
+                "SELECT COUNT(*) c FROM samples s JOIN laps l"
+                " ON l.id = s.lap_id WHERE l.session_id = ?"
+                " GROUP BY s.lap_id", (newest,))]
+            assert set(counts) == {N}, counts
+        finally:
+            conn.close()
+
+
+def test_the_oldest_sessions_are_thinned_first():
+    with tempfile.TemporaryDirectory() as d:
+        conn, path = _build(Path(d))
+        try:
+            before = retention.db_bytes(path)
+            retention.enforce_budget(conn, path, int(before * 0.75))
+            rows = conn.execute(
+                "SELECT session_id, MAX(sample_stride) s FROM laps"
+                " GROUP BY session_id ORDER BY session_id").fetchall()
+            strides = [r["s"] for r in rows]
+            assert strides == sorted(strides, reverse=True), strides
+            assert strides[0] > 1 and strides[-1] == 1, strides
+            print("  strides oldest-to-newest:", strides)
+        finally:
+            conn.close()
+
+
+def test_a_thinned_lap_says_it_is_thinned():
+    # A coarse trace that does not announce itself reads as a lap driven at
+    # 3Hz, and every derived rate is then quietly wrong.
+    with tempfile.TemporaryDirectory() as d:
+        conn, path = _build(Path(d))
+        try:
+            retention.enforce_budget(conn, path, 1)
+            for lap in conn.execute(
+                    "SELECT id, sample_stride FROM laps").fetchall():
+                kept = conn.execute(
+                    "SELECT COUNT(*) c FROM samples WHERE lap_id = ?",
+                    (lap["id"],)).fetchone()["c"]
+                expected = -(-N // lap["sample_stride"])   # ceil
+                assert kept == expected, (dict(lap), kept, expected)
+        finally:
+            conn.close()
+
+
+def test_thinning_keeps_an_even_spread_across_the_lap():
+    # Deleting by "every Nth millisecond" would bias towards wherever the
+    # sampling jitter happened to land and leave holes in one part of a lap.
+    with tempfile.TemporaryDirectory() as d:
+        conn, path = _build(Path(d), sessions=2, laps=1)
+        try:
+            retention.enforce_budget(conn, path, 1)
+            oldest = conn.execute(
+                "SELECT id FROM laps ORDER BY id ASC LIMIT 1").fetchone()["id"]
+            ts = [r["t_ms"] for r in conn.execute(
+                "SELECT t_ms FROM samples WHERE lap_id = ? ORDER BY t_ms",
+                (oldest,))]
+            gaps = {ts[i + 1] - ts[i] for i in range(len(ts) - 1)}
+            assert len(gaps) == 1, f"uneven spacing: {sorted(gaps)[:5]}"
+        finally:
+            conn.close()
+
+
+def test_a_budget_of_zero_means_keep_everything():
+    with tempfile.TemporaryDirectory() as d:
+        conn, path = _build(Path(d))
+        try:
+            r = retention.enforce_budget(conn, path, 0)
+            assert r["acted"] is False, r
+            assert conn.execute("SELECT COUNT(*) c FROM samples"
+                                ).fetchone()["c"] == 5 * 4 * N
+        finally:
+            conn.close()
+
+
+def test_being_unable_to_reach_the_budget_is_said_out_loud():
+    with tempfile.TemporaryDirectory() as d:
+        conn, path = _build(Path(d))
+        try:
+            r = retention.enforce_budget(conn, path, 1)
+            assert r["under_budget"] is False
+            assert "never thinned" in r["note"], r
+            assert "no lap is ever deleted" in r["note"], r
+        finally:
+            conn.close()
+
+
+def test_storage_report_says_what_has_been_thinned():
+    with tempfile.TemporaryDirectory() as d:
+        conn, path = _build(Path(d))
+        try:
+            clean = retention.storage_report(conn, path)
+            assert clean["laps"] == 20 and clean["laps_thinned"] == 0
+            assert "note" not in clean, clean
+
+            retention.enforce_budget(conn, path, 1)
+            after = retention.storage_report(conn, path)
+            assert after["laps"] == 20, "reports laps, not surviving samples"
+            assert after["laps_thinned"] > 0
+            assert (after["laps_full_resolution"] + after["laps_thinned"]
+                    == 20)
+            assert "resolution" in after["note"]
+            print("  ", after["size"], after["note"][:60] + "...")
+        finally:
+            conn.close()
+
+
+def test_the_budget_can_be_set_from_the_environment():
+    import os
+    for var in ("ASSETTO_MCP_MAX_DB_BYTES", "AC_ENGINEER_MAX_DB_BYTES"):
+        os.environ.pop(var, None)
+    assert retention.budget_bytes() == retention.DEFAULT_BUDGET_BYTES
+    try:
+        os.environ["ASSETTO_MCP_MAX_DB_BYTES"] = "12345"
+        assert retention.budget_bytes() == 12345
+        os.environ["ASSETTO_MCP_MAX_DB_BYTES"] = "0"
+        assert retention.budget_bytes() == 0, "0 means keep everything"
+        os.environ["ASSETTO_MCP_MAX_DB_BYTES"] = "not a number"
+        assert retention.budget_bytes() == retention.DEFAULT_BUDGET_BYTES, \
+            "a typo must not silently disable or shrink the budget"
+    finally:
+        os.environ.pop("ASSETTO_MCP_MAX_DB_BYTES", None)
+
+
+if __name__ == "__main__":
+    sys.exit(1 if run_module(globals()) else 0)

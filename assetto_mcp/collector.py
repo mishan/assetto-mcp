@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 
-from . import analysis, db
+from . import analysis, db, retention
 
 TARGET_HZ = 25  # plenty for setup work; keeps the DB small
 
@@ -36,9 +36,9 @@ WRAP_HIGH = 0.9
 WRAP_LOW = 0.1
 
 # The outlier rule lives in analysis so the same definition is used both
-# here (at write time) and by db.revalidate_outlier_laps (over laps stored
-# before the rule existed). Marking a lap invalid only excludes it from
-# best-lap maths -- it is still stored and still readable.
+# here (at write time) and by db.backfill_outliers (over laps stored before
+# the rule existed). Being an outlier only sets a flag: the lap is stored,
+# readable, and still included in comparisons, which say it was slow.
 _is_outlier = analysis.lap_is_outlier
 
 
@@ -145,6 +145,8 @@ class Collector:
         self.last_session_id: int | None = None
         self.laps_recorded = 0
         self.abandoned_laps = 0
+        self.out_laps_recorded = 0
+        self.last_retention: dict | None = None
         self.last_error: str | None = None
         # Observable progress. These exist so "has the collector noticed
         # yet?" is answerable rather than something callers have to guess at
@@ -414,6 +416,40 @@ class Collector:
             self._conn.close()
             self._conn = None
 
+    def _housekeeping(self) -> None:
+        """One retention pass, at session start, if this instance may do it.
+
+        Three guards, each for a way this can hurt rather than help:
+
+        - Only the claim holder runs it. A standby instance thinning the
+          database underneath the one actually recording is pure contention
+          for no benefit.
+        - The heartbeat is forced either side. A VACUUM over a multi-gigabyte
+          file can exceed RECORDER_STALE_SECONDS, and a claim that goes stale
+          mid-pass is handed to another instance, which then opens a second
+          session for the same drive and blocks on the exclusive lock this
+          one is still holding.
+        - Anything raised is recorded and swallowed. Housekeeping must never
+          be the reason a session is not recorded.
+
+        It still costs a pause while the car is in the garage, which is why
+        it is here and not between two flying laps.
+        """
+        if not self.holds_recorder:
+            return
+        try:
+            self._beat(force=True)
+            result = retention.enforce_budget(self._conn, self._db_path)
+            if result.get("acted"):
+                self.last_retention = result
+        except Exception as e:
+            self.last_error = f"retention pass failed: {e}"
+        finally:
+            try:
+                self._beat(force=True)
+            except Exception:
+                pass
+
     def _loop(self, sim, AC_LIVE):
         interval = 1.0 / TARGET_HZ
         session_started = False
@@ -498,6 +534,7 @@ class Collector:
                     air_temp=p.airTemp, road_temp=p.roadTemp,
                 )
                 session_started = True
+                self._housekeeping()
                 last_completed = g.completedLaps
                 last_pos = None
                 lap_samples = []
@@ -518,24 +555,36 @@ class Collector:
                 lap_time = g.iLastTime
                 # First crossing of the line after leaving the pits produces
                 # an out-lap with no meaningful time; iLastTime is 0 then.
-                if lap_samples and lap_time > 0:
-                    valid = (not lap_dirty
-                             and not lap_pitted
-                             and not _is_outlier(lap_time, session_best))
+                # An out-lap used to be dropped here, samples and all. The
+                # driving after pit exit is real telemetry; what is not real
+                # is its lap time, so it is stored and flagged instead.
+                if lap_samples:
+                    out_lap = lap_time <= 0
+                    # Track limits are no longer decided here. store_lap
+                    # scores them from the samples, which is what lets the
+                    # threshold change later and be re-applied to laps
+                    # already driven. lap_dirty survives only to tell the
+                    # in-game overlay something is happening right now.
+                    #
                     # setup_name omitted: store_lap snapshots whatever setup
                     # the session is currently marked as running, so there
                     # is one source of truth rather than a cached copy here
                     # that another instance's set_session_setup can't reach.
-                    db.store_lap(self._conn, self.session_id,
-                                 last_completed + 1, lap_time, valid,
-                                 lap_samples)
+                    db.store_lap(
+                        self._conn, self.session_id, last_completed + 1,
+                        lap_time, True, lap_samples,
+                        out_lap=out_lap, pitted=lap_pitted,
+                        outlier=(not out_lap and not lap_pitted
+                                 and _is_outlier(lap_time, session_best)))
                     self.laps_recorded += 1
+                    if out_lap:
+                        self.out_laps_recorded += 1
                     # Reference for the outlier rule: fastest lap that was
                     # actually driven, whether or not it was clean. Deriving
                     # it from valid laps only made this rule a dependent of
                     # the dirty-lap rule -- at a track with tight limits
                     # every lap can be dirty, leaving no reference at all.
-                    if (not lap_pitted
+                    if (not out_lap and not lap_pitted
                             and (session_best is None
                                  or lap_time < session_best)):
                         session_best = lap_time
@@ -575,7 +624,7 @@ class Collector:
                 elapsed = int((time.monotonic() - lap_start_wall) * 1000)
                 db.store_lap(self._conn, self.session_id,
                              last_completed + 1, elapsed, False,
-                             lap_samples, complete=False)
+                             lap_samples, complete=False, pitted=lap_pitted)
                 self.laps_recorded += 1
                 self.abandoned_laps += 1
                 lap_samples = []
@@ -598,7 +647,13 @@ class Collector:
             if p.packetId != last_packet and not g.isInPitLane:
                 last_packet = p.packetId
                 t_ms = int((time.monotonic() - lap_start_wall) * 1000)
-                if p.numberOfTyresOut > 2:
+                # Drives the in-game overlay's "running wide" indicator
+                # only. The stored verdict is scored from the samples at
+                # store time -- but this must use the same threshold, or
+                # the overlay flags a lap dirty in real time that the
+                # database then records as clean, which is the original
+                # complaint surviving in the one place the driver sees it.
+                if p.numberOfTyresOut >= db.TRACK_LIMITS_WHEELS:
                     lap_dirty = True
                     self.current_lap_dirty = True
                 self.samples_taken += 1

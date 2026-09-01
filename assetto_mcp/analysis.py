@@ -86,6 +86,16 @@ def outlier_reference(lap_times_ms) -> int | None:
     return min(times) if times else None
 
 
+def _usable(lap: dict) -> tuple:
+    """(usable, reason-if-not) for a lap's time.
+
+    Imported lazily from db to keep the one definition of usability in one
+    place without analysis and db importing each other at module scope.
+    """
+    from .db import lap_usability
+    return lap_usability(lap)
+
+
 def lap_is_outlier(lap_time_ms: int, reference_ms: int | None) -> bool:
     """True if this lap is grossly slower than the session's reference.
 
@@ -668,7 +678,31 @@ def lap_summary(lap: dict, samples: list[dict],
                                  if lap.get("track_config") else ""),
         "lap_time": _fmt_time(lap["lap_time_ms"]),
         "lap_time_ms": lap["lap_time_ms"],
-        "valid": bool(lap["valid"]),
+        # Two separate facts, deliberately. `ran_wide` is about track
+        # limits; `usable_for_timing` is about whether the lap time means
+        # anything. A lap can run wide and still be the most informative one
+        # of the session, so both are reported rather than a single verdict
+        # that used to decide, silently, that the lap did not exist.
+        # None, not False, when the lap was never scored. A lap stored with
+        # no samples has nothing to say about track limits, and "did not run
+        # wide" would be a claim there is no evidence for.
+        "ran_wide": (bool(lap.get("invalid"))
+                     if lap.get("excursions") is not None else None),
+        "track_limits": {
+            "max_tyres_out": lap.get("max_tyres_out"),
+            "excursions": lap.get("excursions"),
+            "off_track_ms": lap.get("off_track_ms"),
+            "source": lap.get("invalid_source") or "inferred",
+        },
+        # A bool plus a separate reason, not a bool-or-a-sentence: both
+        # halves of the latter are truthy, so `if lap["usable_for_timing"]`
+        # was always true and read as though it had been checked.
+        "usable_for_timing": _usable(lap)[0],
+        "not_usable_because": _usable(lap)[1],
+        # Above 1, this lap's trace has been decimated to keep the database
+        # within its size budget: 2 means every second sample survives. The
+        # lap and its numbers are intact; the resolution is not.
+        "sample_stride": lap.get("sample_stride") or 1,
         # How many telemetry samples this lap is made of. Reported so
         # accel_samples_dropped below has something to be read against: "12
         # dropped" means nothing without it, and it is the denominator for

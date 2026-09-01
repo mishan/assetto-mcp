@@ -155,6 +155,13 @@ While recording, at 25 Hz:
   up to 333 Hz. Only the last 20 laps of a session are kept; these are by far
   the biggest rows in the database.
 
+**Every lap is kept**, including the ones that don't count: out-laps, laps
+with a pit stop, laps that ran wide, and laps that ended in the barrier. Each
+is flagged for what it is rather than thrown away — a lap that ran wide still
+has real corner speeds and brake points on it, and the lap that ended in the
+wall is often the one you most want to look at. What the flags do is stop a
+lap whose *time* isn't a lap time from being ranked or averaged.
+
 Per session it also stores the car, track and layout, tyre compound, air and
 road temperature, track length, the car's fuel consumption and tank size, the
 setup name you gave it, and a copy of every setup value currently on the car —
@@ -175,6 +182,18 @@ Setup files are read from and written to your normal Assetto Corsa setup
 folder. Only files whose name you ask for are written, and reusing the name of
 an existing setup is refused unless you say to overwrite it — in which case the
 old file is kept alongside as `<name>.ini.bak-<timestamp>`.
+
+### How big it gets
+
+About **0.4 MB per lap**, so roughly **12 MB per hour** of driving.
+
+Nothing is ever deleted. When the database passes its size budget (2 GB by
+default), the *oldest* sessions' traces are thinned instead — every 2nd, then
+4th, then 8th sample — while lap times, setups and the off-track evidence stay
+exactly as recorded. So an old lap gets coarser, never absent. Ask for a
+storage report to see what's stored and what has been thinned, and set
+`ASSETTO_MCP_MAX_DB_BYTES` to change the budget or `0` to keep every sample
+forever.
 
 `diagnose.bat` writes a report that redacts other MCP servers' secrets on a
 best-effort basis, but still contains your username and absolute paths. Skim it
@@ -197,9 +216,11 @@ before sharing it.
 
 ## Planned improvements
 
-- **Read lap validity from the game** instead of inferring it from wheels-off.
-  Today a lap the game counted can still be marked invalid, and an invalid lap
-  is dropped from every comparison. This is the top item in the backlog.
+- **Read lap validity from the game.** Track limits are now scored from
+  recorded wheels-off evidence rather than guessed at, and no lap is dropped
+  from a comparison for it — but it's still inference. CSP will hand the
+  game's own verdict to a physics worker, which is a thing this already runs,
+  so this is wiring rather than research. Single-player only.
 - **Entry-phase corner metrics** — trail braking, rotation and steering between
   the brake point and the apex. That's where most spins live, and nothing
   currently measures it.

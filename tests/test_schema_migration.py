@@ -32,7 +32,12 @@ CREATE TABLE laps (
     lap_number INTEGER NOT NULL, lap_time_ms INTEGER NOT NULL,
     valid INTEGER NOT NULL DEFAULT 1, completed_at REAL NOT NULL
 );
-CREATE TABLE samples (lap_id INTEGER NOT NULL, t_ms INTEGER NOT NULL);
+-- tyres_out is here on purpose: it has existed since the first schema, and
+-- the v11 track-limits backfill short-circuits without it. A fixture that
+-- omitted it made every migration test pass with the backfill never
+-- running -- which is exactly the path a real database does take.
+CREATE TABLE samples (lap_id INTEGER NOT NULL, t_ms INTEGER NOT NULL,
+                      tyres_out INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE notes (
     id INTEGER PRIMARY KEY, session_id INTEGER, lap_count INTEGER NOT NULL,
     spline REAL NOT NULL, tag TEXT NOT NULL, speed_kmh REAL NOT NULL,
@@ -41,7 +46,14 @@ CREATE TABLE notes (
 """
 
 
-def _v0_database(path: Path, laps) -> None:
+def _v0_database(path: Path, laps, tyres_out=None) -> None:
+    """A pre-setup_name database, with samples.
+
+    The samples matter: the v11 backfill re-derives track limits from them,
+    so a fixture without any exercises a path no real database takes.
+    `tyres_out` is a per-lap list of wheels-off counts, defaulting to a
+    clean lap.
+    """
     raw = sqlite3.connect(path)
     raw.executescript(V0_SCHEMA)
     raw.execute("INSERT INTO sessions (started_at, car, track, setup_name)"
@@ -51,6 +63,10 @@ def _v0_database(path: Path, laps) -> None:
         raw.execute("INSERT INTO laps (session_id, lap_number, lap_time_ms,"
                     " valid, completed_at) VALUES (1,?,?,?,?)",
                     (n, lap_time, valid, time.time()))
+        wheels = (tyres_out or {}).get(n, [0] * 40)
+        raw.executemany(
+            "INSERT INTO samples (lap_id, t_ms, tyres_out) VALUES (?,?,?)",
+            [(n, i * 40, w) for i, w in enumerate(wheels)])
     raw.commit()
     raw.close()
 
@@ -100,39 +116,102 @@ def test_laps_stored_before_v4_are_marked_complete():
         conn.close()
 
 
-def test_laps_stored_before_the_outlier_rule_are_rechecked():
-    """The 10:22 lap is still in the user's database, still marked valid.
+def test_laps_stored_before_the_outlier_rule_are_flagged_on_upgrade():
+    """The 10:22 lap is still in the user's database.
 
-    Validity was only ever computed at write time, so shipping the rule
-    fixed nothing for data already recorded -- the lap that motivated the
-    whole change kept poisoning best-lap queries.
+    The rule was only ever applied at write time, so shipping it fixed
+    nothing for data already recorded. Since v11 it sets `outlier` rather
+    than hiding the lap: the lap stays stored, stays readable and stays
+    comparable, and anything ranking lap times can see why it stands out.
     """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "old.db"
         _v0_database(path, [(114054, 1), (622162, 1), (115000, 1)])
 
         conn = db.connect(path)
-        rows = {r["lap_time_ms"]: r["valid"] for r in conn.execute(
-            "SELECT lap_time_ms, valid FROM laps")}
-        assert rows[622162] == 0, "the 10:22 lap is still marked valid"
-        assert rows[114054] == 1
-        assert rows[115000] == 1
+        rows = {r["lap_time_ms"]: dict(r) for r in conn.execute(
+            "SELECT lap_time_ms, outlier, invalid FROM laps")}
+        assert rows[622162]["outlier"] == 1, rows
+        assert rows[114054]["outlier"] == 0 and rows[115000]["outlier"] == 0
+        # Flagged, not invalidated: it did not leave the track.
+        assert rows[622162]["invalid"] == 0, rows
         assert db.list_sessions(conn)[0]["best_ms"] == 114054
-        print("  10:22 lap invalidated on upgrade; best_ms is clean")
+        print("  10:22 lap flagged as an outlier; best_ms is clean")
         conn.close()
 
 
-def test_revalidation_only_ever_invalidates():
-    """Never resurrect a lap the dirty-lap rule set aside deliberately."""
+def test_an_old_exclusion_is_never_silently_undone():
+    """Pre-v11 `valid = 0` meant off-track OR pitted OR grossly slow.
+
+    v11 recomputes the first two from evidence that is still there. The
+    third -- a pit visit -- was never recorded anywhere else, so a lap
+    excluded only for that would come out of the migration looking like a
+    clean flying lap and start polluting every comparison. That is the
+    exact failure this schema change exists to stop, so it must not be the
+    thing the change causes.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "old.db"
-        # A perfectly normal lap that someone marked invalid (off-track).
+        # 115000 is not slow enough to be an outlier and its samples show
+        # no wheels off, so the only explanation left is a pit visit.
         _v0_database(path, [(114054, 1), (115000, 0)])
         conn = db.connect(path)
-        rows = {r["lap_time_ms"]: r["valid"] for r in conn.execute(
-            "SELECT lap_time_ms, valid FROM laps")}
-        assert rows[115000] == 0, rows
-        print("  an invalid lap stays invalid")
+        rows = {r["lap_time_ms"]: dict(r)
+                for r in db.list_laps(conn, limit=None)}
+        excluded = rows[115000]
+        assert excluded["pitted"] == 1, excluded
+        usable, why = db.lap_usability(excluded)
+        assert usable is False, why
+        # And its telemetry is untouched -- nothing was deleted to do this.
+        assert db.get_samples(conn, excluded["id"]), "samples were lost"
+        print("  an unexplained old exclusion survives as `pitted`")
+        conn.close()
+
+
+def test_the_upgrade_gives_back_a_lap_the_old_rule_wrongly_excluded():
+    """Sebring 129, in migration form.
+
+    A clean lap stored `valid = 0` because three wheels touched a flat kerb.
+    The samples proving it never left the track were there the whole time,
+    and v11 reads them: the lap comes back readable and comparable without
+    anyone re-driving it. This is the case that justifies the whole schema
+    change, so it is pinned rather than assumed.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "old.db"
+        _v0_database(
+            path,
+            [(114054, 1), (126769, 0)],
+            # Lap 2: three wheels over the line for a full second, which the
+            # old "> 2 tyres out" rule counted as a cut and the game did not.
+            tyres_out={2: [0] * 10 + [3] * 25 + [0] * 5},
+        )
+        conn = db.connect(path)
+        rows = {r["lap_time_ms"]: dict(r)
+                for r in db.list_laps(conn, limit=None)}
+        given_back = rows[126769]
+        assert given_back["invalid"] == 0, given_back
+        assert given_back["max_tyres_out"] == 3, given_back
+        assert given_back["excursions"] == 0, given_back
+        # Explained by the evidence, so not written off as a pit visit.
+        assert given_back["pitted"] == 0, given_back
+        assert db.lap_usability(given_back) == (True, None), given_back
+        print("  a lap excluded for three wheels on a kerb is back")
+        conn.close()
+
+
+def test_a_lap_that_really_did_cut_stays_flagged_after_the_upgrade():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "old.db"
+        _v0_database(path, [(114054, 1), (111000, 0)],
+                     tyres_out={2: [0] * 10 + [4] * 25 + [0] * 5})
+        conn = db.connect(path)
+        rows = {r["lap_time_ms"]: dict(r)
+                for r in db.list_laps(conn, limit=None)}
+        assert rows[111000]["invalid"] == 1, rows[111000]
+        assert rows[111000]["excursions"] == 1, rows[111000]
+        # Still usable, though -- running wide is not a reason to drop it.
+        assert db.lap_usability(rows[111000])[0] is True
         conn.close()
 
 
@@ -142,9 +221,12 @@ def test_migration_is_idempotent():
         _v0_database(path, [(114054, 1), (622162, 1)])
         db.connect(path).close()
         conn = db.connect(path)
-        valid = conn.execute(
-            "SELECT COUNT(*) FROM laps WHERE valid = 1").fetchone()[0]
-        assert valid == 1, valid
+        # The 10:22 lap is an outlier, flagged once and not re-flagged.
+        outliers = conn.execute(
+            "SELECT COUNT(*) FROM laps WHERE outlier = 1").fetchone()[0]
+        assert outliers == 1, outliers
+        assert db.backfill_excursions(conn) == 0, \
+            "a second pass should find nothing to change"
         assert conn.execute("PRAGMA user_version").fetchone()[0] == \
             db.SCHEMA_VERSION
         print("  reconnecting does not re-run the migration")
@@ -257,7 +339,9 @@ def test_every_sample_column_the_collector_writes_survives_an_upgrade():
         raw = sqlite3.connect(path)
         raw.executescript(V0_SCHEMA.replace(
             "CREATE TABLE samples (lap_id INTEGER NOT NULL,"
-            " t_ms INTEGER NOT NULL);", ""))
+            " t_ms INTEGER NOT NULL,\n"
+            "                      tyres_out INTEGER NOT NULL DEFAULT 0);",
+            ""))
         raw.executescript(V7_SAMPLES)
         raw.execute("PRAGMA user_version = 7")
         raw.commit()

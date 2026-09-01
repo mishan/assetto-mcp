@@ -4,45 +4,73 @@ Known gaps and bugs, ranked by whether they destroy data the driver has
 already produced. Each entry says what is wrong, where it bit, and where the
 code lives, so a future session can act without re-deriving any of it.
 
-Written after the Sebring / NSX GT3 session. Test suite stood at 252 passing,
-schema at v9.
+Written after the Sebring / NSX GT3 session, and kept current since. Test
+suite stands at 337 passing, schema at v11.
 
 ---
 
-## 1. Lap validity is inferred, not read
+## 1. Lap validity was inferred, not read
 
-**Status:** open. The highest-stakes item here — it is the only one that
-silently discards laps the driver has already driven.
+**Status:** largely fixed in schema v11. The remaining gap is reading the
+game's own verdict, which is reachable but not yet wired up — see the end.
 
-`collector._loop` decides validity with:
-
-```python
-if p.numberOfTyresOut > 2:
-    lap_dirty = True
-```
-
-That is a *proxy* for AC's own judgement, not AC's judgement. Vanilla AC does
-not expose lap validity in shared memory — `sim_info.py` maps `penaltyTime`,
-`flag` and `isInPitLane`, and there is no `isValidLap` field the way ACC has
-one.
+`collector._loop` used to decide validity with `numberOfTyresOut > 2` and
+store one boolean. That was wrong in both directions, and `compare_runs`
+dropped the lap and said nothing either way.
 
 **Where it bit:** Sebring, lap 129. A 2:06.769 that the game showed as valid
-(not red on the driver's timing display) was stored `valid: 0`. Sebring is
-ringed with wide flat kerbs and painted apron that put three wheels outside
-the surface without the game calling a cut.
+was stored `valid: 0`. Sebring is ringed with wide flat kerbs and painted
+apron that put three wheels outside the surface without the game calling a
+cut. And the reverse, item 8: Sebring lap 160, 7% off the pace, stayed
+`valid` and blew out a comparison.
 
-**Why it matters:** `compare_runs` drops invalid laps. A lap wrongly flagged
-is a lap deleted from every analysis, and the driver is never told.
+**What changed:** a lap now stores *facts* and derives the verdicts.
 
-**Possible fixes, roughly in order of preference:**
+- `max_tyres_out`, `excursions`, `off_track_ms` — the evidence, computed
+  from `samples.tyres_out` at 25 Hz, which was there all along and was being
+  collapsed into one bit and thrown away.
+- `invalid` — track limits, derived from that evidence at
+  `db.TRACK_LIMITS_WHEELS` (now 4, was effectively 3), with a minimum
+  duration so one glitched tick is not a cut.
+- `out_lap`, `pitted`, `outlier`, `complete` — the other reasons a lap used
+  to be silently invalid, now separate and separately readable.
+- `invalid_source` — `inferred` or `game`, so a reader can tell a
+  measurement from a guess.
 
-- Check whether CSP exposes a real validity flag (it extends the shared
-  memory layout). If it does, read it and keep the proxy only as fallback.
-- Record *how much* the lap was off rather than a boolean — `tyres_out` is
-  already stored per sample, so the count and duration of excursions is
-  recoverable without any schema change. Let the reader decide.
-- At minimum, rename the reported field so it stops implying the game said
-  so: `valid` → something that reads as "3+ wheels off track at some point".
+Because the evidence is stored, the threshold is re-appliable: changing it
+and running `rescore_track_limits` re-scores every lap ever driven. The v11
+migration did exactly that to the existing database, so laps wrongly marked
+invalid came back without anyone re-driving them.
+
+**And nothing is dropped any more.** Laps that ran wide are compared and
+reported in `ran_wide`; only laps whose *time is not a lap time* are
+excluded, by name, with a reason.
+
+### What is left: the game's own verdict
+
+CSP does expose it, and from a context this project already runs:
+
+```lua
+-- acc-lua-internal/included-new-modes/p2p-1v1/impl_steam_worker.lua:111
+ac.onLapCompleted(0, function (carIndex, lapTime, valid, cuts, lapsCount,
+                               splits, lapCrossTime)
+```
+
+`valid` and `cuts` are AC's own answer. That file is started with
+`physics.startPhysicsWorker(...)` (`impl_steam.lua:644`) — the same
+mechanism `lua_app/assetto_mcp/suspension_worker.lua` already uses for
+damper sampling at 333 Hz. So the worker could post the game's verdict over
+the existing HTTP bridge and laps would carry `invalid_source: 'game'`.
+
+Constraint: CSP forbids physics scripting online, so this is single-player
+only and inference stays the fallback — the same worker/app tier split the
+suspension report already has.
+
+For completeness, what is *not* available: the plain app context has no lap
+validity field at all (`ac.getCar()`'s fields are generated from CSP's C++
+and none of the built-in apps read one), and `state_cphys_surface.isValidTrack`
+(`acc-lua-sdk/ac_car_cphys.lua:36`) is AC's authoritative per-surface flag
+but needs a per-car custom physics script with extended physics.
 
 ---
 

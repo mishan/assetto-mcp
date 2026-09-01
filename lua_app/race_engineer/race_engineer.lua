@@ -832,15 +832,39 @@ end
 -- Deliberately conservative. The lap in progress is not stored yet, and an
 -- out-lap has no time so it is skipped by design: a shortfall of one or two
 -- is normal. Two finished laps with nothing stored at all is not.
+--- car.lapCount counts the whole GAME session; status.laps counts what this
+--- recording has stored. Those are only the same window if recording began
+--- when the session did, and it very often does not -- the server restarts,
+--- or the driver starts recording twenty laps in. Comparing them directly
+--- cried wolf immediately: 26 laps driven in the game, a recorder that had
+--- been alive for ten seconds, and a red NOT STORING LAPS over a perfectly
+--- healthy collector.
+---
+--- So the count that matters is laps driven SINCE recording started, which
+--- means remembering where the lap counter stood at that moment. Cleared
+--- when recording stops, so the next run measures itself afresh.
 local LAPS_BEFORE_STORAGE_EXPECTED = 2
+local recordingBaseline = nil
 
 local function recordingHealth()
   if not status.connected then return 'offline', '' end
   local done = math.floor(num(car and car.lapCount, 0))
-  if done >= LAPS_BEFORE_STORAGE_EXPECTED and (status.laps or 0) == 0 then
+
+  if status.running then
+    -- First sight of a live recorder: this is lap zero as far as the
+    -- warning is concerned. Setting it late (the app reloaded mid-run) can
+    -- only postpone a warning, never invent one, which is the right way
+    -- round for something that shouts at the driver.
+    if recordingBaseline == nil then recordingBaseline = done end
+  else
+    recordingBaseline = nil
+  end
+
+  local driven = recordingBaseline and (done - recordingBaseline) or 0
+  if driven >= LAPS_BEFORE_STORAGE_EXPECTED and (status.laps or 0) == 0 then
     return 'not-storing',
-      string.format('%d laps driven, 0 stored - tell Claude to start '
-                    .. 'recording', done)
+      string.format('%d laps driven since recording started, 0 stored - '
+                    .. 'tell Claude to start recording', driven)
   end
   return status.running and 'recording' or 'idle', ''
 end
@@ -999,6 +1023,10 @@ script.__test = {
   -- harness has no way to invoke.
   clearBusy = function() suspBusy = false end,
   recordingHealth = function() return recordingHealth() end,
+  -- The baseline is remembered across calls, so a test that wants to start
+  -- from "recording has only just begun" has to be able to say so.
+  resetBaseline = function() recordingBaseline = nil end,
+  baseline = function() return recordingBaseline end,
   setLaps = function(n) status.laps = n end,
   setConnected = function(v) status.connected = v end,
   -- nil-safe for the same reason recordingHealth reads `car and

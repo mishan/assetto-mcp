@@ -364,5 +364,48 @@ def test_a_short_sample_tuple_is_padded_and_a_long_one_is_refused():
         conn.close()
 
 
+def test_a_failed_sample_write_leaves_no_half_stored_lap():
+    """A lap and its samples are one write, or neither.
+
+    The lap row goes in first and the samples follow, so anything that
+    raises in between left the lap inserted and the transaction open. Two
+    things then go wrong at once: whoever commits next adopts a lap with no
+    telemetry -- which reads as a lap driven and reported as having no
+    samples -- and until then the open transaction holds a write lock every
+    other connection blocks on. The collector catches exceptions from this
+    and carries on, which is precisely the caller that would do it.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "t.db"
+        conn = db.connect(path)
+        sid = make_session(conn)
+        good = tuple(range(len(db.SAMPLE_COLUMNS) - 1))
+
+        before = conn.execute("SELECT COUNT(*) c FROM laps").fetchone()["c"]
+        try:
+            db.store_lap(conn, sid, 1, 114000, True,
+                         [good, good + (1,) * 20])      # second is too long
+        except Exception:
+            pass
+        else:
+            raise AssertionError("an over-long sample tuple was accepted")
+
+        # Nothing left behind, and nothing left open: another connection can
+        # write immediately, which it could not through a held lock.
+        after = conn.execute("SELECT COUNT(*) c FROM laps").fetchone()["c"]
+        assert after == before, f"{after - before} half-stored lap(s)"
+        assert conn.in_transaction is False, "transaction left open"
+
+        other = db.connect(path)
+        try:
+            db.store_lap(other, sid, 2, 113000, True, [good])
+        finally:
+            other.close()
+        rows = conn.execute("SELECT COUNT(*) c FROM laps").fetchone()["c"]
+        assert rows == before + 1, rows
+        print("  failed write rolled back; the connection is usable after")
+        conn.close()
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

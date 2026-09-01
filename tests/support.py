@@ -76,7 +76,18 @@ def temp_db(name: str = "t.db"):
         try:
             yield directory / name
         finally:
+            # A short grace before reporting. The bridge is a threading HTTP
+            # server: shutdown() stops it accepting, but a handler already
+            # inside a request keeps its own connection until it returns,
+            # and each handler opens one. That is a drain, not a leak, and
+            # calling it a leak would make the guard exactly as flaky as the
+            # failure it exists to replace. A real leak has nobody left to
+            # close it and is still there at the end of this.
+            deadline = time.monotonic() + 2.0
             leaked = _open_handles(directory)
+            while leaked and time.monotonic() < deadline:
+                time.sleep(0.02)
+                leaked = _open_handles(directory)
             if leaked:
                 raise AssertionError(
                     "database handles were still open when the test "

@@ -776,6 +776,24 @@ def store_lap(conn, session_id: int, lap_number: int, lap_time_ms: int,
     """
     if setup_name is None:
         setup_name = session_setup(conn, session_id)
+    try:
+        return _store_lap(conn, session_id, lap_number, lap_time_ms, valid,
+                          samples, setup_name, complete)
+    except Exception:
+        # A lap and its samples are one write. Without this, anything that
+        # raises between the two -- a malformed tuple, a disk error -- left
+        # the lap row inserted and uncommitted, and the caller decides what
+        # happens next: a later commit adopts a lap with no telemetry, and
+        # until then the open transaction holds a write lock that every
+        # other connection waits on. The collector catches exceptions from
+        # this and keeps going, which is exactly the caller that would do
+        # it.
+        conn.rollback()
+        raise
+
+
+def _store_lap(conn, session_id, lap_number, lap_time_ms, valid, samples,
+               setup_name, complete):
     cur = conn.execute(
         "INSERT INTO laps (session_id, lap_number, lap_time_ms, valid,"
         " completed_at, setup_name, complete) VALUES (?,?,?,?,?,?,?)",

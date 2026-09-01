@@ -921,7 +921,8 @@ def set_session_setup(conn, session_id: int, setup_name: str) -> bool:
     return cur.rowcount > 0
 
 
-def label_unattributed_laps(conn, session_id: int, setup_name: str) -> int:
+def label_unattributed_laps(conn, session_id: int, setup_name: str,
+                            lap_ids: list[int] | None = None) -> int:
     """Fill in the setup for laps that have none. Returns how many.
 
     The no-rewriting rule above is about not overwriting a *known* setup
@@ -930,11 +931,24 @@ def label_unattributed_laps(conn, session_id: int, setup_name: str) -> int:
     were on after the run rather than before. Filling a blank completes a
     comparison; overwriting a name would destroy one, and this still
     refuses to do that.
+
+    lap_ids narrows it to specific laps. That argument exists because
+    filling *every* blank in the session was the wrong default at the tool
+    layer: the driver's baseline is usually unlabelled too, so "I've loaded
+    claude_v1" relabelled the baseline as claude_v1 and destroyed the
+    comparison it was setting up. Which blanks to fill is a claim about what
+    happened in the garage, so it is made by whoever was there -- see
+    label_laps in server.py.
     """
-    cur = conn.execute(
-        "UPDATE laps SET setup_name = ?"
-        " WHERE session_id = ? AND (setup_name IS NULL OR setup_name = '')",
-        (setup_name, session_id))
+    sql = ("UPDATE laps SET setup_name = ?"
+           " WHERE session_id = ? AND (setup_name IS NULL OR setup_name = '')")
+    args: list = [setup_name, session_id]
+    if lap_ids is not None:
+        if not lap_ids:
+            return 0
+        sql += " AND id IN (%s)" % ",".join("?" * len(lap_ids))
+        args.extend(lap_ids)
+    cur = conn.execute(sql, args)
     conn.commit()
     return cur.rowcount
 
@@ -1033,7 +1047,14 @@ def _store_lap(conn, session_id, lap_number, lap_time_ms, valid, samples,
     return lap_id
 
 
-def list_laps(conn, session_id: int | None = None, limit: int = 50):
+def list_laps(conn, session_id: int | None = None, limit: int | None = 50):
+    """Laps, newest first. limit=None means every one of them.
+
+    The explicit None matters for callers that report on what they did *not*
+    touch: a lap outside a window would otherwise be described as not
+    existing, which is a false claim about the driver's own data rather than
+    a missing convenience.
+    """
     q = ("SELECT laps.*, sessions.car, sessions.track, sessions.track_config,"
          " laps.setup_name"
          " FROM laps JOIN sessions ON sessions.id = laps.session_id")
@@ -1041,8 +1062,10 @@ def list_laps(conn, session_id: int | None = None, limit: int = 50):
     if session_id is not None:
         q += " WHERE session_id = ?"
         args.append(session_id)
-    q += " ORDER BY laps.id DESC LIMIT ?"
-    args.append(limit)
+    q += " ORDER BY laps.id DESC"
+    if limit is not None:
+        q += " LIMIT ?"
+        args.append(limit)
     return [dict(r) for r in conn.execute(q, args)]
 
 

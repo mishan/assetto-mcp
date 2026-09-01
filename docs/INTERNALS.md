@@ -231,12 +231,31 @@ scripts/
 BACKLOG.md           what is known to be broken, worst-first
 ```
 
+### Setup attribution, in three pieces
+
+Nothing in shared memory says which setup is on the car, so attribution is
+always a claim rather than a measurement. The three ways to make it are
+separated by how much damage a wrong one does:
+
+- **`set_session_setup`** is forward-only. It records what's on the car now,
+  and laps completed from here carry it. It touches nothing already stored.
+- **`label_laps`** fills in laps that have *no* setup recorded, and only the
+  ids you name. It refuses to change a lap that already carries a name.
+- **`scripts/relabel_laps.py`** overwrites an existing name, and is
+  deliberately not a tool.
+
+The middle one used to be part of the first, filling every blank lap in the
+session automatically. That sounds helpful and was the bug: the baseline run is
+normally unlabelled too, so "I've loaded claude_v1" relabelled the baseline as
+claude_v1 and destroyed the comparison. The boundary between two runs is a
+garage stop, and nothing in the telemetry marks one — so the ids have to come
+from the person who was there.
+
 ### Why `relabel_laps.py` is not an MCP tool
 
-`set_session_setup` refuses to overwrite a setup name a lap already carries,
-because a late correction applied to the wrong half of an A/B split destroys
-the comparison it exists to enable. The one case where overwriting is right is
-a label that was wrong when it was written — and that is rare, destructive, and
+A late correction applied to the wrong half of an A/B split destroys the
+comparison it exists to enable. The one case where overwriting is right is a
+label that was wrong when it was written — and that is rare, destructive, and
 worth making someone type:
 
 ```

@@ -48,21 +48,28 @@ is a lap deleted from every analysis, and the driver is never told.
 
 ## 2. `set_session_setup` has a timing trap
 
-**Status:** open. Escape hatch exists (`scripts/relabel_laps.py`), cause does
-not.
+**Status:** fixed — the two behaviours are now separate tools.
 
-The tool does two things: labels laps completed from now on, *and* backfills
-laps with no label. Calling it before the driver has loaded the new setup
-therefore stamps the **old** name onto the run that follows.
+The tool used to do two things: label laps completed from now on, *and*
+backfill every lap with no label. Since the baseline run is normally
+unlabelled too, telling it "I've loaded claude_v1" stamped `claude_v1` onto
+the baseline and destroyed the A/B it was being asked to set up.
 
 **Where it bit:** twice in one week. Suzuka laps 87–90 (labelled
 `claude_toe_v1`, actually `claude_press_v1`) and Sebring laps 157–161
 (labelled `claude_sebring_v7`, actually `v8`).
 
-**Fix ideas:** split the two behaviours, or refuse to set a name that
-disagrees with what `identify_setup` currently sees on the car, or have the
-collector stamp laps from the live setup fingerprint instead of a
-session-level string.
+**What changed:** `set_session_setup` is forward-only and touches nothing
+already stored. It reports which earlier laps have no setup rather than
+guessing at them. A new `label_laps` tool backfills, but only laps whose ids
+are named and only where the setup is currently blank — the boundary is a
+garage stop, which nothing in the telemetry marks, so only the driver can say
+where it was. Covered by `test_naming_a_new_setup_does_not_relabel_the_baseline`.
+
+**Still open underneath it:** attribution is a claim someone types, not a
+measurement. The collector could stamp laps from the live setup fingerprint
+(`setup_values` already holds one per session) and remove the question
+entirely. That would also fix item 3 permanently rather than case by case.
 
 ---
 
@@ -86,6 +93,10 @@ python scripts/relabel_laps.py 157,158,159,160,161 claude_sebring_v8 --apply
 
 Verify each against `identify_setup` history before applying — these
 attributions come from reasoning about garage stops, not from recorded fact.
+
+`label_laps` will not do this: these laps carry a *wrong* name rather than no
+name, and overwriting a name is the destructive case. The script stays a
+script for exactly that reason.
 
 ---
 

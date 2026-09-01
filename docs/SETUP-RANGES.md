@@ -4,6 +4,11 @@ AC **silently ignores** setup values outside the ranges defined in the car's
 `setup.ini`. The server clamps and snaps to each car's legal min/max/step so
 that can't happen — and tells you when it did.
 
+If it has no ranges for the car, it **refuses to write** rather than producing
+a file that loads, looks right, and doesn't do what it says. See
+[when there are no ranges](#when-there-are-no-ranges) for the two ways to fix
+that, and the escape hatch if you want the file anyway.
+
 ## With the in-game app running, this needs no setup at all
 
 The app reads `ac.getSetupSpinners()`, which reports every adjustable entry —
@@ -44,7 +49,21 @@ being tidied up. Values are now snapped to what the spinner can actually
 reach, and `write_setup` only reports `clamped` when it genuinely changed
 something.
 
-## Fallback: a ranges file, for when the in-game app isn't running
+## When there are no ranges
+
+`write_setup` refuses. Nothing knows the legal min, max or step, so nothing can
+be checked, and AC discards whatever it doesn't like without saying so — the
+setup would load, the garage would show no complaint, and the first hint would
+be a run that feels exactly like the last one. That's a whole session to
+notice, against one extra round trip to prevent.
+
+Two ways to give it ranges:
+
+**Start the game with the in-game app enabled and open the setup screen once.**
+The app reports every adjustable entry automatically, for whatever car is
+loaded. This is the easy route and needs no files.
+
+**Or install a ranges file**, for working with the game closed:
 
 1. In Content Manager: car page → unpack data (or use QuickBMS).
 2. Copy the car's `setup.ini` into the ranges folder, named after the car's
@@ -56,9 +75,23 @@ explorer $env:USERPROFILE\.assetto-mcp\ranges
 
 (cmd.exe: `explorer %USERPROFILE%\.assetto-mcp\ranges`)
 
-Game-reported ranges always win over this file. Note that encrypted car data
-may refuse to unpack at all, which is the main reason the in-game route is
-preferred. `write_setup` reports `ranges_source` as `game`, `file` or `none`.
+Game-reported ranges always win over this file. Encrypted car data may refuse
+to unpack at all, which is the main reason the in-game route is preferred.
+`write_setup` reports `ranges_source` as `game`, `file` or `none`.
+
+**If you want the file anyway**, `allow_unclamped=true` writes it and keeps the
+warning in the report. Verify every value on the setup screen before driving.
+
+## Reusing a setup name
+
+`write_setup` also refuses to replace an existing setup file, and suggests a
+free name instead. From inside the tool a setup you built by hand and one it
+wrote a minute ago are the same file, and the garage gives no hint that what's
+under the old name is now something else.
+
+`overwrite=true` replaces it, after copying the previous file to
+`<name>.ini.bak-<timestamp>` in the same folder. AC only lists `.ini` files, so
+the backup doesn't clutter your setup menu.
 
 ## Known gap: what the setup screen will actually display
 

@@ -106,9 +106,23 @@ break that:
 ## Setup values don't stick in-game
 
 You're writing outside the car's legal range and AC is silently ignoring them.
-This is also what happens when the in-game app *isn't* running and there's no
-ranges file — values are written unclamped, because nothing knows what the
-limits are. See [SETUP-RANGES.md](SETUP-RANGES.md).
+That should not happen any more — values are clamped to what the car accepts —
+unless the setup was written with `allow_unclamped`, which is what you get if
+you told it to write anyway after it refused. See
+[SETUP-RANGES.md](SETUP-RANGES.md).
+
+## "No setup ranges are known for this car"
+
+It's refusing to write a setup it can't check. Start Assetto Corsa with the
+in-game app enabled and open the setup screen once — the app reports every
+adjustable entry automatically — or install a ranges file. Both routes are in
+[SETUP-RANGES.md](SETUP-RANGES.md#when-there-are-no-ranges).
+
+## "already exists for &lt;car&gt; at &lt;track&gt;"
+
+It won't replace a setup file you might have made yourself. Take the suggested
+name, or say explicitly that it should overwrite — the old file is kept
+alongside as `<name>.ini.bak-<timestamp>` either way.
 
 ## A dead `ac-race-engineer` server shows up
 

@@ -74,22 +74,93 @@ def test_a_setup_is_never_silently_written_empty():
         print("  values survive to the file:", report["written"])
 
 
-def test_a_setup_with_nothing_in_it_is_flagged_in_capitals():
+def test_a_setup_with_nothing_in_it_is_refused_before_anything_is_written():
+    """And refused *before* the file is opened, which is the load-bearing part.
+
+    The check used to run after the write. That was survivable while a write
+    could only create a new file, and became destructive the moment
+    overwrite=True existed: a request naming only sections the car does not
+    have truncated a real setup to a [CAR] header and then reported
+    "NOTHING WAS WRITTEN" about the wreckage.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         rng = _ranges(d, "carx", "[ARB_FRONT]\nMIN=1\nMAX=10\nSTEP=1\n")
         docs = d / "docs"
         docs.mkdir()
+        good = setups.write_setup(docs, rng, car="carx", track="mugello",
+                                  name="good", values={"ARB_FRONT": 5})
+        before = Path(good["path"]).read_text()
+
+        try:
+            setups.write_setup(docs, rng, car="carx", track="mugello",
+                               name="good", values={"NOT_A_REAL_SECTION": 5},
+                               overwrite=True)
+            raise AssertionError("expected EmptySetupError")
+        except setups.EmptySetupError as e:
+            assert "NOT_A_REAL_SECTION" in str(e), e
+        assert Path(good["path"]).read_text() == before, \
+            "a valid setup was truncated by a request that wrote nothing"
+        print("  refused; the existing setup is untouched")
+
+
+def test_a_base_setup_with_no_valid_overrides_still_writes():
+    # Not empty -- the base's values are in it. Worth writing, worth saying
+    # that none of the requested changes landed.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        rng = _ranges(d, "carx", "[ARB_FRONT]\nMIN=1\nMAX=10\nSTEP=1\n")
+        docs = d / "docs"
+        docs.mkdir()
+        setups.write_setup(docs, rng, car="carx", track="mugello",
+                           name="base", values={"ARB_FRONT": 5})
         report = setups.write_setup(
-            docs, rng, car="carx", track="mugello", name="v1",
-            values={"NOT_A_REAL_SECTION": 5})
+            docs, rng, car="carx", track="mugello", name="derived",
+            values={"NOT_A_REAL_SECTION": 5}, base_setup="base")
         assert report["written"] == {}, report
-        assert "NOTHING WAS WRITTEN" in report.get("warning", ""), report
-        print("  empty setup flagged rather than reported as success")
+        assert "ARB_FRONT" in Path(report["path"]).read_text()
+        assert "None of the requested values" in report.get("warning", ""), report
 
 
-def test_an_unusable_ranges_file_warns_but_still_writes():
-    """Losing clamping is survivable; losing the write silently is not."""
+def test_a_refusal_leaves_no_trace_on_disk():
+    """Not even an empty directory.
+
+    setup_dir falls back to prefix-matching a track folder only while the
+    exact name does not exist, so creating an empty 'mugello' beside the real
+    'mugello_osrw' breaks that fallback permanently -- and a refused write is
+    exactly when someone has guessed the track id wrong.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        rng = d / "ranges"
+        rng.mkdir()
+        docs = d / "docs"
+        real = docs / "setups" / "carx" / "mugello_osrw"
+        real.mkdir(parents=True)
+        (real / "real.ini").write_text("[CAR]\nMODEL=carx\n")
+
+        assert setups.list_setups(docs, "carx", "mugello") == ["real"]
+        try:
+            setups.write_setup(docs, rng, car="carx", track="mugello",
+                               name="v1", values={"ARB_FRONT": 5})
+            raise AssertionError("expected UnclampedWriteError")
+        except setups.UnclampedWriteError:
+            pass
+        assert not (docs / "setups" / "carx" / "mugello").exists(), \
+            "a refusal created the directory and poisoned the loose match"
+        assert setups.list_setups(docs, "carx", "mugello") == ["real"]
+        print("  refusal left the filesystem alone")
+
+
+def test_an_unusable_ranges_file_refuses_the_write_and_says_why():
+    """A silently-ignored setup costs a whole run to notice.
+
+    This used to write unclamped with a warning. The warning was true and
+    useless: the file loads, the garage shows no complaint, and the first
+    hint that values were discarded is a run that feels exactly like the one
+    before it. Refusing costs one round trip, and the message has to say
+    which of the two causes it is, because the fix differs.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         rng = _ranges(d, "carx", "[JUNK]\nNOTHING=useful\n")
@@ -100,13 +171,162 @@ def test_an_unusable_ranges_file_warns_but_still_writes():
             raise AssertionError("expected SetupParseError")
         except setups.SetupParseError:
             pass
+        try:
+            setups.write_setup(docs, rng, car="carx", track="mugello",
+                               name="v1", values={"PRESSURE_LF": 26})
+            raise AssertionError("expected UnclampedWriteError")
+        except setups.UnclampedWriteError as e:
+            assert "unusable" in str(e), e
+            assert "allow_unclamped" in str(e), e
+        assert not list(docs.rglob("v1.ini")), \
+            "refusing must not leave a half-written file behind"
+        print("  unusable ranges -> refused, nothing written")
+
+
+def test_no_ranges_at_all_refuses_too_and_names_the_other_cause():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        rng = d / "ranges"
+        rng.mkdir()
+        docs = d / "docs"
+        docs.mkdir()
+        try:
+            setups.write_setup(docs, rng, car="carx", track="mugello",
+                               name="v1", values={"PRESSURE_LF": 26})
+            raise AssertionError("expected UnclampedWriteError")
+        except setups.UnclampedWriteError as e:
+            assert "No setup ranges are known" in str(e), e
+
+
+def test_allow_unclamped_writes_and_keeps_the_warning():
+    # The escape hatch has to work: editing setups with the game closed and
+    # no ranges installed is a real thing to want to do.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        rng = d / "ranges"
+        rng.mkdir()
+        docs = d / "docs"
+        docs.mkdir()
         report = setups.write_setup(
             docs, rng, car="carx", track="mugello", name="v1",
-            values={"PRESSURE_LF": 26})
+            values={"PRESSURE_LF": 26}, allow_unclamped=True)
         assert report["ranges_available"] is False, report
         assert "unclamped" in report.get("warning", ""), report
         assert report["written"] == {"PRESSURE_LF": 26}, report
-        print("  unusable ranges -> unclamped write plus a warning")
+        assert Path(report["path"]).exists()
+        print("  allow_unclamped -> written, warning retained")
+
+
+def test_an_existing_setup_is_not_replaced_without_being_asked():
+    """A name that already exists may be something built by hand.
+
+    From in here a driver's own setup and one this tool wrote a minute ago
+    are the same file, and the garage gives no hint that what is under the
+    old name is now something else.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        rng = _ranges(d, "carx", KUNOS_STYLE)
+        docs = d / "docs"
+        docs.mkdir()
+        first = setups.write_setup(
+            docs, rng, car="carx", track="mugello", name="claude_v1",
+            values={"PRESSURE_LF": 26})
+        before = Path(first["path"]).read_text()
+
+        try:
+            setups.write_setup(docs, rng, car="carx", track="mugello",
+                               name="claude_v1", values={"PRESSURE_LF": 30})
+            raise AssertionError("expected SetupExistsError")
+        except setups.SetupExistsError as e:
+            # The suggested name is the useful part: it is almost always
+            # what was meant, and it keeps the A/B intact.
+            assert "claude_v2" in str(e), e
+        assert Path(first["path"]).read_text() == before, "file was touched"
+        print("  refused, and suggested claude_v2")
+
+
+def test_overwrite_backs_the_old_setup_up_first():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        rng = _ranges(d, "carx", KUNOS_STYLE)
+        docs = d / "docs"
+        docs.mkdir()
+        first = setups.write_setup(
+            docs, rng, car="carx", track="mugello", name="claude_v1",
+            values={"PRESSURE_LF": 26})
+        before = Path(first["path"]).read_text()
+
+        report = setups.write_setup(
+            docs, rng, car="carx", track="mugello", name="claude_v1",
+            values={"PRESSURE_LF": 30}, overwrite=True)
+        assert report["written"] == {"PRESSURE_LF": 30}, report
+        assert "backup" in report, report
+        assert Path(report["backup"]).read_text() == before, \
+            "the backup must hold what was there before, not after"
+        assert "30" in Path(report["path"]).read_text()
+        print("  overwritten, previous file kept at", Path(report["backup"]).name)
+
+
+def test_no_name_is_suggested_when_the_suggestion_would_be_rejected():
+    # _NAME_RE caps at 61 characters and _free_name appends _vN, so a long
+    # enough stem produces a suggestion the very next call refuses -- with a
+    # message about unsupported characters, when the problem is length.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        rng = _ranges(d, "carx", KUNOS_STYLE)
+        docs = d / "docs"
+        docs.mkdir()
+        long_name = "y" * 59
+        assert setups._NAME_RE.match(long_name)
+        setups.write_setup(docs, rng, car="carx", track="mugello",
+                           name=long_name, values={"PRESSURE_LF": 26})
+        try:
+            setups.write_setup(docs, rng, car="carx", track="mugello",
+                               name=long_name, values={"PRESSURE_LF": 30})
+            raise AssertionError("expected SetupExistsError")
+        except setups.SetupExistsError as e:
+            assert "Pick another name" in str(e), e
+            assert "_v2" not in str(e), e
+
+
+def test_backups_do_not_pile_up_in_the_drivers_setup_folder():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        rng = _ranges(d, "carx", KUNOS_STYLE)
+        docs = d / "docs"
+        docs.mkdir()
+        report = setups.write_setup(docs, rng, car="carx", track="mugello",
+                                    name="claude_v1",
+                                    values={"PRESSURE_LF": 26})
+        folder = Path(report["path"]).parent
+        for psi in range(20, 28):
+            report = setups.write_setup(
+                docs, rng, car="carx", track="mugello", name="claude_v1",
+                values={"PRESSURE_LF": psi}, overwrite=True)
+        baks = list(folder.glob("claude_v1.ini.bak-*"))
+        assert len(baks) == 5, [b.name for b in baks]
+        assert report["backups_kept"] == 5, report
+        # And AC's own listing must not see them as setups.
+        assert setups.list_setups(docs, "carx", "mugello") == ["claude_v1"]
+        print("  8 overwrites -> 5 backups kept, none visible as a setup")
+
+
+def test_a_suggested_name_skips_over_names_already_taken():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        rng = _ranges(d, "carx", KUNOS_STYLE)
+        docs = d / "docs"
+        docs.mkdir()
+        for n in ("claude_v1", "claude_v2", "claude_v3"):
+            setups.write_setup(docs, rng, car="carx", track="mugello",
+                               name=n, values={"PRESSURE_LF": 26})
+        try:
+            setups.write_setup(docs, rng, car="carx", track="mugello",
+                               name="claude_v1", values={"PRESSURE_LF": 30})
+            raise AssertionError("expected SetupExistsError")
+        except setups.SetupExistsError as e:
+            assert "claude_v4" in str(e), e
 
 
 def test_inline_comment_stripped_from_a_setup_value():

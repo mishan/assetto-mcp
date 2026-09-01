@@ -12,13 +12,18 @@ setup.ini with Content Manager and drop it at:
 
     <data_dir>/ranges/<car>.ini
 
-where <data_dir> is wherever the server keeps its DB. If no ranges file is
-present, writes go through unclamped with a warning in the result.
+where <data_dir> is wherever the server keeps its DB -- or just run the
+in-game app, which reports every car's ranges without any file at all.
+
+With no ranges from either source, write_setup *refuses* rather than writing
+values nothing could check. allow_unclamped=True overrides it.
 """
 
 import configparser
 import math
 import re
+import shutil
+import time
 from pathlib import Path
 
 _NAME_RE = re.compile(r"^[\w][\w \-.]{0,60}$")
@@ -40,6 +45,27 @@ class SetupParseError(ValueError):
 
     Subclasses ValueError so the MCP tools' existing except clauses turn it
     into a message instead of an unhandled traceback.
+    """
+
+
+class SetupExistsError(ValueError):
+    """Refused to replace an existing setup file.
+
+    Its own type, rather than a bare ValueError, so the tool layer can offer
+    the one-flag way past it without pattern-matching on message text.
+    """
+
+
+class UnclampedWriteError(ValueError):
+    """Refused to write values nothing could check against the car's limits."""
+
+
+class EmptySetupError(ValueError):
+    """Refused to write a setup file with no settings in it.
+
+    A [CAR] header and nothing else loads in the garage without complaint
+    and changes nothing, which is indistinguishable from a setup the car
+    declined -- the failure this whole module is shaped around.
     """
 
 
@@ -353,11 +379,11 @@ def identify_setup(ac_docs_dir: Path, car: str, track: str,
 def load_ranges(ranges_dir: Path, car: str) -> dict | None:
     """Parse an unpacked car setup.ini into {SECTION: (min, max, step)}.
 
-    None means "no ranges file for this car" -- write_setup then warns and
-    writes unclamped. An empty dict must never be returned in its place: it
-    reads as "ranges available, and this car allows nothing", which made
-    write_setup drop every requested value and report success while writing
-    a setup file containing no settings at all.
+    None means "no ranges file for this car" -- write_setup then refuses,
+    unless the caller passes allow_unclamped. An empty dict must never be
+    returned in its place: it reads as "ranges available, and this car allows
+    nothing", which made write_setup drop every requested value and report
+    success while writing a setup file containing no settings at all.
     """
     path = ranges_dir / f"{car}.ini"
     if not path.is_file():
@@ -382,8 +408,9 @@ def load_ranges(ranges_dir: Path, car: str) -> dict | None:
             f"{path.name}: no usable MIN/MAX sections found"
             + (f" ({len(skipped)} section(s) had unreadable numbers)"
                if skipped else "")
-            + ". Clamping cannot be applied from this file; move or fix it "
-              "and the write will go through unclamped with a warning.")
+            + ". Clamping cannot be applied from this file, so writes are "
+              "refused until it is fixed or moved aside -- or let the "
+              "in-game app report the ranges instead, which needs no file.")
     return ranges
 
 
@@ -500,10 +527,57 @@ def snap(value: float, lo: float, hi: float, step: float) -> float:
                key=lambda x: (abs(x - value), x))
 
 
+def _free_name(d: Path, name: str) -> str | None:
+    """A name like the one asked for that nothing is using yet.
+
+    None when there isn't one worth suggesting -- which in practice means the
+    stem is already so long that appending _vN would exceed what _NAME_RE
+    accepts. Suggesting a name the very next call rejects, with a message
+    about unsupported *characters* when the problem is length, is worse than
+    suggesting nothing.
+    """
+    stem = re.sub(r"_v(\d+)$", "", name)
+    m = re.search(r"_v(\d+)$", name)
+    n = int(m.group(1)) + 1 if m else 2
+    while (d / f"{stem}_v{n}.ini").exists():
+        n += 1
+    candidate = f"{stem}_v{n}"
+    return candidate if _NAME_RE.match(candidate) else None
+
+
+_KEEP_BACKUPS = 5
+
+
+def _prune_backups(d: Path, name: str) -> int:
+    """Keep the newest few backups of one setup. Returns how many remain.
+
+    These sit in the driver's own Assetto Corsa setup folder, which they
+    open in Explorer, so an unbounded pile of them is a mess in a place that
+    is not ours to make messy. Newest by name, which sorts correctly because
+    the stamp is yyyymmdd-HHMMSS -- mtime would not survive a folder copy.
+    """
+    baks = sorted(d.glob(f"{name}.ini.bak-*"), reverse=True)
+    for old in baks[_KEEP_BACKUPS:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass  # A backup we cannot delete is not worth failing a write for.
+    return min(len(baks), _KEEP_BACKUPS)
+
+
+def free_name_for(ac_docs_dir: Path, car: str, track: str,
+                  name: str) -> str | None:
+    """The name write_setup would suggest, for callers reporting a refusal."""
+    d = setup_dir(ac_docs_dir, car, track)
+    return _free_name(d, name) if d else None
+
+
 def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
                 name: str, values: dict, base_setup: str | None = None,
                 game_ranges: dict | None = None,
-                display: dict | None = None) -> dict:
+                display: dict | None = None,
+                overwrite: bool = False,
+                allow_unclamped: bool = False) -> dict:
     """Write a setup file, optionally starting from an existing one.
 
     values: {SECTION: number} for the fields to set/override.
@@ -519,13 +593,44 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
     20 mm or 20 clicks is how a setup that looks fine and isn't gets
     written. Every written entry carries `displays_as`.
 
+    Two refusals, both because the failure they prevent is silent:
+
+    overwrite: an existing file of this name is not replaced. A setup the
+    driver built by hand looks identical from here to one this tool wrote a
+    minute ago, and the garage gives no hint that the thing under the old
+    name is now something else. Pass True to replace it; the previous file
+    is copied to <name>.ini.bak-<stamp> first, so the answer to "put it
+    back" is never "you can't".
+
+    allow_unclamped: with no ranges for the car -- no in-game app running
+    and no ranges file installed -- nothing here knows the legal min, max or
+    step, and AC *silently ignores* values outside them. Writing anyway
+    produces a setup that loads without complaint and does not do what it
+    says, which costs a whole run to notice. Pass True to write regardless.
+
     Returns a report of what was written, clamped, or dropped.
     """
     if not _NAME_RE.match(name):
-        raise ValueError("setup name contains unsupported characters")
+        raise ValueError(
+            "setup name must be 1-61 characters of letters, digits, spaces, "
+            "hyphens, dots or underscores, starting with a letter or digit")
 
+    # Deliberately no mkdir yet. A refusal must leave the filesystem exactly
+    # as it found it: setup_dir falls back to matching a track directory by
+    # prefix only while the exact name does not exist, so creating an empty
+    # 'mugello' beside the real 'mugello_osrw' permanently breaks that
+    # fallback -- and a refused write is the most likely moment for someone
+    # to have guessed the track id wrong.
     d = setups_root(ac_docs_dir) / car / track
-    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{name}.ini"
+    if path.exists() and not overwrite:
+        free = _free_name(d, name)
+        raise SetupExistsError(
+            f"'{name}' already exists for {car} at {track} ({path}). "
+            + (f"Write it as '{free}' instead" if free else "Pick another name")
+            + ", or ask the driver whether to replace it -- overwrite=true "
+              "backs the old file up alongside first. Do not assume it was "
+              "ours; it may be one they built by hand.")
 
     merged: dict = {}
     if base_setup:
@@ -533,15 +638,28 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
                   read_setup(ac_docs_dir, car, track, base_setup).items()
                   if not isinstance(v, dict)}
 
-    # A broken ranges file must not block the write -- it only costs us
-    # clamping -- but it has to be said out loud, because the whole point of
-    # clamping is that AC silently ignores out-of-range values.
+    # A broken ranges file does not have to stop us knowing *why* we have no
+    # ranges, and the distinction matters in the refusal below: "your ranges
+    # file is malformed" and "you have no ranges file" need different fixes.
     ranges_problem = None
     ranges_source = "none"
     try:
         ranges, ranges_source = resolve_ranges(ranges_dir, car, game_ranges)
     except SetupParseError as e:
         ranges, ranges_problem = None, str(e)
+
+    if ranges is None and not allow_unclamped:
+        raise UnclampedWriteError(
+            (f"The ranges file for {car} is unusable ({ranges_problem}). "
+             if ranges_problem else
+             f"No setup ranges are known for {car}. ")
+            + "Values cannot be checked against the car's legal min/max/step, "
+              "and AC silently ignores anything outside them -- the setup "
+              "would load, appear fine, and not do what it says. "
+              "Start Assetto Corsa with the in-game app enabled and open the "
+              "setup screen once (the app reports ranges automatically), or "
+              "unpack the car's setup.ini into the ranges directory. "
+              "Pass allow_unclamped=true to write without the check.")
 
     report = {"written": {}, "clamped": {}, "unknown_sections": [],
               "ranges_available": ranges is not None,
@@ -571,6 +689,26 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
         if shown:
             report.setdefault("displays_as", {})[section] = shown
 
+    # Refuse an empty result *before* touching the file. This check used to
+    # run after the write, which was survivable when the write created a new
+    # file and became destructive the moment overwrite=True existed: a
+    # request naming only sections the car does not have truncated a real
+    # setup to a [CAR] header and then said "NOTHING WAS WRITTEN". The
+    # backup made it recoverable; not doing it is better.
+    #
+    # merged carries base_setup's values, so "nothing was written" is about
+    # this request, not about the file -- a base plus zero valid overrides
+    # would still produce a usable setup, and is allowed through.
+    if not report["written"] and not merged:
+        raise EmptySetupError(
+            "Nothing would be written - the setup file would contain no "
+            "settings at all, and loading it in the garage would appear to "
+            "work and change nothing. "
+            + ("None of the requested sections exist for this car: "
+               + ", ".join(report["unknown_sections"]) + ". Check the names "
+               "against setup_ranges."
+               if report["unknown_sections"] else "No values were supplied."))
+
     cp = _parser()
     cp["CAR"] = {"MODEL": car}
     for section, value in merged.items():
@@ -580,7 +718,23 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
             value = int(value)
         cp[section] = {"VALUE": str(value)}
 
-    path = d / f"{name}.ini"
+    # Snapshot before replacing. Only reached with overwrite=True, since the
+    # existence check above is what stands between here and a lost setup.
+    # Re-tested rather than assumed: overwrite=True with no existing file is
+    # a perfectly ordinary call.
+    if path.exists():
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = d / f"{name}.ini.bak-{stamp}"
+        n = 1
+        while backup.exists():
+            backup = d / f"{name}.ini.bak-{stamp}-{n}"
+            n += 1
+        shutil.copy2(path, backup)
+        report["replaced"] = str(path)
+        report["backup"] = str(backup)
+        report["backups_kept"] = _prune_backups(d, name)
+
+    d.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         cp.write(f, space_around_delimiters=False)
 
@@ -589,18 +743,15 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
         report["warning"] = (
             (f"Ranges file unusable: {ranges_problem} " if ranges_problem
              else "No ranges file found for this car; ")
-            + "values were written unclamped. AC silently ignores "
-              "out-of-range values, so verify in the setup screen. To enable "
-              "clamping, unpack the car's setup.ini via Content Manager into "
-              "the ranges directory.")
-    if not report["written"]:
-        # Every requested value was dropped, so the file on disk has a [CAR]
-        # header and nothing else. Loading it in the garage would appear to
-        # work and change nothing.
+            + "values were written unclamped at your request. AC silently "
+              "ignores out-of-range values, so verify every one of them in "
+              "the setup screen before driving.")
+    elif not report["written"]:
+        # Reachable only with a base_setup: the file is usable, but nothing
+        # the caller asked for is in it, and saying so beats a silent
+        # "written: {}" that reads like success.
         report["warning"] = (
-            "NOTHING WAS WRITTEN - the setup file contains no settings. "
-            + ("None of the requested sections exist in this car's ranges "
-               "file: " + ", ".join(report["unknown_sections"])
-               if report["unknown_sections"] else "No values were supplied.")
-            + " Do not load this setup; fix the section names and rewrite.")
+            "None of the requested values were written - the file is a copy "
+            "of " + str(base_setup) + ". Sections not valid for this car: "
+            + ", ".join(report["unknown_sections"] or ["(none supplied)"]))
     return report

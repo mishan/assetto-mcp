@@ -175,6 +175,11 @@ class Recorder:
         self.online = False
         self.physics_available = True
         self.sim_fields = {"raceSessionType": 1, "carsCount": 1}
+        # ac.getCar(0) returns nil early in load, which is why the app reads
+        # `car and car.lapCount`. `car` is a file-local, so a test cannot
+        # reach it after load -- setting a global of the same name does
+        # nothing. Loading the app without one is the only way in.
+        self.car_available = True
 
 
 def load(rec: Recorder = None, patch_version="0.2.11"):
@@ -221,6 +226,8 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
 
     # --- ac -------------------------------------------------------------
     def get_car(_i=0):
+        if not rec.car_available:
+            return None
         return lua.table_from({
             "splinePosition": 0.5, "lapCount": 1, "speedKmh": 180.0,
             "brake": 0.0, "gas": 1.0, "gear": 4, "isConnected": True,

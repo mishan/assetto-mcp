@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import make_session, post, run_module  # noqa: E402
+from support import make_session, post, run_module, temp_db  # noqa: E402
 
 from ac_race_engineer import db, setups  # noqa: E402
 from ac_race_engineer.bridge import Bridge  # noqa: E402
@@ -63,8 +63,7 @@ def _write_setup_file(root, car, track, name, values):
 
 
 def test_spinners_arrive_and_split_into_ranges_and_values():
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         sid = make_session(conn, car="rss_formula_rss_4")
         b = _bridge(path, sid)
@@ -93,8 +92,7 @@ def test_spinners_arrive_and_split_into_ranges_and_values():
 
 def test_display_conventions_are_recorded_not_inferred():
     """displayMultiplier and showClicksMode are the two units mysteries."""
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         sid = make_session(conn, car="rss_formula_rss_4")
         b = _bridge(path, sid)
@@ -146,9 +144,14 @@ def test_write_setup_clamps_against_game_ranges():
             game_ranges={"ARB_REAR": (25459, 88127, 4476),
                          "CAMBER_LF": (-36, -26, 1)})
         assert out["ranges_source"] == "game", out
-        assert out["written"]["ARB_REAR"] == 88123, out["written"]
+        # 88127, not 88123. The rear bar's range is not a whole number of
+        # steps -- the ascending ladder from 25459 stops at 88123 -- so a
+        # grid anchored at the minimum could not express the car's own
+        # maximum, and asking for the stiffest bar returned one notch
+        # softer. AC clamps at the end, so the maximum is reachable.
+        assert out["written"]["ARB_REAR"] == 88127, out["written"]
         assert out["written"]["CAMBER_LF"] == -30, out["written"]
-        print(f"  clamped to {out['written']['ARB_REAR']} from the game's max")
+        print(f"  clamped to {out['written']['ARB_REAR']}, the game's max")
 
 
 def test_identify_finds_the_one_matching_setup():
@@ -193,8 +196,7 @@ def test_identify_says_so_when_the_app_is_not_running():
 
 
 def test_a_malformed_spinner_does_not_lose_the_others():
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         sid = make_session(conn, car="c")
         b = _bridge(path, sid)
@@ -219,8 +221,7 @@ def test_a_setup_for_another_car_is_refused_not_filed():
     name, where they would stay and quietly distort both. The session knows
     its car from shared memory; that is the answer that counts.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         sid = make_session(conn, car="rss_formula_rss_4")
         b = _bridge(path, sid)
@@ -252,8 +253,7 @@ def test_a_session_with_no_car_still_accepts_the_clients():
     The session's car is authoritative when it is known. When it is not, the
     client's is the only value there is, and it is better than nothing.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         sid = make_session(conn, car="")
         b = _bridge(path, sid)
@@ -269,8 +269,7 @@ def test_a_session_with_no_car_still_accepts_the_clients():
 
 
 def test_setup_is_refused_when_nothing_is_recording():
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         db.connect(path).close()
         col = _Col()
         b = Bridge(path, col, port=0)

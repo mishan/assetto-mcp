@@ -16,7 +16,20 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 10
+
+# How long a recorder's claim survives without a heartbeat before another
+# instance may take it. Generously more than HEARTBEAT_SECONDS in
+# collector.py, because the cost of the two errors is not symmetric: taking
+# over too eagerly gives two collectors writing the same laps, while taking
+# over late costs a few seconds of a session nobody was recording anyway.
+RECORDER_STALE_SECONDS = 15.0
+
+# How long a session may go without a heartbeat and still be called live.
+# Same asymmetry, other direction: this decides whether the overlay says
+# "recording" and whether a driver's note has somewhere to go, so it wants
+# slack for a stalled disk or a paused process.
+SESSION_STALE_SECONDS = 30.0
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -43,7 +56,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- 1.0 is 100%; 0 is a real setting and not the same as unknown, which
     -- is why every read of these goes through IS NULL rather than falsy.
     max_fuel_liters REAL,
-    fuel_rate REAL
+    fuel_rate REAL,
+    -- When the collector recording this session last said it was alive.
+    -- started_at never moves, so it cannot answer "is this still going?" --
+    -- and the process that has to answer it is usually not the process
+    -- recording. Every other instance shares this file and nothing else.
+    -- NULL means a session written before v10, where the only evidence
+    -- available is the last stored lap.
+    last_seen_at REAL
 );
 
 -- setup_name is per-lap, not per-session: the tuning loop changes setup in
@@ -84,7 +104,31 @@ CREATE TABLE IF NOT EXISTS samples (
     core_fl REAL NOT NULL, core_fr REAL NOT NULL,
     core_rl REAL NOT NULL, core_rr REAL NOT NULL,
     ride_f REAL NOT NULL, ride_r REAL NOT NULL,
-    tyres_out INTEGER NOT NULL
+    tyres_out INTEGER NOT NULL,
+    -- World position. norm_pos says where the car is ALONG the lap; these
+    -- say where it is across it, which is the whole of what a driving line
+    -- is and the one thing every earlier analysis was blind to. Nullable
+    -- on purpose: laps recorded before v8 have no position and never will,
+    -- and 0,0,0 would be a claim that the car was at the track origin.
+    pos_x REAL, pos_y REAL, pos_z REAL,
+    -- Body attitude. roll settles the body-control arguments that ride
+    -- height and anti-roll bars have only let us reason about indirectly.
+    heading REAL, pitch REAL, roll REAL,
+    -- What the electronics are actually doing, rather than what the setup
+    -- screen says they are set to. A TC level means nothing without knowing
+    -- whether it ever intervenes.
+    tc_active REAL, abs_active REAL,
+    -- Tyre wear, per corner. Separate from carDamage, which is bodywork --
+    -- a distinction worth keeping straight, because wear is the one that
+    -- happens on every lap of every session and underpins any stint or
+    -- strategy question.
+    wear_fl REAL, wear_fr REAL, wear_rl REAL, wear_rr REAL,
+    -- Bodywork damage, summed across AC's five zones. Zero for the whole
+    -- session when the server has damage disabled, which is the usual case
+    -- here -- so this confirms contact when it is on and says nothing when
+    -- it is off. It is not a substitute for detecting a wall from the speed
+    -- trace, which works either way.
+    damage REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_samples_lap ON samples(lap_id, t_ms);
@@ -203,6 +247,32 @@ CREATE TABLE IF NOT EXISTS rival_laps (
     PRIMARY KEY (session_id, car_index, lap_count)
 );
 
+-- Which process is allowed to record, and whether recording is wanted at
+-- all. One row, forever.
+--
+-- Claude Desktop launches one server per client surface, so several of
+-- these processes exist at once and all of them see the same shared memory
+-- and the same database file. The bridge port was the only thing they ever
+-- contended for; the collector asked for nothing, which was harmless only
+-- while a human had to call start_recording to begin. Autostart removed
+-- that accident, and two collectors reading one game wrote every lap twice
+-- under two session ids -- duplicates that survive into compare_runs as a
+-- sample with zero deviation from itself, which is the one input that makes
+-- a t-test certain about nothing.
+--
+-- `enabled` is separate from the claim and deliberately shared: stopping
+-- recording is an instruction about the car, not about whichever server
+-- process happened to receive it, and it used to be undone by the next
+-- restart.
+CREATE TABLE IF NOT EXISTS recorder (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    owner TEXT NOT NULL DEFAULT '',   -- host/pid/token of the holder
+    claimed_at REAL,
+    heartbeat_at REAL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    changed_at REAL
+);
+
 CREATE TABLE IF NOT EXISTS rival_drivers (
     session_id INTEGER NOT NULL,
     car_index INTEGER NOT NULL,
@@ -223,7 +293,24 @@ SAMPLE_COLUMNS = [
     "press_fl", "press_fr", "press_rl", "press_rr",
     "core_fl", "core_fr", "core_rl", "core_rr",
     "ride_f", "ride_r", "tyres_out",
+    "pos_x", "pos_y", "pos_z",
+    "heading", "pitch", "roll",
+    "tc_active", "abs_active",
+    "wear_fl", "wear_fr", "wear_rl", "wear_rr", "damage",
 ]
+
+# Sample tuple widths that have ever been correct, newest first. store_lap
+# pads a short tuple with NULL, which is right for a caller written against
+# an older layout and catastrophic for a tuple that is short because a field
+# was dropped in the MIDDLE -- every column after the gap shifts by one, and
+# the row stores silently. Measured on a tuple missing `steer`: gear 7000,
+# rpm 1, tyres_out 297.63 (a world coordinate), damage NULL, no error.
+#
+# So the padding applies to widths a real layout actually had, and nothing
+# else. 25 is v7 (through tyres_out), 33 adds v8's position/attitude/
+# electronics, 38 adds v9's wear and damage. None of these counts lap_id,
+# which store_lap prepends.
+SAMPLE_WIDTHS = (len(SAMPLE_COLUMNS) - 1, 33, 25)
 
 
 def _table_exists(conn, name: str) -> bool:
@@ -234,6 +321,24 @@ def _table_exists(conn, name: str) -> bool:
 
 def _columns(conn, table: str) -> set[str]:
     return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _add_column(conn, table: str, col: str, decl: str) -> bool:
+    """Add a column if the table exists and doesn't already have it.
+
+    Guarded on the table existing because ALTER on a missing one raises,
+    and a raise inside _migrate does more damage than losing that step: it
+    aborts every later step too AND leaves user_version un-bumped, so the
+    database is stuck below the current schema permanently rather than
+    just this once. A database can legitimately be missing a table -- one
+    that has only ever held imported rows, or a half-built fixture -- and
+    CREATE TABLE IF NOT EXISTS runs straight after this and creates it
+    complete, so there is nothing to repair.
+    """
+    if not _table_exists(conn, table) or col in _columns(conn, table):
+        return False
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+    return True
 
 
 def _migrate(conn) -> list[str]:
@@ -258,9 +363,8 @@ def _migrate(conn) -> list[str]:
 
     if version < 1:
         # v1: setup attribution moved from sessions to laps.
-        if "setup_name" not in _columns(conn, "laps"):
-            conn.execute("ALTER TABLE laps ADD COLUMN"
-                         " setup_name TEXT NOT NULL DEFAULT ''")
+        if _add_column(conn, "laps", "setup_name",
+                       "TEXT NOT NULL DEFAULT ''"):
             # Best available guess for history: whatever the session was
             # last stamped with. Wrong for sessions where the setup changed
             # mid-run, but strictly better than empty, and from here on laps
@@ -290,17 +394,15 @@ def _migrate(conn) -> list[str]:
     if version < 4:
         # v4: laps.complete, so an abandoned lap can be stored rather than
         # thrown away. Existing rows all reached the line by definition.
-        if "complete" not in _columns(conn, "laps"):
-            conn.execute("ALTER TABLE laps ADD COLUMN"
-                         " complete INTEGER NOT NULL DEFAULT 1")
+        if _add_column(conn, "laps", "complete",
+                       "INTEGER NOT NULL DEFAULT 1"):
             log.append("laps.complete added; existing laps marked complete")
 
     if version < 5:
         # v5: the fuel basis, so liters per lap stops being a hand
         # calculation that has to be redone for every track.
         for col in ("track_length_m", "km_per_liter"):
-            if col not in _columns(conn, "sessions"):
-                conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} REAL")
+            if _add_column(conn, "sessions", col, "REAL"):
                 log.append(f"sessions.{col} added")
 
     if version < 6:
@@ -309,8 +411,7 @@ def _migrate(conn) -> list[str]:
         # AC's fuel-usage multiplier, which decides whether a stop is needed
         # and which nothing had ever read.
         for col in ("max_fuel_liters", "fuel_rate"):
-            if col not in _columns(conn, "sessions"):
-                conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} REAL")
+            if _add_column(conn, "sessions", col, "REAL"):
                 log.append(f"sessions.{col} added")
 
     if version < 7:
@@ -327,6 +428,46 @@ def _migrate(conn) -> list[str]:
             conn.execute("ALTER TABLE sessions"
                          " RENAME COLUMN max_fuel_litres TO max_fuel_liters")
             log.append("sessions.max_fuel_litres renamed to max_fuel_liters")
+
+    if version < 8:
+        # v8: position, attitude and electronics activity. All of it was
+        # already being read from shared memory 25 times a second and
+        # discarded -- carCoordinates in particular, which is the only
+        # source of lateral position and therefore of a driving line.
+        #
+        # Nullable, and deliberately not backfilled: there is nothing to
+        # backfill from. Every lap recorded before this migration has no
+        # position and cannot acquire one, so a reader has to be able to
+        # tell "not recorded" from "at the origin".
+        for col in ("pos_x", "pos_y", "pos_z",
+                    "heading", "pitch", "roll",
+                    "tc_active", "abs_active"):
+            if _add_column(conn, "samples", col, "REAL"):
+                log.append(f"samples.{col} added")
+
+    if version < 9:
+        # v9: tyre wear and bodywork damage. Both were mapped in the physics
+        # struct from the beginning and never read. Wear is the one that
+        # matters day to day -- it changes every lap whatever the server
+        # settings, and no stint or pit-strategy question can be answered
+        # without it.
+        for col in ("wear_fl", "wear_fr", "wear_rl", "wear_rr", "damage"):
+            if _add_column(conn, "samples", col, "REAL"):
+                log.append(f"samples.{col} added")
+
+    if version < 10:
+        # v10: sessions.last_seen_at, and the recorder table created by
+        # SCHEMA above. Both exist to answer one question a single process
+        # cannot answer for itself -- is another instance recording right
+        # now -- which the bridge previously guessed at from started_at and
+        # a staleness window, and got wrong in both directions.
+        #
+        # Deliberately not backfilled from started_at: a session that ended
+        # last week would then look like one being heartbeated right now.
+        # NULL reads as "no heartbeat was ever recorded for this session",
+        # and latest_session() falls back to the lap evidence for those.
+        if _add_column(conn, "sessions", "last_seen_at", "REAL"):
+            log.append("sessions.last_seen_at added")
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
@@ -383,14 +524,130 @@ MIGRATION_LOG: dict[str, list[str]] = {}
 
 def create_session(conn, *, car, track, track_config, tyre_compound,
                    air_temp, road_temp) -> int:
+    now = time.time()
     cur = conn.execute(
         "INSERT INTO sessions (started_at, car, track, track_config,"
-        " tyre_compound, air_temp, road_temp) VALUES (?,?,?,?,?,?,?)",
-        (time.time(), car, track, track_config, tyre_compound,
-         air_temp, road_temp),
+        " tyre_compound, air_temp, road_temp, last_seen_at)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        (now, car, track, track_config, tyre_compound,
+         air_temp, road_temp, now),
     )
     conn.commit()
     return cur.lastrowid
+
+
+def touch_session(conn, session_id: int) -> None:
+    """Say that the collector recording this session is still alive.
+
+    Called on a timer rather than on lap completion, which is the whole
+    point: the first lap a session stores is its first FLYING lap, because
+    the out-lap has no time and is skipped. Judging liveness from stored
+    laps therefore declared a session dead for the length of a garage sit
+    plus an out-lap plus a flying lap -- five minutes at Sebring, longer
+    at Nordschleife -- during which the overlay read "not recording" and
+    every complaint tag the driver pressed was filed against nothing.
+    """
+    conn.execute("UPDATE sessions SET last_seen_at = ? WHERE id = ?",
+                 (time.time(), session_id))
+    conn.commit()
+
+
+# --- the single recorder --------------------------------------------------
+
+
+def _recorder_row(conn) -> dict:
+    r = conn.execute("SELECT * FROM recorder WHERE id = 1").fetchone()
+    if r is None:
+        conn.execute(
+            "INSERT OR IGNORE INTO recorder (id, owner, enabled, changed_at)"
+            " VALUES (1, '', 1, ?)", (time.time(),))
+        conn.commit()
+        r = conn.execute("SELECT * FROM recorder WHERE id = 1").fetchone()
+    return dict(r)
+
+
+def recorder_enabled(conn) -> bool:
+    """Whether recording is wanted at all, by any instance."""
+    return bool(_recorder_row(conn)["enabled"])
+
+
+def set_recorder_enabled(conn, on: bool) -> None:
+    """Turn recording on or off for every instance, durably.
+
+    stop_recording used to stop one process's thread. With several server
+    processes alive and each autostarting a collector, that stopped
+    whichever surface the driver happened to be typing into and left the
+    others recording -- and the next restart undid it regardless. An
+    instruction about the car belongs in the file every instance shares.
+    """
+    _recorder_row(conn)
+    conn.execute("UPDATE recorder SET enabled = ?, changed_at = ?"
+                 " WHERE id = 1", (1 if on else 0, time.time()))
+    conn.commit()
+
+
+def claim_recorder(conn, owner: str,
+                   stale_after: float = RECORDER_STALE_SECONDS) -> dict:
+    """Try to become the one process that records. Never blocks.
+
+    Returns {"held": bool, "owner": str, "heartbeat_age": float | None}.
+    `held` is the only thing a caller has to act on; the rest is for saying
+    who has it instead, which is the difference between a collector that
+    looks broken and one that is correctly standing aside.
+
+    The claim is taken by a single conditional UPDATE, so two processes
+    racing for a free slot cannot both win: SQLite serialises the writes and
+    the loser's WHERE no longer matches.
+
+    `<=` on the staleness bound so an age of exactly stale_after is taken
+    over rather than left for the next poll. In practice these are float
+    timestamps and landing on the boundary has essentially no chance, so
+    this is about the comparison matching the sentence above it rather than
+    about a case anyone will hit.
+
+    The real bound on takeover latency is not here anyway: it is
+    RECORDER_STALE_SECONDS plus however long the standby waits between
+    attempts (Collector.STANDBY_RETRY_SECONDS), because nothing notices a
+    dead holder until someone next asks. That is the number to change if
+    takeover ever needs to be quicker.
+    """
+    now = time.time()
+    _recorder_row(conn)
+    with conn:
+        conn.execute(
+            "UPDATE recorder SET owner = ?, claimed_at = ?, heartbeat_at = ?"
+            " WHERE id = 1 AND (owner = '' OR owner = ?"
+            "                   OR heartbeat_at IS NULL"
+            "                   OR heartbeat_at <= ?)",
+            (owner, now, now, owner, now - stale_after))
+    r = _recorder_row(conn)
+    beat = r["heartbeat_at"]
+    return {"held": r["owner"] == owner,
+            "owner": r["owner"],
+            "heartbeat_age": (round(now - beat, 1)
+                              if beat is not None else None)}
+
+
+def renew_recorder(conn, owner: str) -> bool:
+    """Re-assert the claim. False means it was taken while we weren't looking.
+
+    A collector that has lost the claim must stop writing rather than carry
+    on: the takeover only happens after RECORDER_STALE_SECONDS of silence
+    from us, which means something stalled us for that long, and the other
+    instance is now recording the same laps.
+    """
+    with conn:
+        cur = conn.execute(
+            "UPDATE recorder SET heartbeat_at = ? WHERE id = 1 AND owner = ?",
+            (time.time(), owner))
+    return cur.rowcount > 0
+
+
+def release_recorder(conn, owner: str) -> None:
+    """Give the claim up so another instance can take it immediately."""
+    with conn:
+        conn.execute("UPDATE recorder SET owner = '', heartbeat_at = NULL"
+                     " WHERE id = 1 AND owner = ?", (owner,))
 
 
 def get_session(conn, session_id: int) -> dict | None:
@@ -629,6 +886,11 @@ def latest_session(conn) -> dict | None:
     The SQLite file is shared by every server instance, so this is how a
     process that is not itself recording can still file notes and opponent
     telemetry against the session that is.
+
+    `last_seen_at` is the collector's heartbeat and is the only field here
+    that answers "is it still going". `lap_count` and `last_lap_at` describe
+    what the session has produced, which is a different question and a bad
+    proxy for the first one -- see touch_session.
     """
     r = conn.execute(
         "SELECT sessions.*,"
@@ -708,6 +970,24 @@ def store_lap(conn, session_id: int, lap_number: int, lap_time_ms: int,
     """
     if setup_name is None:
         setup_name = session_setup(conn, session_id)
+    try:
+        return _store_lap(conn, session_id, lap_number, lap_time_ms, valid,
+                          samples, setup_name, complete)
+    except Exception:
+        # A lap and its samples are one write. Without this, anything that
+        # raises between the two -- a malformed tuple, a disk error -- left
+        # the lap row inserted and uncommitted, and the caller decides what
+        # happens next: a later commit adopts a lap with no telemetry, and
+        # until then the open transaction holds a write lock that every
+        # other connection waits on. The collector catches exceptions from
+        # this and keeps going, which is exactly the caller that would do
+        # it.
+        conn.rollback()
+        raise
+
+
+def _store_lap(conn, session_id, lap_number, lap_time_ms, valid, samples,
+               setup_name, complete):
     cur = conn.execute(
         "INSERT INTO laps (session_id, lap_number, lap_time_ms, valid,"
         " completed_at, setup_name, complete) VALUES (?,?,?,?,?,?,?)",
@@ -716,10 +996,38 @@ def store_lap(conn, session_id: int, lap_number: int, lap_time_ms: int,
     )
     lap_id = cur.lastrowid
     placeholders = ",".join("?" * len(SAMPLE_COLUMNS))
+    # A sample tuple from an older layout is padded with NULL rather than
+    # refused: the trailing columns are the nullable ones added by later
+    # migrations, so a caller written against v7 or v8 -- a test fixture, a
+    # replay of stored rows -- still writes valid samples, and the fields it
+    # never knew about read as "not recorded" rather than as zeroes.
+    #
+    # Only for widths a real layout actually had, though. Padding anything
+    # shorter turned a field dropped in the MIDDLE into a silent write with
+    # every column after the gap shifted by one: a tuple missing `steer`
+    # stored gear 7000, rpm 1 and a world coordinate in tyres_out, and
+    # raised nothing. That is a worse outcome than the tolerance was ever
+    # worth, and the tolerance costs nothing to keep for the three widths
+    # that are real.
+    width = len(SAMPLE_COLUMNS) - 1          # minus lap_id, prepended below
+    rows = []
+    for s in samples:
+        s = tuple(s)
+        if len(s) != width:
+            if len(s) not in SAMPLE_WIDTHS:
+                raise ValueError(
+                    f"sample tuple has {len(s)} fields; expected {width}"
+                    f" (or {', '.join(str(w) for w in SAMPLE_WIDTHS[1:])}"
+                    f" from an earlier schema). A width that is not one of"
+                    f" these means a field was added or dropped in the"
+                    f" middle, which would store silently against the wrong"
+                    f" columns.")
+            s += (None,) * (width - len(s))
+        rows.append((lap_id, *s))
     conn.executemany(
         f"INSERT INTO samples ({','.join(SAMPLE_COLUMNS)})"
         f" VALUES ({placeholders})",
-        [(lap_id, *s) for s in samples],
+        rows,
     )
     conn.commit()
     return lap_id

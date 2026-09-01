@@ -128,7 +128,26 @@ BIND_RETRY_INTERVAL = 5.0
 BIND_RETRY_SECONDS = 300.0
 
 # How long a session in the shared DB counts as "another instance is still
-# recording this". Generous: a driver can sit in the garage between runs.
+# recording this", when that session predates the collector heartbeat.
+# Generous: a driver can sit in the garage between runs, and for these rows
+# the only evidence is the last stored lap -- or, for a session that never
+# stored one, the moment it started. Both are ages of something that
+# happened once and cannot happen again, which is why the window has to be
+# this loose and why it is a fallback rather than the rule.
+#
+# Live sessions do not use this. A running collector touches
+# sessions.last_seen_at every few seconds, so db.SESSION_STALE_SECONDS
+# decides, and liveness is read rather than inferred.
+#
+# The inference this replaced was wrong in both directions, and no single
+# number could have fixed it. Judged from started_at, an empty session
+# asserted itself for fifteen minutes -- which is how seven laps at Suzuka
+# went unrecorded behind a green indicator. Tightening that to a
+# three-minute grace then declared a real session dead for the length of a
+# garage sit plus an out-lap plus a flying lap, because the first lap a
+# session STORES is its first flying one: over five minutes at Sebring,
+# during which every complaint tag the driver pressed was filed against
+# nothing. Laps were never the question.
 OTHER_INSTANCE_STALE_SECONDS = 900.0
 
 
@@ -280,10 +299,28 @@ class Bridge:
         if not latest:
             return idle
 
-        # "Recent" has to be generous: a driver can sit in the garage for a
-        # while between runs without the session having ended.
-        age = time.time() - (latest["last_lap_at"] or latest["started_at"])
-        if age >= OTHER_INSTANCE_STALE_SECONDS:
+        # Ask the collector recording it, not the laps it has produced. The
+        # heartbeat moves every few seconds from the moment the session
+        # exists, so a driver on the out-lap is as clearly alive as one
+        # setting a personal best -- which the lap-based rules could not
+        # tell apart from a session that ended on Tuesday.
+        beat = latest.get("last_seen_at")
+        if beat is not None:
+            age = time.time() - beat
+            limit = db.SESSION_STALE_SECONDS
+        else:
+            # Recorded before v10. No heartbeat was ever written for this
+            # session and none can be invented, so fall back to the lap
+            # evidence and its generous window.
+            #
+            # `is not None` rather than `or`: these are timestamps, and the
+            # question is whether a lap exists, not whether its timestamp is
+            # truthy.
+            last_lap = latest["last_lap_at"]
+            age = time.time() - (latest["started_at"] if last_lap is None
+                                 else last_lap)
+            limit = OTHER_INSTANCE_STALE_SECONDS
+        if age >= limit:
             return idle
         return {
             "session_id": latest["id"],

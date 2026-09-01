@@ -816,6 +816,97 @@ local function postSetup()
     end)
 end
 
+-- Is what the server claims consistent with what the driver has done?
+--
+-- The overlay used to render whatever /status said. That made it exactly as
+-- trustworthy as the server, and when the server was wrong -- an empty
+-- session asserting itself as "recording, other instance" -- the driver had
+-- a green light through seven laps that were never stored, with no way to
+-- check it from the car.
+--
+-- The app can check. car.lapCount is the driver's own completed laps, owned
+-- by the game and not by us. If laps are being finished and none are
+-- landing, that is a contradiction the app can see on its own, and it is
+-- worth more than any status string the server sends.
+--
+-- Deliberately conservative. The lap in progress is not stored yet, and an
+-- out-lap has no time so it is skipped by design: a shortfall of one or two
+-- is normal. Two finished laps with nothing stored at all is not.
+--- car.lapCount counts the whole GAME session; status.laps counts what this
+--- recording has stored. Those are only the same window if recording began
+--- when the session did, and it very often does not -- the server restarts,
+--- or the driver starts recording twenty laps in. Comparing them directly
+--- cried wolf immediately: 26 laps driven in the game, a recorder that had
+--- been alive for ten seconds, and a red NOT STORING LAPS over a perfectly
+--- healthy collector.
+---
+--- So the count that matters is laps driven SINCE recording started, which
+--- means remembering where the lap counter stood at that moment.
+---
+--- The baseline is only as good as its knowing when "recording started"
+--- changed, and there are three ways it can, only one of which is the
+--- server saying so:
+---
+---   * status.running goes false. The obvious one.
+---   * the bridge goes unreachable. This is a server RESTART, which is the
+---     event the whole recorder-heartbeat mechanism exists for and the one
+---     that happens most. The app kept its baseline across the outage and
+---     met a fresh recording with status.laps back at 0, so the very
+---     scenario that motivated this warning -- 26 laps in, server replaced,
+---     collector perfectly healthy -- produced a red NOT STORING LAPS again
+---     with one extra step. That is worse than the original bug: the alarm
+---     now fires precisely when the driver has been told to expect a
+---     restart.
+---   * the session id changes, or the stored count falls. A new session, or
+---     another instance taking the recorder over. Either way the window
+---     being counted is not the one the baseline was taken in.
+---
+--- All three re-take the baseline rather than warn. Taking it late can only
+--- postpone a warning, never invent one, which is the right way round for
+--- something that shouts at a driver mid-corner.
+local LAPS_BEFORE_STORAGE_EXPECTED = 2
+local recordingBaseline = nil
+local baselineSession = nil
+local baselineLaps = 0
+
+local function recordingHealth()
+  if not status.connected then
+    -- Not just "no answer": we cannot know whether the recorder behind it
+    -- survived, so nothing measured before the silence can be trusted after
+    -- it. Cheap to re-take, and the alternative is crying wolf at a
+    -- collector that is working.
+    recordingBaseline = nil
+    baselineSession = nil
+    baselineLaps = 0
+    return 'offline', ''
+  end
+  local done = math.floor(num(car and car.lapCount, 0))
+  local stored = status.laps or 0
+
+  if status.running then
+    -- A different session, or a stored count that went backwards, is a
+    -- different recording however continuous the connection looked.
+    if status.sessionId ~= baselineSession or stored < baselineLaps then
+      recordingBaseline = nil
+    end
+    if recordingBaseline == nil then recordingBaseline = done end
+    baselineSession = status.sessionId
+    baselineLaps = stored
+  else
+    recordingBaseline = nil
+    baselineSession = nil
+    baselineLaps = 0
+  end
+
+  local driven = recordingBaseline and (done - recordingBaseline) or 0
+  if driven >= LAPS_BEFORE_STORAGE_EXPECTED and stored == 0 then
+    return 'not-storing',
+      string.format('%d laps driven since recording started, 0 stored - '
+                    .. 'ask Claude to check recording_status', driven)
+  end
+  return status.running and 'recording' or 'idle', ''
+end
+
 local function poll()
   if pollBusy then return end
   pollBusy = true
@@ -969,12 +1060,53 @@ script.__test = {
   -- The real busy flag is cleared by the web callback, which a test
   -- harness has no way to invoke.
   clearBusy = function() suspBusy = false end,
+  recordingHealth = function() return recordingHealth() end,
+  -- The baseline is remembered across calls, so a test that wants to start
+  -- from "recording has only just begun" has to be able to say so.
+  --
+  -- All three pieces, not just the lap count. What the warning compares
+  -- against is now (baseline, session, stored laps) together, and clearing
+  -- one of them leaves a test half-reset -- which would look like a fresh
+  -- recording and behave like a continuing one. That is the exact confusion
+  -- the session and lap-count checks were added to remove, so a helper that
+  -- reintroduces it in the tests is worse than no helper.
+  resetBaseline = function()
+    recordingBaseline = nil
+    baselineSession = nil
+    baselineLaps = 0
+  end,
+  baseline = function() return recordingBaseline end,
+  -- All three, so a test can assert the reset rather than infer it from
+  -- behaviour that happens to be identical either way.
+  baselineState = function()
+    return recordingBaseline, baselineSession, baselineLaps
+  end,
+  setLaps = function(n) status.laps = n end,
+  setConnected = function(v) status.connected = v end,
+  setSession = function(n) status.sessionId = n end,
+  -- nil-safe for the same reason recordingHealth reads `car and
+  -- car.lapCount`: ac.getCar(0) can return nil early in load, and a test
+  -- helper that raises there fails on the harness rather than on the thing
+  -- under test. Returns whether it took, so a test cannot silently set
+  -- nothing and then assert on it.
+  setLapCount = function(n)
+    if car == nil then return false end
+    car.lapCount = n
+    return true
+  end,
 }
 
 function windowMain(dt)
   -- status line
+  local health, detail = recordingHealth()
   if not status.connected then
     ui.textColored('● bridge offline', rgbm(1, 0.3, 0.3, 1))
+  elseif health == 'not-storing' then
+    -- The driver has finished laps and none of them landed. Loud, because
+    -- the alternative is what actually happened: a green indicator, seven
+    -- laps at Suzuka, and nothing kept.
+    ui.textColored('● NOT STORING LAPS', rgbm(1, 0.3, 0.3, 1))
+    ui.textColored(detail, rgbm(1, 0.6, 0.3, 1))
   elseif status.running then
     ui.textColored('● recording', rgbm(0.3, 1, 0.3, 1))
     ui.sameLine()

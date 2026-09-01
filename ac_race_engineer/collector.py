@@ -5,8 +5,11 @@ detected via graphics.completedLaps incrementing; the finished lap's official
 time comes from graphics.iLastTime.
 """
 
+import os
+import socket
 import threading
 import time
+import uuid
 
 from . import analysis, db
 
@@ -39,6 +42,68 @@ WRAP_LOW = 0.1
 _is_outlier = analysis.lap_is_outlier
 
 
+# Reads of AC's fixed-size arrays. Both go through getattr because an older
+# shared-memory layout, or a test stub standing in for one, may not carry
+# the field at all -- and both then check the LENGTH, because "the field
+# exists" and "the field has as many entries as I expect" are different
+# claims and only the first one getattr answers.
+#
+# The distinction has teeth here specifically: these run inside the sampling
+# loop, twenty-five times a second. An IndexError from either would come out
+# as an exception from _loop, which ends the recording session and retries --
+# so a layout one element short would cost the driver every lap of that run
+# rather than one nullable field.
+WHEELS_PER_CAR = 4
+DAMAGE_ZONES = 5
+WORLD_AXES = 3
+
+# Why a collector that was recording stopped. A sentinel rather than a bare
+# string because one of the two callers has to tell them apart: standing
+# down because someone switched recording off is not a failure and must not
+# be reported as last_error, while losing the claim is.
+SWITCHED_OFF = "recording was switched off by stop_recording"
+
+
+def _seq(p, field: str, n: int) -> tuple | None:
+    """`n` values from a fixed-size shared-memory array, or None.
+
+    None means "not recorded", which is what a reader has to be able to tell
+    from a real zero. A short array is treated the same way rather than
+    padded: a partial read of a per-corner channel is not a measurement of
+    anything, and pretending three wheels is four is worse than saying we
+    do not have it.
+    """
+    v = getattr(p, field, None)
+    if v is None:
+        return None
+    try:
+        if len(v) < n:
+            return None
+    except TypeError:      # a ctypes array without __len__
+        pass
+    try:
+        return tuple(v[i] for i in range(n))
+    except (IndexError, TypeError):
+        return None
+
+
+def _wear(p) -> tuple:
+    """Per-corner tyre wear, or four Nones if this layout lacks it."""
+    return _seq(p, "tyreWear", WHEELS_PER_CAR) or (None,) * WHEELS_PER_CAR
+
+
+def _damage(p):
+    """Bodywork damage as one number: AC's five zones summed.
+
+    Five separate columns would say where the car was hit, which nothing
+    here asks. What is worth recording is whether it was hit at all, and
+    the sum answers that in one field that can be differenced between
+    samples. Zero throughout when the server has damage disabled.
+    """
+    zones = _seq(p, "carDamage", DAMAGE_ZONES)
+    return float(sum(zones)) if zones is not None else None
+
+
 class Collector:
     def __init__(self, db_path, sim_info_factory):
         """sim_info_factory: zero-arg callable returning a SimInfo-like object.
@@ -52,7 +117,30 @@ class Collector:
         self._sim_factory = sim_info_factory
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
+        # Set by the thread as soon as it has published a status, so start()
+        # can wait on it instead of polling an attribute.
+        self._announced = threading.Event()
+        # Who this collector is, in the recorder table. The pid alone is not
+        # enough -- an OS recycles them, and a recycled pid would look like
+        # our own stale claim and be taken back without a takeover ever being
+        # noticed. The token makes each run of each process distinct.
+        self._owner = (f"{socket.gethostname()}/{os.getpid()}"
+                       f"/{uuid.uuid4().hex[:8]}")
+        self._last_beat = 0.0
+        # Whether this instance is the one allowed to write laps. False is a
+        # normal, healthy state: another server process has the claim.
+        self.holds_recorder = False
+        self.standby_owner: str | None = None
         self.status = "stopped"
+        # Whether this collector has ever been asked to run. A fresh object
+        # and one that was deliberately stopped both reported status
+        # "stopped" with no error and no session, which are the constructor's
+        # defaults -- so a server that had been restarted underneath a
+        # driving session was indistinguishable from one someone had turned
+        # off on purpose. That ambiguity cost sixteen laps across three
+        # sessions and I misread it twice.
+        self.ever_started = False
+        self.stopped_by_request = False
         self.session_id: int | None = None
         self.last_session_id: int | None = None
         self.laps_recorded = 0
@@ -72,15 +160,56 @@ class Collector:
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    # How long start() waits for the new thread to publish a status before
+    # returning. The thread sets one almost immediately; this only has to
+    # outlast scheduling. Bounded so a wedged thread cannot hang a tool call.
+    START_STATUS_TIMEOUT = 2.0
+
+    # How long to wait before looking for Assetto Corsa again. Long enough
+    # that a closed game costs nothing, short enough that the driver never
+    # waits for recording to pick up after launching it.
+    SIM_RETRY_SECONDS = 3.0
+
+    # How long to wait before asking again whether the recorder claim has
+    # come free. Short, because the case it exists for is the holder's
+    # process dying mid-session, and the gap is laps nobody is recording.
+    STANDBY_RETRY_SECONDS = 5.0
+
+    # How often to re-assert the claim and touch the session row. Must stay
+    # comfortably under db.RECORDER_STALE_SECONDS so an ordinary hitch --
+    # a slow disk, a long GC pause -- cannot be mistaken for a dead process
+    # by another instance that is watching this same clock.
+    HEARTBEAT_SECONDS = 3.0
+
     def start(self):
         if self.running:
             return
         self._stop.clear()
+        self._announced.clear()
+        self.ever_started = True
+        self.stopped_by_request = False
+        # Cleared before the thread starts rather than after: a caller
+        # reading status while the previous run's error was still set got a
+        # failure report from a collector that had just been restarted.
+        self.last_error = None
+        self.status = "starting"
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        # Wait for the thread to say something. start() used to return the
+        # instant the thread was spawned, so start_recording read `status`
+        # before the thread had touched it and reported the constructor's
+        # "stopped" -- on every first call, for months. Calling it twice
+        # "worked" only because the second call arrived late enough to see
+        # the truth, which taught both of us to distrust a working tool.
+        #
+        # An Event rather than a sleep loop: this is now on the import path
+        # via autostart, where a busy-wait is startup latency the driver
+        # pays on every server launch.
+        self._announced.wait(self.START_STATUS_TIMEOUT)
 
     def stop(self):
         self._stop.set()
+        self.stopped_by_request = True
         if self._thread:
             # Join generously and report if it didn't take. The thread owns
             # a SQLite connection, so returning while it is still alive
@@ -94,6 +223,8 @@ class Collector:
             else:
                 self._thread = None
         self.status = "stopped"
+        self.holds_recorder = False
+        self.standby_owner = None
         # session_id has to be cleared, not just left behind. The bridge
         # asks the collector which session inbound driver data belongs to; a
         # leftover id means notes and rival telemetry keep being filed
@@ -106,25 +237,180 @@ class Collector:
 
     # ------------------------------------------------------------------
 
+    def _announce(self, status: str) -> None:
+        self.status = status
+        self._announced.set()
+
+    def _beat(self, force: bool = False) -> str | None:
+        """Re-assert the claim and the heartbeat, and check we still may.
+
+        None means carry on. A string is the reason to stop writing, and
+        both reasons are things another process decided while this one was
+        inside the recording loop:
+
+        * the claim is gone -- another instance took it after we went quiet
+          for longer than db.RECORDER_STALE_SECONDS. Two collectors storing
+          the same laps is the failure this whole mechanism exists to
+          prevent, and losing a claim is the one way it can still happen.
+        * recording was switched off. `enabled` is shared precisely so that
+          stop_recording reaches whichever process is holding the recorder
+          rather than whichever chat received the call -- and the holder is
+          normally inside _loop, which is the one place that never returns
+          to the outer loop where the flag was being read. So a driver in
+          any other chat could call stop_recording, be told recording had
+          stopped, and have the holder carry on writing laps until the game
+          closed. The flag has to be read where the writing happens.
+
+        Both checks share the heartbeat's timer, so this costs one extra
+        query every HEARTBEAT_SECONDS rather than one per sample.
+        """
+        now = time.monotonic()
+        if not force and now - self._last_beat < self.HEARTBEAT_SECONDS:
+            return None
+        self._last_beat = now
+        if not db.renew_recorder(self._conn, self._owner):
+            return ("another instance took over recording; this one stopped "
+                    "to avoid storing every lap twice")
+        if not db.recorder_enabled(self._conn):
+            return SWITCHED_OFF
+        if self.session_id is not None:
+            db.touch_session(self._conn, self.session_id)
+        return None
+
+    # ------------------------------------------------------------------
+
     def _run(self):
+        """Attach to AC, record until told to stop, and keep trying.
+
+        This used to give up the first time shared memory could not be
+        opened: AC not started yet, or between sessions, and the collector
+        was finished for the lifetime of the process. Combined with the
+        server being restarted by its host whenever it liked, that is how
+        sixteen laps were lost across three evenings -- every one of them
+        driven past a collector that had already quietly retired.
+
+        So the loop outlives the sim now. AC being absent is a state to wait
+        in, not an error to die of, and an exception from the recording loop
+        is logged and retried rather than fatal. Nothing here spins: every
+        wait goes through the stop event, so stop() is still immediate.
+
+        Standing by because another instance holds the recorder is a state
+        to wait in for the same reason and with the same shape. That
+        instance can be killed at any moment -- it is a server process the
+        host owns -- and when its claim goes stale this loop is what picks
+        the session up.
+        """
         from .sim_info import AC_LIVE  # local import keeps module testable
 
         try:
-            sim = self._sim_factory()
-        except Exception as e:  # AC not running / not Windows
+            self._conn = db.connect(self._db_path)
+        except Exception as e:      # unwritable data dir, corrupt file
+            # Said out loud. This used to kill the thread before it had
+            # published anything, leaving status at "starting", last_error
+            # at None, and _collector_state reporting "died" with no reason
+            # -- a collector that has failed should be at least as legible
+            # as one that is merely waiting.
             self.last_error = str(e)
-            self.status = "error"
+            self._announce("error: could not open the database")
             return
-
-        self.status = "waiting for AC to go live"
-        self._conn = db.connect(self._db_path)
         try:
-            self._loop(sim, AC_LIVE)
-        except Exception as e:
-            self.last_error = str(e)
-            self.status = "error"
+            while not self._stop.is_set():
+                if not db.recorder_enabled(self._conn):
+                    # Someone called stop_recording. That is an instruction
+                    # about the car and it is shared, so every instance
+                    # honours it -- including one started fresh after a
+                    # restart, which is what made the old per-process stop
+                    # last only until the host felt like recycling us.
+                    db.release_recorder(self._conn, self._owner)
+                    self.holds_recorder = False
+                    self.standby_owner = None
+                    # Cleared, because being switched off is not a failure
+                    # and there may be an old one sitting here. A collector
+                    # doing exactly what it was told, reporting the reason
+                    # some earlier problem gave, is how recording_status
+                    # sends someone after a fault that is not there.
+                    self.last_error = None
+                    self._announce("standby (recording is switched off)")
+                    if self._stop.wait(self.STANDBY_RETRY_SECONDS):
+                        break
+                    continue
+
+                claim = db.claim_recorder(self._conn, self._owner)
+                if not claim["held"]:
+                    # Not an error, and not something the driver has to fix.
+                    # Another server process is recording; this one waits in
+                    # case that process dies.
+                    #
+                    # last_error cleared for the same reason as in the
+                    # switched-off branch above: an instance that is healthy
+                    # and correctly standing aside must not keep reporting
+                    # whatever went wrong before it got here. A transient
+                    # failure to open shared memory, then a standby, and
+                    # recording_status would show a working collector next
+                    # to a stale reason to worry about it.
+                    self.holds_recorder = False
+                    self.standby_owner = claim["owner"]
+                    self.last_error = None
+                    self._announce("standby (another instance is recording)")
+                    if self._stop.wait(self.STANDBY_RETRY_SECONDS):
+                        break
+                    continue
+                self.holds_recorder = True
+                self.standby_owner = None
+                self._last_beat = 0.0
+
+                try:
+                    sim = self._sim_factory()
+                except Exception as e:  # AC not running / not Windows
+                    # Reported, but as a state rather than a failure -- the
+                    # driver has not done anything wrong by not having the
+                    # game open yet.
+                    self._announce("waiting for Assetto Corsa")
+                    self.last_error = str(e)
+                    # Result ignored on purpose: this path goes straight back
+                    # round the outer loop, which re-reads both the enabled
+                    # flag and the claim before doing anything. _loop is the
+                    # only place that has to act on it, because it is the
+                    # only place that does not come back here.
+                    self._beat()
+                    if self._stop.wait(self.SIM_RETRY_SECONDS):
+                        break
+                    continue
+
+                self._announce("waiting for AC to go live")
+                self.last_error = None
+                try:
+                    self._loop(sim, AC_LIVE)
+                except Exception as e:
+                    # Keep the reason, then go round again. A crash in the
+                    # recording loop used to end recording permanently and
+                    # look, from outside, exactly like a collector that had
+                    # never been asked to run.
+                    self.last_error = str(e)
+                    self.status = "error, retrying"
+                finally:
+                    try:
+                        sim.close()
+                    except Exception:      # noqa: BLE001 - teardown only
+                        pass
+                    # The session belongs to the sim connection that is
+                    # ending, not to the next one.
+                    if self.session_id is not None:
+                        self.last_session_id = self.session_id
+                        self.session_id = None
+                if self._stop.is_set():
+                    break
+                self._stop.wait(self.SIM_RETRY_SECONDS)
         finally:
-            sim.close()
+            # Hand the claim back rather than making the next instance wait
+            # out RECORDER_STALE_SECONDS for a process that has politely
+            # finished. Best-effort: if this fails the staleness rule still
+            # frees it, just later.
+            try:
+                db.release_recorder(self._conn, self._owner)
+            except Exception:          # noqa: BLE001 - teardown only
+                pass
+            self.holds_recorder = False
             self._conn.close()
             self._conn = None
 
@@ -141,6 +427,35 @@ class Collector:
         last_pos = None
 
         while not self._stop.is_set():
+            # Before anything is read, let alone written. Both reasons this
+            # can refuse were decided by another process while we were in
+            # here: the claim taken over, or recording switched off. This is
+            # the only place either is noticed, because this loop does not
+            # return to the outer one while a session is live.
+            stand_down = self._beat()
+            if stand_down:
+                # Being switched off is not an error, so it does not go in
+                # last_error. Losing the claim is: something stalled this
+                # process for RECORDER_STALE_SECONDS and somebody should
+                # know. The outer loop announces the switched-off case
+                # properly on its next pass.
+                self.last_error = (None if stand_down == SWITCHED_OFF
+                                   else stand_down)
+                self.status = f"standby ({stand_down})"
+                self.holds_recorder = False
+                # Clear the session here, not on the way out of _run. The
+                # outer loop's finally does it eventually, but "eventually"
+                # is a window in which holds_recorder is already False and
+                # session_id is still set -- and _collector_state reads
+                # session_id first, so recording_status would answer
+                # "recording" for a collector that had just stopped writing.
+                # Reporting the stop late is the same class of lie the state
+                # machine exists to end.
+                if self.session_id is not None:
+                    self.last_session_id = self.session_id
+                    self.session_id = None
+                return
+
             g = sim.graphics
             p = sim.physics
 
@@ -154,7 +469,7 @@ class Collector:
                     # Say so. Leaving this reading "recording (session 7)"
                     # while AC sits in the menus is the same class of lie as
                     # the overlay claiming nothing is being recorded.
-                    self.status = "waiting for AC to go live"
+                    self._announce("waiting for AC to go live")
                 time.sleep(0.25)
                 continue
 
@@ -192,7 +507,11 @@ class Collector:
                 self.sessions_started += 1
                 self.current_lap_dirty = False
                 self.current_lap_pitted = False
-                self.status = f"recording (session {self.session_id})"
+                self._announce(f"recording (session {self.session_id})")
+                # Immediately, not on the next tick: the session row is what
+                # every other instance reads to decide whether anything is
+                # recording, and it has to be true from the moment it exists.
+                self._beat(force=True)
 
             # Lap boundary?
             if g.completedLaps != last_completed:
@@ -283,6 +602,20 @@ class Collector:
                     lap_dirty = True
                     self.current_lap_dirty = True
                 self.samples_taken += 1
+                # Position, attitude and electronics activity. Read through
+                # getattr because a test stub or an older shared-memory
+                # layout may not carry them, and a missing field must record
+                # None rather than 0 -- for a coordinate, zero is a claim
+                # that the car was at the track origin, which is a place on
+                # the map.
+                #
+                # Through _seq for the same reason tyre wear and damage are:
+                # a field that exists but is short raises IndexError here, in
+                # the sampling loop, which ends the session rather than
+                # losing one column. Position is the one where a partial read
+                # would also be meaningless -- an x with no z is not a place.
+                pos_x, pos_y, pos_z = _seq(g, "carCoordinates",
+                                           WORLD_AXES) or (None, None, None)
                 lap_samples.append((
                     t_ms,
                     g.normalizedCarPosition,
@@ -298,6 +631,14 @@ class Collector:
                     p.tyreCoreTemperature[2], p.tyreCoreTemperature[3],
                     p.rideHeight[0], p.rideHeight[1],
                     p.numberOfTyresOut,
+                    pos_x, pos_y, pos_z,
+                    getattr(p, "heading", None),
+                    getattr(p, "pitch", None),
+                    getattr(p, "roll", None),
+                    getattr(p, "tc", None),
+                    getattr(p, "abs", None),
+                    *_wear(p),
+                    _damage(p),
                 ))
 
             time.sleep(interval)

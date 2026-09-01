@@ -158,6 +158,14 @@ def test_encodings_and_malformed_files_report_cleanly():
 
 
 def test_values_are_clamped_and_snapped_to_the_cars_grid():
+    """Asking for more than the car allows gets the car's maximum.
+
+    This used to write 9. MIN=1 MAX=10 STEP=2 is not a whole number of
+    steps, so a grid anchored at the minimum stops at 9 and the maximum is
+    not on it -- asking for the stiffest bar the car has quietly returned
+    one notch softer. AC itself clamps at the end, so 10 is reachable and is
+    the right answer.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         rng = _ranges(d, "carx", "[ARB_FRONT]\nMIN=1\nMAX=10\nSTEP=2\n")
@@ -166,9 +174,125 @@ def test_values_are_clamped_and_snapped_to_the_cars_grid():
         report = setups.write_setup(
             docs, rng, car="carx", track="mugello", name="v1",
             values={"ARB_FRONT": 99})
-        assert report["written"]["ARB_FRONT"] == 9, report   # clamped+snapped
+        assert report["written"]["ARB_FRONT"] == 10, report
         assert "ARB_FRONT" in report["clamped"], report
-        print("  out-of-range value clamped and snapped:", report["clamped"])
+        print("  out-of-range value clamped to the maximum:",
+              report["clamped"])
+
+
+# --- what the setup screen can actually reach ---------------------------
+#
+# Driver-observed, and the reason any of this is here: the RSS Formula 4's
+# rear wheel rate is MIN=53 MAX=88 STEP=17. Counting up on the spinner gives
+# 53, 70, 87, 88. Counting back down from 88 gives 71, 54, 53. The set is
+# not a grid, it is two ladders that miss each other, because AC adds and
+# subtracts from where it is and clamps at the ends.
+
+
+def test_both_ladders_are_reachable():
+    assert setups.legal_values(53, 88, 17) == [53, 54, 70, 71, 87, 88]
+    print(f"  rear wheel rate: {setups.legal_values(53, 88, 17)}")
+
+
+def test_a_value_only_on_the_descending_ladder_is_written_exactly():
+    """54 is a real rear spring rate, and the old code called it 53.
+
+    The failure was quiet in the worst way: it reported the substitution as
+    clamping, so a 2% softer spring looked like the request being tidied up.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        rng = _ranges(d, "rss", "[SPRING_RATE_LR]\nMIN=53\nMAX=88\nSTEP=17\n")
+        docs = d / "docs"
+        docs.mkdir()
+        report = setups.write_setup(
+            docs, rng, car="rss", track="suzuka", name="v1",
+            values={"SPRING_RATE_LR": 54})
+        assert report["written"]["SPRING_RATE_LR"] == 54, report
+        assert "SPRING_RATE_LR" not in report["clamped"], report
+        print("  54 written as 54, not reported as clamped")
+
+
+def test_the_anti_roll_bar_has_the_same_two_ladders():
+    """The setting this car is run at sits on the descending ladder, which
+    is how the problem surfaced in the first place.
+
+    126607 is 182107 - 6*9250. The ascending ladder from 52608 passes
+    through 126608 instead, one N/m away, and a one-step reduction that
+    should have landed on 117357 was snapped to 117358.
+    """
+    vals = setups.legal_values(52608, 182107, 9250)
+    for v in (126607, 126608, 117357, 117358, 52608, 182107):
+        assert v in vals, v
+    assert setups.snap(117357, 52608, 182107, 9250) == 117357
+    print(f"  {len(vals)} reachable bar settings, both ladders present")
+
+
+def test_a_request_between_rungs_is_answered_the_same_way_twice():
+    """Ties go low, deterministically, rather than by set iteration order."""
+    assert setups.snap(61.5, 53, 88, 17) == 54
+    assert setups.snap(63, 53, 88, 17) == 70
+    # 62 is exactly 8 from both 54 and 70. Low wins, every time it is asked.
+    assert [setups.snap(62.0, 53, 88, 17) for _ in range(5)] == [54] * 5
+
+
+def test_a_degenerate_range_does_not_raise():
+    assert setups.legal_values(5, 5, 1) == [5]
+    assert setups.legal_values(10, 1, 1) == []
+    assert setups.legal_values(1, 10, 0) == []
+    # With no reachable set to consult, snap still has to clamp.
+    assert setups.snap(99, 1, 10, 0) == 10
+    assert setups.snap(5, 5, 5, 1) == 5
+
+
+def test_snapping_agrees_with_enumerating_across_the_whole_range():
+    """snap() is arithmetic and legal_values() enumerates, so they can
+    drift apart silently. They must not: the enumerated set is the
+    definition, and snap is only an optimisation of searching it.
+
+    The optimisation is not cosmetic. Enumerating cost 80ms and 100,001
+    floats for a 1-unit step over a wide range, per field, on every write --
+    and nothing bounds what the game reports for a car nobody has loaded
+    yet.
+    """
+    cases = [(53, 88, 17), (52608, 182107, 9250), (0, 10, 1), (0, 3.5, 0.1),
+             (-25, 25, 5), (1, 100, 7), (5, 5, 1), (0, 1, 0.25)]
+    for lo, hi, step in cases:
+        options = setups.legal_values(lo, hi, step)
+        assert options, (lo, hi, step)
+        span = hi - lo
+        for i in range(201):
+            v = lo - 0.1 * span + (1.2 * span) * i / 200.0
+            want = min(options, key=lambda x: (abs(x - min(max(v, lo), hi)), x))
+            got = setups.snap(v, lo, hi, step)
+            assert abs(got - want) < 1e-6, (lo, hi, step, v, got, want)
+    print(f"  {len(cases)} ranges x 201 requests: arithmetic == enumerated")
+
+
+def test_a_huge_ladder_is_not_materialised_to_snap_one_value():
+    """A 1-unit step over 100,000 units is a real thing for a game-reported
+    range, and building it to pick one value is pure waste.
+
+    Asserted by asking for a range that could not be materialised at all,
+    rather than by timing one that merely would be slow. A wall-clock bound
+    is a statement about the runner: a loaded CI box fails it while the
+    algorithm is perfect, and a fast one passes it while the algorithm is
+    quadratic. A range with 10^18 rungs cannot be enumerated on any machine,
+    so returning the right answer promptly is the proof, and it is the same
+    proof everywhere.
+    """
+    # The realistic case first: 100,001 rungs, which enumerating did build.
+    assert setups.snap(126607.4, 100000, 200000, 1) == 126607
+    assert setups.legal_values(100000, 200000, 1) == [], (
+        "the enumerating helper must decline, not allocate")
+
+    # And the one that settles it. Materialising this is not slow, it is
+    # impossible; anything that returns has done arithmetic.
+    lo, hi, step = 0.0, 1e9, 1e-9
+    assert abs(setups.snap(123456.789, lo, hi, step) - 123456.789) < 1e-6
+    assert abs(setups.snap(-5, lo, hi, step) - lo) < 1e-9
+    assert abs(setups.snap(2e9, lo, hi, step) - hi) < 1e-9
+    print("  snapped inside a ladder of 10^18 rungs without building it")
 
 
 def test_step_of_zero_does_not_become_a_divide_trap():

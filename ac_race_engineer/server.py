@@ -47,6 +47,25 @@ BRIDGE_PORT = int(os.environ.get("AC_ENGINEER_BRIDGE_PORT", "9666"))
 _bridge = Bridge(DB_PATH, _collector, BRIDGE_PORT)
 _bridge.start()
 
+# Start recording the moment the server exists, rather than waiting to be
+# asked. The host restarts this process whenever it likes -- between turns,
+# on reconnect, for reasons nothing here can see -- and every restart used
+# to silently end recording until a human noticed and said so. Nobody ever
+# noticed in time: sixteen laps went missing across three evenings, twice
+# while I was reading the collector's own status and calling it healthy.
+#
+# The collector waits for Assetto Corsa rather than failing when it is
+# absent, so this costs nothing when the game is closed.
+#
+# Safe to do in every instance only because the collector now takes a claim
+# in the shared database first. Claude Desktop runs one of these processes
+# per client surface; before the claim, autostarting them all meant several
+# collectors reading one game and writing every lap once each. It also
+# reads the shared enabled flag, so a server restarted after
+# stop_recording comes back stopped rather than quietly resuming.
+if os.environ.get("AC_ENGINEER_NO_AUTOSTART") != "1":
+    _collector.start()
+
 
 def _j(obj) -> str:
     return json.dumps(obj, indent=2, default=str)
@@ -58,9 +77,21 @@ def _j(obj) -> str:
 @mcp.tool()
 def start_recording() -> str:
     """Start recording telemetry from the running Assetto Corsa session.
-    Laps are stored automatically as they complete. Idempotent."""
+    Laps are stored automatically as they complete. Idempotent.
+
+    Recording also starts on its own when this server does, so this is
+    mostly here to undo a stop_recording. If another server instance already
+    holds the recorder, this one stands by rather than recording the same
+    laps a second time, and says so."""
+    db.set_recorder_enabled(_conn, True)
     _collector.start()
-    return _j({"status": _collector.status, "error": _collector.last_error})
+    out = {"status": _collector.status, "error": _collector.last_error}
+    if _collector.standby_owner:
+        out["standby"] = (
+            "another server instance holds the recorder and is doing the "
+            "recording. Nothing is wrong and nothing is being lost -- this "
+            "instance takes over automatically if that one stops.")
+    return _j(out)
 
 
 def _active_session(explicit: int | None = None) -> int | None:
@@ -78,22 +109,75 @@ def _active_session(explicit: int | None = None) -> int | None:
     return _bridge.active_session_id()
 
 
+def _collector_state() -> tuple[str, str]:
+    """Why the collector is not running, when it isn't. Returns (state, why).
+
+    `running: false, status: "stopped", error: null, laps_recorded: 0` is
+    the constructor's defaults AND what a deliberate stop leaves behind, so
+    for months those two were indistinguishable. They call for opposite
+    responses: one means "the process was replaced underneath a driving
+    session and nothing resumed", the other means "you asked me to stop".
+    Sixteen laps were lost to the first while it was being read as the
+    second, twice by me.
+    """
+    c = _collector
+    if c.running:
+        if c.session_id is not None:
+            return "recording", ""
+        if c.standby_owner:
+            return ("standby",
+                    "another server instance holds the recorder and is doing "
+                    "the recording. This is the normal arrangement when "
+                    "Claude Desktop has more than one chat open, nothing is "
+                    "being lost, and this instance takes over automatically "
+                    "if that one stops.")
+        if not db.recorder_enabled(_conn):
+            return ("standby",
+                    "recording is switched off for every instance because "
+                    "stop_recording was called. start_recording turns it "
+                    "back on.")
+        return "waiting", "collector is live but AC has not gone live yet"
+    if not c.ever_started:
+        return ("never_started",
+                "this collector has never been asked to run. If laps were "
+                "driven, the server process was restarted underneath them "
+                "and nothing resumed recording -- start_recording now, and "
+                "expect the laps already driven to be gone.")
+    if c.stopped_by_request:
+        return "stopped_by_request", "stop_recording was called"
+    return ("died",
+            "the collector thread started and is no longer alive, without "
+            "being asked to stop" + (f": {c.last_error}"
+                                     if c.last_error else ""))
+
+
 @mcp.tool()
 def recording_status() -> str:
     """Check collector state: whether it's recording, which session,
-    how many laps stored so far, and any error."""
+    how many laps stored so far, and any error.
+
+    Read `state` rather than inferring from `running` and `status`:
+    "never_started" and "stopped_by_request" look identical otherwise and
+    mean opposite things. "standby" is a healthy state -- it means another
+    server instance is doing the recording."""
     snap = _bridge.status_snapshot()
+    state, why = _collector_state()
     out = {
         "running": _collector.running,
+        "state": state,
         "status": _collector.status,
         "session_id": _collector.session_id,
         "active_session_id": snap["session_id"],
         "recording_elsewhere": snap["by_other"],
+        "holds_recorder": _collector.holds_recorder,
+        "recording_enabled": db.recorder_enabled(_conn),
         "laps_recorded": _collector.laps_recorded,
         "error": _collector.last_error,
         "setup_name": (db.session_setup(_conn, snap["session_id"]) or None
                        if snap["session_id"] else None),
     }
+    if why:
+        out["state_note"] = why
     migrations = db.MIGRATION_LOG.pop(str(DB_PATH), None)
     if migrations:
         out["database_upgraded"] = migrations
@@ -102,9 +186,18 @@ def recording_status() -> str:
 
 @mcp.tool()
 def stop_recording() -> str:
-    """Stop the telemetry collector."""
+    """Stop the telemetry collector, in every server instance, until told
+    otherwise.
+
+    Stopping used to apply to one process and last until the next restart,
+    which meant it stopped whichever chat you happened to be in while the
+    other instances kept recording, and undid itself the moment the host
+    recycled the server. It is now a shared, durable setting: use
+    start_recording to turn it back on."""
+    db.set_recorder_enabled(_conn, False)
     _collector.stop()
     return _j({"status": "stopped",
+               "scope": "all server instances, until start_recording",
                "laps_recorded": _collector.laps_recorded})
 
 
@@ -521,6 +614,42 @@ def suspension_capture_status() -> str:
 
 
 @mcp.tool()
+def driving_line(lap_id: int, compare_lap_id: int | None = None,
+                 points: int = 100) -> str:
+    """Where the car actually went around the lap, and how rough it was.
+
+    Track position tells you where the car was ALONG the lap; this tells
+    you where it was ACROSS it, which is the whole of what a driving line
+    is. Each entry is one slice of the circuit with the car's world
+    position, speed, mean front ride height, and how far that ride height
+    moved within the slice -- the last of which is a bump map: a smooth
+    stretch holds the car at a steady height, a broken one does not.
+
+    Pass compare_lap_id for `separation_m`, the distance between where the
+    two cars were at the same point of the circuit. That is what answers
+    "was that a wider line, and by how much".
+
+    Laps recorded before position logging existed report
+    has_position: false. They cannot be backfilled."""
+    lap = db.get_lap(_conn, lap_id)
+    if not lap:
+        return _j({"error": f"no lap with id {lap_id}"})
+    other = other_samples = None
+    if compare_lap_id is not None:
+        other = db.get_lap(_conn, compare_lap_id)
+        if not other:
+            return _j({"error": f"no lap with id {compare_lap_id}"})
+        if (other["track"], other.get("track_config"), other["car"]) != (
+                lap["track"], lap.get("track_config"), lap["car"]):
+            return _j({"error": "those laps are not on the same car and "
+                                "layout, so their coordinates do not share "
+                                "an origin and cannot be subtracted"})
+        other_samples = db.get_samples(_conn, compare_lap_id)
+    return _j(analysis.driving_line(
+        lap, db.get_samples(_conn, lap_id), points, other, other_samples))
+
+
+@mcp.tool()
 def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
     """Corner-by-corner comparison of two laps on the same track: min speed
     deltas, brake point deltas, and slip balance changes. Use to evaluate
@@ -790,17 +919,50 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
                         "reason": "; ".join(why)})
         return False
 
-    def summaries(laps, side):
+    def loaded(laps, side):
+        """Usable laps paired with their samples, in one pass.
+
+        Separate from summarising because the corner-detection threshold has
+        to be computed across every lap in the comparison before any single
+        lap can be summarised.
+        """
         out = []
         for lap in laps:
             if not include_invalid and not usable(lap, side):
                 continue
-            s = analysis.lap_summary(lap, db.get_samples(_conn, lap["id"]))
-            if "error" in s:
+            samples = db.get_samples(_conn, lap["id"])
+            if not samples:
                 dropped.append({"lap_id": lap["id"], "side": side,
                                 "lap_number": lap.get("lap_number"),
                                 "reason": "no telemetry samples stored"})
                 continue
+            out.append((lap, samples))
+        return out
+
+    base_loaded = loaded(base_laps, "baseline")
+    cand_loaded = loaded(cand_laps, "candidate")
+
+    # One bar for every lap on both sides, fixed before anything is
+    # measured against it. Detecting corners per lap made the threshold a
+    # property of how hard each lap was driven, so the harder ones quietly
+    # dropped their lightest corners -- and a corner found on only one side
+    # is not compared at all. Deriving it from both sides together is what
+    # makes it a property of the comparison rather than of either run, so
+    # neither side can move the bar the other is judged against.
+    ref_detail = analysis.lat_g_reference_detail(
+        [s for _, s in base_loaded + cand_loaded])
+    ref = ref_detail["reference"]
+
+    def summaries(pairs):
+        # No `side` parameter, unlike loaded() above: every reason a lap can
+        # be dropped is decided there, so by here the side a lap came from
+        # no longer changes anything. Carrying it for symmetry would be a
+        # parameter a reader has to check the body to find unused.
+        out = []
+        for lap, samples in pairs:
+            s = analysis.lap_summary(lap, samples, ref,
+                                     reference_laps=ref_detail["laps"],
+                                     reference_spread_g=ref_detail["spread_g"])
             # Front load transfer lives in the suspension block and is the
             # quietest channel we have, so it is worth the extra query --
             # it resolves changes lap time cannot see.
@@ -813,8 +975,8 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
             out.append(s)
         return out
 
-    base = summaries(base_laps, "baseline")
-    cand = summaries(cand_laps, "candidate")
+    base = summaries(base_loaded)
+    cand = summaries(cand_loaded)
     if not base or not cand:
         return _j({"error": "no usable laps left on "
                             + ("both sides" if not base and not cand else
@@ -824,6 +986,26 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
                    "excluded_laps": dropped})
 
     out = analysis.compare_runs(base, cand)
+    # Reported because it decides which corners exist. A comparison whose
+    # corner list looks wrong is answerable now: this is the bar every lap
+    # was held to, and it is not the bar lap_summary uses on its own.
+    out["corner_detection"] = analysis.corner_detection_note(
+        ref, ref_detail["laps"], spread_g=ref_detail["spread_g"])
+    out["corner_detection"]["note"] = (
+        "one lateral-g reference across every lap on both sides, so corner "
+        "membership does not depend on how hard an individual lap was "
+        "driven. lap_summary called on a single lap uses that lap's own "
+        "peak instead, so its corner list can differ from the one here."
+        if ref is not None else
+        # No lap in the comparison carried enough lateral load to
+        # contribute, so there is no shared bar and every lap fell back to
+        # its own peak. The note above would flatly contradict the `basis`
+        # beside it, and a reader debugging a corner list is exactly who
+        # reads both.
+        "no lap on either side carried enough cornering load to set a "
+        "shared reference, so each lap was detected against its own peak. "
+        "Corner membership here can depend on how hard an individual lap "
+        "was driven -- which is what a shared reference exists to prevent.")
     out["track"] = where(base_laps[0])
     out["car"] = base_laps[0].get("car")
     if dropped:

@@ -193,5 +193,48 @@ def test_every_module_imports_standalone_without_the_package_installed():
         print(f"  {len(modules())} modules import with nothing installed")
 
 
+# Source files tracked by git, minus the ones whose whole job is to contain
+# these strings. STACK.md and the REVIEW notes quote conflict output.
+CONFLICT_MARKERS = ("<<<<<<< ", ">>>>>>> ")
+
+
+def test_no_source_file_carries_a_merge_conflict_marker():
+    """A marker left in a docstring is valid Python and passes everything.
+
+    This happened: resolving a rebase by line index kept the `<<<<<<< HEAD`
+    line and dropped a line of prose. It sat inside a function docstring, so
+    the module imported, the suite passed on every branch, and it rode three
+    more rebases before anyone looked at that paragraph.
+
+    Nothing else here would catch it -- it is not a syntax error, not a
+    behaviour, and not visible in any output. A grep is the only instrument
+    that works, so this is the file it belongs in.
+    """
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z", "*.py", "*.lua", "*.md", "*.ps1", "*.bat"],
+        cwd=ROOT, capture_output=True, text=True)
+    if tracked.returncode != 0:          # not a checkout: nothing to check
+        print("  not a git checkout, skipping the marker sweep")
+        return
+
+    hits = []
+    for name in filter(None, tracked.stdout.split("\0")):
+        path = ROOT / name
+        # These two files quote conflict output on purpose.
+        if path.name in ("STACK.md",) or path.name.startswith("REVIEW-"):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            if line.startswith(CONFLICT_MARKERS) or line.rstrip() == "=======":
+                hits.append(f"{name}:{n}: {line[:40]}")
+    assert not hits, (
+        "merge conflict markers left in tracked files:\n    "
+        + "\n    ".join(hits))
+    print("  no conflict markers in any tracked source file")
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

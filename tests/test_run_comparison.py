@@ -348,7 +348,7 @@ def test_the_corner_count_does_not_change_what_the_metrics_need():
 
 
 def test_clearing_alone_but_not_the_correction_is_its_own_answer():
-    """"No evidence" and "not enough laps" are different next steps.
+    """No evidence and not enough laps are different next steps.
 
     Reported as a bare "within noise" they read the same, and the engineer
     who would have run three more laps stops instead. p here is 0.0213:
@@ -669,6 +669,16 @@ def _server():
         os.environ["AC_ENGINEER_DATA"] = d
         os.environ["AC_DOCS_DIR"] = d
         os.environ["AC_ENGINEER_BRIDGE_PORT"] = "0"
+        # Importing the server now starts recording, which is right in the
+        # game and wrong here: these tests exercise the tool layer over a
+        # database they build themselves, and a collector polling for
+        # Assetto Corsa in the background contributes a thread, a second
+        # SQLite connection and a retry timer to every one of them.
+        #
+        # Set before the import because the decision is made at import time,
+        # and that is the point -- an import with side effects can only be
+        # opted out of before it happens.
+        os.environ["AC_ENGINEER_NO_AUTOSTART"] = "1"
         import importlib
         _SERVER = importlib.import_module("ac_race_engineer.server")
         atexit.register(_SERVER._bridge.stop)
@@ -835,6 +845,32 @@ def test_lap_ids_survive_the_way_a_list_actually_arrives():
         out = json.loads(srv.compare_runs(bad, cand))
         assert out.get("error") == f"not a lap id: {bad!r}", (bad, out)
         print(" ", out["error"])
+
+
+def test_a_run_with_no_cornering_does_not_claim_a_shared_reference():
+    """corner_detection has to agree with itself.
+
+    When no lap on either side carries enough lateral load, there is no
+    shared bar: lat_g_reference returns None and every lap falls back to its
+    own peak. The note was appended unconditionally and said a single shared
+    reference had been used across both sides -- flatly contradicting the
+    `basis` field beside it, for the one reader who looks at both, which is
+    someone debugging a corner list that surprised them.
+    """
+    srv = _server()
+    sid = make_session(srv._conn, track="mugello",
+                       car="rss_formula_rss_4")
+    # A flat lap: _SAMPLE carries no lateral g at all, so nothing corners.
+    base = [_store(srv, sid, n, 113000 + n * 40) for n in (1, 2, 3)]
+    cand = [_store(srv, sid, n, 113100 + n * 40) for n in (4, 5, 6)]
+
+    out = _run(srv, base, cand)
+    cd = out["corner_detection"]
+    assert cd["basis"] == "this lap's own cornering load", cd
+    assert "laps_in_reference" not in cd, cd
+    assert "no lap on either side" in cd["note"], cd
+    assert "one lateral-g reference" not in cd["note"], cd
+    print(f"  {cd['basis']!r}; note agrees with it")
 
 
 if __name__ == "__main__":

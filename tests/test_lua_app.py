@@ -205,6 +205,273 @@ def test_clamp_and_num_reject_nan_and_out_of_range():
     assert api.num(3.5, 7) == 3.5
 
 
+def test_the_overlay_calls_out_laps_driven_but_not_stored():
+    """The failure the driver actually hit, seen from the car.
+
+    The overlay rendered whatever /status said, which made it exactly as
+    trustworthy as the server. When the server was wrong -- an empty session
+    asserting itself as recording -- the driver had a green light through
+    seven laps that were never stored, and no way to check from the car.
+
+    car.lapCount belongs to the game, not to us. Laps finishing while none
+    are stored is a contradiction the app can see on its own.
+    """
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+
+    # Recording starts with the game already at lap 3. That is the baseline,
+    # not a shortfall.
+    api.setLapCount(3)
+    api.setLaps(0)
+    assert api.recordingHealth()[0] != "not-storing", api.recordingHealth()
+
+    # One lap since: could be an out-lap, which is skipped by design.
+    api.setLapCount(4)
+    assert api.recordingHealth()[0] != "not-storing", api.recordingHealth()
+
+    # Seven finished since recording began, still nothing stored.
+    api.setLapCount(10)
+    state, detail = api.recordingHealth()
+    assert state == "not-storing", state
+    assert "7 laps driven" in detail and "0 stored" in detail, detail
+    print(f"  baseline 3, lapCount 10 -> {state!r}: {detail!r}")
+
+
+def test_a_recorder_that_started_late_does_not_cry_wolf():
+    """The false alarm this warning produced the first time it mattered.
+
+    The driver restarted the MCP server twenty-six laps into a game session.
+    The collector opened cleanly and was waiting for lap twenty-seven. The
+    overlay compared the game's twenty-six against the recorder's zero and
+    put NOT STORING LAPS over a collector that was working perfectly.
+
+    A warning that fires when nothing is wrong is worse than no warning: it
+    is the one the driver learns to ignore, and this one exists because
+    seven laps at Suzuka were lost while the light was green.
+    """
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setLapCount(26)
+    api.setLaps(0)
+
+    state, detail = api.recordingHealth()
+    assert state == "recording", (state, detail)
+    assert api.baseline() == 26, api.baseline()
+    print(f"  26 laps already driven, recording just started -> {state!r}")
+
+
+def test_the_baseline_is_forgotten_when_recording_stops():
+    """Otherwise the next run measures itself against the last one's start."""
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setLapCount(5)
+    api.setLaps(0)
+    api.recordingHealth()
+    assert api.baseline() == 5, api.baseline()
+
+    api.setRunning(False)
+    api.recordingHealth()
+    assert api.baseline() is None, api.baseline()
+
+    # A second run starts counting from wherever the game now is.
+    api.setRunning(True)
+    api.setLapCount(9)
+    api.recordingHealth()
+    assert api.baseline() == 9, api.baseline()
+    assert api.recordingHealth()[0] == "recording"
+    print("  baseline cleared on stop and re-taken on the next run")
+
+
+def test_storing_laps_reads_as_recording():
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setLapCount(7)
+    api.setLaps(6)
+    assert api.recordingHealth()[0] == "recording", api.recordingHealth()
+
+
+def test_a_driver_who_has_not_finished_a_lap_is_not_a_failure():
+    """Out-lap, or the first lap in progress: nothing is wrong yet."""
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setLapCount(0)
+    api.setLaps(0)
+    assert api.recordingHealth()[0] == "recording", api.recordingHealth()
+
+
+def test_an_offline_bridge_is_reported_as_offline_not_as_data_loss():
+    """Two different problems, and conflating them sends you after the
+    wrong one: the bridge being down is not the collector being stopped."""
+    lua, api, rec = lua_harness.load()
+    api.setConnected(False)
+    api.setLapCount(7)
+    api.setLaps(0)
+    assert api.recordingHealth()[0] == "offline", api.recordingHealth()
+
+
+def test_a_server_restart_does_not_produce_a_false_alarm():
+    """The same false alarm as above, reached through the common route.
+
+    Clearing the baseline when status.running goes false does not cover a
+    server RESTART, because that is not what a restart looks like from the
+    car: the bridge simply stops answering, so recordingHealth returns
+    'offline' before it reaches the branch that clears anything. The stale
+    baseline then met a fresh recording with status.laps back at zero.
+
+    A restart is the event the recorder heartbeat exists for and the thing
+    that happens most, so the alarm was firing precisely when the driver
+    had been told to expect one.
+    """
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setSession(4)
+    api.setLapCount(20)
+    api.setLaps(0)
+    api.recordingHealth()
+    api.setLapCount(26)
+    api.setLaps(6)
+    assert api.recordingHealth()[0] == "recording"
+    assert api.baseline() == 20, api.baseline()
+
+    # The host replaces the server process. The bridge is unreachable for a
+    # poll or two.
+    api.setConnected(False)
+    assert api.recordingHealth()[0] == "offline"
+    assert api.baseline() is None, "the baseline outlived the connection"
+
+    # It comes back, autostarts a collector, opens a new session. The driver
+    # has not stopped driving and lap 27 will be stored normally.
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setSession(5)
+    api.setLaps(0)
+    api.setLapCount(27)
+    state, detail = api.recordingHealth()
+    assert state == "recording", (state, detail)
+    assert api.baseline() == 27, api.baseline()
+    print("  server restarted mid-session -> 'recording', baseline re-taken")
+
+
+def test_a_new_session_re_takes_the_baseline():
+    """Another instance taking the recorder over is a new recording.
+
+    The connection never drops and status.running never goes false, so the
+    session id is the only thing that says the window being counted has
+    moved.
+    """
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setSession(1)
+    api.setLapCount(12)
+    api.setLaps(9)
+    api.recordingHealth()
+    assert api.baseline() == 12
+
+    api.setSession(2)          # takeover: new session, nothing stored in it
+    api.setLaps(0)
+    api.setLapCount(14)
+    state, _ = api.recordingHealth()
+    assert state == "recording", state
+    assert api.baseline() == 14, api.baseline()
+    print("  session changed under a live connection -> baseline re-taken")
+
+
+def test_a_stored_count_going_backwards_re_takes_the_baseline():
+    """The same event with the session id unchanged -- a database that was
+    moved, or a count that reset for any reason we did not predict. A
+    number that can only go up going down means the window changed."""
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setSession(1)
+    api.setLapCount(30)
+    api.setLaps(11)
+    api.recordingHealth()
+    assert api.baseline() == 30
+
+    api.setLaps(0)
+    api.setLapCount(33)
+    assert api.recordingHealth()[0] == "recording"
+    assert api.baseline() == 33, api.baseline()
+    print("  stored count fell -> baseline re-taken instead of an alarm")
+
+
+def test_the_test_helper_resets_every_piece_of_the_baseline():
+    """resetBaseline has to clear the whole baseline, not a third of it.
+
+    Asserted on the state directly rather than through behaviour, because
+    behaviour cannot currently tell the difference: baselineSession and
+    baselineLaps are reassigned unconditionally on the next call, so a
+    helper clearing only recordingBaseline produces the same answers today.
+
+    It is still worth fixing, and worth a test. The helper names a thing --
+    "the baseline" -- that now has three parts, and one that clears one part
+    is a trap for the next person: any new check that reads the stale two
+    before they are rewritten would fail in tests only, and look like the
+    code under test rather than the harness.
+    """
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setSession(3)
+    api.setLapCount(40)
+    api.setLaps(12)
+    api.recordingHealth()
+    assert tuple(api.baselineState()) == (40, 3, 12), \
+        tuple(api.baselineState())
+
+    api.resetBaseline()
+    lap, session, laps = api.baselineState()
+    assert lap is None and session is None and laps == 0, (lap, session, laps)
+
+    # And a fresh recording still measures itself from where it starts.
+    api.setLapCount(41)
+    api.setLaps(0)
+    state, detail = api.recordingHealth()
+    assert state == "recording", (state, detail)
+    assert api.baseline() == 41, api.baseline()
+    print("  resetBaseline clears the lap, the session and the stored count")
+
+
+def test_the_lap_count_helper_survives_a_car_that_is_not_there_yet():
+    """ac.getCar(0) can return nil early in load, and recordingHealth already
+    reads `car and car.lapCount` for that reason. The test helper indexed it
+    unguarded, so a harness that loaded the app before the stub car existed
+    would fail inside setLapCount -- on the harness, not on the behaviour
+    under test, and with a Lua error rather than an assertion.
+
+    It reports whether it took, so a test cannot set nothing and then assert
+    on it.
+    """
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    assert api.setLapCount(7) is True
+    with_car = api.recordingHealth()[0]
+
+    # Loaded before the car exists. `car` is a file-local, so this is the
+    # only way to reach the nil path -- assigning a global of the same name
+    # does not touch the app's upvalue.
+    empty = lua_harness.Recorder()
+    empty.car_available = False
+    lua2, api2, _ = lua_harness.load(empty)
+    api2.setConnected(True)
+    api2.setRunning(True)
+
+    assert api2.setLapCount(9) is False, "helper claimed a nil car took it"
+    # And the app itself answers rather than raising, which is what the
+    # `car and car.lapCount` guard in recordingHealth is already for.
+    assert api2.recordingHealth()[0] is not None
+    print(f"  car present -> {with_car!r}; loaded without a car -> helper "
+          f"returns False and health still answers")
+
 if __name__ == "__main__":
     if SKIP:
         # Not 0: exiting 0 made `run_tests.py --isolate` report this module

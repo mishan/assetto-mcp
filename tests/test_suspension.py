@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import make_session, run_module  # noqa: E402
+from support import make_session, run_module, temp_db  # noqa: E402
 
 from ac_race_engineer import db, suspension as susp  # noqa: E402
 
@@ -592,8 +592,7 @@ def test_the_shared_struct_layouts_are_identical():
 def test_out_of_range_fields_are_reported_not_just_nulled():
     """A units disagreement must read as one, not as an empty report."""
     from support import post
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         br, _ = _bridge(path, conn)
         try:
@@ -648,8 +647,7 @@ def _bridge(path, conn):
 def test_samples_survive_the_round_trip_through_http():
     """The wire format the Lua app has to produce, exercised not assumed."""
     from support import post
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         br, sid = _bridge(path, conn)
         try:
@@ -673,8 +671,7 @@ def test_samples_survive_the_round_trip_through_http():
 def test_bad_source_is_refused():
     """The tier decides which analyzes are honest, so it cannot be guessed."""
     from support import post
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         br, _ = _bridge(path, conn)
         try:
@@ -692,8 +689,7 @@ def test_bad_source_is_refused():
 
 def test_one_bad_sample_does_not_cost_the_batch():
     from support import post
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         br, _ = _bridge(path, conn)
         try:
@@ -722,8 +718,7 @@ def test_batch_is_refused_when_nothing_is_recording():
     import time
     from ac_race_engineer import bridge as B
     from support import FakeCollector, age_session, post
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         stale = make_session(conn)
         age_session(conn, stale, 3 * 86400)
@@ -756,9 +751,9 @@ def test_concurrent_posts_do_not_lose_prune_increments():
     database.
     """
     import threading
+    import time as _time
     from support import post
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         br, _ = _bridge(path, conn)
         try:
@@ -767,19 +762,46 @@ def test_concurrent_posts_do_not_lose_prune_increments():
             outcomes: list[int | None] = []
             guard = threading.Lock()
 
+            def already_stored(i):
+                """Did attempt i's batch reach the table?
+
+                Its own connection, because this runs on a worker thread and
+                SQLite objects do not cross threads.
+                """
+                probe = db.connect(path)
+                try:
+                    return probe.execute(
+                        "SELECT COUNT(*) FROM suspension_samples"
+                        " WHERE lap_count = ?", (i,)).fetchone()[0] > 0
+                finally:
+                    probe.close()
+
             def fire(i):
                 # Distinct lap_counts so nothing is deduplicated away and
                 # every request that lands really does write.
                 batch = [dict(s, lap_count=i) for s in rows]
-                try:
-                    code, _ = post(br.port, "/suspension",
-                                   {"source": "app", "samples": batch})
-                except OSError:
-                    # Firing 24 connections at once can overrun the listen
-                    # backlog and get one reset. That is the OS refusing a
-                    # connection, not the server losing a write, so it must
-                    # not be counted as either.
-                    code = None
+                code = None
+                for attempt in range(4):
+                    try:
+                        code, _ = post(br.port, "/suspension",
+                                       {"source": "app", "samples": batch})
+                        break
+                    except OSError:
+                        # The OS refused or reset the connection, which a
+                        # loaded Windows runner does under two dozen
+                        # simultaneous connects. That is not the server
+                        # losing a write, so retry rather than record a
+                        # miss: recording it is what made this a CI flake,
+                        # failing the quorum check below at 5 of 24.
+                        #
+                        # Unless the request was served and only the reply
+                        # was lost -- sending it again would write twice and
+                        # be counted once, failing the invariant under test
+                        # for a reason that has nothing to do with it.
+                        if already_stored(i):
+                            code = 200
+                            break
+                        _time.sleep(0.05 * (attempt + 1))
                 with guard:
                     outcomes.append(code)
 
@@ -791,12 +813,14 @@ def test_concurrent_posts_do_not_lose_prune_increments():
                 t.join()
 
             landed = sum(1 for c in outcomes if c == 200)
-            # Guard against the test passing by doing nothing: if the
-            # backlog ate almost everything there was no concurrency to
-            # speak of and the assertion below proves little.
+            # Guard against the test passing by doing nothing: if almost
+            # nothing landed there was no concurrency to speak of and the
+            # assertion below proves little. With the retry above this is a
+            # floor nothing should reach, not a coin toss.
             assert landed >= attempts // 2, (
-                f"only {landed} of {attempts} posts landed; too few to say "
-                f"anything about concurrent increments")
+                f"only {landed} of {attempts} posts landed even with "
+                f"retries; too few to say anything about concurrent "
+                f"increments")
             # The honest invariant: the counter matches the requests the
             # server actually handled, not the ones the client attempted.
             assert br._susp_writes == landed, (

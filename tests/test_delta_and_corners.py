@@ -487,5 +487,426 @@ def test_cars_of_every_grip_level_still_find_their_corners():
     print("  road, GT3 and formula grip levels all detected")
 
 
+# --- the threshold must not depend on how hard the lap was driven -------
+#
+# The bug these were written for, seen from the car: comparing five Suzuka
+# laps against two, seven corners of seventeen were reported as found on
+# only one side. The threshold is a fraction of the lap's own 99th-
+# percentile lateral g, and across that run peak_lat_g ran 2.78 to 3.42 --
+# a 23% swing in the bar, which took every corner near it in and out of
+# existence. A corner absent from a lap is not compared on that lap, and
+# the corners nearest the threshold are the light ones, which is where a
+# roll-stiffness change shows up first.
+
+
+def _pair_of_efforts():
+    """The same circuit driven at two intensities.
+
+    Identical corners but for the third, which is harder on one lap. That
+    alone moves a per-lap threshold enough to change which of the *other*
+    corners clear it.
+    """
+    shape = ((0.15, 0.05, 2.4), (0.45, 0.04, 1.2), (0.88, 0.05, 2.2))
+    easy = _lap(corners=shape + ((0.70, 0.08, 2.6),))
+    hard = _lap(corners=shape + ((0.70, 0.08, 3.6),))
+    return easy, hard
+
+
+def test_a_shared_reference_finds_the_same_corners_on_both_laps():
+    """The fix, stated as the property that has to hold.
+
+    Not "the light corner survives" -- that depends on where the constants
+    sit. The invariant is that two laps of the same circuit yield the same
+    corners, so a comparison between them is drawn on all of them.
+
+    This is what fails if reference_peak_g is ignored, which is the mutation
+    that reverts the fix while leaving every other test passing.
+    """
+    easy, hard = _pair_of_efforts()
+
+    solo_easy = len(analysis.detect_corners(easy))
+    solo_hard = len(analysis.detect_corners(hard))
+    assert solo_easy != solo_hard, (
+        "premise gone: these laps no longer disagree per-lap, so this test "
+        f"is not exercising the bug ({solo_easy} vs {solo_hard})")
+
+    ref = analysis.lat_g_reference([easy, hard])
+    a = [c["apex_pos"] for c in analysis.detect_corners(easy, ref)]
+    b = [c["apex_pos"] for c in analysis.detect_corners(hard, ref)]
+    assert len(a) == len(b), (a, b)
+    for x, y in zip(a, b):
+        assert abs(x - y) < 0.02, (a, b)
+    print(f"  per-lap: {solo_easy} vs {solo_hard} corners. "
+          f"shared reference {ref:.2f}g: {len(a)} vs {len(b)}")
+
+
+def test_compare_laps_holds_both_laps_to_one_bar():
+    """End to end, because the reference is only useful if it is threaded.
+
+    detect_corners taking the argument means nothing if compare_laps still
+    calls it twice with nothing.
+    """
+    easy, hard = _pair_of_efforts()
+    out = analysis.compare_laps(_meta(1, 113000), easy,
+                                _meta(2, 113480), hard)
+    assert len(out["corners"]) == 4, out["corners"]
+    print(f"  {len(out['corners'])} corners matched across efforts")
+
+
+def test_one_wild_lap_does_not_move_the_reference():
+    """Median, not mean or max.
+
+    One lap with a big correction on it, or one lap driven far harder than
+    the rest, must not raise the bar for the whole run -- that would be the
+    original bug with extra steps, since the run's marginal corners would
+    vanish from every lap at once instead of from one.
+    """
+    normal = [_lap() for _ in range(4)]
+    wild = _lap(corners=((0.15, 0.05, 5.5), (0.45, 0.04, 1.2),
+                         (0.70, 0.08, 2.8), (0.88, 0.05, 2.2)))
+    without = analysis.lat_g_reference(normal)
+    with_ = analysis.lat_g_reference(normal + [wild])
+    assert abs(with_ - without) < 0.05, (without, with_)
+    print(f"  {without:.2f}g -> {with_:.2f}g with a 5.5g lap in the set")
+
+
+def test_an_inlap_neither_moves_the_reference_nor_gains_corners():
+    """A borrowed threshold must not conjure corners out of a flat lap.
+
+    The reference makes the bar lower for a quiet lap, which is the point --
+    but a lap with no cornering load at all has no corners regardless, and
+    promoting its noise would be worse than the bug being fixed. The guard
+    is on the lap's own peak and must stay there.
+    """
+    flat = _lap(corners=())
+    ref = analysis.lat_g_reference([_lap(), _lap(), flat])
+    assert ref is not None and ref > 1.0, ref
+    assert analysis.detect_corners(flat, ref) == []
+    # And it contributed nothing: dropping it leaves the same reference.
+    assert analysis.lat_g_reference([_lap(), _lap()]) == ref
+    print(f"  reference {ref:.2f}g, flat lap still has 0 corners")
+
+
+def test_no_reference_when_nothing_corners():
+    """None, not zero: callers fall back to per-lap rather than to no bar."""
+    assert analysis.lat_g_reference([_lap(corners=()),
+                                     _lap(corners=())]) is None
+    assert analysis.lat_g_reference([]) is None
+
+
+def test_a_lap_read_on_its_own_is_unchanged():
+    """The single-lap path has no run to borrow from and must not regress."""
+    assert (len(analysis.detect_corners(_lap(), None))
+            == len(analysis.detect_corners(_lap())) == 4)
+
+
+# --- the headline accelerations are filtered too ------------------------
+#
+# detect_corners has dropped impossible acceleration since a 9g burst
+# invented a corner. lap_summary's own peak_lat_g and peak_braking_g did
+# not, and they are compare_runs metrics -- so the same signal was cleaned
+# for one purpose and passed through raw for another.
+#
+# Seen live at Sebring: one ~10g lateral spike reported peak_lat_g as 6.32g
+# averaged over two laps against a real 2.4, and inflated the metric's noise
+# estimate until compare_runs' resolution for it reached 15g. The lap was
+# not merely misreported; the channel stopped being able to detect anything.
+
+
+def _spike(samples, field, value, at=600, n=3):
+    """A short burst of impossible physics, the shape AC actually emits."""
+    for s in samples[at:at + n]:
+        s[field] = value
+    return samples
+
+
+def test_a_lateral_spike_does_not_reach_the_headline_figure():
+    clean = analysis.lap_summary(_meta(1, 113000), _lap())
+    spiked = analysis.lap_summary(_meta(1, 113000),
+                                  _spike(_lap(), "acc_lat", 10.0))
+
+    assert spiked["peak_lat_g"] == clean["peak_lat_g"], (
+        f"the 10g spike reached peak_lat_g: {spiked['peak_lat_g']}")
+    assert spiked["peak_lat_g"] < analysis.LAT_G_SANE_MAX, spiked
+    assert spiked["accel_samples_dropped"] == 3, spiked
+    assert clean["accel_samples_dropped"] is None, clean
+    print(f"  10g spike dropped, peak stays {spiked['peak_lat_g']}g, "
+          f"{spiked['accel_samples_dropped']} samples reported")
+
+
+def test_a_braking_spike_does_not_reach_the_headline_figure():
+    """peak_braking_g took a raw min() and had no ceiling at all."""
+    clean = analysis.lap_summary(_meta(1, 113000), _lap())
+    spiked = analysis.lap_summary(_meta(1, 113000),
+                                  _spike(_lap(), "acc_lon", -12.0))
+    assert spiked["peak_braking_g"] == clean["peak_braking_g"], spiked
+    assert spiked["peak_braking_g"] > -analysis.LON_G_SANE_MAX, spiked
+    print(f"  -12g spike dropped, braking stays "
+          f"{spiked['peak_braking_g']}g")
+
+
+def test_a_spike_is_dropped_not_clamped():
+    """Clamping would report the ceiling as though the car had pulled it.
+
+    The distinction matters: 6.0g in a payload is a claim about the car,
+    and a model reading it has no way to tell it from a measurement.
+    """
+    spiked = analysis.lap_summary(_meta(1, 113000),
+                                  _spike(_lap(), "acc_lat", 10.0))
+    assert spiked["peak_lat_g"] != analysis.LAT_G_SANE_MAX, spiked
+
+
+def test_a_lap_of_nothing_but_glitches_reports_none():
+    """No number is better than a wrong one when every sample is a glitch."""
+    lap = _spike(_lap(), "acc_lat", 99.0, at=0, n=1200)
+    out = analysis.lap_summary(_meta(1, 113000), lap)
+    assert out["peak_lat_g"] is None, out["peak_lat_g"]
+    assert out["accel_samples_dropped"] == 1200, out
+
+
+def test_dropped_samples_are_counted_once_not_once_per_channel():
+    """The field says samples, and it is read against the sample count.
+
+    These spikes come from a reset or a teleport, which hits both
+    acceleration axes on the same tick, so adding the two channels' drops
+    together double-counted the usual case -- and could report more samples
+    dropped than the lap contained.
+    """
+    lap = _lap()
+    total = len(lap)
+    both = _spike(_spike(lap, "acc_lat", 99.0, at=100, n=5),
+                  "acc_lon", -99.0, at=100, n=5)
+    out = analysis.lap_summary(_meta(1, 113000), both)
+    assert out["accel_samples_dropped"] == 5, out["accel_samples_dropped"]
+    assert out["accel_samples_dropped"] <= out["samples"], out
+
+    everything = _spike(_spike(_lap(), "acc_lat", 99.0, at=0, n=total),
+                        "acc_lon", -99.0, at=0, n=total)
+    out = analysis.lap_summary(_meta(1, 113000), everything)
+    assert out["accel_samples_dropped"] == total, out
+    print(f"  5 samples bad on both axes -> 5 dropped, not 10; "
+          f"a fully glitched lap reports {total} of {total}")
+
+
+def test_a_zero_reference_is_a_reference_not_an_absence():
+    """float | None, so the check has to be `is not None`.
+
+    Truthiness makes 0.0 -- a real answer, "nothing in this run cornered" --
+    fall back to the lap's own peak. One lap silently measured against a
+    different bar from the rest is the exact failure the shared reference
+    exists to end, so the fallback must fire only for None.
+    """
+    # A lap with three firm corners and one light one. The light corner sits
+    # above the absolute floor and below a bar derived from this lap's own
+    # peak, so it exists under a 0.0 reference and not under the fallback --
+    # which is exactly what tells the two apart.
+    lap = _lap(corners=((0.15, 0.05, 2.4), (0.45, 0.04, 2.2),
+                        (0.70, 0.08, 2.8), (0.88, 0.05, 0.5)))
+    own = analysis._lat_g_peak(analysis._lat_g_trace(lap)[0])
+    assert own * analysis.CORNER_LAT_G_FRACTION > 0.5 > \
+        analysis.CORNER_MIN_LAT_G, own
+
+    at_zero = analysis.detect_corners(lap, 0.0)
+    at_own = analysis.detect_corners(lap, None)
+    assert len(at_zero) == 4, len(at_zero)
+    assert len(at_own) == 3, len(at_own)
+
+    note = analysis.corner_detection_note(0.0, laps=4)
+    assert note["basis"].startswith("shared"), note
+    assert note["lat_g_reference"] == 0.0, note
+    assert note["laps_in_reference"] == 4, note
+
+    own_note = analysis.corner_detection_note(None, laps=0, own_peak=own)
+    assert own_note["basis"] == "this lap's own cornering load", own_note
+    assert "laps_in_reference" not in own_note, own_note
+    print(f"  0.0 kept as a shared bar ({len(at_zero)} corners); None falls "
+          f"back to this lap's own {own:.2f}g ({len(at_own)} corners)")
+
+
+def test_both_channels_are_held_to_the_same_bar_as_corner_detection():
+    """One signal, one definition of believable.
+
+    The bug was two code paths disagreeing about what counts as physics.
+    If these constants ever diverge, that disagreement is back.
+    """
+    assert analysis.LAT_G_SANE_MAX == analysis.LON_G_SANE_MAX
+    assert _lap(corners=()) is not None  # the helper still builds a flat lap
+    lat = analysis._sane_channel(_spike(_lap(), "acc_lat", 10.0),
+                                 "acc_lat", analysis.LAT_G_SANE_MAX)
+    assert all(abs(v) <= analysis.LAT_G_SANE_MAX for v in lat)
+
+
+# --- the driving line ---------------------------------------------------
+
+
+def _placed(samples, x0=0.0, z0=0.0, rough_at=None):
+    """Give a synthetic lap a world position: a circle of radius 500m.
+
+    Offsetting the whole circle stands in for a wider line -- every slice
+    is then a known distance from the reference lap, which is exactly what
+    separation_m has to recover.
+    """
+    for s in samples:
+        a = s["norm_pos"] * 2 * math.pi
+        s["pos_x"] = x0 + 500.0 * math.cos(a)
+        s["pos_y"] = 0.0
+        s["pos_z"] = z0 + 500.0 * math.sin(a)
+        s["ride_f"] = 0.060
+        if rough_at is not None and abs(s["norm_pos"] - rough_at) < 0.02:
+            # A stretch where the car is being thrown about vertically.
+            s["ride_f"] = 0.060 + 0.020 * math.sin(s["norm_pos"] * 900)
+    return samples
+
+
+def test_a_lap_without_position_says_so_instead_of_guessing():
+    """Pre-v8 laps cannot be backfilled and must not pretend otherwise."""
+    out = analysis.driving_line(_meta(1, 113000), _lap())
+    assert out["has_position"] is False, out
+    assert "cannot be backfilled" in out["error"], out
+    assert "line" not in out, out
+
+
+def test_a_comparison_lap_with_no_samples_is_an_error_not_a_silent_skip():
+    """Asking and getting nothing must not look like never asking.
+
+    The branch was gated on the truthiness of other_samples, so a lap whose
+    telemetry was never stored fell straight through it: no comparison, and
+    no comparison_error either. A reader cannot tell that from a
+    single-lap call, and the answer to "was that a wider line" would have
+    been silence.
+    """
+    mine = _placed(_lap())
+    out = analysis.driving_line(_meta(1, 113000), mine, 20,
+                                _meta(2, 113500), [])
+    assert "compared_with" not in out, out
+    assert "no telemetry samples stored" in out["comparison_error"], out
+
+    # And not asking still says nothing, which is the case it was confused
+    # with.
+    alone = analysis.driving_line(_meta(1, 113000), mine, 20)
+    assert "comparison_error" not in alone, alone
+    print(f"  {out['comparison_error']}")
+
+
+def test_two_laps_that_never_overlap_say_so_rather_than_going_quiet():
+    """The same ambiguity one level further in.
+
+    Both laps carry position, so the checks above pass, and then no slice
+    holds both -- two partial laps that stopped in different places. gaps
+    comes back empty and the payload used to contain neither compared_with
+    nor comparison_error, which is the state those checks exist to prevent.
+    """
+    first_half = [s for s in _placed(_lap()) if s["norm_pos"] < 0.4]
+    second_half = [s for s in _placed(_lap()) if s["norm_pos"] > 0.6]
+
+    out = analysis.driving_line(_meta(1, 113000), first_half, 20,
+                                _meta(2, 113500), second_half)
+    assert "compared_with" not in out, out
+    assert "no slice of track in common" in out["comparison_error"], out
+    print(f"  {out['comparison_error'][:72]}...")
+
+
+def test_the_line_follows_the_car_round_the_track():
+    out = analysis.driving_line(_meta(1, 113000), _placed(_lap()), points=40)
+    assert out["has_position"] is True
+    assert out["slices_measured"] == 40, out["slices_measured"]
+    assert out["slices_empty"] == 0, out["slices_empty"]
+    xs = [p["x"] for p in out["line"]]
+    zs = [p["z"] for p in out["line"]]
+    # A circle: both coordinates span roughly the diameter.
+    assert max(xs) - min(xs) > 900, (min(xs), max(xs))
+    assert max(zs) - min(zs) > 900, (min(zs), max(zs))
+    print(f"  {out['slices_measured']} slices, x spans "
+          f"{max(xs) - min(xs):.0f}m")
+
+
+def test_separation_recovers_a_known_offset_between_two_lines():
+    """The number that answers "was that a wider line, and by how much"."""
+    mine = _placed(_lap())
+    wider = _placed(_lap(), x0=3.0)      # three metres across, all the way
+    out = analysis.driving_line(_meta(1, 113000), mine, 40,
+                                _meta(2, 113400), wider)
+    comp = out["compared_with"]
+    assert abs(comp["mean_separation_m"] - 3.0) < 0.2, comp
+    assert abs(comp["max_separation_m"] - 3.0) < 0.5, comp
+    assert all("separation_m" in p for p in out["line"]), out["line"][0]
+    print(f"  3.0m offset recovered as {comp['mean_separation_m']}m mean")
+
+
+def test_the_bump_map_finds_the_rough_stretch():
+    """ride_f_range_mm is the bump proxy, and has to point at the bumps."""
+    out = analysis.driving_line(_meta(1, 113000),
+                                _placed(_lap(), rough_at=0.62), points=50)
+    worst = out["roughest_sections"][0]
+    assert abs(worst["pos"] - 0.62) < 0.04, out["roughest_sections"][:3]
+    smooth = [p for p in out["line"]
+              if p and abs(p["pos"] - 0.2) < 0.05][0]
+    assert worst["ride_f_range_mm"] > 10 * smooth["ride_f_range_mm"], (
+        worst, smooth)
+    print(f"  roughest slice at {worst['pos']} "
+          f"({worst['ride_f_range_mm']}mm of movement)")
+
+
+def test_a_slice_the_car_never_reached_is_empty_not_invented():
+    """A gap in a line must not be drawn through somewhere the car wasn't."""
+    samples = _placed(_lap())
+    kept = [s for s in samples if not (0.4 <= s["norm_pos"] < 0.5)]
+    out = analysis.driving_line(_meta(1, 113000), kept, points=20)
+    missing = [i for i, p in enumerate(out["line"]) if p is None]
+    assert missing == [8, 9], missing
+    assert out["slices_empty"] == 2, out["slices_empty"]
+
+
+def test_the_point_count_is_clamped_rather_than_trusted():
+    for asked, expect in ((0, 100), (5, 10), (99999, 200), (40, 40)):
+        out = analysis.driving_line(_meta(1, 113000), _placed(_lap()), asked)
+        assert out["points"] == expect, (asked, out["points"])
+
+
+def test_a_smooth_track_reports_no_rough_sections():
+    """Sorting descending always returns six, so a glass-smooth lap listed
+    six roughest places at 0.0mm -- a list shaped like a finding."""
+    out = analysis.driving_line(_meta(1, 113000), _placed(_lap()), points=20)
+    assert out["roughest_sections"] == [], out["roughest_sections"]
+    assert "nothing here reads as rough" in out["surface_note"], out
+    print(f"  {out['surface_note']}")
+
+
+def test_a_position_missing_one_axis_is_not_a_position():
+    """The collector writes x, y and z together, so this cannot come from a
+    live session -- but store_lap pads short tuples from earlier layouts,
+    and one truncated a field past tyres_out lands exactly here. Checking
+    pos_x alone let it reach mean(pos_z) and raise from inside statistics."""
+    samples = _placed(_lap())
+    for s in samples:
+        s["pos_z"] = None
+    out = analysis.driving_line(_meta(1, 113000), samples)
+    assert out["has_position"] is False, out
+    assert "line" not in out, out
+    print("  x without z reported as no position, not raised from statistics")
+
+
+def test_a_flat_list_of_samples_is_refused_rather_than_answered():
+    """The call-site mistake this function is easiest to make.
+
+    Every other function here takes a flat list of samples; this one takes
+    one entry per lap. Given the flat version, each "lap" is a single dict,
+    len(dict) < 50 skips all of them, and the answer is None -- which
+    detect_corners reads as "no shared bar" and silently falls back to the
+    per-lap threshold. That is precisely the behaviour the shared reference
+    exists to remove, arrived at from a call that looked like it worked.
+    """
+    laps = [_lap(), _lap()]
+    assert analysis.lat_g_reference(laps) is not None
+
+    try:
+        analysis.lat_g_reference(_lap())      # flat, the likely typo
+    except TypeError as e:
+        assert "one entry per lap" in str(e), e
+        print(f"  refused: {str(e)[:60]}...")
+    else:
+        raise AssertionError("a flat sample list was accepted")
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

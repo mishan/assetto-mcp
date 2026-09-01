@@ -600,5 +600,169 @@ def test_a_lap_read_on_its_own_is_unchanged():
             == len(analysis.detect_corners(_lap())) == 4)
 
 
+# --- the headline accelerations are filtered too ------------------------
+#
+# detect_corners has dropped impossible acceleration since a 9g burst
+# invented a corner. lap_summary's own peak_lat_g and peak_braking_g did
+# not, and they are compare_runs metrics -- so the same signal was cleaned
+# for one purpose and passed through raw for another.
+#
+# Seen live at Sebring: one ~10g lateral spike reported peak_lat_g as 6.32g
+# averaged over two laps against a real 2.4, and inflated the metric's noise
+# estimate until compare_runs' resolution for it reached 15g. The lap was
+# not merely misreported; the channel stopped being able to detect anything.
+
+
+def _spike(samples, field, value, at=600, n=3):
+    """A short burst of impossible physics, the shape AC actually emits."""
+    for s in samples[at:at + n]:
+        s[field] = value
+    return samples
+
+
+def test_a_lateral_spike_does_not_reach_the_headline_figure():
+    clean = analysis.lap_summary(_meta(1, 113000), _lap())
+    spiked = analysis.lap_summary(_meta(1, 113000),
+                                  _spike(_lap(), "acc_lat", 10.0))
+
+    assert spiked["peak_lat_g"] == clean["peak_lat_g"], (
+        f"the 10g spike reached peak_lat_g: {spiked['peak_lat_g']}")
+    assert spiked["peak_lat_g"] < analysis.LAT_G_SANE_MAX, spiked
+    assert spiked["accel_samples_dropped"] == 3, spiked
+    assert clean["accel_samples_dropped"] is None, clean
+    print(f"  10g spike dropped, peak stays {spiked['peak_lat_g']}g, "
+          f"{spiked['accel_samples_dropped']} samples reported")
+
+
+def test_a_braking_spike_does_not_reach_the_headline_figure():
+    """peak_braking_g took a raw min() and had no ceiling at all."""
+    clean = analysis.lap_summary(_meta(1, 113000), _lap())
+    spiked = analysis.lap_summary(_meta(1, 113000),
+                                  _spike(_lap(), "acc_lon", -12.0))
+    assert spiked["peak_braking_g"] == clean["peak_braking_g"], spiked
+    assert spiked["peak_braking_g"] > -analysis.LON_G_SANE_MAX, spiked
+    print(f"  -12g spike dropped, braking stays "
+          f"{spiked['peak_braking_g']}g")
+
+
+def test_a_spike_is_dropped_not_clamped():
+    """Clamping would report the ceiling as though the car had pulled it.
+
+    The distinction matters: 6.0g in a payload is a claim about the car,
+    and a model reading it has no way to tell it from a measurement.
+    """
+    spiked = analysis.lap_summary(_meta(1, 113000),
+                                  _spike(_lap(), "acc_lat", 10.0))
+    assert spiked["peak_lat_g"] != analysis.LAT_G_SANE_MAX, spiked
+
+
+def test_a_lap_of_nothing_but_glitches_reports_none():
+    """No number is better than a wrong one when every sample is a glitch."""
+    lap = _spike(_lap(), "acc_lat", 99.0, at=0, n=1200)
+    out = analysis.lap_summary(_meta(1, 113000), lap)
+    assert out["peak_lat_g"] is None, out["peak_lat_g"]
+    assert out["accel_samples_dropped"] == 1200, out
+
+
+def test_both_channels_are_held_to_the_same_bar_as_corner_detection():
+    """One signal, one definition of believable.
+
+    The bug was two code paths disagreeing about what counts as physics.
+    If these constants ever diverge, that disagreement is back.
+    """
+    assert analysis.LAT_G_SANE_MAX == analysis.LON_G_SANE_MAX
+    assert _lap(corners=()) is not None  # the helper still builds a flat lap
+    lat = analysis._sane_channel(_spike(_lap(), "acc_lat", 10.0),
+                                 "acc_lat", analysis.LAT_G_SANE_MAX)
+    assert all(abs(v) <= analysis.LAT_G_SANE_MAX for v in lat)
+
+
+# --- the driving line ---------------------------------------------------
+
+
+def _placed(samples, x0=0.0, z0=0.0, rough_at=None):
+    """Give a synthetic lap a world position: a circle of radius 500m.
+
+    Offsetting the whole circle stands in for a wider line -- every slice
+    is then a known distance from the reference lap, which is exactly what
+    separation_m has to recover.
+    """
+    for s in samples:
+        a = s["norm_pos"] * 2 * math.pi
+        s["pos_x"] = x0 + 500.0 * math.cos(a)
+        s["pos_y"] = 0.0
+        s["pos_z"] = z0 + 500.0 * math.sin(a)
+        s["ride_f"] = 0.060
+        if rough_at is not None and abs(s["norm_pos"] - rough_at) < 0.02:
+            # A stretch where the car is being thrown about vertically.
+            s["ride_f"] = 0.060 + 0.020 * math.sin(s["norm_pos"] * 900)
+    return samples
+
+
+def test_a_lap_without_position_says_so_instead_of_guessing():
+    """Pre-v8 laps cannot be backfilled and must not pretend otherwise."""
+    out = analysis.driving_line(_meta(1, 113000), _lap())
+    assert out["has_position"] is False, out
+    assert "cannot be backfilled" in out["error"], out
+    assert "line" not in out, out
+
+
+def test_the_line_follows_the_car_round_the_track():
+    out = analysis.driving_line(_meta(1, 113000), _placed(_lap()), points=40)
+    assert out["has_position"] is True
+    assert out["slices_measured"] == 40, out["slices_measured"]
+    assert out["slices_empty"] == 0, out["slices_empty"]
+    xs = [p["x"] for p in out["line"]]
+    zs = [p["z"] for p in out["line"]]
+    # A circle: both coordinates span roughly the diameter.
+    assert max(xs) - min(xs) > 900, (min(xs), max(xs))
+    assert max(zs) - min(zs) > 900, (min(zs), max(zs))
+    print(f"  {out['slices_measured']} slices, x spans "
+          f"{max(xs) - min(xs):.0f}m")
+
+
+def test_separation_recovers_a_known_offset_between_two_lines():
+    """The number that answers "was that a wider line, and by how much"."""
+    mine = _placed(_lap())
+    wider = _placed(_lap(), x0=3.0)      # three metres across, all the way
+    out = analysis.driving_line(_meta(1, 113000), mine, 40,
+                                _meta(2, 113400), wider)
+    comp = out["compared_with"]
+    assert abs(comp["mean_separation_m"] - 3.0) < 0.2, comp
+    assert abs(comp["max_separation_m"] - 3.0) < 0.5, comp
+    assert all("separation_m" in p for p in out["line"]), out["line"][0]
+    print(f"  3.0m offset recovered as {comp['mean_separation_m']}m mean")
+
+
+def test_the_bump_map_finds_the_rough_stretch():
+    """ride_f_range_mm is the bump proxy, and has to point at the bumps."""
+    out = analysis.driving_line(_meta(1, 113000),
+                                _placed(_lap(), rough_at=0.62), points=50)
+    worst = out["roughest_sections"][0]
+    assert abs(worst["pos"] - 0.62) < 0.04, out["roughest_sections"][:3]
+    smooth = [p for p in out["line"]
+              if p and abs(p["pos"] - 0.2) < 0.05][0]
+    assert worst["ride_f_range_mm"] > 10 * smooth["ride_f_range_mm"], (
+        worst, smooth)
+    print(f"  roughest slice at {worst['pos']} "
+          f"({worst['ride_f_range_mm']}mm of movement)")
+
+
+def test_a_slice_the_car_never_reached_is_empty_not_invented():
+    """A gap in a line must not be drawn through somewhere the car wasn't."""
+    samples = _placed(_lap())
+    kept = [s for s in samples if not (0.4 <= s["norm_pos"] < 0.5)]
+    out = analysis.driving_line(_meta(1, 113000), kept, points=20)
+    missing = [i for i, p in enumerate(out["line"]) if p is None]
+    assert missing == [8, 9], missing
+    assert out["slices_empty"] == 2, out["slices_empty"]
+
+
+def test_the_point_count_is_clamped_rather_than_trusted():
+    for asked, expect in ((0, 100), (5, 10), (99999, 200), (40, 40)):
+        out = analysis.driving_line(_meta(1, 113000), _placed(_lap()), asked)
+        assert out["points"] == expect, (asked, out["points"])
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

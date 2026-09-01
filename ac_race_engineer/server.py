@@ -47,6 +47,19 @@ BRIDGE_PORT = int(os.environ.get("AC_ENGINEER_BRIDGE_PORT", "9666"))
 _bridge = Bridge(DB_PATH, _collector, BRIDGE_PORT)
 _bridge.start()
 
+# Start recording the moment the server exists, rather than waiting to be
+# asked. The host restarts this process whenever it likes -- between turns,
+# on reconnect, for reasons nothing here can see -- and every restart used
+# to silently end recording until a human noticed and said so. Nobody ever
+# noticed in time: sixteen laps went missing across three evenings, twice
+# while I was reading the collector's own status and calling it healthy.
+#
+# The collector waits for Assetto Corsa rather than failing when it is
+# absent, so this costs nothing when the game is closed, and stop_recording
+# still works exactly as before for anyone who wants it off.
+if os.environ.get("AC_ENGINEER_NO_AUTOSTART") != "1":
+    _collector.start()
+
 
 def _j(obj) -> str:
     return json.dumps(obj, indent=2, default=str)
@@ -78,13 +91,49 @@ def _active_session(explicit: int | None = None) -> int | None:
     return _bridge.active_session_id()
 
 
+def _collector_state() -> tuple[str, str]:
+    """Why the collector is not running, when it isn't. Returns (state, why).
+
+    `running: false, status: "stopped", error: null, laps_recorded: 0` is
+    the constructor's defaults AND what a deliberate stop leaves behind, so
+    for months those two were indistinguishable. They call for opposite
+    responses: one means "the process was replaced underneath a driving
+    session and nothing resumed", the other means "you asked me to stop".
+    Sixteen laps were lost to the first while it was being read as the
+    second, twice by me.
+    """
+    c = _collector
+    if c.running:
+        if c.session_id is not None:
+            return "recording", ""
+        return "waiting", "collector is live but AC has not gone live yet"
+    if not c.ever_started:
+        return ("never_started",
+                "this collector has never been asked to run. If laps were "
+                "driven, the server process was restarted underneath them "
+                "and nothing resumed recording -- start_recording now, and "
+                "expect the laps already driven to be gone.")
+    if c.stopped_by_request:
+        return "stopped_by_request", "stop_recording was called"
+    return ("died",
+            "the collector thread started and is no longer alive, without "
+            "being asked to stop" + (f": {c.last_error}"
+                                     if c.last_error else ""))
+
+
 @mcp.tool()
 def recording_status() -> str:
     """Check collector state: whether it's recording, which session,
-    how many laps stored so far, and any error."""
+    how many laps stored so far, and any error.
+
+    Read `state` rather than inferring from `running` and `status`:
+    "never_started" and "stopped_by_request" look identical otherwise and
+    mean opposite things."""
     snap = _bridge.status_snapshot()
+    state, why = _collector_state()
     out = {
         "running": _collector.running,
+        "state": state,
         "status": _collector.status,
         "session_id": _collector.session_id,
         "active_session_id": snap["session_id"],
@@ -94,6 +143,8 @@ def recording_status() -> str:
         "setup_name": (db.session_setup(_conn, snap["session_id"]) or None
                        if snap["session_id"] else None),
     }
+    if why:
+        out["state_note"] = why
     migrations = db.MIGRATION_LOG.pop(str(DB_PATH), None)
     if migrations:
         out["database_upgraded"] = migrations
@@ -518,6 +569,42 @@ def suspension_capture_status() -> str:
             "app's status window shows the tier: worker, online, "
             "or render-rate fallback.")
     return _j(out)
+
+
+@mcp.tool()
+def driving_line(lap_id: int, compare_lap_id: int | None = None,
+                 points: int = 100) -> str:
+    """Where the car actually went around the lap, and how rough it was.
+
+    Track position tells you where the car was ALONG the lap; this tells
+    you where it was ACROSS it, which is the whole of what a driving line
+    is. Each entry is one slice of the circuit with the car's world
+    position, speed, mean front ride height, and how far that ride height
+    moved within the slice -- the last of which is a bump map: a smooth
+    stretch holds the car at a steady height, a broken one does not.
+
+    Pass compare_lap_id for `separation_m`, the distance between where the
+    two cars were at the same point of the circuit. That is what answers
+    "was that a wider line, and by how much".
+
+    Laps recorded before position logging existed report
+    has_position: false. They cannot be backfilled."""
+    lap = db.get_lap(_conn, lap_id)
+    if not lap:
+        return _j({"error": f"no lap with id {lap_id}"})
+    other = other_samples = None
+    if compare_lap_id is not None:
+        other = db.get_lap(_conn, compare_lap_id)
+        if not other:
+            return _j({"error": f"no lap with id {compare_lap_id}"})
+        if (other["track"], other.get("track_config"), other["car"]) != (
+                lap["track"], lap.get("track_config"), lap["car"]):
+            return _j({"error": "those laps are not on the same car and "
+                                "layout, so their coordinates do not share "
+                                "an origin and cannot be subtracted"})
+        other_samples = db.get_samples(_conn, compare_lap_id)
+    return _j(analysis.driving_line(
+        lap, db.get_samples(_conn, lap_id), points, other, other_samples))
 
 
 @mcp.tool()

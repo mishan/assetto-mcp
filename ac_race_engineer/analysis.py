@@ -40,6 +40,10 @@ OUTLIER_FRACTION = 0.25
 # the corner threshold is a fraction of the lap's own peak, so a single
 # spiked sample raises the bar above every genuine corner on the lap.
 LAT_G_SANE_MAX = 6.0
+# Longitudinal is the same artefact on a different axis, and had no ceiling
+# at all: peak_braking_g took the raw minimum of acc_lon, so one spiked
+# sample reported a braking figure no car produced.
+LON_G_SANE_MAX = 6.0
 
 CORNER_LAT_G_FRACTION = 0.35
 CORNER_MIN_LAT_G = 0.35
@@ -142,6 +146,32 @@ def _smooth(values: list[float], window: int = 9) -> list[float]:
 
 def _fmt_time(ms: int) -> str:
     return f"{ms // 60000}:{(ms % 60000) / 1000:06.3f}"
+
+
+def _sane_channel(samples: list[dict], field: str,
+                  limit: float) -> list[float]:
+    """One acceleration channel with the glitches removed.
+
+    detect_corners has filtered these spikes since the day a six-sample 9g
+    burst invented a corner. The two headline figures in lap_summary did
+    not: peak_lat_g took the raw maximum and peak_braking_g the raw minimum,
+    so the same signal was sanitised for one purpose and passed through
+    untouched for another.
+
+    That is worse than a wrong number on a summary, because both are
+    compare_runs metrics. Measured on one Sebring run: a single ~10g lateral
+    spike reported peak_lat_g as 6.32g averaged over two laps against a real
+    2.4, and inflated the metric's own noise estimate until compare_runs
+    gave it a resolution of 15g -- a channel that could no longer detect any
+    change of any size. A spike does not just misreport the lap it is on, it
+    silently disables the comparison it takes part in.
+    """
+    out = []
+    for s in samples:
+        v = s.get(field)
+        if isinstance(v, (int, float)) and math.isfinite(v) and abs(v) <= limit:
+            out.append(v)
+    return out
 
 
 def _lat_g_trace(samples: list[dict]) -> tuple[list[float], int]:
@@ -474,6 +504,10 @@ def lap_summary(lap: dict, samples: list[dict],
             "core_temp_avg": round(mean(s[f"core_{w}"] for s in samples), 1),
         }
 
+    sane_lat = _sane_channel(samples, "acc_lat", LAT_G_SANE_MAX)
+    sane_lon = _sane_channel(samples, "acc_lon", LON_G_SANE_MAX)
+    accel_dropped = (total - len(sane_lat)) + (total - len(sane_lon))
+
     corners = detect_corners(samples, reference_peak_g)
     slip_balances = [c["slip_balance"] for c in corners
                      if c["slip_balance"] is not None]
@@ -507,8 +541,16 @@ def lap_summary(lap: dict, samples: list[dict],
         "time_coasting_pct": round(
             100 * sum(1 for s in samples
                       if s["gas"] < 0.05 and s["brake"] < 0.05) / total, 1),
-        "peak_lat_g": round(max(abs(s["acc_lat"]) for s in samples), 2),
-        "peak_braking_g": round(min(s["acc_lon"] for s in samples), 2),
+        # None rather than a number when every sample of a channel was a
+        # glitch. Clamping would report the ceiling as though the car had
+        # actually pulled it, which is the failure this guard exists to stop.
+        "peak_lat_g": (round(max(abs(v) for v in sane_lat), 2)
+                       if sane_lat else None),
+        "peak_braking_g": round(min(sane_lon), 2) if sane_lon else None,
+        # Said out loud rather than filtered silently: a lap that needed
+        # this is one to look at twice, and it is the only warning that a
+        # comparison including it may be reading a kerb strike as physics.
+        "accel_samples_dropped": accel_dropped or None,
         "avg_ride_height_f": round(mean(s["ride_f"] for s in samples), 4),
         "avg_ride_height_r": round(mean(s["ride_r"] for s in samples), 4),
         "tyres": tyres,
@@ -1723,6 +1765,139 @@ def _compare_corners(baseline, candidate, tolerance):
                  + [{"side": "candidate", "apex_pos": round(p, 4)}
                     for k, p in enumerate(c_pos) if k not in taken_c])
     return corners, unmatched, len(corners)
+
+
+LINE_MAX_POINTS = 200
+LINE_DEFAULT_POINTS = 100
+
+
+def _binned_line(samples: list[dict], points: int) -> list[dict | None]:
+    """Average each channel within equal slices of track position.
+
+    Binned by norm_pos rather than by time, so two laps driven at different
+    speeds line up slice for slice and can be subtracted. A slice the car
+    never sampled is None rather than interpolated -- a gap in a driving
+    line is worth seeing, and inventing a point there would draw the car
+    through somewhere it never went.
+    """
+    bins: list[list[dict]] = [[] for _ in range(points)]
+    for s in samples:
+        pos = s.get("norm_pos")
+        if pos is None:
+            continue
+        i = min(points - 1, max(0, int(pos * points)))
+        bins[i].append(s)
+
+    out: list[dict | None] = []
+    for i, group in enumerate(bins):
+        placed = [s for s in group if s.get("pos_x") is not None]
+        if not placed:
+            out.append(None)
+            continue
+        rides = [s["ride_f"] for s in group if s.get("ride_f") is not None]
+        entry = {
+            "pos": round((i + 0.5) / points, 4),
+            "x": round(mean(s["pos_x"] for s in placed), 2),
+            "z": round(mean(s["pos_z"] for s in placed), 2),
+            "speed_kmh": round(mean(s["speed_kmh"] for s in group), 1),
+        }
+        if rides:
+            # Ride height in mm, and how much it moved within this slice.
+            # The spread is the bump proxy: a smooth stretch holds the car
+            # at a near-constant height, a broken one does not.
+            entry["ride_f_mm"] = round(1000 * mean(rides), 1)
+            entry["ride_f_range_mm"] = round(1000 * (max(rides)
+                                                     - min(rides)), 1)
+        out.append(entry)
+    return out
+
+
+def driving_line(lap: dict, samples: list[dict], points: int = 0,
+                 other_lap: dict | None = None,
+                 other_samples: list[dict] | None = None) -> dict:
+    """Where the car actually went, slice by slice around the lap.
+
+    norm_pos has always said where the car was ALONG the lap. Position says
+    where it was across it, which is the whole of what a line is -- so until
+    the samples carried it, "I took a wider entry" was a claim nothing here
+    could check.
+
+    Pass a second lap to get `separation_m`: the straight-line distance
+    between where the two cars were at the same point of the circuit. That
+    is the number that answers whether two laps were driven on different
+    lines, and how much.
+
+    Laps recorded before the position columns existed report
+    has_position: false and nothing else. There is no backfill -- the data
+    was never captured.
+    """
+    points = points or LINE_DEFAULT_POINTS
+    points = max(10, min(LINE_MAX_POINTS, int(points)))
+
+    if not samples:
+        return {"error": "no samples for this lap"}
+    if all(s.get("pos_x") is None for s in samples):
+        return {
+            "lap_id": lap["id"],
+            "has_position": False,
+            "error": "this lap has no position data. Position recording "
+                     "was added in schema v8; laps recorded before it "
+                     "cannot be backfilled because the coordinates were "
+                     "never captured.",
+        }
+
+    line = _binned_line(samples, points)
+    out = {
+        "lap_id": lap["id"],
+        "lap_time": _fmt_time(lap["lap_time_ms"]),
+        "has_position": True,
+        "points": points,
+        "note": "x/z are world metres from the track's own origin; the "
+                "numbers only mean anything relative to each other. "
+                "ride_f_range_mm is how much the front ride height moved "
+                "within the slice -- the higher it is, the rougher the "
+                "surface there.",
+    }
+
+    if other_lap is not None and other_samples:
+        if all(s.get("pos_x") is None for s in other_samples):
+            out["comparison_error"] = (
+                f"lap {other_lap['id']} has no position data")
+        else:
+            theirs = _binned_line(other_samples, points)
+            gaps = []
+            for mine, yours in zip(line, theirs):
+                if mine is None or yours is None:
+                    continue
+                d = math.hypot(mine["x"] - yours["x"], mine["z"] - yours["z"])
+                mine["separation_m"] = round(d, 2)
+                gaps.append((d, mine["pos"]))
+            if gaps:
+                gaps.sort(reverse=True)
+                out["compared_with"] = {
+                    "lap_id": other_lap["id"],
+                    "lap_time": _fmt_time(other_lap["lap_time_ms"]),
+                    "mean_separation_m": round(
+                        mean(d for d, _ in gaps), 2),
+                    "max_separation_m": round(gaps[0][0], 2),
+                    "most_different_at": [
+                        {"pos": p, "separation_m": round(d, 2)}
+                        for d, p in gaps[:5]],
+                }
+
+    measured = [p for p in line if p is not None]
+    rough = [p for p in measured if "ride_f_range_mm" in p]
+    if rough:
+        rough.sort(key=lambda p: -p["ride_f_range_mm"])
+        out["roughest_sections"] = [
+            {"pos": p["pos"], "ride_f_range_mm": p["ride_f_range_mm"],
+             "speed_kmh": p["speed_kmh"]}
+            for p in rough[:6]]
+
+    out["slices_measured"] = len(measured)
+    out["slices_empty"] = points - len(measured)
+    out["line"] = line
+    return out
 
 
 def compare_laps(lap_a: dict, samples_a: list[dict],

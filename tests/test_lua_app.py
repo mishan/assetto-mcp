@@ -262,6 +262,39 @@ def test_an_offline_bridge_is_reported_as_offline_not_as_data_loss():
     assert api.recordingHealth()[0] == "offline", api.recordingHealth()
 
 
+def test_the_lap_count_helper_survives_a_car_that_is_not_there_yet():
+    """ac.getCar(0) can return nil early in load, and recordingHealth already
+    reads `car and car.lapCount` for that reason. The test helper indexed it
+    unguarded, so a harness that loaded the app before the stub car existed
+    would fail inside setLapCount -- on the harness, not on the behaviour
+    under test, and with a Lua error rather than an assertion.
+
+    It reports whether it took, so a test cannot set nothing and then assert
+    on it.
+    """
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    assert api.setLapCount(7) is True
+    with_car = api.recordingHealth()[0]
+
+    # Loaded before the car exists. `car` is a file-local, so this is the
+    # only way to reach the nil path -- assigning a global of the same name
+    # does not touch the app's upvalue.
+    empty = lua_harness.Recorder()
+    empty.car_available = False
+    lua2, api2, _ = lua_harness.load(empty)
+    api2.setConnected(True)
+    api2.setRunning(True)
+
+    assert api2.setLapCount(9) is False, "helper claimed a nil car took it"
+    # And the app itself answers rather than raising, which is what the
+    # `car and car.lapCount` guard in recordingHealth is already for.
+    assert api2.recordingHealth()[0] is not None
+    print(f"  car present -> {with_car!r}; loaded without a car -> helper "
+          f"returns False and health still answers")
+
+
 if __name__ == "__main__":
     if SKIP:
         # Not 0: exiting 0 made `run_tests.py --isolate` report this module

@@ -1001,7 +1001,16 @@ script.__test = {
   recordingHealth = function() return recordingHealth() end,
   setLaps = function(n) status.laps = n end,
   setConnected = function(v) status.connected = v end,
-  setLapCount = function(n) car.lapCount = n end,
+  -- nil-safe for the same reason recordingHealth reads `car and
+  -- car.lapCount`: ac.getCar(0) can return nil early in load, and a test
+  -- helper that raises there fails on the harness rather than on the thing
+  -- under test. Returns whether it took, so a test cannot silently set
+  -- nothing and then assert on it.
+  setLapCount = function(n)
+    if car == nil then return false end
+    car.lapCount = n
+    return true
+  end,
 }
 
 function windowMain(dt)

@@ -841,30 +841,68 @@ end
 --- healthy collector.
 ---
 --- So the count that matters is laps driven SINCE recording started, which
---- means remembering where the lap counter stood at that moment. Cleared
---- when recording stops, so the next run measures itself afresh.
+--- means remembering where the lap counter stood at that moment.
+---
+--- The baseline is only as good as its knowing when "recording started"
+--- changed, and there are three ways it can, only one of which is the
+--- server saying so:
+---
+---   * status.running goes false. The obvious one.
+---   * the bridge goes unreachable. This is a server RESTART, which is the
+---     event the whole recorder-heartbeat mechanism exists for and the one
+---     that happens most. The app kept its baseline across the outage and
+---     met a fresh recording with status.laps back at 0, so the very
+---     scenario that motivated this warning -- 26 laps in, server replaced,
+---     collector perfectly healthy -- produced a red NOT STORING LAPS again
+---     with one extra step. That is worse than the original bug: the alarm
+---     now fires precisely when the driver has been told to expect a
+---     restart.
+---   * the session id changes, or the stored count falls. A new session, or
+---     another instance taking the recorder over. Either way the window
+---     being counted is not the one the baseline was taken in.
+---
+--- All three re-take the baseline rather than warn. Taking it late can only
+--- postpone a warning, never invent one, which is the right way round for
+--- something that shouts at a driver mid-corner.
 local LAPS_BEFORE_STORAGE_EXPECTED = 2
 local recordingBaseline = nil
+local baselineSession = nil
+local baselineLaps = 0
 
 local function recordingHealth()
-  if not status.connected then return 'offline', '' end
+  if not status.connected then
+    -- Not just "no answer": we cannot know whether the recorder behind it
+    -- survived, so nothing measured before the silence can be trusted after
+    -- it. Cheap to re-take, and the alternative is crying wolf at a
+    -- collector that is working.
+    recordingBaseline = nil
+    baselineSession = nil
+    baselineLaps = 0
+    return 'offline', ''
+  end
   local done = math.floor(num(car and car.lapCount, 0))
+  local stored = status.laps or 0
 
   if status.running then
-    -- First sight of a live recorder: this is lap zero as far as the
-    -- warning is concerned. Setting it late (the app reloaded mid-run) can
-    -- only postpone a warning, never invent one, which is the right way
-    -- round for something that shouts at the driver.
+    -- A different session, or a stored count that went backwards, is a
+    -- different recording however continuous the connection looked.
+    if status.sessionId ~= baselineSession or stored < baselineLaps then
+      recordingBaseline = nil
+    end
     if recordingBaseline == nil then recordingBaseline = done end
+    baselineSession = status.sessionId
+    baselineLaps = stored
   else
     recordingBaseline = nil
+    baselineSession = nil
+    baselineLaps = 0
   end
 
   local driven = recordingBaseline and (done - recordingBaseline) or 0
-  if driven >= LAPS_BEFORE_STORAGE_EXPECTED and (status.laps or 0) == 0 then
+  if driven >= LAPS_BEFORE_STORAGE_EXPECTED and stored == 0 then
     return 'not-storing',
       string.format('%d laps driven since recording started, 0 stored - '
-                    .. 'tell Claude to start recording', driven)
+                    .. 'ask Claude to check recording_status', driven)
   end
   return status.running and 'recording' or 'idle', ''
 end
@@ -1029,6 +1067,7 @@ script.__test = {
   baseline = function() return recordingBaseline end,
   setLaps = function(n) status.laps = n end,
   setConnected = function(v) status.connected = v end,
+  setSession = function(n) status.sessionId = n end,
   -- nil-safe for the same reason recordingHealth reads `car and
   -- car.lapCount`: ac.getCar(0) can return nil early in load, and a test
   -- helper that raises there fails on the harness rather than on the thing

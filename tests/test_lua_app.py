@@ -314,6 +314,95 @@ def test_an_offline_bridge_is_reported_as_offline_not_as_data_loss():
     assert api.recordingHealth()[0] == "offline", api.recordingHealth()
 
 
+def test_a_server_restart_does_not_produce_a_false_alarm():
+    """The same false alarm as above, reached through the common route.
+
+    Clearing the baseline when status.running goes false does not cover a
+    server RESTART, because that is not what a restart looks like from the
+    car: the bridge simply stops answering, so recordingHealth returns
+    'offline' before it reaches the branch that clears anything. The stale
+    baseline then met a fresh recording with status.laps back at zero.
+
+    A restart is the event the recorder heartbeat exists for and the thing
+    that happens most, so the alarm was firing precisely when the driver
+    had been told to expect one.
+    """
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setSession(4)
+    api.setLapCount(20)
+    api.setLaps(0)
+    api.recordingHealth()
+    api.setLapCount(26)
+    api.setLaps(6)
+    assert api.recordingHealth()[0] == "recording"
+    assert api.baseline() == 20, api.baseline()
+
+    # The host replaces the server process. The bridge is unreachable for a
+    # poll or two.
+    api.setConnected(False)
+    assert api.recordingHealth()[0] == "offline"
+    assert api.baseline() is None, "the baseline outlived the connection"
+
+    # It comes back, autostarts a collector, opens a new session. The driver
+    # has not stopped driving and lap 27 will be stored normally.
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setSession(5)
+    api.setLaps(0)
+    api.setLapCount(27)
+    state, detail = api.recordingHealth()
+    assert state == "recording", (state, detail)
+    assert api.baseline() == 27, api.baseline()
+    print("  server restarted mid-session -> 'recording', baseline re-taken")
+
+
+def test_a_new_session_re_takes_the_baseline():
+    """Another instance taking the recorder over is a new recording.
+
+    The connection never drops and status.running never goes false, so the
+    session id is the only thing that says the window being counted has
+    moved.
+    """
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setSession(1)
+    api.setLapCount(12)
+    api.setLaps(9)
+    api.recordingHealth()
+    assert api.baseline() == 12
+
+    api.setSession(2)          # takeover: new session, nothing stored in it
+    api.setLaps(0)
+    api.setLapCount(14)
+    state, _ = api.recordingHealth()
+    assert state == "recording", state
+    assert api.baseline() == 14, api.baseline()
+    print("  session changed under a live connection -> baseline re-taken")
+
+
+def test_a_stored_count_going_backwards_re_takes_the_baseline():
+    """The same event with the session id unchanged -- a database that was
+    moved, or a count that reset for any reason we did not predict. A
+    number that can only go up going down means the window changed."""
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setSession(1)
+    api.setLapCount(30)
+    api.setLaps(11)
+    api.recordingHealth()
+    assert api.baseline() == 30
+
+    api.setLaps(0)
+    api.setLapCount(33)
+    assert api.recordingHealth()[0] == "recording"
+    assert api.baseline() == 33, api.baseline()
+    print("  stored count fell -> baseline re-taken instead of an alarm")
+
+
 def test_the_lap_count_helper_survives_a_car_that_is_not_there_yet():
     """ac.getCar(0) can return nil early in load, and recordingHealth already
     reads `car and car.lapCount` for that reason. The test helper indexed it

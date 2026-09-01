@@ -505,6 +505,18 @@ def test_a_collector_that_loses_its_claim_stops_writing():
                      "the collector to notice it lost the claim")
             assert "standby" in col.status, col.status
             assert "took over" in (col.last_error or ""), col.last_error
+            # Cleared in the same breath as holds_recorder, so a reader
+            # cannot see "not holding the recorder" and "session 4" at once
+            # -- _collector_state checks session_id first and would answer
+            # "recording" for a collector that had stopped writing.
+            #
+            # This assertion does not currently discriminate: _run's finally
+            # clears it on the next statement, with no I/O in between, so it
+            # passes with or without the explicit clear. It is here as a
+            # tripwire for that gap widening, not as a reproduction.
+            assert col.session_id is None, (
+                f"session {col.session_id} outlived the stand-down")
+            assert col.last_session_id is not None
             print(f"  {col.status!r} / {col.last_error!r}")
         finally:
             col.stop()

@@ -598,6 +598,18 @@ def claim_recorder(conn, owner: str,
     The claim is taken by a single conditional UPDATE, so two processes
     racing for a free slot cannot both win: SQLite serialises the writes and
     the loser's WHERE no longer matches.
+
+    `<=` on the staleness bound so an age of exactly stale_after is taken
+    over rather than left for the next poll. In practice these are float
+    timestamps and landing on the boundary has essentially no chance, so
+    this is about the comparison matching the sentence above it rather than
+    about a case anyone will hit.
+
+    The real bound on takeover latency is not here anyway: it is
+    RECORDER_STALE_SECONDS plus however long the standby waits between
+    attempts (Collector.STANDBY_RETRY_SECONDS), because nothing notices a
+    dead holder until someone next asks. That is the number to change if
+    takeover ever needs to be quicker.
     """
     now = time.time()
     _recorder_row(conn)
@@ -606,7 +618,7 @@ def claim_recorder(conn, owner: str,
             "UPDATE recorder SET owner = ?, claimed_at = ?, heartbeat_at = ?"
             " WHERE id = 1 AND (owner = '' OR owner = ?"
             "                   OR heartbeat_at IS NULL"
-            "                   OR heartbeat_at < ?)",
+            "                   OR heartbeat_at <= ?)",
             (owner, now, now, owner, now - stale_after))
     r = _recorder_row(conn)
     beat = r["heartbeat_at"]

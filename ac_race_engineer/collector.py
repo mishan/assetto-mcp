@@ -434,6 +434,17 @@ class Collector:
                                    else stand_down)
                 self.status = f"standby ({stand_down})"
                 self.holds_recorder = False
+                # Clear the session here, not on the way out of _run. The
+                # outer loop's finally does it eventually, but "eventually"
+                # is a window in which holds_recorder is already False and
+                # session_id is still set -- and _collector_state reads
+                # session_id first, so recording_status would answer
+                # "recording" for a collector that had just stopped writing.
+                # Reporting the stop late is the same class of lie the state
+                # machine exists to end.
+                if self.session_id is not None:
+                    self.last_session_id = self.session_id
+                    self.session_id = None
                 return
 
             g = sim.graphics

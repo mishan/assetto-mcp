@@ -308,6 +308,12 @@ def corner_detection_note(reference: float | None, laps: int,
     cornered". Treating that as absent would report the per-lap basis for a
     payload whose corners were found against the shared one -- a note about
     provenance that is wrong about provenance is worse than no note.
+
+    `laps` is how many contributed to the reference; 0 means the caller did
+    not say. The count is reported only when it is known, and the caution
+    is worded for the case it actually describes -- a warning about a
+    two-lap median attached to a payload built from one lap, or from an
+    unknown number, is metadata that misleads about metadata.
     """
     shared = reference is not None
     bar = reference if shared else (own_peak or 0.0)
@@ -318,16 +324,28 @@ def corner_detection_note(reference: float | None, laps: int,
         "threshold_g": round(max(bar * CORNER_LAT_G_FRACTION,
                                  CORNER_MIN_LAT_G), 3),
     }
-    if shared:
+    if not shared:
+        return out
+    if laps > 0:
         out["laps_in_reference"] = laps
-        if spread_g is not None:
-            out["peak_spread_g"] = spread_g
-        if laps < 3:
-            out["caution"] = (
-                "a median over two laps is their mean, so one scrappy lap "
-                "moves this bar by half its own deviation. Corner membership "
-                "here is less settled than in a comparison with more laps a "
-                "side.")
+    if spread_g is not None:
+        out["peak_spread_g"] = spread_g
+    if laps == 1:
+        # Not a hypothetical: lat_g_reference only counts laps carrying
+        # enough lateral load to have corners at all, so a run where the
+        # rest were in-laps contributes exactly one peak. There is no
+        # median to be careful about -- the bar simply IS that lap's peak,
+        # and every other lap is judged against it.
+        out["caution"] = (
+            "only one lap carried enough cornering load to contribute, so "
+            "this bar is that lap's own peak rather than a median over the "
+            "run. Every other lap is being judged against it.")
+    elif laps == 2:
+        out["caution"] = (
+            "a median over two laps is their mean, so one scrappy lap "
+            "moves this bar by half its own deviation. Corner membership "
+            "here is less settled than in a comparison with more laps a "
+            "side.")
     return out
 
 
@@ -617,9 +635,15 @@ def lap_summary(lap: dict, samples: list[dict],
         or not _is_sane(s.get("acc_lon"), LON_G_SANE_MAX))
 
     corners = detect_corners(samples, reference_peak_g)
+    # own_peak only when there is no shared reference, because that is the
+    # only case corner_detection_note reports it in. Computing it always
+    # meant smoothing and median-filtering the lateral-g trace a second
+    # time -- detect_corners has already done it -- for every lap of every
+    # comparison, to fill a field that would then be thrown away.
     detection = corner_detection_note(
         reference_peak_g, reference_laps,
-        own_peak=_lat_g_peak(_lat_g_trace(samples)[0]),
+        own_peak=(None if reference_peak_g is not None
+                  else _lat_g_peak(_lat_g_trace(samples)[0])),
         spread_g=reference_spread_g)
     slip_balances = [c["slip_balance"] for c in corners
                      if c["slip_balance"] is not None]
@@ -1928,13 +1952,16 @@ def _binned_line(samples: list[dict], points: int) -> list[dict | None]:
 
     out: list[dict | None] = []
     for i, group in enumerate(bins):
-        # All three axes, not just pos_x. They are written together by the
-        # collector, so a row with one and not the others cannot come from a
-        # live session -- but store_lap accepts short tuples from earlier
-        # layouts, and a tuple truncated one field past tyres_out produces
-        # exactly this. Checking pos_x alone let such a row through to
-        # mean(s["pos_z"]), which raised a TypeError from inside statistics
-        # naming nothing the caller could act on.
+        # Both axes the line is drawn from -- x and z. pos_y is the height
+        # and nothing here reads it, so it is deliberately not required: a
+        # row missing only the vertical still describes a line on the map.
+        #
+        # Checking pos_x alone was the bug. The three are written together
+        # by the collector, so a row with one and not the others cannot come
+        # from a live session -- but store_lap accepts short tuples from
+        # earlier layouts, and one truncated a field past tyres_out produces
+        # exactly this. It reached mean(s["pos_z"]) and raised a TypeError
+        # from inside statistics, naming nothing the caller could act on.
         placed = [s for s in group
                   if s.get("pos_x") is not None and s.get("pos_z") is not None]
         if not placed:

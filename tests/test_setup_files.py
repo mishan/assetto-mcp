@@ -8,7 +8,6 @@ nothing changed". Anything this module cannot honour has to say so loudly.
 
 import sys
 import tempfile
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -272,16 +271,28 @@ def test_snapping_agrees_with_enumerating_across_the_whole_range():
 
 def test_a_huge_ladder_is_not_materialised_to_snap_one_value():
     """A 1-unit step over 100,000 units is a real thing for a game-reported
-    range, and building it to pick one value is pure waste."""
-    lo, hi, step = 100000, 200000, 1
-    began = time.perf_counter()
-    got = setups.snap(126607.4, lo, hi, step)
-    took = time.perf_counter() - began
-    assert got == 126607, got
-    assert took < 0.01, f"snap took {took * 1000:.0f}ms"
-    # And the enumerating helper declines rather than allocating it.
-    assert setups.legal_values(lo, hi, step) == []
-    print(f"  snapped in {took * 1e6:.0f}us without building 100,001 values")
+    range, and building it to pick one value is pure waste.
+
+    Asserted by asking for a range that could not be materialised at all,
+    rather than by timing one that merely would be slow. A wall-clock bound
+    is a statement about the runner: a loaded CI box fails it while the
+    algorithm is perfect, and a fast one passes it while the algorithm is
+    quadratic. A range with 10^18 rungs cannot be enumerated on any machine,
+    so returning the right answer promptly is the proof, and it is the same
+    proof everywhere.
+    """
+    # The realistic case first: 100,001 rungs, which enumerating did build.
+    assert setups.snap(126607.4, 100000, 200000, 1) == 126607
+    assert setups.legal_values(100000, 200000, 1) == [], (
+        "the enumerating helper must decline, not allocate")
+
+    # And the one that settles it. Materialising this is not slow, it is
+    # impossible; anything that returns has done arithmetic.
+    lo, hi, step = 0.0, 1e9, 1e-9
+    assert abs(setups.snap(123456.789, lo, hi, step) - 123456.789) < 1e-6
+    assert abs(setups.snap(-5, lo, hi, step) - lo) < 1e-9
+    assert abs(setups.snap(2e9, lo, hi, step) - hi) < 1e-9
+    print("  snapped inside a ladder of 10^18 rungs without building it")
 
 
 def test_step_of_zero_does_not_become_a_divide_trap():

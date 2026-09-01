@@ -312,6 +312,89 @@ def test_backups_do_not_pile_up_in_the_drivers_setup_folder():
         print("  8 overwrites -> 5 backups kept, none visible as a setup")
 
 
+def test_a_track_prefix_writes_into_the_folder_ac_actually_reads():
+    """A setup written to `mugello` when the folder is `mugello_osrw`.
+
+    Two failures at once, and the second is the bad one. The new setup
+    landed in a folder AC never opens -- and creating that folder stopped
+    setup_dir's prefix fallback firing, so `list_setups(car, "mugello")`
+    went from listing the driver's own setups to listing only ours. Their
+    files were still on disk and invisible to every tool here.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        rng = _ranges(d, "carx", KUNOS_STYLE)
+        docs = d / "docs"
+        real = docs / "setups" / "carx" / "mugello_osrw"
+        real.mkdir(parents=True)
+        (real / "my_baseline.ini").write_text(
+            "[CAR]\nMODEL=carx\n[ARB_FRONT]\nVALUE=5\n")
+
+        report = setups.write_setup(
+            docs, rng, car="carx", track="mugello", name="claude_v1",
+            values={"PRESSURE_LF": 26}, base_setup="my_baseline")
+
+        assert Path(report["path"]).parent == real, report["path"]
+        assert not (docs / "setups" / "carx" / "mugello").exists(), \
+            "a folder AC never reads was created beside the real one"
+        assert sorted(setups.list_setups(docs, "carx", "mugello")) == \
+            ["claude_v1", "my_baseline"], "the driver's setups went missing"
+        # And the base setup resolved through the same fallback.
+        written = setups.read_setup(docs, "carx", "mugello", "claude_v1")
+        assert written["ARB_FRONT"] == 5, written
+        print("  wrote into", real.name, "and kept the existing setups")
+
+
+def test_the_first_setup_at_a_new_track_creates_the_folder():
+    # The prefix resolution must not stop an ordinary first write.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        rng = _ranges(d, "carx", KUNOS_STYLE)
+        docs = d / "docs"
+        docs.mkdir()
+        report = setups.write_setup(docs, rng, car="carx", track="spa",
+                                    name="v1", values={"PRESSURE_LF": 26})
+        assert Path(report["path"]).parent.name == "spa"
+        assert setups.list_setups(docs, "carx", "spa") == ["v1"]
+
+
+def test_backups_are_pruned_oldest_first_even_past_nine_in_a_second():
+    """The collision suffix has to be compared as a number.
+
+    Sorting the whole filename as text puts "-9" after "-10", so once ten
+    backups landed in the same second the pruner deleted the newest and
+    kept the oldest -- the exact opposite of its job. And the timestamp
+    contains a hyphen of its own, so the suffix is the third segment, not
+    the second.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        stamp = "20260101-120000"
+        names = [f"s.ini.bak-{stamp}"] + \
+                [f"s.ini.bak-{stamp}-{i}" for i in range(1, 13)]
+        for n in names:
+            (d / n).write_text(n)
+
+        kept = setups._prune_backups(d, "s")
+        assert kept == setups._KEEP_BACKUPS, kept
+        survived = sorted(setups._backup_age(p)
+                          for p in d.glob("s.ini.bak-*"))
+        assert survived == [(stamp, i) for i in (8, 9, 10, 11, 12)], survived
+        print("  13 backups in one second -> newest 5 kept")
+
+
+def test_the_unsuffixed_backup_is_the_oldest_of_its_second():
+    # "...bak-20260101-120000" is written before "...-1", so it must sort
+    # before it. Splitting on the first hyphen read it as collision 120000
+    # and made it the newest.
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        for n in ("s.ini.bak-20260101-120000", "s.ini.bak-20260101-120000-1"):
+            (d / n).write_text(n)
+        ages = sorted(setups._backup_age(p) for p in d.glob("s.ini.bak-*"))
+        assert ages == [("20260101-120000", 0), ("20260101-120000", 1)], ages
+
+
 def test_a_suggested_name_skips_over_names_already_taken():
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)

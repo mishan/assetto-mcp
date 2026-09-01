@@ -299,6 +299,40 @@ def test_a_lap_older_than_any_window_is_not_called_missing():
     assert _labels(srv, sid)[oldest] == "baseline"
 
 
+def test_neither_tool_reads_the_whole_session_to_answer():
+    """Both used to fetch every lap row through the sessions JOIN.
+
+    set_session_setup wanted a count and some ids; label_laps wanted the
+    setup names of the handful of ids it was given. On a long session that
+    is hundreds of wide rows read and discarded, on every call.
+    """
+    srv = _server()
+    sid = make_session(srv._conn)
+    ids = [db.store_lap(srv._conn, sid, n, 113000 + n, True, [])
+           for n in range(1, 41)]
+
+    # set_trace_callback rather than monkeypatching execute, which sqlite3
+    # will not allow on a Connection.
+    seen = []
+    srv._conn.set_trace_callback(seen.append)
+    try:
+        out = _call(srv.set_session_setup, setup_name="claude_v1",
+                    session_id=sid)
+        assert len(out["unlabelled_laps"]) == 40, out
+        out = _call(srv.label_laps, lap_ids=f"{ids[0]},{ids[1]}",
+                    setup_name="baseline", session_id=sid)
+        assert out["laps_labelled"] == 2, out
+    finally:
+        srv._conn.set_trace_callback(None)
+
+    reads = [s for s in seen
+             if s.lstrip().upper().startswith("SELECT") and "laps" in s]
+    assert reads, "no lap query was observed at all"
+    wide = [s for s in reads if "laps.*" in s or "sessions.car" in s]
+    assert not wide, f"still reading whole lap rows: {wide}"
+    print(f"  {len(reads)} narrow lap queries, no full-row scan")
+
+
 def test_label_laps_rejects_ids_that_are_not_numbers():
     srv = _server()
     sid = make_session(srv._conn)

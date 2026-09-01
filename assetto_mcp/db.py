@@ -1484,6 +1484,45 @@ _TIMED_LAP_SQL = ("laps.complete AND NOT laps.out_lap AND NOT laps.pitted"
                   " AND laps.lap_time_ms > 0")
 
 
+def count_laps(conn, session_id: int) -> int:
+    return conn.execute("SELECT COUNT(*) c FROM laps WHERE session_id = ?",
+                        (session_id,)).fetchone()["c"]
+
+
+def unlabelled_lap_ids(conn, session_id: int) -> list[int]:
+    """Ids of laps in this session with no setup recorded, oldest first.
+
+    Two columns instead of whole lap rows because the callers only ever
+    wanted ids and a count. Fetching every row of a long session through
+    the sessions JOIN to compute `len()` is a lot of work and a lot of JSON
+    for two numbers.
+    """
+    return [r["id"] for r in conn.execute(
+        "SELECT id FROM laps WHERE session_id = ?"
+        " AND (setup_name IS NULL OR setup_name = '') ORDER BY id",
+        (session_id,))]
+
+
+def lap_setup_names(conn, session_id: int, lap_ids: list[int]) -> dict:
+    """{lap_id: setup_name} for the given laps that are in this session.
+
+    Ids absent from the result are not in this session -- which the caller
+    has to be able to say, because labelling nothing while reporting
+    success is indistinguishable from having worked.
+    """
+    if not lap_ids:
+        return {}
+    out = {}
+    for i in range(0, len(lap_ids), 500):
+        chunk = lap_ids[i:i + 500]
+        rows = conn.execute(
+            "SELECT id, setup_name FROM laps WHERE session_id = ?"
+            " AND id IN (%s)" % ",".join("?" * len(chunk)),
+            [session_id, *chunk])
+        out.update({r["id"]: (r["setup_name"] or "") for r in rows})
+    return out
+
+
 def list_sessions(conn, limit: int = 20) -> list[dict]:
     rows = conn.execute(
         "SELECT sessions.*, COUNT(laps.id) AS lap_count,"

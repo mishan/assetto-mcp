@@ -223,7 +223,16 @@ def _resolve_track_dir(ac_docs_dir: Path, car: str,
 
 
 def read_setup(ac_docs_dir: Path, car: str, track: str, name: str) -> dict:
-    path = setups_root(ac_docs_dir) / car / track / f"{name}.ini"
+    """One setup file, resolved the same way list_setups resolves it.
+
+    Through setup_dir rather than the literal path, so a track prefix --
+    "mugello" for "mugello_osrw" -- reads the folder that list_setups and
+    write_setup use. Reading the literal path meant a name that listing had
+    just offered came back as "no setup at ...", and a base_setup that
+    plainly existed could not be found.
+    """
+    d = setup_dir(ac_docs_dir, car, track)
+    path = (d or setups_root(ac_docs_dir) / car / track) / f"{name}.ini"
     if not path.is_file():
         raise FileNotFoundError(f"no setup at {path}")
     cp = _parser()
@@ -548,15 +557,42 @@ def _free_name(d: Path, name: str) -> str | None:
 _KEEP_BACKUPS = 5
 
 
+def _backup_age(path: Path) -> tuple:
+    """Sort key for a backup filename: (timestamp, collision number).
+
+    The collision number has to be compared as a *number*. Sorting the
+    whole name as text puts "-9" after "-10", so once ten backups landed in
+    the same second the pruner deleted the newest ones and kept the oldest
+    -- the precise opposite of the job. Ten writes inside one second is
+    unlikely by hand and trivial in a loop.
+    """
+    # The timestamp contains a hyphen of its own (yyyymmdd-HHMMSS), so the
+    # collision number is the THIRD segment when there is one. Partitioning
+    # on the first hyphen instead read "20260101-120000" as stamp
+    # "20260101" collision 120000, which sorted the very first backup of a
+    # second as the newest of them.
+    parts = path.name.split(".ini.bak-", 1)[-1].split("-")
+    try:
+        if len(parts) == 2:
+            return (f"{parts[0]}-{parts[1]}", 0)
+        if len(parts) == 3:
+            return (f"{parts[0]}-{parts[1]}", int(parts[2]))
+    except ValueError:
+        pass
+    # Something else matched the glob. Sort it oldest so it is pruned
+    # before any backup we actually wrote.
+    return ("", -1)
+
+
 def _prune_backups(d: Path, name: str) -> int:
     """Keep the newest few backups of one setup. Returns how many remain.
 
     These sit in the driver's own Assetto Corsa setup folder, which they
     open in Explorer, so an unbounded pile of them is a mess in a place that
-    is not ours to make messy. Newest by name, which sorts correctly because
-    the stamp is yyyymmdd-HHMMSS -- mtime would not survive a folder copy.
+    is not ours to make messy. Ordered by the timestamp in the name rather
+    than by mtime, which would not survive the driver copying the folder.
     """
-    baks = sorted(d.glob(f"{name}.ini.bak-*"), reverse=True)
+    baks = sorted(d.glob(f"{name}.ini.bak-*"), key=_backup_age, reverse=True)
     for old in baks[_KEEP_BACKUPS:]:
         try:
             old.unlink()
@@ -615,13 +651,24 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
             "setup name must be 1-61 characters of letters, digits, spaces, "
             "hyphens, dots or underscores, starting with a letter or digit")
 
-    # Deliberately no mkdir yet. A refusal must leave the filesystem exactly
-    # as it found it: setup_dir falls back to matching a track directory by
-    # prefix only while the exact name does not exist, so creating an empty
-    # 'mugello' beside the real 'mugello_osrw' permanently breaks that
-    # fallback -- and a refused write is the most likely moment for someone
-    # to have guessed the track id wrong.
-    d = setups_root(ac_docs_dir) / car / track
+    # Write into the folder every *reader* will look in, not into the
+    # literal name the caller passed. setup_dir resolves a track prefix to
+    # the real directory -- "mugello" to "mugello_osrw" -- and taking the
+    # literal path instead did two bad things at once: the new setup landed
+    # in a folder AC never reads, and creating that folder stopped the
+    # prefix fallback firing at all, so `list_setups(car, "mugello")` went
+    # from listing the driver's own setups to listing only ours. Their files
+    # were still on disk and invisible to every tool here.
+    #
+    # None means no folder for this track yet, which is ordinary for the
+    # first setup at a new circuit -- use the name as given.
+    #
+    # Deliberately no mkdir yet either. A refusal must leave the filesystem
+    # exactly as it found it, for the same reason: an empty directory
+    # created on the way to failing breaks the fallback permanently, and a
+    # refused write is the likeliest moment for a track id to be wrong.
+    d = setup_dir(ac_docs_dir, car, track) or (
+        setups_root(ac_docs_dir) / car / track)
     path = d / f"{name}.ini"
     if path.exists() and not overwrite:
         free = _free_name(d, name)

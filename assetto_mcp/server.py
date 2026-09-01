@@ -467,13 +467,15 @@ def set_session_setup(setup_name: str, session_id: int | None = None) -> str:
     if not db.set_session_setup(_conn, sid, setup_name):
         return _j({"error": f"no session with id {sid}"})
 
-    laps = db.list_laps(_conn, sid, limit=None)
-    blank = [l for l in laps if not (l.get("setup_name") or "")]
+    # A count and a list of ids, not every lap row through the sessions
+    # JOIN. This only ever needed two numbers, and a long session made it
+    # fetch and discard hundreds of full rows to get them.
+    blank = db.unlabelled_lap_ids(_conn, sid)
     out = {"ok": True, "session_id": sid, "setup_name": setup_name,
            "applies_to": "laps completed from now on",
-           "laps_already_stored": len(laps)}
+           "laps_already_stored": db.count_laps(_conn, sid)}
     if blank:
-        out["unlabelled_laps"] = [l["id"] for l in blank]
+        out["unlabelled_laps"] = blank
         out["note"] = (
             f"{len(blank)} earlier lap(s) in this session have no setup "
             f"recorded and were left alone. If some of them were driven on "
@@ -516,18 +518,16 @@ def label_laps(lap_ids: str, setup_name: str,
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
 
-    # No limit: a lap old enough to fall outside a window would be reported
-    # as "not in this session", which is a false statement about the
-    # driver's own data rather than a missing convenience.
-    laps = {l["id"]: l for l in db.list_laps(_conn, sid, limit=None)}
-    missing = [i for i in ids if i not in laps]
-    named = {i: laps[i]["setup_name"] for i in ids
-             if i in laps and (laps[i].get("setup_name") or "")
-             and laps[i]["setup_name"] != setup_name}
-    already = [i for i in ids
-               if i in laps and (laps[i].get("setup_name") or "") == setup_name]
-    fillable = [i for i in ids
-                if i in laps and not (laps[i].get("setup_name") or "")]
+    # Two columns for the ids actually asked about, rather than every lap
+    # in the session. Unbounded by lap count either way: a lap old enough to
+    # fall outside a window would be reported as "not in this session",
+    # which is a false statement about the driver's own data.
+    names = db.lap_setup_names(_conn, sid, ids)
+    missing = [i for i in ids if i not in names]
+    named = {i: names[i] for i in ids
+             if names.get(i) and names[i] != setup_name}
+    already = [i for i in ids if names.get(i) == setup_name]
+    fillable = [i for i in ids if i in names and not names[i]]
 
     labelled = db.label_unattributed_laps(_conn, sid, setup_name, fillable)
     out = {"ok": True, "session_id": sid, "setup_name": setup_name,

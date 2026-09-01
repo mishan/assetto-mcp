@@ -730,6 +730,24 @@ def test_a_comparison_lap_with_no_samples_is_an_error_not_a_silent_skip():
     print(f"  {out['comparison_error']}")
 
 
+def test_two_laps_that_never_overlap_say_so_rather_than_going_quiet():
+    """The same ambiguity one level further in.
+
+    Both laps carry position, so the checks above pass, and then no slice
+    holds both -- two partial laps that stopped in different places. gaps
+    comes back empty and the payload used to contain neither compared_with
+    nor comparison_error, which is the state those checks exist to prevent.
+    """
+    first_half = [s for s in _placed(_lap()) if s["norm_pos"] < 0.4]
+    second_half = [s for s in _placed(_lap()) if s["norm_pos"] > 0.6]
+
+    out = analysis.driving_line(_meta(1, 113000), first_half, 20,
+                                _meta(2, 113500), second_half)
+    assert "compared_with" not in out, out
+    assert "no slice of track in common" in out["comparison_error"], out
+    print(f"  {out['comparison_error'][:72]}...")
+
+
 def test_the_line_follows_the_car_round_the_track():
     out = analysis.driving_line(_meta(1, 113000), _placed(_lap()), points=40)
     assert out["has_position"] is True

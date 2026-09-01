@@ -1918,6 +1918,17 @@ def driving_line(lap: dict, samples: list[dict], points: int = 0,
                         {"pos": p, "separation_m": round(d, 2)}
                         for d, p in gaps[:5]],
                 }
+            else:
+                # Both laps carry position and still no slice holds both:
+                # two partial laps that stopped in different places, or two
+                # sets of gaps that happen not to overlap. Rare, and it
+                # leaves the payload in exactly the state the checks above
+                # exist to prevent -- no comparison, and nothing saying why.
+                out["comparison_error"] = (
+                    f"lap {other_lap['id']} and this one have no slice of "
+                    f"track in common, so there is nothing to subtract. "
+                    f"Both carry position; they just never cover the same "
+                    f"part of the lap.")
 
     measured = [p for p in line if p is not None]
     rough = [p for p in measured if "ride_f_range_mm" in p]

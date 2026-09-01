@@ -7,6 +7,7 @@ Pure Python on purpose - no numpy dependency to install on the gaming PC.
 """
 
 import math
+from collections.abc import Iterable
 from statistics import mean, median
 
 WHEELS = ("fl", "fr", "rl", "rr")
@@ -192,8 +193,15 @@ def _lat_g_peak(lat: list[float]) -> float:
     return mags[int(0.99 * (len(mags) - 1))] if mags else 0.0
 
 
-def lat_g_reference(sample_sets) -> float | None:
+def lat_g_reference(
+        sample_sets: list[list[dict]] | Iterable[list[dict]]
+) -> float | None:
     """One cornering load for a set of laps, to detect corners against.
+
+    `sample_sets` is one entry per lap, each the sample list that lap's other
+    analysis takes -- not a flat list of samples. Annotated because the two
+    are easy to confuse at a call site and the flat version does not fail,
+    it just returns a reference computed over one enormous "lap".
 
     Pass every lap that is going to be compared. Returns None when none of
     them carries enough lateral load to have corners at all, which leaves
@@ -242,6 +250,8 @@ def detect_corners(samples: list[dict],
     if len(samples) < 50:
         return []
 
+    # `dropped` is read at the bottom of this function, where it is attached
+    # to every corner as lat_g_samples_dropped.
     lat, dropped = _lat_g_trace(samples)
     own_peak = _lat_g_peak(lat)
     # An in-lap, or a lap spent trundling: nothing corner-shaped here. Note

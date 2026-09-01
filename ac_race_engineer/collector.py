@@ -39,6 +39,28 @@ WRAP_LOW = 0.1
 _is_outlier = analysis.lap_is_outlier
 
 
+def _wear(p) -> tuple:
+    """Per-corner tyre wear, or four Nones if this layout lacks it."""
+    w = getattr(p, "tyreWear", None)
+    if w is None:
+        return (None, None, None, None)
+    return (w[0], w[1], w[2], w[3])
+
+
+def _damage(p):
+    """Bodywork damage as one number: AC's five zones summed.
+
+    Five separate columns would say where the car was hit, which nothing
+    here asks. What is worth recording is whether it was hit at all, and
+    the sum answers that in one field that can be differenced between
+    samples. Zero throughout when the server has damage disabled.
+    """
+    d = getattr(p, "carDamage", None)
+    if d is None:
+        return None
+    return float(sum(d[i] for i in range(5)))
+
+
 class Collector:
     def __init__(self, db_path, sim_info_factory):
         """sim_info_factory: zero-arg callable returning a SimInfo-like object.
@@ -53,6 +75,15 @@ class Collector:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self.status = "stopped"
+        # Whether this collector has ever been asked to run. A fresh object
+        # and one that was deliberately stopped both reported status
+        # "stopped" with no error and no session, which are the constructor's
+        # defaults -- so a server that had been restarted underneath a
+        # driving session was indistinguishable from one someone had turned
+        # off on purpose. That ambiguity cost sixteen laps across three
+        # sessions and I misread it twice.
+        self.ever_started = False
+        self.stopped_by_request = False
         self.session_id: int | None = None
         self.last_session_id: int | None = None
         self.laps_recorded = 0
@@ -72,15 +103,42 @@ class Collector:
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
+    # How long start() waits for the new thread to publish a status before
+    # returning. The thread sets one almost immediately; this only has to
+    # outlast scheduling. Bounded so a wedged thread cannot hang a tool call.
+    START_STATUS_TIMEOUT = 2.0
+
+    # How long to wait before looking for Assetto Corsa again. Long enough
+    # that a closed game costs nothing, short enough that the driver never
+    # waits for recording to pick up after launching it.
+    SIM_RETRY_SECONDS = 3.0
+
     def start(self):
         if self.running:
             return
         self._stop.clear()
+        self.ever_started = True
+        self.stopped_by_request = False
+        # Cleared before the thread starts rather than after: a caller
+        # reading status while the previous run's error was still set got a
+        # failure report from a collector that had just been restarted.
+        self.last_error = None
+        self.status = "starting"
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+        # Wait for the thread to say something. start() used to return the
+        # instant the thread was spawned, so start_recording read `status`
+        # before the thread had touched it and reported the constructor's
+        # "stopped" -- on every first call, for months. Calling it twice
+        # "worked" only because the second call arrived late enough to see
+        # the truth, which taught both of us to distrust a working tool.
+        deadline = time.monotonic() + self.START_STATUS_TIMEOUT
+        while self.status == "starting" and time.monotonic() < deadline:
+            time.sleep(0.01)
 
     def stop(self):
         self._stop.set()
+        self.stopped_by_request = True
         if self._thread:
             # Join generously and report if it didn't take. The thread owns
             # a SQLite connection, so returning while it is still alive
@@ -107,24 +165,62 @@ class Collector:
     # ------------------------------------------------------------------
 
     def _run(self):
+        """Attach to AC, record until told to stop, and keep trying.
+
+        This used to give up the first time shared memory could not be
+        opened: AC not started yet, or between sessions, and the collector
+        was finished for the lifetime of the process. Combined with the
+        server being restarted by its host whenever it liked, that is how
+        sixteen laps were lost across three evenings -- every one of them
+        driven past a collector that had already quietly retired.
+
+        So the loop outlives the sim now. AC being absent is a state to wait
+        in, not an error to die of, and an exception from the recording loop
+        is logged and retried rather than fatal. Nothing here spins: every
+        wait goes through the stop event, so stop() is still immediate.
+        """
         from .sim_info import AC_LIVE  # local import keeps module testable
 
-        try:
-            sim = self._sim_factory()
-        except Exception as e:  # AC not running / not Windows
-            self.last_error = str(e)
-            self.status = "error"
-            return
-
-        self.status = "waiting for AC to go live"
         self._conn = db.connect(self._db_path)
         try:
-            self._loop(sim, AC_LIVE)
-        except Exception as e:
-            self.last_error = str(e)
-            self.status = "error"
+            while not self._stop.is_set():
+                try:
+                    sim = self._sim_factory()
+                except Exception as e:  # AC not running / not Windows
+                    # Reported, but as a state rather than a failure -- the
+                    # driver has not done anything wrong by not having the
+                    # game open yet.
+                    self.status = "waiting for Assetto Corsa"
+                    self.last_error = str(e)
+                    if self._stop.wait(self.SIM_RETRY_SECONDS):
+                        break
+                    continue
+
+                self.status = "waiting for AC to go live"
+                self.last_error = None
+                try:
+                    self._loop(sim, AC_LIVE)
+                except Exception as e:
+                    # Keep the reason, then go round again. A crash in the
+                    # recording loop used to end recording permanently and
+                    # look, from outside, exactly like a collector that had
+                    # never been asked to run.
+                    self.last_error = str(e)
+                    self.status = "error, retrying"
+                finally:
+                    try:
+                        sim.close()
+                    except Exception:      # noqa: BLE001 - teardown only
+                        pass
+                    # The session belongs to the sim connection that is
+                    # ending, not to the next one.
+                    if self.session_id is not None:
+                        self.last_session_id = self.session_id
+                        self.session_id = None
+                if self._stop.is_set():
+                    break
+                self._stop.wait(self.SIM_RETRY_SECONDS)
         finally:
-            sim.close()
             self._conn.close()
             self._conn = None
 
@@ -283,6 +379,16 @@ class Collector:
                     lap_dirty = True
                     self.current_lap_dirty = True
                 self.samples_taken += 1
+                # Position, attitude and electronics activity. Read through
+                # getattr because a test stub or an older shared-memory
+                # layout may not carry them, and a missing field must record
+                # None rather than 0 -- for a coordinate, zero is a claim
+                # that the car was at the track origin, which is a place on
+                # the map.
+                coords = getattr(g, "carCoordinates", None)
+                pos_x, pos_y, pos_z = (
+                    (coords[0], coords[1], coords[2]) if coords is not None
+                    else (None, None, None))
                 lap_samples.append((
                     t_ms,
                     g.normalizedCarPosition,
@@ -298,6 +404,14 @@ class Collector:
                     p.tyreCoreTemperature[2], p.tyreCoreTemperature[3],
                     p.rideHeight[0], p.rideHeight[1],
                     p.numberOfTyresOut,
+                    pos_x, pos_y, pos_z,
+                    getattr(p, "heading", None),
+                    getattr(p, "pitch", None),
+                    getattr(p, "roll", None),
+                    getattr(p, "tc", None),
+                    getattr(p, "abs", None),
+                    *_wear(p),
+                    _damage(p),
                 ))
 
             time.sleep(interval)

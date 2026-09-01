@@ -1,17 +1,22 @@
 <#
 .SYNOPSIS
-    One-shot installer for ac-race-engineer on the Windows gaming PC.
+    One-shot installer for assetto-mcp on the Windows gaming PC.
 
 .DESCRIPTION
     Does everything the README used to ask you to do by hand:
 
       1. Finds a real Python 3.10+ (ignoring the Microsoft Store stub)
       2. pip install -e . from this folder
-      3. Writes/merges claude_desktop_config.json, preserving any MCP
-         servers you already have, with a timestamped backup
+      3. Registers the server with Claude Desktop (see
+         install-claude-desktop.ps1), or prints what to paste into another
+         MCP client with -SkipClientConfig
       4. Finds your Assetto Corsa install and copies the CSP Lua app in
       5. Creates the data + ranges directories
       6. Prints exactly what to do next
+
+    Steps 1, 2, 4 and 5 are the same whatever client you use -- the server is
+    a plain stdio MCP server. Only step 3 knows about Claude Desktop, and it
+    lives in its own file so another client can be added beside it.
 
     Everything is idempotent: run it again after a git pull and it will
     update in place rather than duplicating anything.
@@ -25,6 +30,11 @@
 
 .PARAMETER SkipLuaApp
     Don't install the in-game CSP Lua app.
+
+.PARAMETER SkipClientConfig
+    Don't touch any MCP client's config. Installs everything else and prints
+    the command and arguments to register by hand. Use this if your client is
+    not Claude Desktop.
 
 .PARAMETER Uninstall
     Remove the Claude Desktop config entry and the installed Lua app.
@@ -41,6 +51,7 @@
 param(
     [string] $AcPath,
     [switch] $SkipLuaApp,
+    [switch] $SkipClientConfig,
     [switch] $Uninstall
 )
 
@@ -104,254 +115,53 @@ function Write-JsonFile ($path, $text) {
 }
 
 Write-Host ""
-Write-Host "  ac-race-engineer installer" -ForegroundColor White
+Write-Host "  assetto-mcp installer" -ForegroundColor White
 Write-Host "  $script:RepoRoot" -ForegroundColor DarkGray
 
 # --- paths --------------------------------------------------------------
 
-# $env:APPDATA is PowerShell's way of saying %APPDATA%; it resolves to
-# C:\Users\<you>\AppData\Roaming. AppData is hidden in Explorer by default,
-# which is why browsing to it by hand is miserable.
-$ServerName            = 'ac-race-engineer'
+$ServerName            = 'assetto-mcp'
 $script:OwnerConfigDir = Join-Path $env:APPDATA 'Claude'   # refined in step 3
 
-# ...except when Claude Desktop is the MSIX-packaged build - which is what
-# Anthropic's own Windows download installs, not just the Store version. MSIX
-# packages get a private, redirected view of %APPDATA%: the app writes and reads
-#   %LOCALAPPDATA%\Packages\<PackageFamilyName>\LocalCache\Roaming\Claude\
-# and once a file exists in that layer it *shadows* the real %APPDATA% copy.
-# So writing only to %APPDATA%\Claude silently does nothing there - the entry
-# lands in a file the app will never open.
+# This project was called ac-race-engineer until it was renamed, and the
+# installer is the only thing that knows where the old install put itself.
+# Anything left under these names is dead weight that still gets launched, so
+# every run sweeps them up.
+$LegacyServerName      = 'ac-race-engineer'
+$LegacyLuaAppName      = 'race_engineer'
+$LegacyDataDir         = Join-Path $env:USERPROFILE '.ac-race-engineer'
+
+# --- MCP client support --------------------------------------------------
 #
-# We enumerate every location, but we do NOT write the entry to all of them:
-# see Select-OwnerConfig below for why exactly one config must own it.
-function Get-ClaudeConfigCandidates {
-    $out = @()
-
-    $plain = Join-Path $env:APPDATA 'Claude'
-    $out += [pscustomobject]@{
-        Dir           = $plain
-        Path          = Join-Path $plain 'claude_desktop_config.json'
-        IsPackage     = $false
-        PackageFamily = $null
-        NameRank      = 0
-    }
-
-    $packages = Join-Path $env:LOCALAPPDATA 'Packages'
-    if (Test-Path -LiteralPath $packages) {
-        foreach ($pkg in @(Get-ChildItem -LiteralPath $packages -Directory -ErrorAction SilentlyContinue)) {
-            # The redirect directory actually existing - not the folder name -
-            # is what proves this package is a Claude Desktop build. The old
-            # 'Claude*' -or '*Anthropic*' name filter was loose enough to catch
-            # unrelated packages, so name matching is now only used to *rank*
-            # candidates, never to exclude them: a differently named package
-            # that has the redirect dir still works, it just ranks lower.
-            $d = Join-Path $pkg.FullName 'LocalCache\Roaming\Claude'
-            if (-not (Test-Path -LiteralPath $d)) { continue }
-
-            $rank = 1
-            if ($pkg.Name -like 'AnthropicClaude*' -or $pkg.Name -like 'Claude_*') {
-                $rank = 3      # the shapes Anthropic's own installer produces
-            } elseif ($pkg.Name -like 'Claude*' -or $pkg.Name -like '*Anthropic*') {
-                $rank = 2
-            }
-
-            $out += [pscustomobject]@{
-                Dir           = $d
-                Path          = Join-Path $d 'claude_desktop_config.json'
-                IsPackage     = $true
-                PackageFamily = $pkg.Name
-                NameRank      = $rank
-            }
-        }
-    }
-
-    # De-duplicate on directory, keeping the first occurrence.
-    $seen = @{}
-    $uniq = @()
-    foreach ($c in $out) {
-        $k = $c.Dir.ToLowerInvariant()
-        if (-not $seen.ContainsKey($k)) { $seen[$k] = $true; $uniq += $c }
-    }
-    return @($uniq)
+# The server is a plain stdio MCP server; nothing below this line knows or
+# cares which client launches it. Everything Claude-Desktop-specific lives in
+# its own file, so supporting another client means adding a file beside it.
+# Dot-sourced, so it runs in this scope and can use the helpers above.
+$clientScript = Join-Path $script:RepoRoot 'install-claude-desktop.ps1'
+if (-not (Test-Path -LiteralPath $clientScript)) {
+    Stop-WithError "install-claude-desktop.ps1 is missing from this folder." @"
+  It sits next to install-windows.bat and holds the MCP client setup.
+  If you copied only some files out of the repo, copy the whole folder.
+  Otherwise, re-clone or re-download and run the installer again.
+"@
 }
+. $clientScript
 
-function Get-ClaudeConfigDirs {
-    return @(Get-ClaudeConfigCandidates | ForEach-Object { $_.Dir })
-}
 
-function Get-ClaudeConfigPaths {
-    return @(Get-ClaudeConfigCandidates | ForEach-Object { $_.Path })
-}
-
-# An MSIX package runs from
-#   %PROGRAMFILES%\WindowsApps\<Name>_<version>_<arch>__<PublisherId>\claude.exe
-# (the package *full* name) while its redirected AppData lives in
-#   %LOCALAPPDATA%\Packages\<Name>_<PublisherId>
-# (the package *family* name). Turn the former into the latter.
-function Get-PackageFamilyFromExePath {
-    param([string] $ExePath)
-    if (-not $ExePath) { return $null }
-    $m = [regex]::Match($ExePath, '(?i)\\WindowsApps\\([^\\]+)\\')
-    if (-not $m.Success) { return $null }
-    $parts = $m.Groups[1].Value -split '_'
-    if ($parts.Count -lt 2) { return $null }
-    return ($parts[0] + '_' + $parts[$parts.Count - 1])
-}
-
-# Exactly ONE config file may carry the ac-race-engineer entry.
-#
-# If several do, every Claude surface that reads one of them spawns its own
-# copy of the MCP server, and those copies then fight over the single
-# 127.0.0.1:9666 bridge socket and the same SQLite file. bridge.py has ~90
-# lines of defensive code for precisely that situation; don't cause it here.
-#
-# Precedence (first match wins), preferring the config the *running* app reads:
-#   1. The config belonging to a Claude process running right now. Reading
-#      another process's .Path needs rights we may not have, so it's guarded.
-#   2. Otherwise: an existing config that already has an mcpServers key, most
-#      recently written - that is the file something is actively maintaining.
-#   3. Otherwise: an existing MSIX config over the plain %APPDATA% one, because
-#      the redirect layer shadows %APPDATA% whenever it has a copy.
-#   4. Otherwise: %APPDATA%\Claude\claude_desktop_config.json.
-function Select-OwnerConfig {
-    param($Candidates)
-
-    function New-Result ($cand, $reason) {
-        return [pscustomobject]@{ Owner = $cand; Reason = $reason }
-    }
-
-    # --- 1. follow the running process --------------------------------
-    $exes = @()
+# Delete the in-game app directory this project installed under an older
+# name. CSP loads every folder under apps\lua, so leaving it there means two
+# copies of the app in the sidebar, both talking to the same bridge port.
+function Remove-LegacyLuaApp ($ac) {
+    if (-not $ac) { return }
+    $old = Join-Path $ac "apps\lua\$LegacyLuaAppName"
+    if (-not (Test-Path -LiteralPath $old)) { return }
     try {
-        foreach ($proc in @(Get-Process -Name 'Claude*' -ErrorAction SilentlyContinue)) {
-            $p = $null
-            try { $p = $proc.Path } catch { $p = $null }
-            if ($p) { $exes += $p }
-        }
-    } catch { $exes = @() }
-
-    foreach ($exe in @($exes | Select-Object -Unique)) {
-        $fam = Get-PackageFamilyFromExePath $exe
-        if ($fam) {
-            $hit = @($Candidates | Where-Object { $_.IsPackage -and $_.PackageFamily -eq $fam })
-            if ($hit.Count -eq 0) {
-                $stem = ($fam -split '_')[0]
-                $hit = @($Candidates | Where-Object { $_.IsPackage -and $_.PackageFamily -like "$stem*" })
-            }
-            if ($hit.Count -gt 0) {
-                return (New-Result $hit[0] "Claude Desktop is running right now from MSIX package '$fam'")
-            }
-        } else {
-            $hit = @($Candidates | Where-Object { -not $_.IsPackage })
-            if ($hit.Count -gt 0) {
-                return (New-Result $hit[0] "Claude Desktop is running right now as an unpackaged build ($exe)")
-            }
-        }
-    }
-
-    # --- gather facts about the files that exist ----------------------
-    $existing = @()
-    foreach ($c in $Candidates) {
-        if (-not (Test-Path -LiteralPath $c.Path)) { continue }
-        $hasServers = $false
-        $lastWrite  = [datetime]::MinValue
-        try {
-            $lastWrite = (Get-Item -LiteralPath $c.Path).LastWriteTime
-            $raw = Get-Content -Raw -LiteralPath $c.Path
-            if ($raw -and $raw.Trim()) {
-                $j = $raw | ConvertFrom-Json
-                if ($j -and $j.PSObject.Properties['mcpServers']) { $hasServers = $true }
-            }
-        } catch { }
-        $existing += [pscustomobject]@{
-            Cand = $c; HasServers = $hasServers; LastWrite = $lastWrite
-        }
-    }
-
-    # --- 2. the file already defining mcpServers, most recently written -
-    $withServers = @($existing | Where-Object { $_.HasServers } |
-                     Sort-Object -Property @{Expression={$_.LastWrite};Descending=$true})
-    if ($withServers.Count -gt 0) {
-        return (New-Result $withServers[0].Cand `
-                "it already defines mcpServers and is the most recently written config (last written $($withServers[0].LastWrite))")
-    }
-
-    # --- 3. an existing MSIX config shadows %APPDATA% -------------------
-    $pkg = @($existing | Where-Object { $_.Cand.IsPackage } |
-             Sort-Object -Property @{Expression={$_.Cand.NameRank};Descending=$true},
-                                   @{Expression={$_.LastWrite};Descending=$true})
-    if ($pkg.Count -gt 0) {
-        return (New-Result $pkg[0].Cand `
-                "an MSIX redirect layer exists ($($pkg[0].Cand.PackageFamily)) and shadows %APPDATA%")
-    }
-
-    # --- 4. default -----------------------------------------------------
-    $plain = @($Candidates | Where-Object { -not $_.IsPackage })
-    if ($plain.Count -gt 0) {
-        return (New-Result $plain[0] "default location; no packaged build and no existing config found")
-    }
-    return (New-Result $Candidates[0] "only candidate found")
-}
-
-# Backups are byte-for-byte copies of claude_desktop_config.json, so they can
-# contain OTHER MCP servers' API keys and tokens. Keep the 5 most recent per
-# config file and delete the rest rather than letting credential copies pile
-# up forever in a folder nobody ever looks at.
-function Remove-OldBackups ($configPath) {
-    try {
-        $dir  = Split-Path -Parent $configPath
-        $leaf = Split-Path -Leaf   $configPath
-        $baks = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue |
-                  Where-Object { $_.Name -like "$leaf.*.bak" } |
-                  Sort-Object -Property LastWriteTime -Descending)
-        if ($baks.Count -gt 5) {
-            foreach ($old in $baks[5..($baks.Count - 1)]) {
-                Remove-Item -LiteralPath $old.FullName -Force -ErrorAction SilentlyContinue
-            }
-        }
-    } catch { }
-}
-
-function Backup-ConfigFile ($path) {
-    $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-    $bak   = "$path.$stamp.bak"
-    Copy-Item -LiteralPath $path -Destination $bak
-    Remove-OldBackups $path
-    return $bak
-}
-
-# Remove the ac-race-engineer entry from one config, preserving every other
-# MCP server and every other top-level setting. Only rewrites the file if the
-# entry was actually there. Returns 'removed', 'absent' or 'error'.
-function Remove-ServerEntry ($path) {
-    if (-not (Test-Path -LiteralPath $path)) { return 'absent' }
-
-    $cfg = $null
-    try {
-        $raw = Get-Content -Raw -LiteralPath $path
-        if ($raw -and $raw.Trim()) { $cfg = $raw | ConvertFrom-Json }
+        Remove-Item -LiteralPath $old -Recurse -Force
+        Write-Ok "Removed the pre-rename in-game app from $old"
     } catch {
-        Write-Warn2 "Not valid JSON, leaving it alone: $path"
-        return 'error'
+        Write-Warn2 "Could not remove the old in-game app at $old - is Assetto Corsa running?"
+        Write-Info  "Delete that folder by hand, or you will see the app twice in the sidebar."
     }
-    if (-not $cfg) { return 'absent' }
-    if (-not $cfg.PSObject.Properties['mcpServers'] -or -not $cfg.mcpServers) { return 'absent' }
-    if (-not $cfg.mcpServers.PSObject.Properties[$ServerName]) { return 'absent' }
-
-    $others = @($cfg.mcpServers.PSObject.Properties.Name | Where-Object { $_ -ne $ServerName })
-    try {
-        Backup-ConfigFile $path | Out-Null
-        $cfg.mcpServers.PSObject.Properties.Remove($ServerName)
-        Write-JsonFile $path ($cfg | ConvertTo-Json -Depth 20)
-    } catch {
-        Write-Warn2 "Could not update $path - $($_.Exception.Message)"
-        return 'error'
-    }
-    if ($others.Count -gt 0) {
-        Write-Info "Kept the $($others.Count) other MCP server(s) there: $($others -join ', ')"
-    }
-    return 'removed'
 }
 
 # --- locating Assetto Corsa (needed by both install and uninstall) -------
@@ -414,18 +224,15 @@ function Resolve-AcPath {
 if ($Uninstall) {
     Write-Step "Uninstalling"
 
-    # Uninstall clears the entry from EVERY config location, not just the one
-    # the installer would have chosen as owner.
-    foreach ($ClaudeConfigPath in (Get-ClaudeConfigPaths)) {
-        if (-not (Test-Path -LiteralPath $ClaudeConfigPath)) { continue }
-        $status = Remove-ServerEntry $ClaudeConfigPath
-        if     ($status -eq 'removed') { Write-Ok   "Removed '$ServerName' from $ClaudeConfigPath" }
-        elseif ($status -eq 'absent')  { Write-Info "No '$ServerName' entry in $ClaudeConfigPath" }
-    }
+    # Only Claude Desktop is registered automatically, so it is the only client
+    # there is anything to unregister from. If you wired this into another MCP
+    # client by hand, remove the 'assetto-mcp' entry from its config yourself.
+    Unregister-FromClaudeDesktop
 
     $ac = Resolve-AcPath
     if ($ac) {
-        $dest = Join-Path $ac 'apps\lua\race_engineer'
+        Remove-LegacyLuaApp $ac
+        $dest = Join-Path $ac 'apps\lua\assetto_mcp'
         if (Test-Path -LiteralPath $dest) {
             try {
                 Remove-Item -LiteralPath $dest -Recurse -Force
@@ -525,7 +332,7 @@ Write-Info $python.Path
 # 2. Install the package
 # ======================================================================
 
-Write-Step "Installing ac-race-engineer (editable)"
+Write-Step "Installing assetto-mcp (editable)"
 
 Push-Location -LiteralPath $script:RepoRoot
 try {
@@ -555,145 +362,37 @@ Write-Ok "Package installed"
 $py = $python.Path
 $r = Invoke-Native {
     Push-Location -LiteralPath ([System.IO.Path]::GetTempPath())
-    try { & $py -c "import ac_race_engineer" } finally { Pop-Location }
+    try { & $py -c "import assetto_mcp" } finally { Pop-Location }
 }
 if ($r.ExitCode -ne 0) {
-    Stop-WithError "Package installed but 'import ac_race_engineer' failed." @"
+    Stop-WithError "Package installed but 'import assetto_mcp' failed." @"
   pip most likely installed into a different Python than the one detected.
   Try running this in a terminal to see the real error:
-      "$($python.Path)" -c "import ac_race_engineer"
+      "$($python.Path)" -c "import assetto_mcp"
 "@
 }
 Write-Ok "Import check passed"
 
 # ======================================================================
-# 3. Claude Desktop config
+# 3. Register with an MCP client
 # ======================================================================
+#
+# Claude Desktop is the only client this script configures automatically,
+# because it is the only one whose config location needs a script to find.
+# Every other MCP client takes the same two facts -- a command and its
+# arguments -- pasted into its own config; -SkipClientConfig prints them.
 
-Write-Step "Configuring Claude Desktop"
-
-$configCandidates = Get-ClaudeConfigCandidates
-$selection        = Select-OwnerConfig $configCandidates
-$OwnerConfigPath  = $selection.Owner.Path
-$script:OwnerConfigDir = $selection.Owner.Dir
-
-Write-Info "Claude config locations found: $($configCandidates.Count)"
-foreach ($c in $configCandidates) {
-    $tag = if ($c.IsPackage) { "MSIX $($c.PackageFamily)" } else { 'plain %APPDATA%' }
-    Write-Info "  [$tag] $($c.Path)"
-}
-Write-Ok   "This entry will live in: $OwnerConfigPath"
-Write-Info "Chosen because: $($selection.Reason)"
-if ($configCandidates.Count -gt 1) {
-    Write-Info "Any '$ServerName' entry in the other location(s) will be removed so"
-    Write-Info "only one copy of the server can ever be launched."
-}
-
-# An unpackaged build reads %APPDATA%\Claude, so create the owner directory if
-# it's missing. Package folders are never created here - if the redirect layer
-# doesn't already exist, there's no packaged build to configure.
-# ([IO.Directory]::CreateDirectory, not New-Item: New-Item has no -LiteralPath
-# and its -Path globs, which mangles paths containing [ ].)
-if (-not (Test-Path -LiteralPath $script:OwnerConfigDir)) {
-    [void][System.IO.Directory]::CreateDirectory($script:OwnerConfigDir)
-    Write-Info "Created $($script:OwnerConfigDir)"
-}
-
-# Absolute python path, not bare "python": Claude Desktop launches MCP
-# servers without your shell's PATH, so a bare command often silently fails.
-$entry = [pscustomobject]@{
-    command = $python.Path
-    args    = @('-m', 'ac_race_engineer.server')
-}
-
-$written  = @()
-$failures = @()
-
-# --- the owner config gets the entry ------------------------------------
-$config  = $null
-$rawOld  = $null
-if (Test-Path -LiteralPath $OwnerConfigPath) {
-    $rawOld = Get-Content -Raw -LiteralPath $OwnerConfigPath
-    if ($rawOld -and $rawOld.Trim()) {
-        try {
-            $config = $rawOld | ConvertFrom-Json
-        } catch {
-            $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-            Copy-Item -LiteralPath $OwnerConfigPath `
-                      -Destination "$OwnerConfigPath.corrupt-$stamp.bak"
-            Remove-OldBackups $OwnerConfigPath
-            Write-Warn2 "Not valid JSON; saved as .corrupt-$stamp.bak and starting fresh: $OwnerConfigPath"
-            $config = $null
-        }
-    }
-}
-
-if (-not $config) { $config = [pscustomobject]@{} }
-
-if (-not $config.PSObject.Properties['mcpServers']) {
-    $config | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{})
-}
-if ($null -eq $config.mcpServers) {
-    $config.mcpServers = [pscustomobject]@{}
-}
-
-$existingNames = @($config.mcpServers.PSObject.Properties.Name)
-if ($existingNames -contains $ServerName) {
-    $config.mcpServers.$ServerName = $entry
+if ($SkipClientConfig) {
+    Write-Step "Skipping MCP client configuration (-SkipClientConfig)"
+    Write-Info "Register this server with your client using:"
+    Write-Info ""
+    Write-Info "    command : $($python.Path)"
+    Write-Info "    args    : -m assetto_mcp.server"
+    Write-Info ""
+    Write-Info "Most clients (Claude Desktop, Claude Code, Cursor, LM Studio, Windsurf)"
+    Write-Info "take an ""mcpServers"" JSON object. See docs/INSTALL.md."
 } else {
-    $config.mcpServers | Add-Member -NotePropertyName $ServerName -NotePropertyValue $entry
-}
-
-$newText = $config | ConvertTo-Json -Depth 20
-
-if ($null -ne $rawOld -and $rawOld -eq $newText) {
-    Write-Ok "Already up to date, left unchanged: $OwnerConfigPath"
-    $written += $OwnerConfigPath
-} else {
-    try {
-        if ($rawOld -and $rawOld.Trim()) {
-            $bak = Backup-ConfigFile $OwnerConfigPath
-            Write-Info "Backed up to $(Split-Path -Leaf $bak)"
-        }
-        Write-JsonFile $OwnerConfigPath $newText
-        Write-Ok "Wrote $OwnerConfigPath"
-        $written += $OwnerConfigPath
-    } catch {
-        $failures += "$OwnerConfigPath - $($_.Exception.Message)"
-        Write-Warn2 "Could not write $OwnerConfigPath"
-    }
-}
-
-if ($written.Count -gt 0) {
-    $others = @($existingNames | Where-Object { $_ -ne $ServerName })
-    if ($others.Count -gt 0) {
-        Write-Info "Preserved $($others.Count) other MCP server(s): $($others -join ', ')"
-    }
-    # Everything outside mcpServers (window prefs, cowork paths, ...) is
-    # carried through by round-tripping the whole object, not rebuilt.
-    $otherKeys = @($config.PSObject.Properties.Name | Where-Object { $_ -ne 'mcpServers' })
-    if ($otherKeys.Count -gt 0) {
-        Write-Info "Preserved other settings: $($otherKeys -join ', ')"
-    }
-}
-
-# --- every other config must NOT have the entry -------------------------
-# Two configs carrying it means two Claude surfaces each spawning their own
-# server process, both racing for 127.0.0.1:9666 and the same database.
-foreach ($c in $configCandidates) {
-    if ($c.Path -eq $OwnerConfigPath) { continue }
-    $status = Remove-ServerEntry $c.Path
-    if     ($status -eq 'removed') { Write-Ok   "Removed the duplicate '$ServerName' entry from $($c.Path)" }
-    elseif ($status -eq 'absent')  { Write-Info "No duplicate entry in $($c.Path) (unchanged)" }
-}
-
-if ($written.Count -eq 0) {
-    Stop-WithError "Could not write the Claude Desktop config." @"
-  $($failures -join "`n  ")
-
-  Close Claude Desktop completely (system tray icon -> Quit) and try again.
-  If a backup was made, your previous config is safe alongside it as a .bak.
-"@
+    Register-WithClaudeDesktop -PythonPath $python.Path
 }
 
 # ======================================================================
@@ -702,12 +401,74 @@ if ($written.Count -eq 0) {
 
 Write-Step "Preparing data directory"
 
-$dataDir = if ($env:AC_ENGINEER_DATA) { $env:AC_ENGINEER_DATA }
-           else { Join-Path $env:USERPROFILE '.ac-race-engineer' }
+# Same resolution order as assetto_mcp/config.py: an explicit variable wins,
+# then the pre-rename directory, which is *moved* rather than left behind. The
+# installer is the best place to do it -- it runs once, with the client quit,
+# so nothing has the database open. config.py retries the same move at startup
+# for anyone who installed by hand and never runs this.
+$defaultDataDir = Join-Path $env:USERPROFILE '.assetto-mcp'
+# -PathType Container throughout: if the old name happens to be a *file*, a
+# bare Test-Path is true and Move-Item cheerfully renames it into the place a
+# directory is about to be created, which fails several lines later with the
+# file already moved. assetto_mcp/config.py uses is_dir() for the same reason.
+$haveLegacyDir  = Test-Path -LiteralPath $LegacyDataDir  -PathType Container
+$haveDefaultDir = Test-Path -LiteralPath $defaultDataDir -PathType Container
+
+# Exists, but as something other than a directory. Say so by name rather than
+# letting it surface as a failed move or a failed CreateDirectory below.
+if ((Test-Path -LiteralPath $defaultDataDir) -and -not $haveDefaultDir) {
+    Stop-WithError "$defaultDataDir exists but is not a folder." @"
+  The lap database and car setup ranges live there.
+  Move that file aside and run this installer again.
+"@
+}
+
+if ($env:ASSETTO_MCP_DATA) {
+    $dataDir = $env:ASSETTO_MCP_DATA
+} elseif ($env:AC_ENGINEER_DATA) {
+    $dataDir = $env:AC_ENGINEER_DATA
+} elseif ($haveLegacyDir -and -not $haveDefaultDir) {
+    try {
+        Move-Item -LiteralPath $LegacyDataDir -Destination $defaultDataDir
+        $dataDir = $defaultDataDir
+        Write-Ok "Moved your laps from $LegacyDataDir to $defaultDataDir"
+    } catch {
+        # Almost always the client still running with the database open.
+        # Keep using the old directory: a failed move must not look like a
+        # lost season, and re-running after a proper quit will finish the job.
+        $dataDir = $LegacyDataDir
+        Write-Warn2 "Could not move $LegacyDataDir to the new name - something has it open."
+        Write-Info  "Your laps are fine and still being used from the old folder."
+        Write-Info  "Fully quit your MCP client and re-run this installer to finish the move."
+    }
+} else {
+    $dataDir = $defaultDataDir
+    # Both names present. Merging two databases by moving one onto the other
+    # would be worse than leaving them, but saying nothing is worse still:
+    # the new directory is the one that gets used, so a driver whose history
+    # is in the old one just sees an empty history and no explanation.
+    if ($haveLegacyDir -and $haveDefaultDir) {
+        Write-Warn2 "Two data directories exist, and only the new one will be used."
+        Write-Info  "  in use : $defaultDataDir"
+        Write-Info  "  older  : $LegacyDataDir  (from before the rename)"
+        Write-Info  "If your laps are missing, they are in the older folder. Fully quit"
+        Write-Info  "your MCP client, move telemetry.db and ranges\ across, and re-run."
+    }
+}
+
 $rangesDir = Join-Path $dataDir 'ranges'
 # New-Item has no -LiteralPath and treats -Path as a wildcard pattern, so a
 # folder like "D:\Games [SSD]" would be misread. .NET takes paths literally.
-[void][System.IO.Directory]::CreateDirectory($rangesDir)
+try {
+    [void][System.IO.Directory]::CreateDirectory($rangesDir)
+} catch {
+    Stop-WithError "Could not create the data directory at $dataDir" @"
+  $($_.Exception.Message)
+
+  Check that the path is writable, or point somewhere else by setting
+  ASSETTO_MCP_DATA and re-running.
+"@
+}
 Write-Ok "$dataDir"
 Write-Info "Car setup ranges go in: $rangesDir"
 
@@ -726,17 +487,18 @@ if (-not $SkipLuaApp) {
         Write-Info  "then re-run:  install-windows.bat -AcPath ""<that folder>"""
     } else {
         Write-Ok "Found Assetto Corsa at $ac"
-        $src  = Join-Path $script:RepoRoot 'lua_app\race_engineer'
-        $dest = Join-Path $ac 'apps\lua\race_engineer'
+        Remove-LegacyLuaApp $ac
+        $src  = Join-Path $script:RepoRoot 'lua_app\assetto_mcp'
+        $dest = Join-Path $ac 'apps\lua\assetto_mcp'
 
         if (-not (Test-Path -LiteralPath $src)) {
-            Write-Warn2 "lua_app\race_engineer missing from this repo - skipping"
+            Write-Warn2 "lua_app\assetto_mcp missing from this repo - skipping"
         } else {
             try {
                 # Literal, not wildcard: Steam libraries are often "D:\Games [SSD]".
                 [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $dest))
                 # Remove first: Copy-Item -Recurse onto an existing directory
-                # would nest it as race_engineer\race_engineer.
+                # would nest it as assetto_mcp\assetto_mcp.
                 if (Test-Path -LiteralPath $dest) {
                     Remove-Item -LiteralPath $dest -Recurse -Force
                 }
@@ -770,16 +532,31 @@ if ($script:Problems.Count -gt 0) {
     Write-Host ""
 }
 
-# Logs live next to whichever config the app actually uses, so on a packaged
-# install they are NOT under %APPDATA%\Claude. Put the owner config's log
-# first, then any other location, since which build is running can change.
-$logDirs = @($script:OwnerConfigDir) +
-           @(Get-ClaudeConfigDirs | Where-Object { $_ -ne $script:OwnerConfigDir })
-$logHint = ($logDirs | ForEach-Object {
-    "      notepad ""$(Join-Path $_ "logs\mcp-server-$ServerName.log")"""
-}) -join "`n"
+if ($SkipClientConfig) {
+    Write-Host @"
+  Next steps
+  ----------
+  1. Add the server to your MCP client's config (see docs/INSTALL.md), then
+     fully restart the client.
 
-Write-Host @"
+  2. Start Assetto Corsa, get on track, and ask your assistant:
+       "confirm you can see the session"
+
+  3. In-game, open the apps sidebar (move mouse to the right edge) and
+     enable "Assetto MCP" to bind complaint tags to wheel buttons.
+"@ -ForegroundColor White
+} else {
+    # Logs live next to whichever config the app actually uses, so on a
+    # packaged install they are NOT under %APPDATA%\Claude. Put the owner
+    # config's log first, then any other location, since which build is
+    # running can change.
+    $logDirs = @($script:OwnerConfigDir) +
+               @(Get-ClaudeConfigDirs | Where-Object { $_ -ne $script:OwnerConfigDir })
+    $logHint = ($logDirs | ForEach-Object {
+        "      notepad ""$(Join-Path $_ "logs\mcp-server-$ServerName.log")"""
+    }) -join "`n"
+
+    Write-Host @"
   Next steps
   ----------
   1. Fully quit Claude Desktop and start it again.
@@ -787,17 +564,18 @@ Write-Host @"
      system tray (bottom-right, possibly under the '^' arrow) and choose Quit.
 
   2. In Claude Desktop, open a new chat and look for the tools icon.
-     You should see ac-race-engineer listed.
+     You should see assetto-mcp listed.
 
-  3. Start Assetto Corsa, get on track, and tell Claude:
-       "start recording and confirm you can see the session"
+  3. Start Assetto Corsa, get on track, and ask:
+       "confirm you can see the session"
 
   4. In-game, open the apps sidebar (move mouse to the right edge) and
-     enable "Race Engineer" to bind complaint tags to wheel buttons.
+     enable "Assetto MCP" to bind complaint tags to wheel buttons.
 
   If Claude does not see the server, read the log:
 $logHint
 "@ -ForegroundColor White
+}
 
 Write-Host ""
 if ($script:PauseAtEnd) { Read-Host "Press Enter to close" }

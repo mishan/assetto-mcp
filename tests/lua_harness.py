@@ -22,7 +22,7 @@ import unittest
 import warnings
 from pathlib import Path
 
-APP = Path(__file__).resolve().parent.parent / "lua_app" / "race_engineer"
+APP = Path(__file__).resolve().parent.parent / "lua_app" / "assetto_mcp"
 
 # CSP runs the in-game app on LuaJIT 2.1, which is Lua 5.1 with extensions.
 # lupa ships several interpreters in one wheel and bare lupa.LuaRuntime()
@@ -342,5 +342,5 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
       script = {}
     """)
 
-    lua.execute((APP / "race_engineer.lua").read_text(encoding="utf-8"))
+    lua.execute((APP / "assetto_mcp.lua").read_text(encoding="utf-8"))
     return lua, g.script.__test, rec

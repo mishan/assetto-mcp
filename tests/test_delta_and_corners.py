@@ -10,7 +10,7 @@ import math
 import sys
 from pathlib import Path
 
-# tests/ for `support`, and the repo root for `ac_race_engineer`. The other
+# tests/ for `support`, and the repo root for `assetto_mcp`. The other
 # modules get the root as a side effect of importing support, which does the
 # same insert; this one is the only file that needs to say so itself, and
 # saying it explicitly is why `python tests/test_delta_and_corners.py` works
@@ -22,7 +22,7 @@ for _p in (str(_HERE.parent), str(_HERE)):
 
 from support import run_module  # noqa: E402
 
-from ac_race_engineer import analysis  # noqa: E402
+from assetto_mcp import analysis  # noqa: E402
 
 
 def _lap(n=1200, lap_ms=113000, corners=((0.15, 0.05, 2.4),

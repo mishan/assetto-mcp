@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import make_session, run_module, temp_db  # noqa: E402
 
-from ac_race_engineer import db, suspension as susp  # noqa: E402
+from assetto_mcp import db, suspension as susp  # noqa: E402
 
 
 def _lap(rate_hz=333.0, n=1200, compression_is_positive=True,
@@ -461,9 +461,9 @@ def test_lua_and_python_batch_limits_agree():
     drained sample silently, and a client buffer above the server's cap
     means every POST is rejected.
     """
-    from ac_race_engineer import bridge as B
-    lua_dir = Path(__file__).resolve().parents[1] / "lua_app/race_engineer"
-    app = (lua_dir / "race_engineer.lua").read_text(encoding="utf-8")
+    from assetto_mcp import bridge as B
+    lua_dir = Path(__file__).resolve().parents[1] / "lua_app/assetto_mcp"
+    app = (lua_dir / "assetto_mcp.lua").read_text(encoding="utf-8")
     wrk = (lua_dir / "suspension_worker.lua").read_text(encoding="utf-8")
 
     def const(text, name):
@@ -506,7 +506,7 @@ def test_the_lua_app_assigns_no_implicit_globals():
 
     from luaparser import ast, astnodes
 
-    lua_dir = Path(__file__).resolve().parents[1] / "lua_app/race_engineer"
+    lua_dir = Path(__file__).resolve().parents[1] / "lua_app/assetto_mcp"
     # Names Lua and CSP provide. Anything assigned that isn't declared local
     # and isn't one of these is a new global.
     provided = {
@@ -561,7 +561,7 @@ def test_the_shared_struct_layouts_are_identical():
     subsequent field -- damper travel read as a spline position, say. There
     is no error for this at runtime, just wrong numbers.
     """
-    lua_dir = Path(__file__).resolve().parents[1] / "lua_app/race_engineer"
+    lua_dir = Path(__file__).resolve().parents[1] / "lua_app/assetto_mcp"
 
     def struct(name):
         text = (lua_dir / name).read_text(encoding="utf-8")
@@ -581,11 +581,11 @@ def test_the_shared_struct_layouts_are_identical():
         return [l.replace("WORKER_RING", "N").replace("BUFFER", "N")
                 for l in lines if l]
 
-    app = struct("race_engineer.lua")
+    app = struct("assetto_mcp.lua")
     wrk = struct("suspension_worker.lua")
     assert app == wrk, "\n".join(
         f"  app: {a!r}\n  wrk: {b!r}" for a, b in zip(app, wrk) if a != b)
-    assert "ac.StructItem.key('ac_race_engineer.suspension')" in app[1]
+    assert "ac.StructItem.key('assetto_mcp.suspension')" in app[1]
     print(f"  {len(app)} lines, identical on both sides")
 
 
@@ -634,7 +634,7 @@ def test_pruning_keeps_recent_laps():
 
 def _bridge(path, conn):
     import time
-    from ac_race_engineer import bridge as B
+    from assetto_mcp import bridge as B
     from support import FakeCollector
     sid = make_session(conn)
     br = B.Bridge(path, FakeCollector(session_id=sid, running=True), 0)
@@ -716,7 +716,7 @@ def test_one_bad_sample_does_not_cost_the_batch():
 
 def test_batch_is_refused_when_nothing_is_recording():
     import time
-    from ac_race_engineer import bridge as B
+    from assetto_mcp import bridge as B
     from support import FakeCollector, age_session, post
     with temp_db() as path:
         conn = db.connect(path)

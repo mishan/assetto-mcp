@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import run_module  # noqa: E402
 
-from ac_race_engineer import setups  # noqa: E402
+from assetto_mcp import setups  # noqa: E402
 
 # A ranges file in the shape Kunos actually ships: C-style banner comments
 # between sections, trailing comments on values, and a valueless key.

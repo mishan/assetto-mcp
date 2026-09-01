@@ -14,7 +14,7 @@ which had actually happened when this file was written:
     root, so `python tests/test_delta_and_corners.py` was a
     ModuleNotFoundError -- invisible under pytest, which sets the path
     itself, and invisible in CI, which runs `pip install -e .` first and so
-    makes ac_race_engineer importable from anywhere.
+    makes assetto_mcp importable from anywhere.
 
 Both are properties of the suite rather than of the code under test, which
 is why they belong here rather than in any module about the game.
@@ -114,7 +114,7 @@ def test_no_test_is_defined_after_the_main_block():
 
 # The subprocess below runs with -I (isolated: no PYTHONPATH, no user site,
 # sys.path[0] is the wrapper's own directory) from a temporary working
-# directory, and then removes every remaining way to import ac_race_engineer
+# directory, and then removes every remaining way to import assetto_mcp
 # that the module did not arrange itself. That last part is the point: CI
 # runs `pip install -e ".[test]"` before the suite, which puts the package
 # on sys.path for every interpreter on the machine and so hides a module
@@ -123,7 +123,7 @@ def test_no_test_is_defined_after_the_main_block():
 _WRAPPER = '''
 import importlib.util, runpy, sys
 
-PKG = "ac_race_engineer"
+PKG = "assetto_mcp"
 
 def provides(entry):
     try:

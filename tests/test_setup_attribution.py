@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import make_session, run_module  # noqa: E402
 
-from ac_race_engineer import db  # noqa: E402
+from assetto_mcp import db  # noqa: E402
 
 
 def test_a_lap_is_tagged_with_the_setup_current_when_it_was_stored():

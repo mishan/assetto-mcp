@@ -1,4 +1,4 @@
--- Race Engineer: in-game companion for the ac-race-engineer MCP server.
+-- Assetto MCP: in-game companion for the assetto-mcp MCP server.
 --
 -- Talks to the localhost HTTP bridge (default port 9666):
 --   * polls /status every 2s (recording state + messages from Claude)
@@ -118,7 +118,7 @@ local TAGS = {
   { tag = 'traction',   label = 'Traction'   },
 }
 for _, t in ipairs(TAGS) do
-  t.btn = ac.ControlButton('__EXT_RACE_ENGINEER_' .. t.tag:upper())
+  t.btn = ac.ControlButton('__EXT_ASSETTO_MCP_' .. t.tag:upper())
 end
 
 -- The bridge rejects out-of-range values (they would never correlate with a
@@ -217,7 +217,7 @@ local function pumpNotes()
         -- Don't let a rejected note look like a recorded one: the "noted"
         -- toast already fired at enqueue time.
         toast, toastTimer = 'note REJECTED (' .. tostring(response.status) .. ')', 3
-        ac.warn('race_engineer: /note rejected: ' .. tostring(response.body))
+        ac.warn('assetto_mcp: /note rejected: ' .. tostring(response.body))
       else
         -- Stored, but with no session to attach it to. Say so: an orphaned
         -- note won't show up against this run's telemetry.
@@ -258,7 +258,7 @@ local function ask(label, fn)
 end
 
 local function logWorkerEnvironment()
-  ac.log('race_engineer: physics worker environment')
+  ac.log('assetto_mcp: physics worker environment')
   ask('csp version', function() return ac.getPatchVersion() end)
   ask('csp version code', function() return ac.getPatchVersionCode() end)
   ask('physics table', function() return type(physics) end)
@@ -305,7 +305,7 @@ local function startSuspensionWorker()
   if isOnlineSession() == true then
     suspNote = 'multiplayer: damper capture is single-player only'
     onlineSuppressed = true
-    ac.log('race_engineer: online session, not starting physics worker '
+    ac.log('assetto_mcp: online session, not starting physics worker '
       .. '(CSP disallows physics scripting in multiplayer). Ride height '
       .. 'and load transfer still recording at render rate.')
     return
@@ -348,7 +348,7 @@ local function startSuspensionWorker()
   end
 
   worker = ac.connect({
-    ac.StructItem.key('ac_race_engineer.suspension'),
+    ac.StructItem.key('assetto_mcp.suspension'),
     writeIndex = ac.StructItem.int32(),
     running    = ac.StructItem.int32(),
     samples    = ac.StructItem.array(ac.StructItem.struct({
@@ -377,13 +377,13 @@ local function startSuspensionWorker()
       if err then
         worker, workerProducing = nil, false
         suspNote = 'worker stopped: ' .. tostring(err)
-        ac.warn('race_engineer: physics worker stopped: ' .. tostring(err))
+        ac.warn('assetto_mcp: physics worker stopped: ' .. tostring(err))
       end
     end)
   if not started then
     worker = nil
     suspNote = 'worker start failed: ' .. tostring(startErr)
-    ac.warn('race_engineer: startPhysicsWorker failed: ' .. tostring(startErr))
+    ac.warn('assetto_mcp: startPhysicsWorker failed: ' .. tostring(startErr))
     return
   end
   -- Deliberately not claiming the worker tier yet. startPhysicsWorker
@@ -525,7 +525,7 @@ local function postSuspensionBuffer(which, buffer)
       if err or not response or response.status ~= 200 then
         suspDropped = suspDropped + #batch
         if response and response.status and response.status ~= 200 then
-          ac.warn('race_engineer: /suspension rejected: '
+          ac.warn('assetto_mcp: /suspension rejected: '
             .. tostring(response.status) .. ' ' .. tostring(response.body))
         end
         return
@@ -553,7 +553,7 @@ local function postSuspensionBuffer(which, buffer)
       -- a units disagreement, and silent nulls would surface much later as
       -- an empty report with no explanation.
       if parsed.rejected_fields then
-        ac.warn('race_engineer: /suspension rejected fields: '
+        ac.warn('assetto_mcp: /suspension rejected fields: '
           .. tostring(response.body))
       end
     end)
@@ -677,7 +677,7 @@ local function postRivals()
       end
       if response.status ~= 200 then
         rivalDropped = rivalDropped + #batch
-        ac.warn('race_engineer: /rivals rejected: '
+        ac.warn('assetto_mcp: /rivals rejected: '
           .. tostring(response.status) .. ' ' .. tostring(response.body))
         return
       end
@@ -799,7 +799,7 @@ local function postSetup()
       setupBusy = false
       local outcome = classifyReply(err, response)
       if outcome == 'rejected' then
-        ac.warn('race_engineer: /setup rejected: '
+        ac.warn('assetto_mcp: /setup rejected: '
           .. tostring(response.status) .. ' ' .. tostring(response.body))
       end
       if outcome ~= 'ok' then
@@ -963,7 +963,7 @@ function script.update(dt)
     if not ok then
       worker, workerProducing = nil, false
       suspNote = 'render rate only (worker probe failed)'
-      ac.warn('race_engineer: suspension worker probe failed: '
+      ac.warn('assetto_mcp: suspension worker probe failed: '
         .. tostring(err))
     end
   end
@@ -1185,5 +1185,5 @@ function windowSettings(dt)
   end
   ui.separator()
   ui.textWrapped('Bridge: ' .. BASE ..
-    '  (ac-race-engineer server must be running)')
+    '  (assetto-mcp server must be running)')
 end

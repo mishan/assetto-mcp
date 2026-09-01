@@ -1,4 +1,4 @@
-# Diagnostics for ac-race-engineer / Claude Desktop MCP.
+# Diagnostics for assetto-mcp / Claude Desktop MCP.
 #
 # Read-only with respect to your installation: it changes no config, installs
 # nothing, and does not touch the live bridge port. It writes one file,
@@ -17,7 +17,10 @@ $root = if ($PSScriptRoot) { $PSScriptRoot }
 $report = Join-Path $root 'diagnose-report.txt'
 $lines = New-Object System.Collections.ArrayList
 
-$ServerName = 'ac-race-engineer'
+$ServerName = 'assetto-mcp'
+# What this server was called before the rename. An entry under the old name
+# points at a module that no longer exists, so it is worth reporting.
+$LegacyServerName = 'ac-race-engineer'
 $BridgePort = 9666
 
 function L ($t) { [void]$lines.Add([string]$t); Write-Host $t }
@@ -127,6 +130,7 @@ foreach ($c in ($candidates | Select-Object -Unique)) {
 }
 
 $withEntry = @()   # configs that actually define our server, newest first
+$withLegacyEntry = @()   # configs still carrying the pre-rename entry
 
 foreach ($p in $configPaths) {
     H "CONFIG: $p"
@@ -185,6 +189,7 @@ foreach ($p in $configPaths) {
                     Command = [string]$e.command; Args = $a
                 }
             }
+            if ($n -eq $LegacyServerName) { $withLegacyEntry += $p }
         }
     } else {
         L "!! no 'mcpServers' key at the top level"
@@ -201,6 +206,15 @@ if ($withEntry.Count -gt 1) {
     L "   If more than one of these is live, each Claude surface launches its own"
     L "   copy of the server and they fight over port $BridgePort and the database."
     L "   Re-run install-windows.bat: it keeps exactly one and clears the rest."
+}
+
+if ($withLegacyEntry.Count -gt 0) {
+    L ""
+    L "!! a pre-rename '$LegacyServerName' entry is still present in:"
+    foreach ($p in $withLegacyEntry) { L "     $p" }
+    L "   It names a module that no longer exists, so Claude Desktop launches it,"
+    L "   gets ModuleNotFoundError, and shows a failed server. Re-run"
+    L "   install-windows.bat: it removes these."
 }
 
 # ---------------------------------------------------------------- python
@@ -230,21 +244,21 @@ foreach ($exe in $pyExes) {
     L "  version: $v"
     Push-Location ([System.IO.Path]::GetTempPath())
     try {
-        $imp = & $exe -c "import ac_race_engineer,sys;print('import OK ->',ac_race_engineer.__file__)" 2>&1
+        $imp = & $exe -c "import assetto_mcp,sys;print('import OK ->',assetto_mcp.__file__)" 2>&1
         $impCode = $LASTEXITCODE
-        $srv = & $exe -c "import ac_race_engineer.server;print('server module OK')" 2>&1
+        $srv = & $exe -c "import assetto_mcp.server;print('server module OK')" 2>&1
         $srvCode = $LASTEXITCODE
     } finally {
         Pop-Location
     }
-    L "  import ac_race_engineer          : $(if ($impCode -eq 0) {'OK'} else {'FAILED'})"
+    L "  import assetto_mcp          : $(if ($impCode -eq 0) {'OK'} else {'FAILED'})"
     L "    $($imp -join "`n    ")"
-    L "  import ac_race_engineer.server   : $(if ($srvCode -eq 0) {'OK'} else {'FAILED'})"
+    L "  import assetto_mcp.server   : $(if ($srvCode -eq 0) {'OK'} else {'FAILED'})"
     L "    $($srv -join "`n    ")"
 }
 
 # ------------------------------------------------------------ bridge port
-# ac_race_engineer/server.py starts the HTTP bridge at import time, so ANY
+# assetto_mcp/server.py starts the HTTP bridge at import time, so ANY
 # process that imports it binds this port immediately.
 H "BRIDGE PORT $BridgePort"
 
@@ -317,7 +331,7 @@ if (-not $cmd) {
     L "config used : $cfgUsed"
     L "running     : `"$cmd`" $($cargs -join ' ')   (2s, then killed)"
     if ($testPort -gt 0) {
-        L "bridge port : $testPort for this test (AC_ENGINEER_BRIDGE_PORT), so the"
+        L "bridge port : $testPort for this test (ASSETTO_MCP_BRIDGE_PORT), so the"
         L "              real port $BridgePort is never touched"
     } else {
         L "!! could not find a free test port; skipping the cold-start test to"
@@ -327,8 +341,8 @@ if (-not $cmd) {
     if ($testPort -gt 0) {
         $stdout = [System.IO.Path]::GetTempFileName()
         $stderr = [System.IO.Path]::GetTempFileName()
-        $prevPort = $env:AC_ENGINEER_BRIDGE_PORT
-        $env:AC_ENGINEER_BRIDGE_PORT = "$testPort"
+        $prevPort = $env:ASSETTO_MCP_BRIDGE_PORT
+        $env:ASSETTO_MCP_BRIDGE_PORT = "$testPort"
         try {
             # -ArgumentList rejects an empty array, so only pass it when there is one.
             if ($cargs.Count -gt 0) {
@@ -348,7 +362,7 @@ if (-not $cmd) {
         } catch {
             L "!! could not launch: $($_.Exception.Message)"
         } finally {
-            $env:AC_ENGINEER_BRIDGE_PORT = $prevPort
+            $env:ASSETTO_MCP_BRIDGE_PORT = $prevPort
         }
         Start-Sleep -Milliseconds 300   # let the handles flush before reading
 
@@ -412,7 +426,7 @@ if ($procs) {
 
 # ---------------------------------------------------------------- output
 $header = @(
-    "ac-race-engineer diagnostic report"
+    "assetto-mcp diagnostic report"
     "generated $(Get-Date -Format s) by diagnose.ps1"
     ""
     "PRIVACY NOTE"

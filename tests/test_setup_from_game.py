@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import make_session, post, run_module, temp_db  # noqa: E402
 
-from ac_race_engineer import db, setups  # noqa: E402
-from ac_race_engineer.bridge import Bridge  # noqa: E402
+from assetto_mcp import db, setups  # noqa: E402
+from assetto_mcp.bridge import Bridge  # noqa: E402
 
 
 class _Col:

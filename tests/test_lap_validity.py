@@ -17,8 +17,8 @@ from support import (complete_lap, enter_pits, leave_pits,  # noqa: E402
                      make_session, run_collector, run_module, temp_db,
                      tick, wait_for)
 
-from ac_race_engineer import analysis, db  # noqa: E402
-from ac_race_engineer.collector import _is_outlier  # noqa: E402
+from assetto_mcp import analysis, db  # noqa: E402
+from assetto_mcp.collector import _is_outlier  # noqa: E402
 
 
 def test_gross_outliers_are_set_aside():

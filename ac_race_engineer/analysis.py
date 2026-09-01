@@ -173,12 +173,13 @@ def _sane_channel(samples: list[dict], field: str,
     because leaving one of a matched pair unfiltered is how the first one
     came to be missed.
     """
-    out = []
-    for s in samples:
-        v = s.get(field)
-        if isinstance(v, (int, float)) and math.isfinite(v) and abs(v) <= limit:
-            out.append(v)
-    return out
+    return [s[field] for s in samples if _is_sane(s.get(field), limit)]
+
+
+def _is_sane(v, limit: float) -> bool:
+    """One acceleration reading that is a number, finite, and physical."""
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and math.isfinite(v) and abs(v) <= limit)
 
 
 def _lat_g_trace(samples: list[dict]) -> tuple[list[float], int]:
@@ -229,10 +230,9 @@ def _lat_g_peak(lat: list[float]) -> float:
     return mags[int(0.99 * (len(mags) - 1))] if mags else 0.0
 
 
-def lat_g_reference(
-        sample_sets: list[list[dict]] | Iterable[list[dict]]
-) -> float | None:
-    """One cornering load for a set of laps, to detect corners against.
+def lat_g_reference_detail(
+        sample_sets: Iterable[list[dict]]) -> dict:
+    """One cornering load for a set of laps, and how firm that number is.
 
     `sample_sets` is one entry per lap, each the sample list that lap's other
     analysis takes -- NOT a flat list of samples, which is the shape every
@@ -246,15 +246,22 @@ def lat_g_reference(
     behaviour this function exists to replace, from a call that appeared to
     work.
 
-    Pass every lap that is going to be compared. Returns None when none of
-    them carries enough lateral load to have corners at all, which leaves
-    detect_corners on its per-lap fallback. That is the real "nothing here
-    corners" answer, and it should not be reachable by a typo as well.
-
+<<<<<<< HEAD
+    Pass every lap that is going to be compared. `reference` is None when
+    none of them carries enough lateral load to have corners at all, which
+    leaves detect_corners on its per-lap fallback. That is the real
+    "nothing here corners" answer, and it should not be reachable by a
+    typo as well.
     The median rather than the mean or the max: one scrappy lap with a big
     correction on it, or one lap driven far harder than the rest, should not
     move the bar for the whole run. The median of five laps is unmoved by
     either.
+
+    `laps` is reported because that claim gets weaker as the count falls,
+    and at two it is not true at all -- the median of two IS their mean, so
+    a single scrappy lap drags the bar by half its own deviation. compare_laps
+    passes exactly two, so this is not a hypothetical, and a caller that
+    reports the reference should report how many laps produced it.
     """
     peaks = []
     for samples in sample_sets:
@@ -272,7 +279,56 @@ def lat_g_reference(
         # drag the reference down and promote noise on every other lap.
         if peak >= CORNER_MIN_PEAK_LAT_G:
             peaks.append(peak)
-    return median(peaks) if peaks else None
+    return {"reference": median(peaks) if peaks else None,
+            "laps": len(peaks),
+            "spread_g": (round(max(peaks) - min(peaks), 3)
+                         if len(peaks) > 1 else 0.0)}
+
+
+def lat_g_reference(
+        sample_sets: Iterable[list[dict]]) -> float | None:
+    """The shared cornering load alone, for callers that only threshold."""
+    return lat_g_reference_detail(sample_sets)["reference"]
+
+
+def corner_detection_note(reference: float | None, laps: int,
+                          own_peak: float | None = None,
+                          spread_g: float | None = None) -> dict:
+    """What bar the corners on this payload were found against.
+
+    Reported everywhere corners are, because it decides which corners exist
+    and it is not the same number in every tool. lap_summary read on its own
+    uses the lap's own peak; the same lap inside compare_runs uses the bar
+    shared across the comparison. Both are right, they disagree by design,
+    and a driver who reads one and then the other was previously given two
+    corner lists and no way to know why they differed.
+
+    `reference is not None` throughout rather than truthiness: it is
+    float | None, and 0.0 is a real reference meaning "nothing in this run
+    cornered". Treating that as absent would report the per-lap basis for a
+    payload whose corners were found against the shared one -- a note about
+    provenance that is wrong about provenance is worse than no note.
+    """
+    shared = reference is not None
+    bar = reference if shared else (own_peak or 0.0)
+    out = {
+        "basis": "shared across the laps being compared" if shared
+                 else "this lap's own cornering load",
+        "lat_g_reference": round(bar, 3),
+        "threshold_g": round(max(bar * CORNER_LAT_G_FRACTION,
+                                 CORNER_MIN_LAT_G), 3),
+    }
+    if shared:
+        out["laps_in_reference"] = laps
+        if spread_g is not None:
+            out["peak_spread_g"] = spread_g
+        if laps < 3:
+            out["caution"] = (
+                "a median over two laps is their mean, so one scrappy lap "
+                "moves this bar by half its own deviation. Corner membership "
+                "here is less settled than in a comparison with more laps a "
+                "side.")
+    return out
 
 
 def detect_corners(samples: list[dict],
@@ -333,7 +389,14 @@ def detect_corners(samples: list[dict],
     # and each lap is measured against the same bar. A lap analysed on its
     # own still falls back to its own peak, which is the best available
     # answer when there is nothing to compare it to.
-    peak = reference_peak_g if reference_peak_g else own_peak
+    #
+    # `is not None`, not truthiness. These are float | None, and a 0.0
+    # reference is a real answer -- "nothing in this run cornered" -- that
+    # must not silently become "use your own peak instead". Falling back on
+    # a falsy float is how one lap ends up measured against a different bar
+    # from the rest without anything saying so, which is the whole failure
+    # this parameter exists to end.
+    peak = own_peak if reference_peak_g is None else reference_peak_g
     thresh = max(peak * CORNER_LAT_G_FRACTION, CORNER_MIN_LAT_G)
 
     # A region is contiguous samples above the threshold turning the SAME
@@ -513,13 +576,20 @@ def _corner_stats(samples, apex_idx, exit_idx, brake_floor_idx=0) -> dict:
 
 
 def lap_summary(lap: dict, samples: list[dict],
-                reference_peak_g: float | None = None) -> dict:
+                reference_peak_g: float | None = None,
+                reference_laps: int = 0,
+                reference_spread_g: float | None = None) -> dict:
     """Everything an engineer needs to know about one lap, in ~1KB.
 
     reference_peak_g comes from lat_g_reference over every lap being looked
     at together. Omit it for a lap read on its own; pass it whenever two
     summaries are going to be compared, or the two corner lists are drawn
     against different bars and need not contain the same corners.
+
+    Which bar was used comes back in `corner_detection`, because that
+    difference is otherwise invisible: the same lap read here and read
+    inside compare_runs can carry different corners, and a driver comparing
+    the two payloads has no way to see why.
     """
     if not samples:
         return {"error": "no samples for this lap"}
@@ -536,9 +606,21 @@ def lap_summary(lap: dict, samples: list[dict],
 
     sane_lat = _sane_channel(samples, "acc_lat", LAT_G_SANE_MAX)
     sane_lon = _sane_channel(samples, "acc_lon", LON_G_SANE_MAX)
-    accel_dropped = (total - len(sane_lat)) + (total - len(sane_lon))
+    # Distinct samples, not the two channels' drops added together. These
+    # spikes come from a reset or a teleport and hit both axes on the same
+    # tick, so summing double-counted the usual case -- and a lap where
+    # every sample was glitched reported 800 dropped out of 400, a figure
+    # the driver is meant to read against the lap's own sample count.
+    accel_dropped = sum(
+        1 for s in samples
+        if not _is_sane(s.get("acc_lat"), LAT_G_SANE_MAX)
+        or not _is_sane(s.get("acc_lon"), LON_G_SANE_MAX))
 
     corners = detect_corners(samples, reference_peak_g)
+    detection = corner_detection_note(
+        reference_peak_g, reference_laps,
+        own_peak=_lat_g_peak(_lat_g_trace(samples)[0]),
+        spread_g=reference_spread_g)
     slip_balances = [c["slip_balance"] for c in corners
                      if c["slip_balance"] is not None]
 
@@ -563,6 +645,11 @@ def lap_summary(lap: dict, samples: list[dict],
         "lap_time": _fmt_time(lap["lap_time_ms"]),
         "lap_time_ms": lap["lap_time_ms"],
         "valid": bool(lap["valid"]),
+        # How many telemetry samples this lap is made of. Reported so
+        # accel_samples_dropped below has something to be read against: "12
+        # dropped" means nothing without it, and it is the denominator for
+        # judging whether a lap's peaks are trustworthy.
+        "samples": total,
         "top_speed_kmh": round(max(s["speed_kmh"] for s in samples), 1),
         "time_full_throttle_pct": round(
             100 * sum(1 for s in samples if s["gas"] > 0.95) / total, 1),
@@ -580,6 +667,10 @@ def lap_summary(lap: dict, samples: list[dict],
         # Said out loud rather than filtered silently: a lap that needed
         # this is one to look at twice, and it is the only warning that a
         # comparison including it may be reading a kerb strike as physics.
+        # Counts distinct samples, so it is directly comparable to `samples`
+        # above -- a spike usually hits both axes on the same tick, and
+        # adding the two channels' drops made this exceed the lap's own
+        # sample count.
         "accel_samples_dropped": accel_dropped or None,
         "avg_ride_height_f": round(mean(s["ride_f"] for s in samples), 4),
         "avg_ride_height_r": round(mean(s["ride_r"] for s in samples), 4),
@@ -590,6 +681,7 @@ def lap_summary(lap: dict, samples: list[dict],
         "balance_note": ("positive slip_balance = front slides more "
                          "(understeer); negative = rear (oversteer)"),
         "setup": lap.get("setup_name") or None,
+        "corner_detection": detection,
         "corners": corners,
     }
 
@@ -1800,6 +1892,22 @@ def _compare_corners(baseline, candidate, tolerance):
 LINE_MAX_POINTS = 200
 LINE_DEFAULT_POINTS = 100
 
+# How much a slice's front ride height must move before it is worth calling
+# a rough section. Below this the ranking is just sorting noise, and a
+# glass-smooth lap was still reporting its six "roughest" places at 0.0mm --
+# which reads as a finding rather than as the absence of one.
+ROUGH_MIN_RANGE_MM = 1.0
+
+
+def _has_position(samples: list[dict]) -> bool:
+    """Whether any sample carries a usable world position.
+
+    Both axes the line is drawn from, because a row with one and not the
+    other is not a position -- see the note in _binned_line.
+    """
+    return any(s.get("pos_x") is not None and s.get("pos_z") is not None
+               for s in samples)
+
 
 def _binned_line(samples: list[dict], points: int) -> list[dict | None]:
     """Average each channel within equal slices of track position.
@@ -1820,7 +1928,15 @@ def _binned_line(samples: list[dict], points: int) -> list[dict | None]:
 
     out: list[dict | None] = []
     for i, group in enumerate(bins):
-        placed = [s for s in group if s.get("pos_x") is not None]
+        # All three axes, not just pos_x. They are written together by the
+        # collector, so a row with one and not the others cannot come from a
+        # live session -- but store_lap accepts short tuples from earlier
+        # layouts, and a tuple truncated one field past tyres_out produces
+        # exactly this. Checking pos_x alone let such a row through to
+        # mean(s["pos_z"]), which raised a TypeError from inside statistics
+        # naming nothing the caller could act on.
+        placed = [s for s in group
+                  if s.get("pos_x") is not None and s.get("pos_z") is not None]
         if not placed:
             out.append(None)
             continue
@@ -1866,7 +1982,7 @@ def driving_line(lap: dict, samples: list[dict], points: int = 0,
 
     if not samples:
         return {"error": "no samples for this lap"}
-    if all(s.get("pos_x") is None for s in samples):
+    if not _has_position(samples):
         return {
             "lap_id": lap["id"],
             "has_position": False,
@@ -1900,7 +2016,7 @@ def driving_line(lap: dict, samples: list[dict], points: int = 0,
             out["comparison_error"] = (
                 f"lap {other_lap['id']} has no telemetry samples stored, so "
                 f"there is no line to compare against")
-        elif all(s.get("pos_x") is None for s in other_samples):
+        elif not _has_position(other_samples):
             out["comparison_error"] = (
                 f"lap {other_lap['id']} has no position data")
         else:
@@ -1937,13 +2053,22 @@ def driving_line(lap: dict, samples: list[dict], points: int = 0,
                     f"part of the lap.")
 
     measured = [p for p in line if p is not None]
-    rough = [p for p in measured if "ride_f_range_mm" in p]
+    # A floor, not just a ranking. Sorting descending always yields six
+    # entries, so a glass-smooth track reported six roughest sections at
+    # 0.0mm -- a list that looks like a finding and is the absence of one.
+    rough = [p for p in measured
+             if p.get("ride_f_range_mm", 0.0) >= ROUGH_MIN_RANGE_MM]
     if rough:
         rough.sort(key=lambda p: -p["ride_f_range_mm"])
         out["roughest_sections"] = [
             {"pos": p["pos"], "ride_f_range_mm": p["ride_f_range_mm"],
              "speed_kmh": p["speed_kmh"]}
             for p in rough[:6]]
+    elif any("ride_f_range_mm" in p for p in measured):
+        out["roughest_sections"] = []
+        out["surface_note"] = (
+            f"no slice moved the front ride height by "
+            f"{ROUGH_MIN_RANGE_MM}mm or more; nothing here reads as rough")
 
     out["slices_measured"] = len(measured)
     out["slices_empty"] = points - len(measured)
@@ -1959,7 +2084,8 @@ def compare_laps(lap_a: dict, samples_a: list[dict],
     # from one side simply does not appear in the comparison -- so the two
     # laps were being compared on whichever corners they happened to agree
     # existed.
-    ref = lat_g_reference([samples_a, samples_b])
+    detail = lat_g_reference_detail([samples_a, samples_b])
+    ref = detail["reference"]
     ca = detect_corners(samples_a, ref)
     cb = detect_corners(samples_b, ref)
 
@@ -1988,5 +2114,11 @@ def compare_laps(lap_a: dict, samples_a: list[dict],
         "time_delta_ms": lap_a["lap_time_ms"] - lap_b["lap_time_ms"],
         "note": "deltas are lap_a minus lap_b; positive min_speed_delta means"
                 " lap_a carried more speed",
+        # Which bar produced these corners, and how firm it is. Two laps is
+        # the weakest case for a median, and this tool always passes two.
+        "corner_detection": corner_detection_note(
+            ref, detail["laps"], spread_g=detail["spread_g"]),
+        "corners_found": {"lap_a": len(ca), "lap_b": len(cb),
+                          "matched": len(matched)},
         "corners": matched,
     }

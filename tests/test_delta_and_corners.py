@@ -664,6 +664,65 @@ def test_a_lap_of_nothing_but_glitches_reports_none():
     assert out["accel_samples_dropped"] == 1200, out
 
 
+def test_dropped_samples_are_counted_once_not_once_per_channel():
+    """The field says samples, and it is read against the sample count.
+
+    These spikes come from a reset or a teleport, which hits both
+    acceleration axes on the same tick, so adding the two channels' drops
+    together double-counted the usual case -- and could report more samples
+    dropped than the lap contained.
+    """
+    lap = _lap()
+    total = len(lap)
+    both = _spike(_spike(lap, "acc_lat", 99.0, at=100, n=5),
+                  "acc_lon", -99.0, at=100, n=5)
+    out = analysis.lap_summary(_meta(1, 113000), both)
+    assert out["accel_samples_dropped"] == 5, out["accel_samples_dropped"]
+    assert out["accel_samples_dropped"] <= out["samples"], out
+
+    everything = _spike(_spike(_lap(), "acc_lat", 99.0, at=0, n=total),
+                        "acc_lon", -99.0, at=0, n=total)
+    out = analysis.lap_summary(_meta(1, 113000), everything)
+    assert out["accel_samples_dropped"] == total, out
+    print(f"  5 samples bad on both axes -> 5 dropped, not 10; "
+          f"a fully glitched lap reports {total} of {total}")
+
+
+def test_a_zero_reference_is_a_reference_not_an_absence():
+    """float | None, so the check has to be `is not None`.
+
+    Truthiness makes 0.0 -- a real answer, "nothing in this run cornered" --
+    fall back to the lap's own peak. One lap silently measured against a
+    different bar from the rest is the exact failure the shared reference
+    exists to end, so the fallback must fire only for None.
+    """
+    # A lap with three firm corners and one light one. The light corner sits
+    # above the absolute floor and below a bar derived from this lap's own
+    # peak, so it exists under a 0.0 reference and not under the fallback --
+    # which is exactly what tells the two apart.
+    lap = _lap(corners=((0.15, 0.05, 2.4), (0.45, 0.04, 2.2),
+                        (0.70, 0.08, 2.8), (0.88, 0.05, 0.5)))
+    own = analysis._lat_g_peak(analysis._lat_g_trace(lap)[0])
+    assert own * analysis.CORNER_LAT_G_FRACTION > 0.5 > \
+        analysis.CORNER_MIN_LAT_G, own
+
+    at_zero = analysis.detect_corners(lap, 0.0)
+    at_own = analysis.detect_corners(lap, None)
+    assert len(at_zero) == 4, len(at_zero)
+    assert len(at_own) == 3, len(at_own)
+
+    note = analysis.corner_detection_note(0.0, laps=4)
+    assert note["basis"].startswith("shared"), note
+    assert note["lat_g_reference"] == 0.0, note
+    assert note["laps_in_reference"] == 4, note
+
+    own_note = analysis.corner_detection_note(None, laps=0, own_peak=own)
+    assert own_note["basis"] == "this lap's own cornering load", own_note
+    assert "laps_in_reference" not in own_note, own_note
+    print(f"  0.0 kept as a shared bar ({len(at_zero)} corners); None falls "
+          f"back to this lap's own {own:.2f}g ({len(at_own)} corners)")
+
+
 def test_both_channels_are_held_to_the_same_bar_as_corner_detection():
     """One signal, one definition of believable.
 
@@ -802,6 +861,29 @@ def test_the_point_count_is_clamped_rather_than_trusted():
     for asked, expect in ((0, 100), (5, 10), (99999, 200), (40, 40)):
         out = analysis.driving_line(_meta(1, 113000), _placed(_lap()), asked)
         assert out["points"] == expect, (asked, out["points"])
+
+
+def test_a_smooth_track_reports_no_rough_sections():
+    """Sorting descending always returns six, so a glass-smooth lap listed
+    six roughest places at 0.0mm -- a list shaped like a finding."""
+    out = analysis.driving_line(_meta(1, 113000), _placed(_lap()), points=20)
+    assert out["roughest_sections"] == [], out["roughest_sections"]
+    assert "nothing here reads as rough" in out["surface_note"], out
+    print(f"  {out['surface_note']}")
+
+
+def test_a_position_missing_one_axis_is_not_a_position():
+    """The collector writes x, y and z together, so this cannot come from a
+    live session -- but store_lap pads short tuples from earlier layouts,
+    and one truncated a field past tyres_out lands exactly here. Checking
+    pos_x alone let it reach mean(pos_z) and raise from inside statistics."""
+    samples = _placed(_lap())
+    for s in samples:
+        s["pos_z"] = None
+    out = analysis.driving_line(_meta(1, 113000), samples)
+    assert out["has_position"] is False, out
+    assert "line" not in out, out
+    print("  x without z reported as no position, not raised from statistics")
 
 
 def test_a_flat_list_of_samples_is_refused_rather_than_answered():

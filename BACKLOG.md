@@ -5,7 +5,8 @@ already produced. Each entry says what is wrong, where it bit, and where the
 code lives, so a future session can act without re-deriving any of it.
 
 Written after the Sebring / NSX GT3 session, and kept current since. Test
-suite stands at 337 passing, schema at v11.
+suite stands at 389 passing with the Lua tooling installed (21 of them
+skip without lupa), schema at v12.
 
 ---
 
@@ -195,28 +196,44 @@ Highest value first:
 
 ## 7. Display-mapping registry
 
-**Status:** proposed, never built. Cost three driver corrections in one
-evening.
+**Status:** built, in schema v12. What remains is filling it in, which only
+happens at the setup screen.
 
-`setup_ranges` reports `show_clicks_mode` and `display_multiplier`, and
-`write_setup` prints things like `"0 (click index, mode 2)"` — which is the
-tool admitting it does not know what the setup screen will say. It then gets
-guessed at anyway.
+`setup_ranges` reported `show_clicks_mode` and `display_multiplier`, and
+`write_setup` printed things like `"0 (click index, mode 2)"` — the tool
+admitting it did not know what the setup screen would say, in a format that
+reads like an answer. It then got repeated back as one.
 
-**Corrections needed so far:**
+**Corrections that were needed, and what handles each now:**
 
-| Field | Guess | Truth |
-|---|---|---|
-| Camber (F4) | −25 out of range | −25 *is* the maximum |
-| Toe (F4) | rear toe-out | front axle display is negated |
-| Rod length (F4) | ~1 mm per click | a fraction of a mm |
-| Toe (NSX) | stored 0 = 0.00° | stored **10** = 0.00° |
-| Traction control | unknown direction | **1 = most**, 11 = least |
+| Field | Guess | Truth | Handled by |
+|---|---|---|---|
+| Camber (F4) | −25 out of range | −25 *is* the maximum | game ranges (fixed earlier) |
+| Toe (F4) | rear toe-out | front axle display is negated | slope −0.01, two readings |
+| Rod length (F4) | ~1 mm per click | a fraction of a mm | slope from two readings |
+| Toe (NSX) | stored 0 = 0.00° | stored **10** = 0.00° | offset from ONE reading |
+| Traction control | unknown direction | **1 = most**, 11 = least | a note, not a number |
 
-**Fix:** a small table keyed on (car, field) storing observed
-(stored_value → displayed_value) pairs. Two points define a linear mapping.
-`write_setup` then reports the real displayed value, and refuses to guess
-when it has no mapping rather than guessing anyway.
+**What was built:** `display_observations` holds (car, field, stored →
+displayed) pairs read off the screen; `display_notes` holds what is not a
+number. `setups.fit_display` turns them into a line — two distinct stored
+values give slope and offset outright, one borrows the game's multiplier as
+the slope and fits only the offset, which is the NSX case and costs one
+number. `record_display_value`, `record_display_range` (both ends of the
+spinner at once) and `forget_display_value` are the tools; a misreading has
+to be undoable, because a mapping fitted from one is stated with confidence.
+
+Everything reported now carries a `source` — `observed`, `game`, `stored` or
+`unknown` — and `unknown` states no value at all. That is the actual fix:
+the registry gives it somewhere to put the truth, and the `source` field is
+what stops it inventing one in the meantime.
+
+**Still open:** nothing populates this automatically. CSP exposes
+`displayMultiplier` and `showClicksMode` but no formatted display string —
+`acc-lua-internal/lua-module/src/_hotlap_utils.lua:265` does
+`e[1] * sd.displayMultiplier` itself, the same arithmetic and the same
+exposure to being wrong — so a reading has to come from a driver looking at
+the screen. Worth revisiting if CSP ever exposes the rendered value.
 
 ---
 

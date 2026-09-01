@@ -423,41 +423,283 @@ def load_ranges(ranges_dir: Path, car: str) -> dict | None:
     return ranges
 
 
-def _displays_as(stored: float, conv: dict | None) -> str | None:
-    """How a stored value reads on AC's setup screen, or None if unknown.
+# Two stored values closer together than this, relative to their own
+# magnitude, are the same spinner position. Deliberately not exact equality:
+# a continuous entry can report stored values that differ only in the last
+# bit, and dividing by that difference gave a slope of 2e14.
+_STORED_EPS = 1e-9
 
-    Deliberately a string, not a converted number. The stored value is what
-    the file must contain, so replacing it would be wrong; this exists so a
-    report cannot say "wrote 20" when the driver asked for 20 mm and the car
-    took 20 clicks.
 
-    None means only that nothing is known about this entry's display. It is
-    not the answer for an entry the game describes as needing no conversion
-    at all -- that entry has a display, it is just the stored number.
+def fit_display(observations: list[tuple], multiplier: float | None = None
+                ) -> dict | None:
+    """A linear stored -> displayed mapping from what the driver read.
+
+    observations: (stored, displayed) pairs. Returns
+    {slope, offset, basis, points} or None if nothing can be fitted.
+
+    Two distinct stored values give both slope and offset outright: two
+    points define a line, and that covers a negated axis, a wrong scale and
+    a wrong zero at once.
+
+    One observation cannot separate a scale error from an offset error, so
+    it borrows the game's own `display_multiplier` as the slope and fits
+    only the offset. That is not a guess dressed up -- it is the NSX toe
+    case exactly, where the scale was right and the zero was not (stored 10
+    reads 0.00 degrees), and it costs the driver one number instead of two.
+    `basis` says which happened so a reader can tell a fitted line from a
+    half-fitted one.
+
+    Fits from the two most extreme stored values rather than a least
+    squares over all of them. The relationship is exactly linear -- it is a
+    multiply and an add inside the game -- so extra points are confirmation,
+    not signal, and the widest pair gives the least error from rounding on
+    the screen.
+    """
+    pts = set()
+    for s, d in observations:
+        try:
+            fs, fd = float(s), float(d)
+        except (TypeError, ValueError):
+            continue        # a NULL or a string in the table is not a point
+        if math.isfinite(fs) and math.isfinite(fd):
+            pts.add((fs, fd))
+    pts = sorted(pts)
+    if not pts:
+        return None
+
+    (s0, d0), (s1, d1) = pts[0], pts[-1]
+    # Relative, not exact. Two readings whose stored values differ only by
+    # floating-point noise are one reading, and dividing by that difference
+    # produced a slope of 2e14 and a screen value of 1.5e15 reported as
+    # `observed`. Continuous entries (step 0) are supported deliberately, so
+    # this is reachable rather than theoretical.
+    spread = abs(s1 - s0)
+    if spread > _STORED_EPS * max(1.0, abs(s0), abs(s1)):
+        if d1 == d0:
+            # Both ends read the same. That is a screen that rounds, or the
+            # same number written down twice -- not a horizontal line. A
+            # slope of 0 would report every value of the entry as one
+            # number, with `observed` beside it.
+            return _offset_only(s0, d0, multiplier, pts,
+                                why="both readings showed the same number, "
+                                    "so they cannot define a scale")
+        slope = (d1 - d0) / (s1 - s0)
+        out = {"slope": slope, "offset": d0 - slope * s0,
+               "basis": "two observations", "points": len(pts),
+               "fitted_over": [s0, s1]}
+        # Residual against the fitted line. `points` used to be published as
+        # "observations: 3" while a wildly contradictory middle reading was
+        # silently discarded -- confirmation counted without being checked.
+        worst = max(((s, d, abs(d - (slope * s + out["offset"])))
+                     for s, d in pts), key=lambda t: t[2], default=None)
+        if worst and worst[2] > _residual_tolerance(pts):
+            out["disagreement"] = {
+                "stored": worst[0], "read": worst[1],
+                "predicted": round(slope * worst[0] + out["offset"], 4),
+                "note": "a reading disagrees with the line the others make. "
+                        "One of them was misread; forget_display_value "
+                        "clears them all so they can be taken again."}
+        return out
+
+    # One point, or several at the same spinner position.
+    return _offset_only(s0, d0, multiplier, pts,
+                        why="only one spinner position has been read")
+
+
+def _residual_tolerance(pts: list) -> float:
+    """How far a reading may sit off the line before it is a disagreement.
+
+    Proportional to the displayed span, because a screen showing degrees to
+    two places and one showing millimetres to one place round differently.
+    Never zero, so an exactly-linear set does not flag itself.
+    """
+    span = abs(pts[-1][1] - pts[0][1])
+    return max(span * 0.02, 1e-9)
+
+
+def _offset_only(s0: float, d0: float, multiplier, pts: list,
+                 why: str) -> dict | None:
+    """Fit the zero against the game's scale, or admit there is no fit.
+
+    None when the game gives no usable multiplier -- which is exactly the
+    click-index entries, the ones with no known display at all. Returning a
+    mapping there would mean inventing the scale, and returning success
+    without one was worse: the tool reported the reading accepted, the entry
+    stayed "unknown", and the advice was to do the thing that had just been
+    done.
+    """
+    if multiplier in (None, 0) or multiplier is False:
+        return None
+    mult = float(multiplier)
+    return {"slope": mult, "offset": d0 - mult * s0,
+            "basis": "one observation, scale from the game", "points": len(pts),
+            "why_partial": why, "fitted_over": [s0, s0]}
+
+
+def apply_display(stored: float, mapping: dict) -> float:
+    return mapping["slope"] * stored + mapping["offset"]
+
+
+def describe_display(conv: dict | None) -> dict:
+    """What is known about one entry's screen display, without a value.
+
+    For listings, where there is no particular stored number to convert but
+    a reader still has to be told whether anything here knows what the
+    screen says.
+    """
+    if not conv:
+        return {"source": "unknown",
+                "reason": "no spinner data and no readings for this entry"}
+    out: dict = {}
+    if conv.get("note"):
+        out["note"] = conv["note"]
+    if conv.get("units"):
+        out["units"] = conv["units"]
+
+    mapping = conv.get("mapping")
+    if mapping:
+        partial = mapping["points"] < 2 or "why_partial" in mapping
+        out.update(source="observed_offset" if partial else "observed",
+                   basis=mapping["basis"],
+                   observations=mapping["points"],
+                   slope=round(mapping["slope"], 6),
+                   offset=round(mapping["offset"], 6),
+                   formula=f"screen = {mapping['slope']:g} * stored"
+                           f" + {mapping['offset']:g}")
+        if mapping.get("fitted_over"):
+            out["fitted_over"] = mapping["fitted_over"]
+        if mapping.get("disagreement"):
+            out["disagreement"] = mapping["disagreement"]
+        return out
+    if conv.get("show_clicks_mode"):
+        out.update(
+            source="unknown",
+            reason=f"the game reports a click index (mode "
+                   f"{conv['show_clicks_mode']}), which says the stored "
+                   f"number is a position rather than a value",
+            how_to_fix="record_display_value with what the driver reads")
+        return out
+    if conv.get("from_game", True) is False:
+        out.update(
+            source="unknown",
+            reason="the in-game app has never reported this entry, so a "
+                   "missing multiplier means nobody said rather than no "
+                   "conversion",
+            how_to_fix="open the setup screen with the app running, then "
+                       "record_display_value")
+        return out
+    mult = conv.get("display_multiplier")
+    if mult in (None, 0, 1):
+        out.update(source="stored", formula="screen = stored")
+        return out
+    out.update(source="game", display_multiplier=mult,
+               formula=f"screen = {mult:g} * stored",
+               caveat="the game's own multiplier, which has been wrong "
+                      "before about sign, scale and zero")
+    return out
+
+
+def _displays_as(stored: float, conv: dict | None) -> dict | None:
+    """How a stored value reads on AC's setup screen.
+
+    Returns a dict -- `shown`, `source`, and `confidence` -- rather than the
+    bare string it used to. The string said things like
+    "0 (click index, mode 2)", which is the tool admitting it does not know
+    what the screen will say, in a format that reads like an answer. It got
+    repeated back to the driver as one five times in an evening.
+
+    `source` is the load-bearing field:
+      observed         a line fitted from two readings off the actual screen
+      observed_offset  the zero came from a reading, the scale from the game
+      game             the game's display_multiplier, applied as documented
+      stored           the game says the screen shows the stored number
+      unknown          nothing here knows; do not state a displayed value
+
+    `observed_offset` is separate from `observed` on purpose. It borrows the
+    game's multiplier for the scale -- the same number that has been wrong
+    about scale -- so it is not the same claim, and `source` is the field
+    every docstring tells a reader to key off.
+
+    None only when there is no entry at all.
     """
     if not conv:
         return None
-    mult = conv.get("display_multiplier")
     units = (conv.get("units") or "").strip()
     clicks = conv.get("show_clicks_mode")
+    mult = conv.get("display_multiplier")
+    mapping = conv.get("mapping")
+    note = conv.get("note")
 
-    # show_clicks_mode is not a multiplier: it says the number *is* an index
-    # into the car's positions, so there is no unit to convert to.
+    def out(**kw):
+        if units:
+            kw["units"] = units
+        if note:
+            kw["note"] = note
+        return kw
+
+    if mapping:
+        shown = apply_display(stored, mapping)
+        partial = mapping["points"] < 2 or "why_partial" in mapping
+        res = out(shown=f"{shown:g}{(' ' + units) if units else ''}",
+                  value=round(shown, 4),
+                  source="observed_offset" if partial else "observed",
+                  basis=mapping["basis"], stored=stored)
+        if partial:
+            res["caveat"] = (
+                "the zero is measured, the scale is the game's -- which has "
+                "been wrong about scale. A reading at a different spinner "
+                "position would settle it.")
+        if mapping.get("disagreement"):
+            res["disagreement"] = mapping["disagreement"]
+        lo, hi = mapping.get("fitted_over", (None, None))
+        if lo is not None and not (lo - _STORED_EPS <= stored
+                                   <= hi + _STORED_EPS):
+            res["extrapolated"] = (
+                f"outside the range these readings covered ({lo:g} to "
+                f"{hi:g}); the further out, the more any rounding on the "
+                f"screen is multiplied")
+        return res
+
+    # show_clicks_mode says the number IS an index into the car's positions,
+    # so there is no unit and no multiplier to apply. Nothing here can turn
+    # it into what the screen shows, and saying so plainly is the whole
+    # point -- this is where the guessing used to happen.
     if clicks:
-        return f"{stored:g} (click index, mode {clicks})"
+        return out(
+            shown=None, source="unknown", stored=stored,
+            reason=f"the game reports this as a click index (mode {clicks}), "
+                   f"not a value. What the screen shows for it is not "
+                   f"derivable from anything here.",
+            how_to_fix="ask the driver what the setup screen reads for this "
+                       "entry and record it with record_display_value")
+
+    # Defaults to True: a caller handing us a conv dict directly is handing
+    # us the game's own fields. db.setup_display sets it explicitly either
+    # way, so only an entry it KNOWS the game never described lands here.
+    if conv.get("from_game", True) is False:
+        # Here only because somebody left a note or a reading on it. A NULL
+        # multiplier then means "nobody said", not "no conversion", and
+        # reporting it as `stored` is a confident answer built from an
+        # absence.
+        return out(shown=None, source="unknown", stored=stored,
+                   reason="the in-game app has never reported this entry, so "
+                          "nothing here knows how it is displayed",
+                   how_to_fix="open the setup screen with the app running, "
+                              "then record_display_value")
+
     if mult in (None, 0, 1):
         # 0 and 1 both mean "shown as stored"; 0 is how some entries report
         # having no conversion, and coalescing it to a multiplier would
         # scale the value to nothing.
-        #
-        # No units either just means the screen shows a bare number, which is
-        # a complete answer rather than a missing one. Returning None dropped
-        # the entry out of `displays_as` altogether -- so the report that
-        # promises to say what every written value means went quiet on
-        # exactly the entries where the answer was simplest.
-        return f"{stored:g}{(' ' + units) if units else ''}"
+        return out(shown=f"{stored:g}{(' ' + units) if units else ''}",
+                   value=stored, source="stored", stored=stored)
+
     shown = stored * mult
-    return f"{shown:g}{(' ' + units) if units else ''} (stored {stored:g})"
+    return out(shown=f"{shown:g}{(' ' + units) if units else ''}",
+               value=round(shown, 4), source="game", stored=stored,
+               caveat="from the game's display_multiplier, which has been "
+                      "wrong before (a negated axis, a non-zero zero). "
+                      "record_display_value replaces it with a reading.")
 
 
 def legal_values(lo: float, hi: float, step: float) -> list[float]:
@@ -735,6 +977,8 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
         shown = _displays_as(value, (display or {}).get(section))
         if shown:
             report.setdefault("displays_as", {})[section] = shown
+            if shown.get("source") == "unknown":
+                report.setdefault("display_unknown", []).append(section)
 
     # Refuse an empty result *before* touching the file. This check used to
     # run after the write, which was survivable when the write created a new
@@ -801,4 +1045,11 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
             "None of the requested values were written - the file is a copy "
             "of " + str(base_setup) + ". Sections not valid for this car: "
             + ", ".join(report["unknown_sections"] or ["(none supplied)"]))
+    if report.get("display_unknown"):
+        report["display_note"] = (
+            "The values were written correctly, but for "
+            + ", ".join(report["display_unknown"]) + " nothing here knows "
+            "what the setup SCREEN will show. Do not state one: say it is "
+            "unknown, and offer to record what the driver reads with "
+            "record_display_value so it is known next time.")
     return report

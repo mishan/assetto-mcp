@@ -74,8 +74,9 @@ remember to switch on.
 
 > *"Confirm you can see my session."*
 
-**2. Drive 3–5 laps.** They store as they complete. Out-laps are skipped, and
-scrappy laps are marked so they don't poison your best-lap numbers.
+**2. Drive 3–5 laps.** They store as they complete — every lap, including
+out-laps and the one that ended in the barrier. Each is flagged for what it is,
+so a lap whose time isn't a lap time can't poison your best-lap numbers.
 
 **3. Ask what the car is doing.**
 
@@ -94,6 +95,14 @@ Values are clamped to what your car will actually accept, so the game can't
 silently ignore them. Two things it will refuse rather than do quietly: reusing
 an existing setup name, and writing at all when it has no ranges for the car —
 which is what happens if the in-game app has never seen the setup screen.
+
+It'll also tell you what each value reads as on the **setup screen**, which is
+often a different number from the stored one — or say it doesn't know, rather
+than guessing. Read a couple off the screen for it and it won't have to ask
+again:
+
+> *"At minimum front toe shows 0.40, at maximum -0.40."*
+
 Details: [docs/SETUP-RANGES.md](docs/SETUP-RANGES.md).
 
 **5. Pit, load the setup — then say you loaded it.**
@@ -229,8 +238,9 @@ before sharing it.
   current statistics call that "within noise".
 - **Use the channels already being recorded** — tyre wear across a stint, TC
   and ABS intervention, body roll. All logged, none read yet.
-- **Report the number your setup screen shows.** Stored values and displayed
-  values differ per car and per field, and the tool currently guesses.
+- **Fill in the display registry.** It no longer guesses what your setup
+  screen shows — it says "unknown" and asks — but it only knows a car once
+  you've read a couple of values off the screen for it.
 - **Per-track corner names**, so advice reads "T3 / Variante" rather than
   "the corner at 0.34".
 

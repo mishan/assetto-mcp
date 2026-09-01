@@ -7,6 +7,7 @@ does nothing at all, which is how a column addition ships green and no-ops
 on the only database anyone cares about.
 """
 
+import re
 import sqlite3
 import sys
 import tempfile
@@ -255,6 +256,68 @@ def test_a_database_missing_a_column_it_should_have_still_upgrades():
             assert {"complete", "invalid", "pitted"} <= cols, cols
             assert len(db.list_laps(conn, limit=None)) == 2
             print("  a database missing `complete` upgrades cleanly")
+        finally:
+            conn.close()
+
+
+def test_v12_adds_its_tables_to_a_real_v11_database():
+    """v12 is new tables only, so it has no ALTER step at all.
+
+    That is only correct because connect() runs _migrate and *then*
+    executescript(SCHEMA), where CREATE TABLE IF NOT EXISTS creates them. A
+    version bump with no migration block is the shape of a change that
+    silently does nothing, so the ordering is pinned rather than assumed.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "v11.db"
+        # Build a genuine v11 file: the current schema minus the two tables
+        # v12 introduces, stamped at 11.
+        raw = sqlite3.connect(path)
+        v11 = db.SCHEMA
+        for table in ("display_observations", "display_notes"):
+            v11 = re.sub(
+                rf"CREATE TABLE IF NOT EXISTS {table}\s*\(.*?\n\);",
+                "", v11, flags=re.DOTALL)
+        assert "display_observations" not in v11, "fixture still has v12"
+        raw.executescript(v11)
+        raw.execute("PRAGMA user_version = 11")
+        raw.commit()
+        raw.close()
+
+        conn = db.connect(path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == 12
+            # And they are writable, not merely present.
+            db.record_display_observation(conn, "carx", "TOE_OUT_LF", 10, 0.1)
+            db.record_display_note(conn, "carx", "TOE_OUT_LF", "reads negated")
+            assert db.display_observations(conn, "carx") == \
+                {"TOE_OUT_LF": [(10.0, 0.1)]}
+            assert db.display_notes(conn, "carx")["TOE_OUT_LF"] == \
+                "reads negated"
+            print("  v11 -> v12: both display tables created and usable")
+        finally:
+            conn.close()
+
+
+def test_display_readings_survive_a_retention_pass():
+    # They are keyed on the car, not the session, so pruning a session's
+    # samples must not take a car's hard-won screen readings with it.
+    from assetto_mcp import retention
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "t.db"
+        conn = db.connect(path)
+        try:
+            sid = make_session(conn, car="carx")
+            db.record_display_observation(conn, "carx", "TOE_OUT_LF", 10, 0.1)
+            sample = (180.0, 1.0, 0.0, 0.0, 4, 9000, 0.0, 0.0,
+                      0.4, 0.4, 0.3, 0.3, 26.0, 26.0, 26.0, 26.0,
+                      85.0, 85.0, 85.0, 85.0, 0.02, 0.024, 0)
+            for lap in range(1, 4):
+                db.store_lap(conn, sid, lap, 113000, True,
+                             [(i * 40, i / 200, *sample) for i in range(200)])
+            retention.enforce_budget(conn, path, 1)
+            assert db.display_observations(conn, "carx") == \
+                {"TOE_OUT_LF": [(10.0, 0.1)]}
         finally:
             conn.close()
 

@@ -443,33 +443,61 @@ def legal_values(lo: float, hi: float, step: float) -> list[float]:
     ladders exist on the front anti-roll bar: 126607 is on the descending
     one and 126608 on the ascending one, and a one-step reduction landed on
     117358 when 117357 was available and exact.
+
+    Enumerating is for reporting and for tests. snap() does not use it: a
+    1-unit step over a wide range -- which nothing rules out, since these
+    numbers come from whatever the game reports for whatever car is loaded
+    -- is a hundred thousand values per field per write, and there is no
+    reason to build them to pick one. Returns [] above LEGAL_VALUES_MAX
+    rungs, which means "too many to list", not "none".
     """
-    if step <= 0 or hi < lo:
+    n = _rungs(lo, hi, step)
+    if n is None or n > LEGAL_VALUES_MAX:
         return []
-    out = set()
-    v = lo
-    while v < hi:
-        out.add(round(v, 6))
-        v += step
-    out.add(round(hi, 6))
-    v = hi
-    while v > lo:
-        out.add(round(v, 6))
-        v -= step
-    out.add(round(lo, 6))
-    return sorted(x for x in out if lo <= x <= hi)
+    out = {round(lo, 6), round(hi, 6)}
+    for k in range(n + 1):
+        out.add(round(lo + k * step, 6))
+        out.add(round(hi - k * step, 6))
+    return sorted(x for x in out if lo - _EPS <= x <= hi + _EPS)
+
+
+# Above this the ladders are not worth materialising, and nothing needs them
+# to be: legal_values is a reporting helper, and snap works arithmetically.
+LEGAL_VALUES_MAX = 10000
+_EPS = 1e-9
+
+
+def _rungs(lo: float, hi: float, step: float) -> int | None:
+    """How many whole steps fit between lo and hi. None if the range is
+    not a range at all."""
+    if step <= 0 or hi < lo:
+        return None
+    return int(math.floor((hi - lo) / step + _EPS))
 
 
 def snap(value: float, lo: float, hi: float, step: float) -> float:
     """The reachable value nearest what was asked for.
 
+    Both ladders are arithmetic, so the nearest rung on each is computed
+    rather than searched: at most six candidates, whatever the range. The
+    enumerating version cost 80ms and 100,001 floats on a 1-unit step, per
+    field, on every write.
+
     Ties go to the lower value, so a request exactly between two rungs is
     answered the same way twice rather than depending on set ordering.
     """
-    options = legal_values(lo, hi, step)
-    if not options:
+    n = _rungs(lo, hi, step)
+    if n is None:
         return min(max(value, lo), hi)
-    return min(options, key=lambda x: (abs(x - value), x))
+    value = min(max(value, lo), hi)
+    out = {round(lo, 6), round(hi, 6)}
+    for base, sign in ((lo, 1.0), (hi, -1.0)):
+        exact = sign * (value - base) / step
+        for k in (math.floor(exact), math.floor(exact) + 1):
+            k = min(max(int(k), 0), n)
+            out.add(round(base + sign * k * step, 6))
+    return min((x for x in out if lo - _EPS <= x <= hi + _EPS),
+               key=lambda x: (abs(x - value), x))
 
 
 def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,

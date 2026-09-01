@@ -8,6 +8,7 @@ nothing changed". Anything this module cannot honour has to say so loudly.
 
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -242,6 +243,45 @@ def test_a_degenerate_range_does_not_raise():
     assert setups.legal_values(1, 10, 0) == []
     # With no reachable set to consult, snap still has to clamp.
     assert setups.snap(99, 1, 10, 0) == 10
+    assert setups.snap(5, 5, 5, 1) == 5
+
+
+def test_snapping_agrees_with_enumerating_across_the_whole_range():
+    """snap() is arithmetic and legal_values() enumerates, so they can
+    drift apart silently. They must not: the enumerated set is the
+    definition, and snap is only an optimisation of searching it.
+
+    The optimisation is not cosmetic. Enumerating cost 80ms and 100,001
+    floats for a 1-unit step over a wide range, per field, on every write --
+    and nothing bounds what the game reports for a car nobody has loaded
+    yet.
+    """
+    cases = [(53, 88, 17), (52608, 182107, 9250), (0, 10, 1), (0, 3.5, 0.1),
+             (-25, 25, 5), (1, 100, 7), (5, 5, 1), (0, 1, 0.25)]
+    for lo, hi, step in cases:
+        options = setups.legal_values(lo, hi, step)
+        assert options, (lo, hi, step)
+        span = hi - lo
+        for i in range(201):
+            v = lo - 0.1 * span + (1.2 * span) * i / 200.0
+            want = min(options, key=lambda x: (abs(x - min(max(v, lo), hi)), x))
+            got = setups.snap(v, lo, hi, step)
+            assert abs(got - want) < 1e-6, (lo, hi, step, v, got, want)
+    print(f"  {len(cases)} ranges x 201 requests: arithmetic == enumerated")
+
+
+def test_a_huge_ladder_is_not_materialised_to_snap_one_value():
+    """A 1-unit step over 100,000 units is a real thing for a game-reported
+    range, and building it to pick one value is pure waste."""
+    lo, hi, step = 100000, 200000, 1
+    began = time.perf_counter()
+    got = setups.snap(126607.4, lo, hi, step)
+    took = time.perf_counter() - began
+    assert got == 126607, got
+    assert took < 0.01, f"snap took {took * 1000:.0f}ms"
+    # And the enumerating helper declines rather than allocating it.
+    assert setups.legal_values(lo, hi, step) == []
+    print(f"  snapped in {took * 1e6:.0f}us without building 100,001 values")
 
 
 def test_step_of_zero_does_not_become_a_divide_trap():

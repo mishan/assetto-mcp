@@ -218,19 +218,71 @@ def test_the_overlay_calls_out_laps_driven_but_not_stored():
     """
     lua, api, rec = lua_harness.load()
     api.setConnected(True)
+    api.setRunning(True)
 
-    # One lap down, nothing stored: could be an out-lap, which is skipped
-    # by design. Not yet a complaint.
-    api.setLapCount(1)
+    # Recording starts with the game already at lap 3. That is the baseline,
+    # not a shortfall.
+    api.setLapCount(3)
     api.setLaps(0)
     assert api.recordingHealth()[0] != "not-storing", api.recordingHealth()
 
-    # Two finished laps and still nothing stored is not explicable.
-    api.setLapCount(7)
+    # One lap since: could be an out-lap, which is skipped by design.
+    api.setLapCount(4)
+    assert api.recordingHealth()[0] != "not-storing", api.recordingHealth()
+
+    # Seven finished since recording began, still nothing stored.
+    api.setLapCount(10)
     state, detail = api.recordingHealth()
     assert state == "not-storing", state
     assert "7 laps driven" in detail and "0 stored" in detail, detail
-    print(f"  7 driven / 0 stored -> {state!r}: {detail!r}")
+    print(f"  baseline 3, lapCount 10 -> {state!r}: {detail!r}")
+
+
+def test_a_recorder_that_started_late_does_not_cry_wolf():
+    """The false alarm this warning produced the first time it mattered.
+
+    The driver restarted the MCP server twenty-six laps into a game session.
+    The collector opened cleanly and was waiting for lap twenty-seven. The
+    overlay compared the game's twenty-six against the recorder's zero and
+    put NOT STORING LAPS over a collector that was working perfectly.
+
+    A warning that fires when nothing is wrong is worse than no warning: it
+    is the one the driver learns to ignore, and this one exists because
+    seven laps at Suzuka were lost while the light was green.
+    """
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setLapCount(26)
+    api.setLaps(0)
+
+    state, detail = api.recordingHealth()
+    assert state == "recording", (state, detail)
+    assert api.baseline() == 26, api.baseline()
+    print(f"  26 laps already driven, recording just started -> {state!r}")
+
+
+def test_the_baseline_is_forgotten_when_recording_stops():
+    """Otherwise the next run measures itself against the last one's start."""
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setLapCount(5)
+    api.setLaps(0)
+    api.recordingHealth()
+    assert api.baseline() == 5, api.baseline()
+
+    api.setRunning(False)
+    api.recordingHealth()
+    assert api.baseline() is None, api.baseline()
+
+    # A second run starts counting from wherever the game now is.
+    api.setRunning(True)
+    api.setLapCount(9)
+    api.recordingHealth()
+    assert api.baseline() == 9, api.baseline()
+    assert api.recordingHealth()[0] == "recording"
+    print("  baseline cleared on stop and re-taken on the next run")
 
 
 def test_storing_laps_reads_as_recording():

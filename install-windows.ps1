@@ -414,6 +414,15 @@ $defaultDataDir = Join-Path $env:USERPROFILE '.assetto-mcp'
 $haveLegacyDir  = Test-Path -LiteralPath $LegacyDataDir  -PathType Container
 $haveDefaultDir = Test-Path -LiteralPath $defaultDataDir -PathType Container
 
+# Exists, but as something other than a directory. Say so by name rather than
+# letting it surface as a failed move or a failed CreateDirectory below.
+if ((Test-Path -LiteralPath $defaultDataDir) -and -not $haveDefaultDir) {
+    Stop-WithError "$defaultDataDir exists but is not a folder." @"
+  The lap database and car setup ranges live there.
+  Move that file aside and run this installer again.
+"@
+}
+
 if ($env:ASSETTO_MCP_DATA) {
     $dataDir = $env:ASSETTO_MCP_DATA
 } elseif ($env:AC_ENGINEER_DATA) {

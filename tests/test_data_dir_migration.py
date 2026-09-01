@@ -112,6 +112,56 @@ def test_the_new_environment_name_wins_over_the_old_one():
         assert config.env("BRIDGE_PORT", "9666") == "8888"
 
 
+def test_a_file_where_the_data_directory_goes_is_named_not_stumbled_over():
+    # Without the guard this surfaces several lines later as a
+    # NotADirectoryError from mkdir(ranges), which reads like a server bug.
+    with _Home() as h:
+        h.new.write_text("not a directory")
+        try:
+            config.data_dir()
+        except NotADirectoryError as e:
+            assert str(h.new) in str(e)
+        else:
+            raise AssertionError("should have refused")
+
+
+def test_a_file_at_the_destination_is_never_renamed_over():
+    # Path.rename replaces an existing *file* destination silently on POSIX,
+    # so a check for mere existence would have deleted it and moved the
+    # database on top. Refuse instead, and leave both where they are.
+    with _Home() as h:
+        h.seed_legacy()
+        h.new.write_text("someone's file")
+        try:
+            config.data_dir()
+        except NotADirectoryError:
+            pass
+        else:
+            raise AssertionError("should have refused")
+        assert h.new.read_text() == "someone's file", "the file was destroyed"
+        assert (h.old / "telemetry.db").exists(), "the laps were moved anyway"
+
+
+def test_an_explicit_data_dir_pointing_at_a_file_is_refused_too():
+    with _Home() as h:
+        stray = h.new.parent / "stray"
+        stray.write_text("x")
+        os.environ["ASSETTO_MCP_DATA"] = str(stray)
+        try:
+            config.data_dir()
+        except NotADirectoryError:
+            pass
+        else:
+            raise AssertionError("should have refused")
+
+
+def test_a_legacy_path_that_is_a_file_is_simply_ignored():
+    with _Home() as h:
+        h.old.write_text("not a directory either")
+        assert config.data_dir() == h.new
+        assert h.old.read_text() == "not a directory either"
+
+
 def test_losing_the_race_adopts_what_the_winner_created():
     # Two servers start together. The loser's rename fails with the source
     # already gone; it must use the directory the winner just made, not

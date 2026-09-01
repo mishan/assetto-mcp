@@ -306,9 +306,35 @@ def make_session(conn, track="mugello", car="ks_mazda_mx5_cup"):
 
 
 def age_session(conn, session_id, seconds):
-    """Backdate a session so staleness logic can be exercised."""
-    conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?",
-                 (time.time() - seconds, session_id))
+    """Backdate a whole session so staleness logic can be exercised.
+
+    The heartbeat moves with it. Ageing started_at alone would describe a
+    session that began an hour ago and is still being recorded right now,
+    which is a real state -- see heartbeat_session -- but not the one any
+    caller of this function means.
+    """
+    then = time.time() - seconds
+    conn.execute("UPDATE sessions SET started_at = ?, last_seen_at = ?"
+                 " WHERE id = ?", (then, then, session_id))
+    conn.commit()
+
+
+def heartbeat_session(conn, session_id, seconds_ago=0.0):
+    """Set only the heartbeat: a session that started long ago and is live.
+
+    This is the case the lap-based staleness rules could not express. A
+    driver on the out-lap of a Nordschleife session has produced no laps
+    and will not for ten minutes, and is unambiguously recording.
+    """
+    conn.execute("UPDATE sessions SET last_seen_at = ? WHERE id = ?",
+                 (time.time() - seconds_ago, session_id))
+    conn.commit()
+
+
+def clear_heartbeat(conn, session_id):
+    """A session recorded before v10: no heartbeat exists or ever will."""
+    conn.execute("UPDATE sessions SET last_seen_at = NULL WHERE id = ?",
+                 (session_id,))
     conn.commit()
 
 

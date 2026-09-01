@@ -15,8 +15,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import (FakeCollector, age_session, get, make_session,  # noqa: E402
-                     post, run_module)
+from support import (FakeCollector, age_session, clear_heartbeat,  # noqa: E402
+                     get, heartbeat_session, make_session, post, run_module)
 
 from ac_race_engineer import bridge as B, db  # noqa: E402
 
@@ -145,17 +145,16 @@ def test_orphaned_notes_are_countable():
         conn.close()
 
 
-def test_an_empty_session_stops_claiming_to_record():
+def test_a_collector_that_went_quiet_stops_claiming_to_record():
     """Seven laps at Suzuka went unrecorded behind a green indicator.
 
-    A session row is created the instant a collector starts, and its
-    started_at never advances. The staleness check read that timestamp when
-    no laps existed, so an empty session -- one whose collector had failed
-    to start at all -- asserted itself as "recording, other instance" for a
-    full fifteen minutes while the driver drove.
+    A session row is created the instant a collector starts, and started_at
+    never advances. Reading that timestamp meant a session whose collector
+    had failed asserted itself as "recording, other instance" for a full
+    fifteen minutes while the driver drove.
 
-    A real instance produces a lap well inside the grace period. One that
-    has produced none, and started minutes ago, is not recording.
+    The heartbeat is what separates the two. It stops when the collector
+    does, so this is now noticed in seconds rather than minutes.
     """
     with tempfile.TemporaryDirectory() as d:
         path = Path(d) / "t.db"
@@ -165,38 +164,84 @@ def test_an_empty_session_stops_claiming_to_record():
         col.running = False
         br = B.Bridge(path, col, port=0)
 
-        # Freshly created: still plausibly another instance warming up.
+        # Freshly created, heartbeat fresh: another instance is recording.
         assert br.status_snapshot()["running"] is True
 
-        age_session(conn, sid, B.EMPTY_SESSION_GRACE_SECONDS + 30)
+        heartbeat_session(conn, sid, db.SESSION_STALE_SECONDS + 1)
         after = br.status_snapshot()
         assert after["running"] is False, after
         assert after["session_id"] is None, after
         # And nothing may be filed against it either.
         assert br.active_session_id() is None
-        print(f"  empty session at +{B.EMPTY_SESSION_GRACE_SECONDS + 30:.0f}s "
+        print(f"  heartbeat {db.SESSION_STALE_SECONDS + 1:.0f}s old "
               f"-> {after['running']}, id {after['session_id']}")
         conn.close()
 
 
-def test_a_session_that_is_producing_laps_keeps_the_generous_window():
-    """The tighter bound must not evict a driver sitting in the garage."""
+def test_an_out_lap_is_not_mistaken_for_a_dead_session():
+    """The failure the lap-based rules produced in the other direction.
+
+    The first lap a session STORES is its first flying lap -- the out-lap
+    has no time and is skipped by design. So judging liveness from stored
+    laps declared a live session dead for the length of a garage sit plus
+    an out-lap plus a flying lap: over five minutes at Sebring, and over
+    ten at Nordschleife. During that window the overlay read "not
+    recording" and every complaint tag the driver pressed was orphaned --
+    on the first laps of a new setup, which is when she presses them.
+
+    An hour, because a session can be that old and still not have stored a
+    lap. What settles it is that the collector is still talking.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "t.db"
+        conn = db.connect(path)
+        sid = make_session(conn)          # no laps stored yet
+        col = FakeCollector(session_id=None)
+        col.running = False
+        br = B.Bridge(path, col, port=0)
+
+        age_session(conn, sid, 3600)
+        heartbeat_session(conn, sid, 1.0)
+        snap = br.status_snapshot()
+        assert snap["running"] is True, snap
+        assert snap["session_id"] == sid and snap["by_other"] is True, snap
+        assert br.active_session_id() == sid
+        print("  session an hour old with no laps and a live heartbeat "
+              "-> still recording")
+        conn.close()
+
+
+def test_a_session_from_before_the_heartbeat_falls_back_to_its_laps():
+    """v9 and earlier have no last_seen_at and never will.
+
+    Guessing one from started_at would make a session that ended last week
+    look like one being recorded right now, so these keep the old rule:
+    the last stored lap, and the generous window it needs.
+    """
     with tempfile.TemporaryDirectory() as d:
         path = Path(d) / "t.db"
         conn = db.connect(path)
         sid = make_session(conn)
         db.store_lap(conn, sid, 1, 113000, True, [])
+        clear_heartbeat(conn, sid)
         col = FakeCollector(session_id=None)
         col.running = False
         br = B.Bridge(path, col, port=0)
 
-        # Older than the empty-session grace, far inside the lap window.
-        age_session(conn, sid, B.EMPTY_SESSION_GRACE_SECONDS + 120)
+        # Well past the heartbeat window, well inside the lap window.
+        age_session(conn, sid, db.SESSION_STALE_SECONDS + 120)
+        clear_heartbeat(conn, sid)
         snap = br.status_snapshot()
         assert snap["running"] is True, snap
         assert snap["session_id"] == sid and snap["by_other"] is True, snap
-        print(f"  session with a stored lap at "
-              f"+{B.EMPTY_SESSION_GRACE_SECONDS + 120:.0f}s -> still live")
+
+        age_session(conn, sid, B.OTHER_INSTANCE_STALE_SECONDS + 60)
+        clear_heartbeat(conn, sid)
+        conn.execute("UPDATE laps SET completed_at = ? WHERE session_id = ?",
+                     (time.time() - B.OTHER_INSTANCE_STALE_SECONDS - 60, sid))
+        conn.commit()
+        assert br.status_snapshot()["running"] is False
+        print("  pre-v10 session still judged by its laps, both ways")
         conn.close()
 
 

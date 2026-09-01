@@ -390,5 +390,172 @@ def test_a_crash_in_the_recording_loop_is_not_the_end_of_recording():
             col.stop()
 
 
+# --- one recorder, however many server processes -----------------------
+#
+# Claude Desktop runs one server per client surface, so several of these
+# processes are alive at once, reading the same shared memory and writing
+# the same database file. That was harmless only while a human had to call
+# start_recording to begin. Autostart removed the accident, and the
+# duplicates it produced survive into compare_runs as a sample with zero
+# deviation from itself -- which is exactly what makes a t-test certain
+# about a change that never happened.
+
+
+def test_only_one_of_two_collectors_records():
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "t.db"
+        sim = FakeSim()
+        a = Collector(path, lambda: sim)
+        b = Collector(path, lambda: sim)
+        try:
+            a.start()
+            b.start()
+            wait_for(lambda: a.holds_recorder or b.holds_recorder,
+                     "one collector to take the claim")
+            holder = a if a.holds_recorder else b
+            standby = b if holder is a else a
+            wait_for(lambda: standby.standby_owner is not None,
+                     "the other to notice it is standing by")
+
+            assert not standby.holds_recorder
+            assert "standby" in standby.status, standby.status
+
+            # FakeSim is live from the start, so the holder has already
+            # opened its session by now.
+            wait_for(lambda: holder.session_id is not None, "a session")
+            tick(sim, holder)
+            complete_lap(sim, holder, 0, stored=False)
+            tick(sim, holder)
+            complete_lap(sim, holder, 113000)
+
+            conn = db.connect(path)
+            sessions = conn.execute(
+                "SELECT COUNT(*) c FROM sessions").fetchone()["c"]
+            laps = conn.execute("SELECT COUNT(*) c FROM laps").fetchone()["c"]
+            conn.close()
+            assert sessions == 1, f"{sessions} sessions for one game session"
+            assert laps == 1, f"{laps} rows for one lap"
+            assert standby.laps_recorded == 0
+            print(f"  one lap driven, {laps} stored, {sessions} session")
+        finally:
+            a.stop()
+            b.stop()
+
+
+def test_a_standby_takes_over_when_the_holder_stops():
+    """The whole reason the standby stays alive.
+
+    The holder is a server process the host can recycle at any moment. If
+    nothing picks the claim up, that is the sixteen-laps failure again with
+    an extra step.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "t.db"
+        sim = FakeSim()
+        a = Collector(path, lambda: sim)
+        b = Collector(path, lambda: sim)
+        a.STANDBY_RETRY_SECONDS = b.STANDBY_RETRY_SECONDS = 0.05
+        try:
+            a.start()
+            b.start()
+            wait_for(lambda: a.holds_recorder or b.holds_recorder, "a holder")
+            holder = a if a.holds_recorder else b
+            standby = b if holder is a else a
+            wait_for(lambda: standby.standby_owner is not None, "a standby")
+
+            holder.stop()
+            wait_for(lambda: standby.holds_recorder,
+                     "the standby to take the claim over", timeout=20)
+            wait_for(lambda: standby.session_id is not None,
+                     "the standby to open a session")
+
+            tick(sim, standby)
+            complete_lap(sim, standby, 0, stored=False)
+            tick(sim, standby)
+            complete_lap(sim, standby, 112500)
+            assert standby.laps_recorded == 1
+            print("  standby picked the claim up and recorded")
+        finally:
+            a.stop()
+            b.stop()
+
+
+def test_a_collector_that_loses_its_claim_stops_writing():
+    """Losing it means another instance believes it is recording this.
+
+    That only happens after RECORDER_STALE_SECONDS of silence from us, so
+    something has stalled this process badly -- and the wrong response is to
+    carry on and be the second writer.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "t.db"
+        sim = FakeSim()
+        col = Collector(path, lambda: sim)
+        col.HEARTBEAT_SECONDS = 0.01
+        col.STANDBY_RETRY_SECONDS = 30.0     # so it cannot re-claim and hide
+        try:
+            col.start()
+            wait_for(lambda: col.session_id is not None, "a session")
+
+            conn = db.connect(path)
+            db.claim_recorder(conn, "someone-else", stale_after=0.0)
+            conn.close()
+
+            wait_for(lambda: not col.holds_recorder,
+                     "the collector to notice it lost the claim")
+            assert "standby" in col.status, col.status
+            assert "took over" in (col.last_error or ""), col.last_error
+            print(f"  {col.status!r} / {col.last_error!r}")
+        finally:
+            col.stop()
+
+
+def test_stopping_recording_is_shared_and_survives_a_restart():
+    """stop_recording used to stop one process until the next restart.
+
+    With every instance autostarting a collector, that stopped whichever
+    chat the driver was typing into and left the others recording -- and
+    the host undid it the moment it recycled the server.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "t.db"
+        sim = FakeSim()
+        conn = db.connect(path)
+        db.set_recorder_enabled(conn, False)
+
+        col = Collector(path, lambda: sim)
+        col.STANDBY_RETRY_SECONDS = 0.05
+        try:
+            col.start()
+            wait_for(lambda: "switched off" in col.status,
+                     "the collector to honour the shared setting")
+            go_live_attempted = col.sessions_started
+            assert go_live_attempted == 0, col.sessions_started
+
+            db.set_recorder_enabled(conn, True)
+            wait_for(lambda: col.holds_recorder,
+                     "recording to resume once it is switched back on")
+            print("  a fresh collector honours a stop from a previous run")
+        finally:
+            col.stop()
+            conn.close()
+
+
+def test_a_database_that_cannot_be_opened_says_so():
+    """This used to kill the thread before it published anything, leaving
+    status at "starting" and last_error at None -- reported as "died", with
+    no reason, by the very function written to end that ambiguity."""
+    with tempfile.TemporaryDirectory() as d:
+        # A directory where the database file should be.
+        path = Path(d) / "t.db"
+        path.mkdir()
+        col = Collector(path, FakeSim)
+        col.start()
+        assert not col.running
+        assert col.status.startswith("error"), col.status
+        assert col.last_error, "no reason given"
+        print(f"  {col.status!r}: {col.last_error!r}")
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

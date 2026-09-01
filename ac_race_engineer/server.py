@@ -55,8 +55,14 @@ _bridge.start()
 # while I was reading the collector's own status and calling it healthy.
 #
 # The collector waits for Assetto Corsa rather than failing when it is
-# absent, so this costs nothing when the game is closed, and stop_recording
-# still works exactly as before for anyone who wants it off.
+# absent, so this costs nothing when the game is closed.
+#
+# Safe to do in every instance only because the collector now takes a claim
+# in the shared database first. Claude Desktop runs one of these processes
+# per client surface; before the claim, autostarting them all meant several
+# collectors reading one game and writing every lap once each. It also
+# reads the shared enabled flag, so a server restarted after
+# stop_recording comes back stopped rather than quietly resuming.
 if os.environ.get("AC_ENGINEER_NO_AUTOSTART") != "1":
     _collector.start()
 
@@ -71,9 +77,21 @@ def _j(obj) -> str:
 @mcp.tool()
 def start_recording() -> str:
     """Start recording telemetry from the running Assetto Corsa session.
-    Laps are stored automatically as they complete. Idempotent."""
+    Laps are stored automatically as they complete. Idempotent.
+
+    Recording also starts on its own when this server does, so this is
+    mostly here to undo a stop_recording. If another server instance already
+    holds the recorder, this one stands by rather than recording the same
+    laps a second time, and says so."""
+    db.set_recorder_enabled(_conn, True)
     _collector.start()
-    return _j({"status": _collector.status, "error": _collector.last_error})
+    out = {"status": _collector.status, "error": _collector.last_error}
+    if _collector.standby_owner:
+        out["standby"] = (
+            "another server instance holds the recorder and is doing the "
+            "recording. Nothing is wrong and nothing is being lost -- this "
+            "instance takes over automatically if that one stops.")
+    return _j(out)
 
 
 def _active_session(explicit: int | None = None) -> int | None:
@@ -106,6 +124,18 @@ def _collector_state() -> tuple[str, str]:
     if c.running:
         if c.session_id is not None:
             return "recording", ""
+        if c.standby_owner:
+            return ("standby",
+                    "another server instance holds the recorder and is doing "
+                    "the recording. This is the normal arrangement when "
+                    "Claude Desktop has more than one chat open, nothing is "
+                    "being lost, and this instance takes over automatically "
+                    "if that one stops.")
+        if not db.recorder_enabled(_conn):
+            return ("standby",
+                    "recording is switched off for every instance because "
+                    "stop_recording was called. start_recording turns it "
+                    "back on.")
         return "waiting", "collector is live but AC has not gone live yet"
     if not c.ever_started:
         return ("never_started",
@@ -128,7 +158,8 @@ def recording_status() -> str:
 
     Read `state` rather than inferring from `running` and `status`:
     "never_started" and "stopped_by_request" look identical otherwise and
-    mean opposite things."""
+    mean opposite things. "standby" is a healthy state -- it means another
+    server instance is doing the recording."""
     snap = _bridge.status_snapshot()
     state, why = _collector_state()
     out = {
@@ -138,6 +169,8 @@ def recording_status() -> str:
         "session_id": _collector.session_id,
         "active_session_id": snap["session_id"],
         "recording_elsewhere": snap["by_other"],
+        "holds_recorder": _collector.holds_recorder,
+        "recording_enabled": db.recorder_enabled(_conn),
         "laps_recorded": _collector.laps_recorded,
         "error": _collector.last_error,
         "setup_name": (db.session_setup(_conn, snap["session_id"]) or None
@@ -153,9 +186,18 @@ def recording_status() -> str:
 
 @mcp.tool()
 def stop_recording() -> str:
-    """Stop the telemetry collector."""
+    """Stop the telemetry collector, in every server instance, until told
+    otherwise.
+
+    Stopping used to apply to one process and last until the next restart,
+    which meant it stopped whichever chat you happened to be in while the
+    other instances kept recording, and undid itself the moment the host
+    recycled the server. It is now a shared, durable setting: use
+    start_recording to turn it back on."""
+    db.set_recorder_enabled(_conn, False)
     _collector.stop()
     return _j({"status": "stopped",
+               "scope": "all server instances, until start_recording",
                "laps_recorded": _collector.laps_recorded})
 
 
@@ -907,7 +949,9 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
     # is not compared at all. Deriving it from both sides together is what
     # makes it a property of the comparison rather than of either run, so
     # neither side can move the bar the other is judged against.
-    ref = analysis.lat_g_reference([s for _, s in base_loaded + cand_loaded])
+    ref_detail = analysis.lat_g_reference_detail(
+        [s for _, s in base_loaded + cand_loaded])
+    ref = ref_detail["reference"]
 
     def summaries(pairs):
         # No `side` parameter, unlike loaded() above: every reason a lap can
@@ -916,7 +960,9 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
         # parameter a reader has to check the body to find unused.
         out = []
         for lap, samples in pairs:
-            s = analysis.lap_summary(lap, samples, ref)
+            s = analysis.lap_summary(lap, samples, ref,
+                                     reference_laps=ref_detail["laps"],
+                                     reference_spread_g=ref_detail["spread_g"])
             # Front load transfer lives in the suspension block and is the
             # quietest channel we have, so it is worth the extra query --
             # it resolves changes lap time cannot see.
@@ -940,16 +986,17 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
                    "excluded_laps": dropped})
 
     out = analysis.compare_runs(base, cand)
-    if ref:
-        # Reported because it decides which corners exist. A comparison
-        # whose corner list looks wrong is answerable now: this is the bar
-        # every lap was held to.
-        out["corner_detection"] = {
-            "lat_g_reference": round(ref, 3),
-            "note": "one lateral-g reference across every lap on both "
-                    "sides, so corner membership does not depend on how "
-                    "hard an individual lap was driven",
-        }
+    # Reported because it decides which corners exist. A comparison whose
+    # corner list looks wrong is answerable now: this is the bar every lap
+    # was held to, and it is not the bar lap_summary uses on its own.
+    out["corner_detection"] = dict(
+        analysis.corner_detection_note(ref, ref_detail["laps"],
+                                       spread_g=ref_detail["spread_g"]),
+        note="one lateral-g reference across every lap on both sides, so "
+             "corner membership does not depend on how hard an individual "
+             "lap was driven. lap_summary called on a single lap uses that "
+             "lap's own peak instead, so its corner list can differ from "
+             "the one here.")
     out["track"] = where(base_laps[0])
     out["car"] = base_laps[0].get("car")
     if dropped:

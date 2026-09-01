@@ -128,16 +128,24 @@ BIND_RETRY_INTERVAL = 5.0
 BIND_RETRY_SECONDS = 300.0
 
 # How long a session in the shared DB counts as "another instance is still
-# recording this". Generous: a driver can sit in the garage between runs.
+# recording this", when that session predates the collector heartbeat.
+# Generous: a driver can sit in the garage between runs, and for these rows
+# the last stored lap is the only evidence there is.
+#
+# Live sessions do not use this. A running collector touches
+# sessions.last_seen_at every few seconds, so db.SESSION_STALE_SECONDS
+# decides, and liveness is read rather than inferred.
+#
+# The inference this replaced was wrong in both directions, and no single
+# number could have fixed it. Judged from started_at, an empty session
+# asserted itself for fifteen minutes -- which is how seven laps at Suzuka
+# went unrecorded behind a green indicator. Tightening that to a
+# three-minute grace then declared a real session dead for the length of a
+# garage sit plus an out-lap plus a flying lap, because the first lap a
+# session STORES is its first flying one: over five minutes at Sebring,
+# during which every complaint tag the driver pressed was filed against
+# nothing. Laps were never the question.
 OTHER_INSTANCE_STALE_SECONDS = 900.0
-
-# How long a session that has stored NO laps may still claim to be
-# recording. A row is created the instant a collector starts and its
-# started_at never moves, so without a tighter bound an empty session
-# asserts itself for the full window above -- which is how seven laps went
-# unrecorded behind a green indicator. A real instance produces a lap well
-# inside this.
-EMPTY_SESSION_GRACE_SECONDS = 180.0
 
 
 class FieldError(ValueError):
@@ -288,30 +296,27 @@ class Bridge:
         if not latest:
             return idle
 
-        # "Recent" has to be generous for a session that is producing laps:
-        # a driver can sit in the garage a while between runs.
-        #
-        # It must not be generous for one that has produced none. A session
-        # row is created the moment a collector starts, and started_at never
-        # advances -- so an empty session that never recorded anything read
-        # as "recording, other instance" for a full fifteen minutes. That is
-        # exactly what happened while seven laps at Suzuka went unrecorded
-        # behind a green indicator, and the driver had no way to check it.
-        #
-        # A genuine other instance produces laps within a few minutes. One
-        # that has not is not recording, whatever its row says.
-        # `is not None`, not truthiness: last_lap_at is a timestamp or NULL,
-        # and the branches mean "this session has produced laps" against "it
-        # never has". A falsy-but-real timestamp would take the second one
-        # and be given the tight window. A completed_at of 0.0 is not
-        # something this code produces, but the check should say which
-        # question it is asking rather than lean on that.
-        if latest["last_lap_at"] is not None:
-            age = time.time() - latest["last_lap_at"]
-            limit = OTHER_INSTANCE_STALE_SECONDS
+        # Ask the collector recording it, not the laps it has produced. The
+        # heartbeat moves every few seconds from the moment the session
+        # exists, so a driver on the out-lap is as clearly alive as one
+        # setting a personal best -- which the lap-based rules could not
+        # tell apart from a session that ended on Tuesday.
+        beat = latest.get("last_seen_at")
+        if beat is not None:
+            age = time.time() - beat
+            limit = db.SESSION_STALE_SECONDS
         else:
-            age = time.time() - latest["started_at"]
-            limit = EMPTY_SESSION_GRACE_SECONDS
+            # Recorded before v10. No heartbeat was ever written for this
+            # session and none can be invented, so fall back to the lap
+            # evidence and its generous window.
+            #
+            # `is not None` rather than `or`: these are timestamps, and the
+            # question is whether a lap exists, not whether its timestamp is
+            # truthy.
+            last_lap = latest["last_lap_at"]
+            age = time.time() - (latest["started_at"] if last_lap is None
+                                 else last_lap)
+            limit = OTHER_INSTANCE_STALE_SECONDS
         if age >= limit:
             return idle
         return {

@@ -356,11 +356,57 @@ def test_a_short_sample_tuple_is_padded_and_a_long_one_is_refused():
 
         try:
             db.store_lap(conn, sid, 2, 114000, True, [short + (1,) * 20])
-        except sqlite3.Error:
+        except (sqlite3.Error, ValueError):
             pass
         else:
             raise AssertionError("an over-long sample tuple was accepted")
         print("  short tuple padded with NULL, over-long tuple refused")
+        conn.close()
+
+
+def test_a_field_dropped_in_the_middle_is_refused_not_padded():
+    """Padding was applied to any short tuple, so a tuple short for the
+    wrong reason stored silently against shifted columns.
+
+    Measured before the fix, on a full-width tuple missing `steer`: gear
+    7000, rpm 1, tyres_out 297.63 (a world coordinate), damage NULL, and no
+    error anywhere. Every value after the gap was one column out.
+
+    Only the widths a real layout actually had are padded now.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = db.connect(Path(tmp) / "new.db")
+        sid = make_session(conn)
+        full = tuple(range(len(db.SAMPLE_COLUMNS) - 1))
+        assert len(full) in db.SAMPLE_WIDTHS
+
+        # Drop `steer`, index 5 in the tuple (column 6, after lap_id).
+        gapped = full[:5] + full[6:]
+        assert len(gapped) not in db.SAMPLE_WIDTHS, (
+            "this test needs a width no real layout ever had")
+        try:
+            db.store_lap(conn, sid, 1, 114000, True, [gapped])
+        except ValueError as e:
+            assert str(len(gapped)) in str(e), e
+            print(f"  {len(gapped)}-field tuple refused: {e}")
+        else:
+            raise AssertionError("a mid-tuple gap was padded and stored")
+        conn.close()
+
+
+def test_every_historical_width_is_still_accepted():
+    """The tolerance is the point; narrowing it must not remove it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = db.connect(Path(tmp) / "new.db")
+        sid = make_session(conn)
+        full = tuple(range(len(db.SAMPLE_COLUMNS) - 1))
+        for n, width in enumerate(db.SAMPLE_WIDTHS):
+            lap_id = db.store_lap(conn, sid, n + 1, 114000, True,
+                                  [full[:width]])
+            row = conn.execute("SELECT COUNT(*) c FROM samples"
+                               " WHERE lap_id = ?", (lap_id,)).fetchone()
+            assert row["c"] == 1, width
+        print(f"  widths {db.SAMPLE_WIDTHS} all stored")
         conn.close()
 
 

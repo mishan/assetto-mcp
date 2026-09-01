@@ -14,8 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import (FakeSim, complete_lap, go_live, go_off,  # noqa: E402
-                     restart_from_menu, run_collector, run_module, tick,
-                     wait_for)
+                     restart_from_menu, run_collector, run_module, temp_db,
+                     tick, wait_for)
 
 from ac_race_engineer import db  # noqa: E402
 from ac_race_engineer.collector import Collector  # noqa: E402
@@ -122,8 +122,7 @@ def test_a_recorded_lap_carries_a_driving_line():
     on the floor, and it fails if the collector stores one position over and
     over, which a test against a stationary stub would not catch.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         script = [
             lambda s, c: tick(s, c),
             lambda s, c: (tick(s, c), complete_lap(s, c, 114000)),
@@ -131,11 +130,17 @@ def test_a_recorded_lap_carries_a_driving_line():
         run_collector(script, path)
 
         conn = db.connect(path)
-        lap = db.list_laps(conn)[0]
-        rows = conn.execute(
-            "SELECT pos_x, pos_y, pos_z, heading, pitch, roll,"
-            " tc_active, abs_active FROM samples WHERE lap_id = ?"
-            " ORDER BY t_ms", (lap["id"],)).fetchall()
+        try:
+            lap = db.list_laps(conn)[0]
+            rows = conn.execute(
+                "SELECT pos_x, pos_y, pos_z, heading, pitch, roll,"
+                " tc_active, abs_active FROM samples WHERE lap_id = ?"
+                " ORDER BY t_ms", (lap["id"],)).fetchall()
+        finally:
+            # try/finally rather than a trailing close(): an assertion below
+            # would otherwise skip the close and turn one failing test into
+            # a second, unrelated-looking teardown error on Windows.
+            conn.close()
         assert rows, "no samples stored"
 
         assert all(r["pos_x"] is not None for r in rows), "position not stored"
@@ -159,8 +164,7 @@ def test_a_sim_without_the_newer_fields_still_records():
     The collector reads these through getattr for exactly this reason, and
     a missing field has to land as NULL rather than as a zero coordinate.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         sim = FakeSim()
         del sim.graphics.carCoordinates
         del sim.physics.roll
@@ -172,13 +176,15 @@ def test_a_sim_without_the_newer_fields_still_records():
         run_collector(script, path, sim=sim)
 
         conn = db.connect(path)
-        row = conn.execute(
-            "SELECT pos_x, roll, pitch FROM samples").fetchone()
+        try:
+            row = conn.execute(
+                "SELECT pos_x, roll, pitch FROM samples").fetchone()
+        finally:
+            conn.close()
         assert row["pos_x"] is None and row["roll"] is None, tuple(row)
         # The fields that ARE present still arrive.
         assert row["pitch"] == 0.01, tuple(row)
         print("  missing fields recorded as NULL, present ones still stored")
-        conn.close()
 
 
 def test_start_does_not_return_the_status_it_had_before_starting():

@@ -5,9 +5,12 @@ no Windows, no Assetto Corsa, no network beyond localhost. The collector is
 driven through a fake SimInfo and the bridge is exercised over real HTTP.
 """
 
+import contextlib
 import http.client
 import json
+import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -18,6 +21,69 @@ from ac_race_engineer.collector import Collector  # noqa: E402
 
 AC_OFF = 0
 AC_LIVE = 2
+
+
+# --- temp databases, and the handles that outlive them ------------------
+
+
+def _open_handles(directory: Path) -> list[str]:
+    """Files still open inside `directory`, on platforms that will say.
+
+    Linux exposes this through /proc/self/fd. Nothing else here does, and
+    that asymmetry is the whole point of this function -- see temp_db.
+    """
+    fds = Path("/proc/self/fd")
+    if not fds.is_dir():
+        return []
+    out = []
+    root = str(directory.resolve())
+    for fd in fds.iterdir():
+        try:
+            target = os.readlink(fd)
+        except OSError:          # the fd closed while we walked, or is ours
+            continue
+        if target.startswith(root + os.sep):
+            out.append(target)
+    return sorted(set(out))
+
+
+@contextlib.contextmanager
+def temp_db(name: str = "t.db"):
+    """A temp directory for a database, with leaked handles reported.
+
+    Yields the path the database should live at. On the way out it checks
+    that nothing is still holding a file inside the directory, and names
+    what is.
+
+    This exists because the platforms disagree about whether forgetting
+    `conn.close()` is an error. Windows refuses to delete an open file, so
+    the TemporaryDirectory teardown raises WinError 32 -- from inside
+    shutil, pointing at a temp path, with the test that leaked it named
+    nowhere obvious. POSIX deletes it happily and says nothing at all.
+
+    So a missing close is invisible to everyone developing on Linux and to
+    the Linux CI leg, and red only on the Windows one. That is a slow and
+    confusing way to find out, and it is how one reached a review stack:
+    test_a_recorded_lap_carries_a_driving_line opened a connection to read
+    its samples back and never closed it, passed everywhere it was run, and
+    failed on a Windows runner four branches later.
+
+    Reporting the leak here makes it fail on the machine the author is
+    actually using, at the test that caused it, with the handle named.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        directory = Path(d)
+        try:
+            yield directory / name
+        finally:
+            leaked = _open_handles(directory)
+            if leaked:
+                raise AssertionError(
+                    "database handles were still open when the test "
+                    "finished, which fails the Windows CI leg on teardown "
+                    "and nowhere else:\n  "
+                    + "\n  ".join(leaked)
+                    + "\nClose every connection this test opened.")
 
 
 # --- fake shared memory -------------------------------------------------

@@ -451,10 +451,25 @@ def setup_ranges(car: str | None = None) -> str:
     # Entries known only from a reading or a note. setup_display keeps them
     # deliberately -- a reading is worth having whether or not the app was
     # running -- and listing only the spinner rows threw them away again.
+    #
+    # Given the SAME keys as a real row, with None where the game has said
+    # nothing. A list whose entries have different shapes makes every reader
+    # guess which kind it is holding, and the docstring above promises that
+    # each entry carries min, max and step. None says "not known" in a field
+    # that exists; a missing key says nothing at all, twice.
     named = {r["name"] for r in rows}
     for name in sorted(set(display) - named):
-        rows.append({"name": name, "from_game": False,
-                     "display": setups.describe_display(display[name])})
+        conv = display[name]
+        rows.append({
+            "car": car, "name": name, "label": "",
+            "min_value": None, "max_value": None, "step": None,
+            "display_multiplier": None, "show_clicks_mode": None,
+            "units": conv.get("units", ""), "read_only": None,
+            "updated_at": None, "from_game": False,
+            "display": setups.describe_display(conv),
+        })
+    for row in rows:
+        row.setdefault("from_game", True)
     unknown = sorted(r["name"] for r in rows
                      if (r.get("display") or {}).get("source") == "unknown")
     out = {"car": car, "count": len(rows), "ranges": rows}

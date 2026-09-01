@@ -602,11 +602,23 @@ def describe_display(conv: dict | None) -> dict:
 def _displays_as(stored: float, conv: dict | None) -> dict | None:
     """How a stored value reads on AC's setup screen.
 
-    Returns a dict -- `shown`, `source`, and `confidence` -- rather than the
-    bare string it used to. The string said things like
-    "0 (click index, mode 2)", which is the tool admitting it does not know
-    what the screen will say, in a format that reads like an answer. It got
-    repeated back to the driver as one five times in an evening.
+    Returns a dict rather than the bare string it used to. The string said
+    things like "0 (click index, mode 2)", which is the tool admitting it
+    does not know what the screen will say, in a format that reads like an
+    answer. It got repeated back to the driver as one five times in an
+    evening.
+
+    Always: `source`, and `stored`. Then, depending on `source`:
+
+      shown       the value as text, or None when source is "unknown"
+      value       the same number, rounded, when there is one
+      units       when the entry has any
+      note        when something non-numeric was recorded about it
+      basis       how an observed mapping was fitted
+      caveat      why a non-observed answer may be wrong
+      reason      why nothing is known, when source is "unknown"
+      how_to_fix  what would make it known
+      disagreement / extrapolated  when the readings warrant it
 
     `source` is the load-bearing field:
       observed         a line fitted from two readings off the actual screen

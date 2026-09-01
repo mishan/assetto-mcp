@@ -488,6 +488,51 @@ def test_setup_ranges_lists_entries_known_only_from_a_reading():
     assert ghost["display"]["note"] == "recorded by hand", ghost
 
 
+def test_every_row_in_setup_ranges_has_the_same_shape():
+    """A list whose entries have different keys makes every reader guess.
+
+    Rows synthesised from a note or a reading were appended with three keys
+    while real rows had twelve, and the tool's own docstring promises each
+    entry carries min, max and step. None says "not known" in a field that
+    exists; a missing key says nothing at all, twice.
+    """
+    srv = _server()
+    _car_with_spinners(srv._conn, car="shape_car")
+    _call(srv.record_display_note, car="shape_car", field="GHOST",
+          note="recorded by hand")
+    rows = _call(srv.setup_ranges, car="shape_car")["ranges"]
+    assert len(rows) >= 2, rows
+
+    shapes = [set(r) for r in rows]
+    assert all(s == shapes[0] for s in shapes), \
+        [sorted(s ^ shapes[0]) for s in shapes]
+    for key in ("min_value", "max_value", "step", "units", "from_game"):
+        assert all(key in r for r in rows), key
+
+    ghost = [r for r in rows if r["name"] == "GHOST"][0]
+    real = [r for r in rows if r["name"] == "TOE_OUT_LF"][0]
+    # None for the synthetic one, real numbers for the one the game gave.
+    assert ghost["min_value"] is None and ghost["step"] is None, ghost
+    assert real["min_value"] == -40 and real["step"] == 1, real
+    assert real["from_game"] is True, real
+    print("  synthetic and real rows share one shape")
+
+
+def test_the_display_docstring_names_the_keys_it_returns():
+    # It claimed a `confidence` field that was never set, which is the kind
+    # of thing a caller reaches for and finds missing at runtime.
+    doc = setups._displays_as.__doc__
+    assert "confidence" not in doc, "still promising a field it never sets"
+    for conv in ({"units": "deg", "display_multiplier": 0.01},
+                 {"units": "", "display_multiplier": None,
+                  "show_clicks_mode": 2},
+                 {"units": "psi", "display_multiplier": 1}):
+        got = setups._displays_as(20, conv)
+        assert "source" in got and "stored" in got, got
+        missing = [k for k in got if k not in doc]
+        assert not missing, (missing, conv)
+
+
 def test_both_ends_reading_the_same_number_is_refused():
     srv = _server()
     _car_with_spinners(srv._conn, car="flat_car")

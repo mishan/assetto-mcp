@@ -946,7 +946,20 @@ def set_session_setup(conn, session_id: int, setup_name: str) -> bool:
     return cur.rowcount > 0
 
 
-def label_unattributed_laps(conn, session_id: int, setup_name: str) -> int:
+# SQLite's default SQLITE_MAX_VARIABLE_NUMBER is 999 on the builds Python
+# ships against, and every id in an `IN (...)` list costs one. A session can
+# hold more laps than that, so any query that takes a list of ids goes
+# through here rather than trusting the list to be short.
+_MAX_IDS_PER_QUERY = 500
+
+
+def _id_chunks(ids: list[int]) -> list[list[int]]:
+    return [ids[i:i + _MAX_IDS_PER_QUERY]
+            for i in range(0, len(ids), _MAX_IDS_PER_QUERY)]
+
+
+def label_unattributed_laps(conn, session_id: int, setup_name: str,
+                            lap_ids: list[int] | None = None) -> int:
     """Fill in the setup for laps that have none. Returns how many.
 
     The no-rewriting rule above is about not overwriting a *known* setup
@@ -955,13 +968,37 @@ def label_unattributed_laps(conn, session_id: int, setup_name: str) -> int:
     were on after the run rather than before. Filling a blank completes a
     comparison; overwriting a name would destroy one, and this still
     refuses to do that.
+
+    lap_ids narrows it to specific laps. That argument exists because
+    filling *every* blank in the session was the wrong default at the tool
+    layer: the driver's baseline is usually unlabelled too, so "I've loaded
+    claude_v1" relabelled the baseline as claude_v1 and destroyed the
+    comparison it was setting up. Which blanks to fill is a claim about what
+    happened in the garage, so it is made by whoever was there -- see
+    label_laps in server.py.
     """
-    cur = conn.execute(
-        "UPDATE laps SET setup_name = ?"
-        " WHERE session_id = ? AND (setup_name IS NULL OR setup_name = '')",
-        (setup_name, session_id))
-    conn.commit()
-    return cur.rowcount
+    base = ("UPDATE laps SET setup_name = ?"
+            " WHERE session_id = ? AND (setup_name IS NULL OR setup_name = '')")
+    if lap_ids is None:
+        chunks = [None]
+    elif not lap_ids:
+        return 0
+    else:
+        chunks = _id_chunks(lap_ids)
+    # One transaction across the chunks: the caller is making a single claim
+    # about the garage, so a failure part way through should not leave half
+    # the laps labelled.
+    filled = 0
+    with conn:
+        for chunk in chunks:
+            if chunk is None:
+                cur = conn.execute(base, [setup_name, session_id])
+            else:
+                cur = conn.execute(
+                    base + " AND id IN (%s)" % ",".join("?" * len(chunk)),
+                    [setup_name, session_id, *chunk])
+            filled += cur.rowcount
+    return filled
 
 
 def session_setup(conn, session_id: int) -> str:
@@ -1058,7 +1095,14 @@ def _store_lap(conn, session_id, lap_number, lap_time_ms, valid, samples,
     return lap_id
 
 
-def list_laps(conn, session_id: int | None = None, limit: int = 50):
+def list_laps(conn, session_id: int | None = None, limit: int | None = 50):
+    """Laps, newest first. limit=None means every one of them.
+
+    The explicit None matters for callers that report on what they did *not*
+    touch: a lap outside a window would otherwise be described as not
+    existing, which is a false claim about the driver's own data rather than
+    a missing convenience.
+    """
     q = ("SELECT laps.*, sessions.car, sessions.track, sessions.track_config,"
          " laps.setup_name"
          " FROM laps JOIN sessions ON sessions.id = laps.session_id")
@@ -1066,8 +1110,10 @@ def list_laps(conn, session_id: int | None = None, limit: int = 50):
     if session_id is not None:
         q += " WHERE session_id = ?"
         args.append(session_id)
-    q += " ORDER BY laps.id DESC LIMIT ?"
-    args.append(limit)
+    q += " ORDER BY laps.id DESC"
+    if limit is not None:
+        q += " LIMIT ?"
+        args.append(limit)
     return [dict(r) for r in conn.execute(q, args)]
 
 
@@ -1085,6 +1131,44 @@ def get_samples(conn, lap_id: int) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM samples WHERE lap_id = ? ORDER BY t_ms", (lap_id,))
     return [dict(r) for r in rows]
+
+
+def count_laps(conn, session_id: int) -> int:
+    return conn.execute("SELECT COUNT(*) c FROM laps WHERE session_id = ?",
+                        (session_id,)).fetchone()["c"]
+
+
+def unlabelled_lap_ids(conn, session_id: int) -> list[int]:
+    """Ids of laps in this session with no setup recorded, oldest first.
+
+    Two columns instead of whole lap rows because the callers only ever
+    wanted ids and a count. Fetching every row of a long session through
+    the sessions JOIN to compute `len()` is a lot of work and a lot of JSON
+    for two numbers.
+    """
+    return [r["id"] for r in conn.execute(
+        "SELECT id FROM laps WHERE session_id = ?"
+        " AND (setup_name IS NULL OR setup_name = '') ORDER BY id",
+        (session_id,))]
+
+
+def lap_setup_names(conn, session_id: int, lap_ids: list[int]) -> dict:
+    """{lap_id: setup_name} for the given laps that are in this session.
+
+    Ids absent from the result are not in this session -- which the caller
+    has to be able to say, because labelling nothing while reporting
+    success is indistinguishable from having worked.
+    """
+    if not lap_ids:
+        return {}
+    out = {}
+    for chunk in _id_chunks(lap_ids):
+        rows = conn.execute(
+            "SELECT id, setup_name FROM laps WHERE session_id = ?"
+            " AND id IN (%s)" % ",".join("?" * len(chunk)),
+            [session_id, *chunk])
+        out.update({r["id"]: (r["setup_name"] or "") for r in rows})
+    return out
 
 
 def list_sessions(conn, limit: int = 20) -> list[dict]:

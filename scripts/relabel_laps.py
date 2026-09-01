@@ -1,16 +1,17 @@
 """Correct the setup_name on laps that were labelled wrong.
 
-set_session_setup deliberately refuses to relabel a lap that already
-carries a different setup name, because a late correction applied to the
-wrong half of an A/B split silently destroys the comparison it exists to
-enable. That guard is right whenever the existing label came from the
-driver.
+label_laps deliberately refuses to relabel a lap that already carries a
+different setup name, because a late correction applied to the wrong half
+of an A/B split silently destroys the comparison it exists to enable. That
+guard is right whenever the existing label came from the driver.
 
 It is wrong in exactly one case: the label was written by mistake in the
-first place. set_session_setup applies to "laps completed from now on" as
-well as backfilling blanks, so calling it *before* the driver loads the
-new setup stamps the old name onto the run that follows. That is how laps
-87-90 came to be labelled claude_toe_v1 while running claude_press_v1.
+first place. set_session_setup used to backfill every unlabelled lap in the
+session as well as applying forward, so calling it *after* loading a new
+setup stamped the new name onto the baseline. That is how laps 87-90 came
+to be labelled claude_toe_v1 while running claude_press_v1. The tools no
+longer do that -- see BACKLOG item 2 -- but the laps it already mislabelled
+still need this.
 
 This is the escape hatch, kept out of the MCP surface on purpose: it is
 rare, it is destructive, and it should require someone to type it.
@@ -74,7 +75,7 @@ def main(argv=None):
 
         # A lap belonging to a different session than the rest is the shape
         # of a typo in the lap list, and relabelling it would be the exact
-        # damage the guard in set_session_setup exists to prevent.
+        # damage the guard in label_laps exists to prevent.
         sessions = {r["session_id"] for r in rows}
         if len(sessions) > 1:
             print(f"refusing: laps span sessions {sorted(sessions)}. Run one "

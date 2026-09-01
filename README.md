@@ -90,9 +90,10 @@ positive means understeer, negative means oversteer.
 > *"It pushes on entry at the second-to-last corner. Try something and save it
 > as `claude_v1`."*
 
-Give new setups new names — an existing file of that name is overwritten
-without warning. When the in-game app is running, values are also clamped to
-what your car will actually accept, so the game can't silently ignore them.
+Values are clamped to what your car will actually accept, so the game can't
+silently ignore them. Two things it will refuse rather than do quietly: reusing
+an existing setup name, and writing at all when it has no ranges for the car —
+which is what happens if the in-game app has never seen the setup screen.
 Details: [docs/SETUP-RANGES.md](docs/SETUP-RANGES.md).
 
 **5. Pit, load the setup — then say you loaded it.**
@@ -100,14 +101,13 @@ Details: [docs/SETUP-RANGES.md](docs/SETUP-RANGES.md).
 > *"I've loaded claude_v1."*
 
 This step matters. Nothing in shared memory reveals which setup is on the car,
-so this is the only way laps get labelled correctly.
+so this is the only way laps get labelled correctly. It applies to laps from
+here on; the baseline you already drove keeps whatever it had, including
+nothing.
 
-⚠️ **Name your baseline before you drive it.** Saying "I've loaded claude_v1"
-also backfills that name onto any lap in the session that has no setup name
-yet — including the baseline you just drove — which destroys the very
-comparison you're setting up. So start the session with *"I'm on the stock
-setup, call it `baseline`"*. Laps that already carry a *different* name are
-safe. This is a known trap; see [BACKLOG.md](BACKLOG.md) item 2.
+If you realise afterwards that some stored laps were on a setup nobody
+recorded, say which ones — *"laps 41 to 44 were on `baseline`"*. It only fills
+laps that have no setup yet, and only the ones you name.
 
 **6. Drive again, and ask whether it worked.**
 
@@ -172,9 +172,9 @@ Two things worth knowing:
   local database.
 
 Setup files are read from and written to your normal Assetto Corsa setup
-folder. Only files whose name you ask for are written — but an existing setup
-of that name is overwritten without warning, so don't reuse a name you care
-about.
+folder. Only files whose name you ask for are written, and reusing the name of
+an existing setup is refused unless you say to overwrite it — in which case the
+old file is kept alongside as `<name>.ini.bak-<timestamp>`.
 
 `diagnose.bat` writes a report that redacts other MCP servers' secrets on a
 best-effort basis, but still contains your username and absolute paths. Skim it

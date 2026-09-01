@@ -14,6 +14,7 @@ are still read under both names; see config.py.
 
 import json
 import os
+import re
 from pathlib import Path
 
 try:  # mcp SDK 2.x
@@ -432,46 +433,143 @@ def setup_ranges(car: str | None = None) -> str:
 
 
 @mcp.tool()
-def set_session_setup(setup_name: str, session_id: int | None = None,
-                      fill_unattributed: bool = True) -> str:
-    """Record the setup now on the car, so laps are attributed to it.
+def set_session_setup(setup_name: str, session_id: int | None = None) -> str:
+    """Record the setup now on the car. Applies to laps from now on only.
 
     AC's shared memory does not expose the setup loaded in the garage, so
     this has to be stated explicitly -- call it whenever the driver says
-    they've loaded a different setup, including mid-session after a pit stop.
+    they've loaded a different setup, including mid-session after a pit
+    stop, and ideally before the first lap on it.
 
-    Laps completed from now on are tagged with this name. Laps already
-    stored under a *different* setup keep it -- relabelling those would
-    destroy the A/B comparison this exists to enable. Laps stored with no
-    setup at all are filled in, since a blank is a gap rather than a
-    competing claim, and telling us after a run is the normal case.
+    **This does not touch laps already stored**, including unlabelled ones.
+    It used to fill in every unlabelled lap in the session, which sounds
+    helpful and is the exact shape of the bug it caused: the baseline run is
+    normally unlabelled too, so "I've loaded claude_v1" stamped claude_v1
+    onto the baseline and destroyed the A/B the driver was in the middle of
+    setting up. It happened twice in one week.
 
-    Pass fill_unattributed=False to leave even the blanks alone."""
+    If laps really were driven on this setup before you were told, use
+    label_laps with their ids -- naming them is the point, because only the
+    driver knows where the garage stop was."""
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
     if not db.set_session_setup(_conn, sid, setup_name):
         return _j({"error": f"no session with id {sid}"})
 
-    laps = db.list_laps(_conn, sid, limit=500)
-    blank = [l for l in laps if not (l.get("setup_name") or "")]
-    labelled_now = 0
-    if fill_unattributed and blank:
-        labelled_now = db.label_unattributed_laps(_conn, sid, setup_name)
-
-    kept = [l for l in laps
-            if (l.get("setup_name") or "") not in ("", setup_name)]
+    # A count and a list of ids, not every lap row through the sessions
+    # JOIN. This only ever needed two numbers, and a long session made it
+    # fetch and discard hundreds of full rows to get them.
+    blank = db.unlabelled_lap_ids(_conn, sid)
     out = {"ok": True, "session_id": sid, "setup_name": setup_name,
            "applies_to": "laps completed from now on",
-           "laps_already_stored": len(laps),
-           "laps_labelled_now": labelled_now}
-    if kept:
-        out["left_alone"] = sorted({l["setup_name"] for l in kept})
-        out["note"] = (f"{len(kept)} lap(s) already carry a different setup "
-                       f"and were not touched.")
-    elif labelled_now:
-        out["note"] = (f"{labelled_now} previously unattributed lap(s) in "
-                       f"this session are now labelled {setup_name}.")
+           "laps_already_stored": db.count_laps(_conn, sid)}
+    if blank:
+        out["unlabelled_laps"] = blank
+        out["note"] = (
+            f"{len(blank)} earlier lap(s) in this session have no setup "
+            f"recorded and were left alone. If some of them were driven on "
+            f"'{setup_name}', label those specific ids with label_laps. Do "
+            f"not label all of them without asking -- the ones before the "
+            f"garage stop were a different setup, and that is the "
+            f"comparison.")
+    return _j(out)
+
+
+# A run of consecutive laps is how a driver describes a stint, so "87-90"
+# has to mean four laps. Splitting on every non-digit would read it as two,
+# label half the stint and report success -- the same silent no-op that
+# "87 88 89" used to produce by becoming the single id 878889.
+_LAP_ID_TOKEN = re.compile(r"^(\d+)(?:-(\d+))?$")
+
+# A range is expanded eagerly, so a typo has to be bounded. This is far more
+# laps than any real stint and still small enough to be harmless.
+MAX_LAP_ID_RANGE = 2000
+
+
+def _parse_lap_ids(text: str) -> tuple[list[int], str]:
+    """Lap ids from "87,88", "87 88", or "87-90". Returns (ids, error)."""
+    ids: list[int] = []
+    for token in re.split(r"[,;\s]+", text.strip()):
+        if not token:
+            continue
+        m = _LAP_ID_TOKEN.match(token)
+        if not m:
+            return [], ('lap_ids must be lap id numbers or ranges, '
+                        f'e.g. "87,88,89,90" or "87-90" -- not "{token}"')
+        lo = int(m.group(1))
+        if m.group(2) is None:
+            ids.append(lo)
+            continue
+        hi = int(m.group(2))
+        if hi < lo:
+            return [], f'"{token}" runs backwards; write it as "{hi}-{lo}"'
+        if hi - lo + 1 > MAX_LAP_ID_RANGE:
+            return [], (f'"{token}" covers {hi - lo + 1} ids, more than the '
+                        f'{MAX_LAP_ID_RANGE} this accepts. List them, or '
+                        f'label them in smaller runs.')
+        ids.extend(range(lo, hi + 1))
+    if not ids:
+        return [], "no lap ids given"
+    # Duplicates would double-count in the report ("2 laps labelled" for one
+    # lap named twice), and order is the driver's, so it is kept.
+    return list(dict.fromkeys(ids)), ""
+
+
+@mcp.tool()
+def label_laps(lap_ids: str, setup_name: str,
+               session_id: int | None = None) -> str:
+    """Record which setup specific already-stored laps were driven on.
+
+    lap_ids: lap ids, e.g. "87,88,89,90" or the range "87-90".
+
+    For the normal case of realising after a run that the laps were on a
+    setup nobody had recorded. Ask the driver which laps, rather than
+    inferring it -- the boundary is a garage stop, which nothing in the
+    telemetry marks.
+
+    Only laps with *no* setup recorded are changed. A lap already carrying a
+    different name is reported back untouched, because a late correction
+    applied to the wrong half of an A/B destroys the comparison it was meant
+    to complete. Genuinely mislabelled laps are fixed with
+    scripts/relabel_laps.py, which is deliberately not a tool."""
+    ids, err = _parse_lap_ids(lap_ids)
+    if err:
+        return _j({"error": err})
+
+    sid = _active_session(session_id)
+    if sid is None:
+        return _j({"error": "no active session; pass session_id explicitly"})
+
+    # Two columns for the ids actually asked about, rather than every lap
+    # in the session. Unbounded by lap count either way: a lap old enough to
+    # fall outside a window would be reported as "not in this session",
+    # which is a false statement about the driver's own data.
+    names = db.lap_setup_names(_conn, sid, ids)
+    missing = [i for i in ids if i not in names]
+    named = {i: names[i] for i in ids
+             if names.get(i) and names[i] != setup_name}
+    already = [i for i in ids if names.get(i) == setup_name]
+    fillable = [i for i in ids if i in names and not names[i]]
+
+    labelled = db.label_unattributed_laps(_conn, sid, setup_name, fillable)
+    out = {"ok": True, "session_id": sid, "setup_name": setup_name,
+           "laps_labelled": labelled, "lap_ids_labelled": fillable}
+    if missing:
+        out["not_in_this_session"] = missing
+    if already:
+        out["already_labelled"] = already
+    if named:
+        out["left_alone"] = named
+        out["note"] = (
+            f"{len(named)} lap(s) already carry a different setup and were "
+            f"not touched. If those labels are genuinely wrong, fix them "
+            f"with scripts/relabel_laps.py.")
+    if not labelled and not already:
+        # Every id was missing or already claimed by another setup. Saying
+        # "ok" and nothing else would read as "done".
+        out["ok"] = False
+        out.setdefault("note", "Nothing was labelled.")
     return _j(out)
 
 
@@ -1126,7 +1224,9 @@ def read_setup(car: str, track: str, name: str) -> str:
 
 @mcp.tool()
 def write_setup(car: str, track: str, name: str, values_json: str,
-                base_setup: str | None = None) -> str:
+                base_setup: str | None = None,
+                overwrite: bool = False,
+                allow_unclamped: bool = False) -> str:
     """Write a new setup file the user can load from the in-game setup menu.
 
     values_json: JSON object of {SECTION: number}, e.g.
@@ -1134,9 +1234,26 @@ def write_setup(car: str, track: str, name: str, values_json: str,
     base_setup: optional existing setup name to start from; unspecified
       sections are carried over unchanged.
 
-    If a ranges file exists for the car, values are clamped and snapped to
-    the car's legal min/max/step; otherwise they're written as-is with a
-    warning (AC silently ignores out-of-range values)."""
+    Values are clamped and snapped to the car's legal min/max/step. Ranges
+    come from the in-game app when it is running, or from a ranges file.
+
+    This refuses rather than write something that fails silently in the
+    garage. A refusal is not a retry prompt: each one carries `do_this` with
+    the fix that does not need a flag, and `ask_the_driver` with what only
+    they can answer. Setting `overwrite` or `allow_unclamped` on your own
+    initiative in response to a refusal defeats the check entirely, and both
+    situations are invisible from in here, which is the reason they exist.
+
+    overwrite: a setup of this name already exists. Do not assume it was
+    ours -- it may be one they built by hand, and replacing it looks like
+    nothing at all from the setup screen. Write under `suggested_name`, or
+    ask. With overwrite=true the old file is backed up alongside first.
+
+    allow_unclamped: no ranges are known for this car, so no value can be
+    checked, and AC silently ignores anything out of range -- the setup
+    would load, look right, and not do what it says. The fix is for them to
+    open the setup screen once with the in-game app running; it takes
+    seconds and makes every later write correct."""
     try:
         values = json.loads(values_json)
     except json.JSONDecodeError as e:
@@ -1151,7 +1268,33 @@ def write_setup(car: str, track: str, name: str, values_json: str,
         return _j(setups.write_setup(
             AC_DOCS_DIR, RANGES_DIR, car, track, name, values, base_setup,
             game_ranges=db.setup_ranges(_conn, car),
-            display=db.setup_display(_conn, car)))
+            display=db.setup_display(_conn, car),
+            overwrite=overwrite, allow_unclamped=allow_unclamped))
+    # Deliberately no "retry_with" field on either of these. The first
+    # version had one, and it undid the whole point: a structured field
+    # naming the override is the thing a model acts on, so both refusals
+    # became one automatic retry away from the behaviour they replaced.
+    # What each payload carries instead is the *right* fix, and the flag
+    # only in prose, described as something to ask about.
+    except setups.SetupExistsError as e:
+        out = {"error": str(e), "refused": "setup_exists",
+               "do_this": "write it under a different name",
+               "ask_the_driver": "whether the existing setup is theirs and "
+                                 "may be replaced"}
+        free = setups.free_name_for(AC_DOCS_DIR, car, track, name)
+        if free:
+            out["suggested_name"] = free
+        return _j(out)
+    except setups.UnclampedWriteError as e:
+        return _j({"error": str(e), "refused": "no_ranges",
+                   "do_this": "have the driver start Assetto Corsa with the "
+                              "in-game app enabled and open the setup screen "
+                              "once, then try again",
+                   "ask_the_driver": "do not write unclamped without saying "
+                                     "that the values cannot be checked"})
+    except setups.EmptySetupError as e:
+        return _j({"error": str(e), "refused": "empty_setup",
+                   "do_this": "check the section names with setup_ranges"})
     except (ValueError, FileNotFoundError) as e:
         return _j({"error": str(e)})
 

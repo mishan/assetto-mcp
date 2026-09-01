@@ -822,7 +822,11 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
     # neither side can move the bar the other is judged against.
     ref = analysis.lat_g_reference([s for _, s in base_loaded + cand_loaded])
 
-    def summaries(pairs, side):
+    def summaries(pairs):
+        # No `side` parameter, unlike loaded() above: every reason a lap can
+        # be dropped is decided there, so by here the side a lap came from
+        # no longer changes anything. Carrying it for symmetry would be a
+        # parameter a reader has to check the body to find unused.
         out = []
         for lap, samples in pairs:
             s = analysis.lap_summary(lap, samples, ref)
@@ -838,8 +842,8 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
             out.append(s)
         return out
 
-    base = summaries(base_loaded, "baseline")
-    cand = summaries(cand_loaded, "candidate")
+    base = summaries(base_loaded)
+    cand = summaries(cand_loaded)
     if not base or not cand:
         return _j({"error": "no usable laps left on "
                             + ("both sides" if not base and not cand else

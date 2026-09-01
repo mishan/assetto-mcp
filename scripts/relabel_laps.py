@@ -81,9 +81,19 @@ def main(argv=None):
         print(f"{args.db}\n")
         changing = 0
         for r in rows:
-            was = r["setup_name"] or "(none)"
-            mark = " " if was == args.setup_name else "*"
-            if mark == "*":
+            # Decide from the stored value, print a readable one. Deciding
+            # from the display string got it wrong at both edges: '' is the
+            # schema default and renders as "(none)", so an unlabelled lap
+            # being given the literal name "(none)" read as unchanged, and a
+            # lap already labelled "(none)" was counted as changing. Neither
+            # is likely. Both are the kind of thing a destructive script
+            # should not be wrong about, and the fix is to compare the value
+            # the UPDATE is actually going to write.
+            stored = r["setup_name"] or ""
+            changed = stored != args.setup_name
+            was = stored or "(none)"
+            mark = "*" if changed else " "
+            if changed:
                 changing += 1
             secs = r["lap_time_ms"] / 1000.0
             print(f" {mark} lap {r['id']:>4}  session {r['session_id']}  "

@@ -159,13 +159,19 @@ def _sane_channel(samples: list[dict], field: str,
     so the same signal was sanitised for one purpose and passed through
     untouched for another.
 
-    That is worse than a wrong number on a summary, because both are
-    compare_runs metrics. Measured on one Sebring run: a single ~10g lateral
-    spike reported peak_lat_g as 6.32g averaged over two laps against a real
-    2.4, and inflated the metric's own noise estimate until compare_runs
-    gave it a resolution of 15g -- a channel that could no longer detect any
-    change of any size. A spike does not just misreport the lap it is on, it
-    silently disables the comparison it takes part in.
+    For peak_lat_g that is worse than a wrong number on a summary, because
+    it is one of RUN_METRICS. Measured on one Sebring run: a single ~10g
+    lateral spike reported peak_lat_g as 6.32g averaged over two laps
+    against a real 2.4, and inflated the metric's own noise estimate until
+    compare_runs gave it a resolution of 15g -- a channel that could no
+    longer detect a change of any size. A spike does not just misreport the
+    lap it is on, it silently disables the comparison it takes part in.
+
+    peak_braking_g is not in RUN_METRICS and carries none of that. It is
+    filtered because it is the same signal on the other axis and a braking
+    figure no car could produce is worth removing on its own account -- and
+    because leaving one of a matched pair unfiltered is how the first one
+    came to be missed.
     """
     out = []
     for s in samples:

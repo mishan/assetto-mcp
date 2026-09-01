@@ -708,8 +708,7 @@ def test_a_lap_without_position_says_so_instead_of_guessing():
 
 
 def test_a_comparison_lap_with_no_samples_is_an_error_not_a_silent_skip():
-    """"I asked for a comparison and got none" and "I did not ask" must not
-    produce the same payload.
+    """Asking and getting nothing must not look like never asking.
 
     The branch was gated on the truthiness of other_samples, so a lap whose
     telemetry was never stored fell straight through it: no comparison, and

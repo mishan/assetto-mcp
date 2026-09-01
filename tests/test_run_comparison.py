@@ -348,7 +348,7 @@ def test_the_corner_count_does_not_change_what_the_metrics_need():
 
 
 def test_clearing_alone_but_not_the_correction_is_its_own_answer():
-    """"No evidence" and "not enough laps" are different next steps.
+    """No evidence and not enough laps are different next steps.
 
     Reported as a bare "within noise" they read the same, and the engineer
     who would have run three more laps stops instead. p here is 0.0213:

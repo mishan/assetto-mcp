@@ -194,7 +194,7 @@ def test_both_ladders_are_reachable():
     print(f"  rear wheel rate: {setups.legal_values(53, 88, 17)}")
 
 
-def test_the_value_she_is_actually_running_can_be_written():
+def test_a_value_only_on_the_descending_ladder_is_written_exactly():
     """54 is a real rear spring rate, and the old code called it 53.
 
     The failure was quiet in the worst way: it reported the substitution as
@@ -214,7 +214,8 @@ def test_the_value_she_is_actually_running_can_be_written():
 
 
 def test_the_anti_roll_bar_has_the_same_two_ladders():
-    """Her front bar sits on the descending one, which is how this surfaced.
+    """The setting this car is run at sits on the descending ladder, which
+    is how the problem surfaced in the first place.
 
     126607 is 182107 - 6*9250. The ascending ladder from 52608 passes
     through 126608 instead, one N/m away, and a one-step reduction that

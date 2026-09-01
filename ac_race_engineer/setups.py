@@ -436,12 +436,13 @@ def legal_values(lo: float, hi: float, step: float) -> list[float]:
     back down from 88: 71, 54, then 53. Six reachable values, of which a
     grid anchored at lo can express three.
 
-    This is not pedantry. She runs 54. Asked to write 54 the old snapping
+    This is not pedantry. 54 is a rate this car is actually run at, and it
+    sits only on the descending ladder. Asked to write 54, the old snapping
     returned 53 and reported it as clamping -- the correct value, declared
     illegal and quietly replaced by a 2% softer spring. The same offset
-    ladders exist on the front anti-roll bar, where her 126607 is the
-    descending value and 126608 the ascending one; a one-step reduction
-    landed on 117358 when 117357 was available and exact.
+    ladders exist on the front anti-roll bar: 126607 is on the descending
+    one and 126608 on the ascending one, and a one-step reduction landed on
+    117358 when 117357 was available and exact.
     """
     if step <= 0 or hi < lo:
         return []

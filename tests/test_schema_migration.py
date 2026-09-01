@@ -187,7 +187,7 @@ def test_existing_rows_and_queries_survive_the_upgrade():
         conn.close()
 
 
-# --- v8: position, attitude, electronics -------------------------------
+# --- v8 and v9: position, attitude, electronics, wear, damage ----------
 #
 # The one thing every analysis was blind to: norm_pos says where the car is
 # ALONG the lap, nothing said where it was across it. carCoordinates was
@@ -196,18 +196,81 @@ def test_existing_rows_and_queries_survive_the_upgrade():
 
 V8_COLUMNS = ("pos_x", "pos_y", "pos_z", "heading", "pitch", "roll",
               "tc_active", "abs_active")
+V9_COLUMNS = ("wear_fl", "wear_fr", "wear_rl", "wear_rr", "damage")
 
 
 def test_the_new_sample_columns_arrive_on_an_upgraded_database():
-    """The failure this whole module exists for: ALTER, not CREATE."""
+    """The failure this whole module exists for: ALTER, not CREATE.
+
+    Both migrations, not just v8. CREATE TABLE IF NOT EXISTS silently does
+    nothing on a database that already has the table, so a step that is
+    missing from _migrate looks exactly like one that worked -- on a fresh
+    database, which is the only kind the rest of the suite builds. The
+    driver's database is not fresh, and it is the only one that matters.
+    """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "old.db"
         _v0_database(path, [(114054, 1)])
         conn = db.connect(path)
         cols = {r[1] for r in conn.execute("PRAGMA table_info(samples)")}
-        for c in V8_COLUMNS:
+        for c in V8_COLUMNS + V9_COLUMNS:
             assert c in cols, f"{c} missing after upgrade"
-        print(f"  {len(V8_COLUMNS)} columns added to an existing samples table")
+        print(f"  {len(V8_COLUMNS)} v8 and {len(V9_COLUMNS)} v9 columns "
+              f"added to an existing samples table")
+        conn.close()
+
+
+# The samples table exactly as it stood at v7 -- the last schema before
+# columns started being added to it. A historical snapshot on purpose: it is
+# the shape of the database the driver has actually been recording into, and
+# the only fixture that can tell a migration that ran from one that was
+# forgotten. The V0_SCHEMA stub above cannot, because its samples table is
+# two columns and never had these.
+V7_SAMPLES = """
+CREATE TABLE samples (
+    lap_id INTEGER NOT NULL, t_ms INTEGER NOT NULL, norm_pos REAL NOT NULL,
+    speed_kmh REAL NOT NULL, gas REAL NOT NULL, brake REAL NOT NULL,
+    steer REAL NOT NULL, gear INTEGER NOT NULL, rpm INTEGER NOT NULL,
+    acc_lat REAL NOT NULL, acc_lon REAL NOT NULL,
+    slip_fl REAL NOT NULL, slip_fr REAL NOT NULL,
+    slip_rl REAL NOT NULL, slip_rr REAL NOT NULL,
+    press_fl REAL NOT NULL, press_fr REAL NOT NULL,
+    press_rl REAL NOT NULL, press_rr REAL NOT NULL,
+    core_fl REAL NOT NULL, core_fr REAL NOT NULL,
+    core_rl REAL NOT NULL, core_rr REAL NOT NULL,
+    ride_f REAL NOT NULL, ride_r REAL NOT NULL, tyres_out INTEGER NOT NULL
+);
+"""
+
+
+def test_every_sample_column_the_collector_writes_survives_an_upgrade():
+    """The generalisation, so the next migration cannot be forgotten.
+
+    SAMPLE_COLUMNS is what store_lap writes against. A column that reaches
+    it without reaching _migrate works on every fresh database -- which is
+    the only kind the rest of the suite builds -- and takes an
+    OperationalError on the first lap of the next session on the only
+    database that matters.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "v7.db"
+        raw = sqlite3.connect(path)
+        raw.executescript(V0_SCHEMA.replace(
+            "CREATE TABLE samples (lap_id INTEGER NOT NULL,"
+            " t_ms INTEGER NOT NULL);", ""))
+        raw.executescript(V7_SAMPLES)
+        raw.execute("PRAGMA user_version = 7")
+        raw.commit()
+        raw.close()
+
+        conn = db.connect(path)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(samples)")}
+        missing = [c for c in db.SAMPLE_COLUMNS if c not in cols]
+        assert not missing, (
+            f"{missing} are in SAMPLE_COLUMNS but no _migrate step adds "
+            f"them to a database that already had a samples table")
+        print(f"  all {len(db.SAMPLE_COLUMNS)} sample columns reachable "
+              f"after upgrading a v7 database")
         conn.close()
 
 
@@ -221,9 +284,10 @@ def test_a_migration_survives_a_database_with_no_samples_table():
     created, which is what a database that only ever held imported rows
     looks like.
 
-    Note for later: the v1 step ALTERs `laps` unguarded and has the same
-    hole. It needs a database with sessions but no laps to trigger, which
-    nothing produces today, so it is a latent bug rather than a live one.
+    Every ALTER site goes through _add_column, which no-ops on a missing
+    table, so there is no longer an unguarded one to find -- including the
+    v1 step on `laps`, which an earlier draft of this docstring called out
+    as still latent.
     """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "partial.db"

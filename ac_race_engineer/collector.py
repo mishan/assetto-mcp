@@ -39,12 +39,47 @@ WRAP_LOW = 0.1
 _is_outlier = analysis.lap_is_outlier
 
 
+# Reads of AC's fixed-size arrays. Both go through getattr because an older
+# shared-memory layout, or a test stub standing in for one, may not carry
+# the field at all -- and both then check the LENGTH, because "the field
+# exists" and "the field has as many entries as I expect" are different
+# claims and only the first one getattr answers.
+#
+# The distinction has teeth here specifically: these run inside the sampling
+# loop, twenty-five times a second. An IndexError from either would come out
+# as an exception from _loop, which ends the recording session and retries --
+# so a layout one element short would cost the driver every lap of that run
+# rather than one nullable field.
+WHEELS_PER_CAR = 4
+DAMAGE_ZONES = 5
+
+
+def _seq(p, field: str, n: int) -> tuple | None:
+    """`n` values from a fixed-size shared-memory array, or None.
+
+    None means "not recorded", which is what a reader has to be able to tell
+    from a real zero. A short array is treated the same way rather than
+    padded: a partial read of a per-corner channel is not a measurement of
+    anything, and pretending three wheels is four is worse than saying we
+    do not have it.
+    """
+    v = getattr(p, field, None)
+    if v is None:
+        return None
+    try:
+        if len(v) < n:
+            return None
+    except TypeError:      # a ctypes array without __len__
+        pass
+    try:
+        return tuple(v[i] for i in range(n))
+    except (IndexError, TypeError):
+        return None
+
+
 def _wear(p) -> tuple:
     """Per-corner tyre wear, or four Nones if this layout lacks it."""
-    w = getattr(p, "tyreWear", None)
-    if w is None:
-        return (None, None, None, None)
-    return (w[0], w[1], w[2], w[3])
+    return _seq(p, "tyreWear", WHEELS_PER_CAR) or (None,) * WHEELS_PER_CAR
 
 
 def _damage(p):
@@ -55,10 +90,8 @@ def _damage(p):
     the sum answers that in one field that can be differenced between
     samples. Zero throughout when the server has damage disabled.
     """
-    d = getattr(p, "carDamage", None)
-    if d is None:
-        return None
-    return float(sum(d[i] for i in range(5)))
+    zones = _seq(p, "carDamage", DAMAGE_ZONES)
+    return float(sum(zones)) if zones is not None else None
 
 
 class Collector:

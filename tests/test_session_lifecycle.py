@@ -187,6 +187,46 @@ def test_a_sim_without_the_newer_fields_still_records():
         print("  missing fields recorded as NULL, present ones still stored")
 
 
+def test_a_short_array_is_not_recorded_as_a_partial_reading():
+    """A present-but-shorter field is a different failure from an absent one.
+
+    getattr answers "does this field exist", which is not the same claim as
+    "does it have four entries". Indexing straight into it raises IndexError
+    from inside the sampling loop -- which surfaces as an exception out of
+    _loop, ending the session and retrying, so one element short would have
+    cost the driver a whole run rather than one nullable column.
+
+    Recorded as absent rather than padded: three wheels of wear is not a
+    measurement of a four-wheeled car, and a reader has to be able to tell
+    "not recorded" from a number.
+    """
+    with temp_db() as path:
+        sim = FakeSim()
+        sim.physics.tyreWear = [99.5, 99.4, 99.2]      # three, not four
+        sim.physics.carDamage = [0.0, 1.0]             # two, not five
+
+        script = [
+            lambda s, c: tick(s, c),
+            lambda s, c: (tick(s, c), complete_lap(s, c, 114000)),
+        ]
+        col = run_collector(script, path, sim=sim)
+        assert col.laps_recorded == 1, col.last_error
+        assert col.last_error is None, col.last_error
+
+        conn = db.connect(path)
+        try:
+            row = conn.execute(
+                "SELECT wear_fl, wear_rr, damage, pitch FROM samples"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row["wear_fl"] is None and row["wear_rr"] is None, tuple(row)
+        assert row["damage"] is None, tuple(row)
+        # And the lap still recorded, with everything else intact.
+        assert row["pitch"] == 0.01, tuple(row)
+        print("  short arrays stored as NULL; the lap recorded anyway")
+
+
 def test_start_does_not_return_the_status_it_had_before_starting():
     """start_recording answered "stopped" on every first call, for months.
 

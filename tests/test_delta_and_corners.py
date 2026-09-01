@@ -707,6 +707,29 @@ def test_a_lap_without_position_says_so_instead_of_guessing():
     assert "line" not in out, out
 
 
+def test_a_comparison_lap_with_no_samples_is_an_error_not_a_silent_skip():
+    """"I asked for a comparison and got none" and "I did not ask" must not
+    produce the same payload.
+
+    The branch was gated on the truthiness of other_samples, so a lap whose
+    telemetry was never stored fell straight through it: no comparison, and
+    no comparison_error either. A reader cannot tell that from a
+    single-lap call, and the answer to "was that a wider line" would have
+    been silence.
+    """
+    mine = _placed(_lap())
+    out = analysis.driving_line(_meta(1, 113000), mine, 20,
+                                _meta(2, 113500), [])
+    assert "compared_with" not in out, out
+    assert "no telemetry samples stored" in out["comparison_error"], out
+
+    # And not asking still says nothing, which is the case it was confused
+    # with.
+    alone = analysis.driving_line(_meta(1, 113000), mine, 20)
+    assert "comparison_error" not in alone, alone
+    print(f"  {out['comparison_error']}")
+
+
 def test_the_line_follows_the_car_round_the_track():
     out = analysis.driving_line(_meta(1, 113000), _placed(_lap()), points=40)
     assert out["has_position"] is True

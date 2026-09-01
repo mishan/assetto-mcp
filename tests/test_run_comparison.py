@@ -669,6 +669,16 @@ def _server():
         os.environ["AC_ENGINEER_DATA"] = d
         os.environ["AC_DOCS_DIR"] = d
         os.environ["AC_ENGINEER_BRIDGE_PORT"] = "0"
+        # Importing the server now starts recording, which is right in the
+        # game and wrong here: these tests exercise the tool layer over a
+        # database they build themselves, and a collector polling for
+        # Assetto Corsa in the background contributes a thread, a second
+        # SQLite connection and a retry timer to every one of them.
+        #
+        # Set before the import because the decision is made at import time,
+        # and that is the point -- an import with side effects can only be
+        # opted out of before it happens.
+        os.environ["AC_ENGINEER_NO_AUTOSTART"] = "1"
         import importlib
         _SERVER = importlib.import_module("ac_race_engineer.server")
         atexit.register(_SERVER._bridge.stop)

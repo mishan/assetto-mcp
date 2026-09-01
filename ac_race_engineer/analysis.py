@@ -1883,8 +1883,18 @@ def driving_line(lap: dict, samples: list[dict], points: int = 0,
                 "surface there.",
     }
 
-    if other_lap is not None and other_samples:
-        if all(s.get("pos_x") is None for s in other_samples):
+    # `is not None` on the samples too, not truthiness. A caller that asked
+    # for a comparison and passed a lap with no stored samples would
+    # otherwise fall through the whole branch silently, and a payload with
+    # no comparison in it and no comparison_error is indistinguishable from
+    # one where no comparison was asked for. Skipping is only correct when
+    # nothing was requested.
+    if other_lap is not None and other_samples is not None:
+        if not other_samples:
+            out["comparison_error"] = (
+                f"lap {other_lap['id']} has no telemetry samples stored, so "
+                f"there is no line to compare against")
+        elif all(s.get("pos_x") is None for s in other_samples):
             out["comparison_error"] = (
                 f"lap {other_lap['id']} has no position data")
         else:

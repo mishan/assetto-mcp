@@ -152,8 +152,13 @@ Track limits are still *inferred* from wheels-off-track, because vanilla AC
 doesn't expose lap validity. The threshold is four wheels off for at least
 120 ms. If it's consistently wrong for a circuit, change
 `TRACK_LIMITS_WHEELS` in `assetto_mcp/db.py` and run `rescore_track_limits` —
-the evidence is stored per lap, so every lap you've ever driven is re-scored
-without re-driving anything. Worth reporting with the track and lap number.
+the evidence is stored per lap, so laps are re-scored without re-driving
+anything.
+
+One exception: laps whose traces retention has already **thinned** keep the
+verdict measured at full resolution, and a new threshold does not reach them.
+`rescore_track_limits` reports how many it skipped for that reason. Worth
+reporting with the track and lap number.
 
 ## Old laps have lower-resolution traces than I remember
 

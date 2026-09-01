@@ -218,5 +218,34 @@ def test_crossing_the_line_is_not_mistaken_for_a_teleport():
         print("  3 line crossings, 0 false abandonments")
 
 
+def test_a_slow_first_lap_is_re_flagged_once_a_quick_one_follows():
+    """The flag was set against a reference that did not exist yet.
+
+    Outlier status is judged against the fastest lap seen SO FAR. A first
+    lap of 3:10 followed by a 1:53 was stored clean and nothing ever went
+    back for it, so a warm-up lap sat in the session looking representative.
+    """
+    with temp_db() as path:
+        script = [
+            lambda s, c: tick(s, c),
+            lambda s, c: (tick(s, c), complete_lap(s, c, 190000)),
+            lambda s, c: tick(s, c),
+            lambda s, c: (tick(s, c), complete_lap(s, c, 113000)),
+        ]
+        run_collector(script, path)
+        conn = db.connect(path)
+        try:
+            laps = {l["lap_time_ms"]: dict(l)
+                    for l in db.list_laps(conn, limit=None)}
+            assert laps[190000]["outlier"] == 1, \
+                "the slow lap should have been re-flagged when the best fell"
+            assert laps[113000]["outlier"] == 0, laps[113000]
+            # Still stored and still comparable -- flagged, not hidden.
+            assert db.lap_usability(laps[190000])[0] is True
+            print("  first-lap outlier re-flagged live, without a backfill")
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

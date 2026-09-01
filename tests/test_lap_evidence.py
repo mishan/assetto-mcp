@@ -123,10 +123,28 @@ def test_a_lap_with_no_samples_is_unknown_not_clean():
 
 def test_duration_uses_the_samples_own_clock():
     # A thinned lap is not 25Hz any more, and an assumed rate would report
-    # an eighth of the real time off track.
+    # an eighth of the real time off track. Ten samples 320ms apart, still
+    # off track at the end, so the run is closed one interval past the last.
     thinned = [(i * 320, 4) for i in range(10)]
     s = db.score_excursions(thinned)
-    assert s["off_track_ms"] == 9 * 320, s
+    assert s["off_track_ms"] == 10 * 320, s
+
+
+def test_a_lap_ending_off_track_is_scored_like_one_that_did_not():
+    """The verdict must not turn on whether a clean sample happened to follow.
+
+    Three off-track samples ending a lap scored 0 excursions; the identical
+    three followed by one clean sample scored 1. A lap that ends off track
+    is the likeliest to have run wide, and it was the one being let off.
+    """
+    ends_off = db.score_excursions(_pairs([4, 4, 4]))
+    then_clean = db.score_excursions(_pairs([4, 4, 4, 0]))
+    assert ends_off["excursions"] == then_clean["excursions"] == 1
+    assert ends_off["off_track_ms"] == then_clean["off_track_ms"] == 120
+
+    # And the threshold still holds at the boundary either way.
+    assert db.score_excursions(_pairs([4, 4]))["excursions"] == 0
+    assert db.score_excursions(_pairs([4, 4, 0]))["excursions"] == 0
 
 
 # --- the stored side ---------------------------------------------------
@@ -285,6 +303,43 @@ def test_an_out_lap_does_not_become_the_sessions_best_lap():
             print("  4 laps stored, 1 of them a lap time, best", s["best_ms"])
         finally:
             conn.close()
+
+
+def test_every_tool_that_subtracts_lap_times_says_when_it_should_not():
+    """Storing out-laps and pit laps made them reachable by id.
+
+    That is the point -- their telemetry is real -- but their stored
+    lap_time_ms is not a lap time: zero for an out-lap, wall clock for an
+    abandoned or pitted one. compare_runs and list_sessions were taught
+    this; compare_laps and delta_by_position were not, and quietly reported
+    a `time_delta_ms` against a zero.
+    """
+    import importlib
+    import atexit
+    import json
+    import os
+    d = tempfile.mkdtemp(prefix="ac-deltas-")
+    os.environ.update(ASSETTO_MCP_DATA=d, AC_DOCS_DIR=d,
+                      ASSETTO_MCP_BRIDGE_PORT="0",
+                      ASSETTO_MCP_NO_AUTOSTART="1")
+    srv = importlib.import_module("assetto_mcp.server")
+    atexit.register(srv._bridge.stop)
+    call = lambda fn, **kw: json.loads(getattr(fn, "fn", fn)(**kw))  # noqa: E731
+
+    sid = make_session(srv._conn, car="carx", track="mugello")
+    clean = db.store_lap(srv._conn, sid, 1, 113000, True,
+                         _lap_samples([0] * 60))
+    out = db.store_lap(srv._conn, sid, 2, 0, True,
+                       _lap_samples([0] * 60), out_lap=True)
+
+    for tool in (srv.compare_laps, srv.delta_by_position):
+        got = call(tool, lap_id_a=clean, lap_id_b=out)
+        assert "lap_time_warning" in got, (tool, got)
+        assert "out-lap" in got["lap_time_warning"], got["lap_time_warning"]
+        # And two real laps carry no warning at all.
+        both = call(tool, lap_id_a=clean, lap_id_b=clean)
+        assert "lap_time_warning" not in both, both
+    print("  compare_laps and delta_by_position both flag it now")
 
 
 def test_a_lap_that_ran_wide_can_still_be_the_best_lap():

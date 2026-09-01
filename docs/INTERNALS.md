@@ -81,15 +81,18 @@ where the episode starts to where it *ends*, using each sample's own `t_ms`
 rather than an assumed rate, because a thinned lap isn't 25 Hz any more.
 
 A lap whose trace has been thinned is never re-scored: its evidence was
-computed at full resolution and the samples behind it no longer are.
+computed at full resolution and the samples behind it no longer are. So a
+changed threshold does not reach those laps, and `rescore_track_limits`
+reports how many it skipped for that reason rather than describing the pass
+as covering everything.
 
 The threshold was effectively 3 wheels, which is what stored a clean 2:06.769
 at Sebring as invalid — that circuit's flat kerbs put three wheels over the
 line routinely and the game counted the lap.
 
 **Because the evidence is stored, the verdict is re-derivable.** Change
-`TRACK_LIMITS_WHEELS` and run `rescore_track_limits`, and every lap ever
-driven is re-scored from its own samples. That's the point of storing
+`TRACK_LIMITS_WHEELS` and run `rescore_track_limits`, and every lap still
+holding a full-resolution trace is re-scored from its own samples. That's the point of storing
 evidence rather than a decision: the v11 migration did this to the existing
 database and gave back laps that had been wrongly marked, without re-driving
 anything.
@@ -113,11 +116,16 @@ reference lap from three months ago is exactly what a change gets measured
 against, and coming back to a circuit after a season away is precisely when
 the old run matters.
 
-**So nothing is deleted.** When the database passes its budget, the *oldest*
-sessions' traces are **thinned** — decimated to every 2nd, 4th, then 8th
-sample — and the stride is recorded on the lap. Lap times, setup
+**No lap is deleted.** When the database passes its budget, the *oldest*
+sessions' traces are **thinned** — decimated to every 2nd, 4th, 8th, 16th
+then 32nd sample — and the stride is recorded on the lap. Lap times, setup
 attribution and track-limits evidence are computed before any thinning and
 are never touched, so a thinned lap loses resolution and nothing else.
+
+The ladder has a floor, and that is why the budget is a **target, not a
+guarantee**: because lap rows and their facts are kept forever, a database
+of nothing but fully-thinned laps still grows, slowly. `enforce_budget`
+says so when it runs out of room rather than reporting success.
 
 Order of sacrifice, worst value per byte first:
 
@@ -126,10 +134,11 @@ Order of sacrifice, worst value per byte first:
 2. **Suspension samples** from older sessions — already capped at 20 laps
    per session, and by far the heaviest rows at 333 Hz.
 3. **Car samples**, oldest session first, one stride step at a time, so a
-   session only reaches 1-in-8 once every older one is already there.
+   session only reaches 1-in-32 once every older one is already there.
 
 The current session is never thinned. `ASSETTO_MCP_MAX_DB_BYTES` sets the
-budget (default 2 GB); `0` disables thinning entirely. A pass runs once at
+budget (default 2 GB); `0` disables budget-driven thinning entirely, though
+the per-session cap on suspension samples applies either way. A pass runs once at
 session start, so the cost lands while the car is in the garage rather than
 between two flying laps. `storage_report` says what's stored and what has
 been thinned; `sample_stride` on a lap says by how much.

@@ -5,7 +5,7 @@ already produced. Each entry says what is wrong, where it bit, and where the
 code lives, so a future session can act without re-deriving any of it.
 
 Written after the Sebring / NSX GT3 session, and kept current since. Test
-suite stands at 389 passing with the Lua tooling installed (21 of them
+suite stands at 398 passing with the Lua tooling installed (21 of them
 skip without lupa), schema at v12.
 
 ---
@@ -39,9 +39,12 @@ cut. And the reverse, item 8: Sebring lap 160, 7% off the pace, stayed
   measurement from a guess.
 
 Because the evidence is stored, the threshold is re-appliable: changing it
-and running `rescore_track_limits` re-scores every lap ever driven. The v11
-migration did exactly that to the existing database, so laps wrongly marked
-invalid came back without anyone re-driving them.
+and running `rescore_track_limits` re-scores every lap still holding a
+full-resolution trace. The v11 migration did exactly that to the existing
+database, so laps wrongly marked invalid came back without anyone re-driving
+them. Laps whose traces retention has thinned keep the verdict measured at
+full resolution and are reported as skipped rather than re-scored from a
+decimated trace.
 
 **And nothing is dropped any more.** Laps that ran wide are compared and
 reported in `ran_wide`; only laps whose *time is not a lap time* are

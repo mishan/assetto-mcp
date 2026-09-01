@@ -17,7 +17,7 @@ from support import (FakeSim, complete_lap, go_live, go_off,  # noqa: E402
                      restart_from_menu, run_collector, run_module, temp_db,
                      tick, timed_laps, wait_for)
 
-from assetto_mcp import db  # noqa: E402
+from assetto_mcp import db, retention  # noqa: E402
 from assetto_mcp.collector import Collector  # noqa: E402
 
 
@@ -672,6 +672,66 @@ def test_standing_aside_does_not_keep_reporting_an_old_error():
         finally:
             holder.stop()
             standby.stop()
+
+
+def test_a_retention_pass_that_loses_the_claim_stops_the_collector():
+    """The forced heartbeat's answer was computed and thrown away.
+
+    A VACUUM over a large database can outlast RECORDER_STALE_SECONDS, and
+    the beat after the pass exists to notice that another instance took
+    over. Discarding it left this collector carrying on into sampling while
+    a second one recorded the same laps -- the one failure the claim exists
+    to prevent.
+    """
+    with temp_db() as path:
+        sim = FakeSim()
+        col = Collector(path, lambda: sim)
+        col._conn = db.connect(path)
+        try:
+            # Hold the claim, then hand it to somebody else mid-pass.
+            db.claim_recorder(col._conn, col._owner)
+            col.holds_recorder = True
+
+            real = retention.enforce_budget
+
+            def steal_the_claim(conn, db_path, budget=None):
+                # What a long VACUUM looks like from outside: our heartbeat
+                # goes stale and another instance takes the claim.
+                taken = db.claim_recorder(conn, "somebody-else", stale_after=0)
+                assert taken["held"], taken
+                return {"acted": False}
+
+            retention.enforce_budget = steal_the_claim
+            try:
+                stand_down = col._housekeeping()
+            finally:
+                retention.enforce_budget = real
+
+            assert stand_down, "losing the claim mid-pass must be reported"
+            print("  stand-down propagated:", stand_down)
+        finally:
+            col._conn.close()
+
+
+def test_a_retention_report_does_not_outlive_its_pass():
+    """One thinning event made every later status say it had just happened.
+
+    last_retention was only ever assigned, never cleared, so a pass that did
+    nothing left the previous pass's report standing -- for the rest of the
+    process's life.
+    """
+    with temp_db() as path:
+        sim = FakeSim()
+        col = Collector(path, lambda: sim)
+        col._conn = db.connect(path)
+        try:
+            db.claim_recorder(col._conn, col._owner)
+            col.holds_recorder = True
+            col.last_retention = {"acted": True, "actions": ["thinned 40"]}
+            col._housekeeping()          # a pass that does nothing
+            assert col.last_retention is None, col.last_retention
+        finally:
+            col._conn.close()
 
 
 if __name__ == "__main__":

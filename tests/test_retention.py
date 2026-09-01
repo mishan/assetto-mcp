@@ -10,6 +10,7 @@ and the lap keeps its time, its setup and its track-limits evidence at full
 fidelity. These tests are almost entirely about that distinction.
 """
 
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -219,6 +220,88 @@ def test_the_budget_can_be_set_from_the_environment():
             "a typo must not silently disable or shrink the budget"
     finally:
         os.environ.pop("ASSETTO_MCP_MAX_DB_BYTES", None)
+
+
+class _FailAfter:
+    """A connection that raises on the Nth DELETE, and is otherwise real.
+
+    sqlite3.Connection forbids assigning to .execute, so the failure is
+    injected through a wrapper rather than by monkeypatching.
+    """
+
+    def __init__(self, conn, fail_on):
+        self._conn = conn
+        self._fail_on = fail_on
+        self.deletes = 0
+
+    def execute(self, sql, *a, **k):
+        if sql.lstrip().upper().startswith("DELETE FROM SAMPLES"):
+            self.deletes += 1
+            if self.deletes == self._fail_on:
+                raise sqlite3.OperationalError("disk I/O error")
+        return self._conn.execute(sql, *a, **k)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def test_a_failed_thin_leaves_the_lap_whole():
+    """All of it or none of it.
+
+    The deletes go out in chunks and the stride is stamped at the end, so a
+    failure between them left a lap decimated and still marked stride 1 --
+    and those partial deletes did not stay uncommitted, because the
+    collector's next heartbeat commits (renew_recorder uses `with conn`). A
+    lap that has quietly lost most of its trace while claiming full
+    resolution is then eligible for re-scoring, which reads the gaps as
+    clean track.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        conn, path = _build(Path(d), sessions=2, laps=1)
+        try:
+            lap_id = conn.execute(
+                "SELECT id FROM laps ORDER BY id ASC LIMIT 1").fetchone()["id"]
+            before = conn.execute(
+                "SELECT COUNT(*) c FROM samples WHERE lap_id = ?",
+                (lap_id,)).fetchone()["c"]
+
+            failing = _FailAfter(conn, fail_on=2)
+            try:
+                retention._thin_lap(failing, lap_id, 1, 8)
+            except sqlite3.OperationalError:
+                pass
+            else:
+                raise AssertionError("the failure did not propagate")
+            assert failing.deletes >= 2, "the test did not reach a second chunk"
+
+            after = conn.execute(
+                "SELECT COUNT(*) c FROM samples WHERE lap_id = ?",
+                (lap_id,)).fetchone()["c"]
+            stride = conn.execute(
+                "SELECT sample_stride s FROM laps WHERE id = ?",
+                (lap_id,)).fetchone()["s"]
+            assert after == before, f"partial delete survived: {after}/{before}"
+            assert stride == 1, stride
+            print(f"  failed mid-thin: all {before} samples still there")
+        finally:
+            conn.close()
+
+
+def test_the_stride_ladder_goes_deeper_than_eight():
+    # Stopping at 8 meant every further session added an eighth of its
+    # samples on top of an already over-budget file, forever.
+    assert retention.STRIDE_LADDER[-1] >= 32, retention.STRIDE_LADDER
+    with tempfile.TemporaryDirectory() as d:
+        conn, path = _build(Path(d), sessions=4, laps=3)
+        try:
+            retention.enforce_budget(conn, path, 1)
+            worst = conn.execute(
+                "SELECT MAX(sample_stride) s FROM laps").fetchone()["s"]
+            assert worst == retention.STRIDE_LADDER[-1], worst
+            assert conn.execute(
+                "SELECT COUNT(*) c FROM laps").fetchone()["c"] == 12
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

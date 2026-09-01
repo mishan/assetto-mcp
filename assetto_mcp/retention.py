@@ -32,10 +32,18 @@ import os
 import sqlite3
 
 # Stride ladder. A lap is thinned one step at a time, so a session is only
-# taken to 1-in-8 once every older session is already there. 8 is the floor:
-# below ~3Hz a brake trace stops being a brake trace, and a lap that cannot
-# answer any question is not worth the bytes it still costs.
-STRIDE_LADDER = (2, 4, 8)
+# taken to 1-in-16 once every older session is already there.
+#
+# The ladder has a floor, and that floor is why the budget is a target
+# rather than a guarantee: lap rows and their derived facts are never
+# deleted, so a database of nothing but fully-thinned laps still grows,
+# slowly, forever. Stopping at 8 made that bite sooner than it needed to --
+# every further session added an eighth of its samples on top of an already
+# over-budget file. 32 is about 0.8Hz, which is still enough to place a lap
+# on the circuit and see roughly where the driver lifted, and it buys a
+# factor of four before the floor is real. Below that a trace answers
+# nothing and is not worth the bytes it still costs.
+STRIDE_LADDER = (2, 4, 8, 16, 32)
 
 DEFAULT_BUDGET_BYTES = 2 * 1024 ** 3  # 2 GB
 
@@ -131,19 +139,30 @@ def _thin_lap(conn, lap_id: int, current: int, target: int) -> int:
         "SELECT rowid FROM samples WHERE lap_id = ? ORDER BY t_ms",
         (lap_id,))]
     doomed = [r for i, r in enumerate(rows) if i % step]
-    if not doomed:
-        # Nothing to remove -- a lap of 0 or 1 samples. Stamp it anyway, or
-        # every future pass re-queries it forever looking for work.
+
+    # All of it, or none of it. The deletes go out in chunks and the stride
+    # is stamped at the end, so a failure in between left a lap decimated
+    # and still marked stride 1 -- and those partial deletes did not even
+    # stay uncommitted, because the caller's next heartbeat commits (
+    # renew_recorder uses `with conn`). A lap that has quietly lost seven
+    # eighths of its trace while claiming full resolution is then eligible
+    # for re-scoring, which reads the gaps as clean track.
+    conn.execute("SAVEPOINT thin_lap")
+    try:
+        for i in range(0, len(doomed), 500):
+            chunk = doomed[i:i + 500]
+            conn.execute(
+                "DELETE FROM samples WHERE rowid IN (%s)"
+                % ",".join("?" * len(chunk)), chunk)
+        # Stamped even when nothing was removed -- a lap of 0 or 1 samples
+        # would otherwise be re-queried by every future pass forever.
         conn.execute("UPDATE laps SET sample_stride = ? WHERE id = ?",
                      (target, lap_id))
-        return 0
-    for i in range(0, len(doomed), 500):
-        chunk = doomed[i:i + 500]
-        conn.execute(
-            "DELETE FROM samples WHERE rowid IN (%s)"
-            % ",".join("?" * len(chunk)), chunk)
-    conn.execute("UPDATE laps SET sample_stride = ? WHERE id = ?",
-                 (target, lap_id))
+    except Exception:
+        conn.execute("ROLLBACK TO thin_lap")
+        raise
+    finally:
+        conn.execute("RELEASE thin_lap")
     return len(doomed)
 
 

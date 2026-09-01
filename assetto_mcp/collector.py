@@ -416,19 +416,22 @@ class Collector:
             self._conn.close()
             self._conn = None
 
-    def _housekeeping(self) -> None:
-        """One retention pass, at session start, if this instance may do it.
+    def _housekeeping(self) -> str | None:
+        """One retention pass, at session start. Returns a stand-down reason.
 
-        Three guards, each for a way this can hurt rather than help:
+        A string means STOP: the pass took long enough that another instance
+        took the claim, and the caller must leave the loop before writing
+        anything. That is the whole reason the heartbeat is forced on the way
+        out -- discarding its answer left this collector carrying on into
+        sampling while a second one recorded the same laps, which is the
+        failure the claim exists to prevent.
 
-        - Only the claim holder runs it. A standby instance thinning the
-          database underneath the one actually recording is pure contention
-          for no benefit.
-        - The heartbeat is forced either side. A VACUUM over a multi-gigabyte
-          file can exceed RECORDER_STALE_SECONDS, and a claim that goes stale
-          mid-pass is handed to another instance, which then opens a second
-          session for the same drive and blocks on the exclusive lock this
-          one is still holding.
+        Three other guards:
+
+        - Only the claim holder runs it. A standby thinning the database
+          underneath the one actually recording is contention for no benefit.
+        - The heartbeat is forced either side. A VACUUM over a
+          multi-gigabyte file can exceed RECORDER_STALE_SECONDS.
         - Anything raised is recorded and swallowed. Housekeeping must never
           be the reason a session is not recorded.
 
@@ -436,25 +439,31 @@ class Collector:
         it is here and not between two flying laps.
         """
         if not self.holds_recorder:
-            return
+            return None
+        # Cleared on every pass, not only on one that acted. Left set, one
+        # thinning event made every later recording_status say a pass had
+        # just decimated traces, for the rest of the process's life.
+        self.last_retention = None
         try:
-            self._beat(force=True)
+            stand_down = self._beat(force=True)
+            if stand_down:
+                return stand_down
             result = retention.enforce_budget(self._conn, self._db_path)
             if result.get("acted"):
                 self.last_retention = result
         except Exception as e:
             self.last_error = f"retention pass failed: {e}"
-        finally:
-            try:
-                self._beat(force=True)
-            except Exception:
-                pass
+        try:
+            return self._beat(force=True)
+        except Exception:
+            return None
 
     def _loop(self, sim, AC_LIVE):
         interval = 1.0 / TARGET_HZ
         session_started = False
         lap_samples: list[tuple] = []
-        lap_dirty = False        # any tyres-out excursion this lap
+        lap_dirty = False        # overlay only: a real excursion this lap
+        wide_since = None        # t_ms the current excursion began
         lap_pitted = False       # driver entered the pit lane this lap
         session_best = None      # fastest valid lap so far, for outlier check
         last_completed = None
@@ -522,6 +531,7 @@ class Collector:
                 session_best = None
                 lap_samples = []
                 lap_dirty = False
+                wide_since = None
                 lap_pitted = False
 
             if not session_started:
@@ -534,11 +544,26 @@ class Collector:
                     air_temp=p.airTemp, road_temp=p.roadTemp,
                 )
                 session_started = True
-                self._housekeeping()
+                # A retention pass can outlast the claim, and the answer has
+                # to be acted on: carrying on here means two collectors
+                # writing the same laps, which is the one failure the claim
+                # exists to prevent. Handled exactly like the beat at the top
+                # of the loop.
+                stand_down = self._housekeeping()
+                if stand_down:
+                    self.last_error = (None if stand_down == SWITCHED_OFF
+                                       else stand_down)
+                    self.status = f"standby ({stand_down})"
+                    self.holds_recorder = False
+                    if self.session_id is not None:
+                        self.last_session_id = self.session_id
+                        self.session_id = None
+                    return
                 last_completed = g.completedLaps
                 last_pos = None
                 lap_samples = []
                 lap_dirty = False
+                wide_since = None
                 lap_pitted = False
                 lap_start_wall = time.monotonic()
                 self.sessions_started += 1
@@ -588,9 +613,18 @@ class Collector:
                             and (session_best is None
                                  or lap_time < session_best)):
                         session_best = lap_time
+                        # The reference improved, so laps already stored
+                        # were judged against a slower one. A first lap of
+                        # 3:10 followed by a 1:53 stayed flagged clean
+                        # forever: the flag was set once, against a
+                        # reference that did not exist yet, and nothing went
+                        # back. Re-scoring the session is a handful of rows
+                        # and only happens on a new personal best.
+                        db.backfill_outliers(self._conn, self.session_id)
                 last_completed = g.completedLaps
                 lap_samples = []
                 lap_dirty = False
+                wide_since = None
                 lap_pitted = False
                 lap_start_wall = time.monotonic()
                 # Forget the previous position too. The lap counter and the
@@ -629,6 +663,7 @@ class Collector:
                 self.abandoned_laps += 1
                 lap_samples = []
                 lap_dirty = False
+                wide_since = None
                 lap_pitted = False
                 lap_start_wall = time.monotonic()
                 self.current_lap_dirty = False
@@ -648,14 +683,21 @@ class Collector:
                 last_packet = p.packetId
                 t_ms = int((time.monotonic() - lap_start_wall) * 1000)
                 # Drives the in-game overlay's "running wide" indicator
-                # only. The stored verdict is scored from the samples at
-                # store time -- but this must use the same threshold, or
-                # the overlay flags a lap dirty in real time that the
-                # database then records as clean, which is the original
+                # only -- the stored verdict is scored from the samples at
+                # store time. It has to use the same rule, though, and the
+                # rule is two things: the wheel count AND a minimum
+                # duration. Matching only the count meant one 40ms glitch
+                # lit the overlay for the rest of the lap while the database
+                # recorded that same lap clean, which is the original
                 # complaint surviving in the one place the driver sees it.
                 if p.numberOfTyresOut >= db.TRACK_LIMITS_WHEELS:
-                    lap_dirty = True
-                    self.current_lap_dirty = True
+                    if wide_since is None:
+                        wide_since = t_ms
+                    elif t_ms - wide_since >= db.MIN_EXCURSION_MS:
+                        lap_dirty = True
+                        self.current_lap_dirty = True
+                else:
+                    wide_since = None
                 self.samples_taken += 1
                 # Position, attitude and electronics activity. Read through
                 # getattr because a test stub or an older shared-memory

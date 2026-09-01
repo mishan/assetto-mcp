@@ -823,14 +823,31 @@ def rescore_track_limits() -> str:
 
     Run this after changing TRACK_LIMITS_WHEELS. Only ever recomputes;
     never deletes a lap and never touches a verdict that came from the game
-    rather than from inference."""
+    rather than from inference.
+
+    **Laps whose traces have been thinned are skipped**, and counted in
+    `laps_skipped_thinned`. Their evidence was measured at full resolution
+    and the samples behind it no longer are, so re-scoring would replace a
+    real measurement with a worse one. A new threshold therefore does NOT
+    reach those laps -- say so rather than describing the pass as covering
+    the driver's whole history."""
     changed = db.backfill_excursions(_conn)
     flagged = db.backfill_outliers(_conn)
-    return _j({"laps_rescored": changed, "outliers_reflagged": flagged,
-               "threshold_wheels_off": db.TRACK_LIMITS_WHEELS,
-               "min_excursion_ms": db.MIN_EXCURSION_MS,
-               "note": "Nothing was deleted. A lap that no longer counts as "
-                       "running wide is readable and comparable again."})
+    skipped = _conn.execute(
+        "SELECT COUNT(*) c FROM laps WHERE sample_stride > 1"
+        " AND invalid_source = 'inferred'").fetchone()["c"]
+    out = {"laps_rescored": changed, "outliers_reflagged": flagged,
+           "laps_skipped_thinned": skipped,
+           "threshold_wheels_off": db.TRACK_LIMITS_WHEELS,
+           "min_excursion_ms": db.MIN_EXCURSION_MS,
+           "note": "Nothing was deleted. A lap that no longer counts as "
+                   "running wide is readable and comparable again."}
+    if skipped:
+        out["skipped_note"] = (
+            f"{skipped} lap(s) were NOT re-scored because retention has "
+            f"thinned their traces; they keep the verdict measured at full "
+            f"resolution. A changed threshold does not reach them.")
+    return _j(out)
 
 
 @mcp.tool()
@@ -1013,13 +1030,43 @@ def driving_line(lap_id: int, compare_lap_id: int | None = None,
 def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
     """Corner-by-corner comparison of two laps on the same track: min speed
     deltas, brake point deltas, and slip balance changes. Use to evaluate
-    whether a setup change actually helped."""
+    whether a setup change actually helped.
+
+    Both laps are compared whatever they are -- an out-lap and a lap that
+    ended in the barrier still have real corner speeds on them. But if
+    either lap's *time* is not a lap time, `time_delta_ms` is meaningless
+    and `lap_time_warning` says so. Read it before quoting a delta."""
     a, b = db.get_lap(_conn, lap_id_a), db.get_lap(_conn, lap_id_b)
     if not a or not b:
         return _j({"error": "one or both lap ids not found"})
-    return _j(analysis.compare_laps(
+    out = analysis.compare_laps(
         a, db.get_samples(_conn, lap_id_a),
-        b, db.get_samples(_conn, lap_id_b)))
+        b, db.get_samples(_conn, lap_id_b))
+    warning = _lap_time_warning({"A": a, "B": b})
+    if warning:
+        out["lap_time_warning"] = warning
+    return _j(out)
+
+
+def _lap_time_warning(laps: dict) -> str | None:
+    """Why a delta between these laps' times means nothing, if it doesn't.
+
+    Storing out-laps and pit laps made them reachable by id, which is the
+    point -- their telemetry is real. Their stored `lap_time_ms` is not a
+    lap time though: zero for an out-lap, wall-clock elapsed for an
+    abandoned one, wall-clock-plus-a-pit-stop for a pit lap. Any tool that
+    subtracts one from another has to say so rather than print the number.
+    """
+    bad = []
+    for side, lap in laps.items():
+        ok, why = db.lap_usability(dict(lap))
+        if not ok:
+            bad.append(f"{side} (lap {lap.get('lap_number')}): {why}")
+    if not bad:
+        return None
+    return ("a time difference between these laps is not a lap-time "
+            "difference -- " + "; ".join(bad) + ". The corner-by-corner "
+            "figures are still real; the time is not.")
 
 
 def _live_fuel_facts() -> tuple[dict, str | None]:
@@ -1443,9 +1490,13 @@ def delta_by_position(lap_id_a: int, lap_id_b: int,
             return f"{l.get('track')}/{cfg}"
         return _j({"error": f"different track layouts: {_name(a)} vs "
                             f"{_name(b)}; positions are not comparable"})
-    return _j(analysis.delta_by_position(
+    out = analysis.delta_by_position(
         a, db.get_samples(_conn, lap_id_a),
-        b, db.get_samples(_conn, lap_id_b), segments=segments))
+        b, db.get_samples(_conn, lap_id_b), segments=segments)
+    warning = _lap_time_warning({"A": a, "B": b})
+    if warning:
+        out["lap_time_warning"] = warning
+    return _j(out)
 
 
 # --- in-game app bridge ------------------------------------------------

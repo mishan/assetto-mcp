@@ -699,25 +699,25 @@ def _v11_preserve_old_exclusions(conn) -> list[str]:
             if worst is not None and worst > LEGACY_TRACK_LIMITS_WHEELS:
                 went_wide.add(row["id"])
 
-    # The outlier reference is the fastest lap of the session, however it
-    # was flagged -- same rule backfill_outliers uses.
-    refs: dict = {}
-    for r in conn.execute(
-            f"SELECT session_id, MIN(lap_time_ms) m FROM laps"
-            f" WHERE {complete_expr} AND lap_time_ms > 0"
-            f" GROUP BY session_id"):
-        refs[r["session_id"]] = r["m"]
-
-    from .analysis import lap_is_outlier
+    # Only two things explain an old exclusion in a way that lets the lap
+    # back in, and being a gross outlier is deliberately NOT one of them.
+    #
+    # The reasons were never mutually exclusive. The 10:22 pit-stop lap that
+    # motivated the outlier rule in the first place is both a pit lap and an
+    # outlier, and treating "it was slow" as proof that no pit visit
+    # happened let exactly that lap through: outliers are usable under the
+    # new model, so a wall-clock pit time walked straight into lap-time
+    # comparisons. Which is the failure this whole function exists to stop.
+    #
+    # So a slow lap stays excluded. The cost of being wrong that way is a
+    # genuinely slow clean lap kept out of timing with its telemetry intact;
+    # the cost the other way is a 10:22 "lap time" averaged into a run.
     presumed_pit = []
     for row in excluded:
         if row["id"] in went_wide:
-            continue                        # explained: it ran wide
+            continue        # explained, and the new model re-admits it
         if not row["complete"]:
-            continue                        # explained: it was abandoned
-        if row["lap_time_ms"] > 0 and lap_is_outlier(
-                row["lap_time_ms"], refs.get(row["session_id"])):
-            continue                        # explained: it was a gross outlier
+            continue        # explained: `complete` still excludes it
         presumed_pit.append(row["id"])
 
     if not presumed_pit:
@@ -771,6 +771,18 @@ def score_excursions(pairs: list[tuple]) -> dict:
     max_out, episodes, total_ms = 0, 0, 0
     run_start = None
 
+    def _typical_interval(pairs):
+        """The median gap between samples, for closing a run that never ended.
+
+        Measured rather than assumed: 25Hz is nominal, a thinned trace is a
+        multiple of it, and an abandoned lap stops wherever it stopped.
+        """
+        if len(pairs) < 2:
+            return 0
+        gaps = sorted(pairs[i + 1][0] - pairs[i][0]
+                      for i in range(len(pairs) - 1))
+        return gaps[len(gaps) // 2]
+
     def close(run_start, end_t):
         """An episode's duration runs to where it *ended*, not to its last
         off-track sample. Measuring to the last off sample loses one tick
@@ -792,9 +804,15 @@ def score_excursions(pairs: list[tuple]) -> dict:
             run_start = None
     if run_start is not None:
         # Still off track when the samples ran out: the lap ended in the
-        # gravel, or the trace does. There is no later timestamp to measure
-        # to, so this one does end at its last sample.
-        n, span = close(run_start, usable[-1][0])
+        # gravel, or the trace does. Measuring to the last sample loses one
+        # interval and made the verdict depend on whether a clean sample
+        # happened to follow -- three off-track samples ending a lap scored
+        # 0 excursions, the identical three followed by one clean sample
+        # scored 1. A lap that ends off track is the likeliest to have run
+        # wide, and it was the one being let off. So the run is extended by
+        # one typical interval, which is the least this episode can have
+        # lasted.
+        n, span = close(run_start, usable[-1][0] + _typical_interval(usable))
         episodes += n
         total_ms += span
 
@@ -885,18 +903,28 @@ def backfill_excursions(conn, lap_ids: list[int] | None = None) -> int:
     return changed
 
 
-def backfill_outliers(conn) -> int:
+def backfill_outliers(conn, session_id: int | None = None) -> int:
     """Mark grossly slow laps as outliers, per session. Returns rows changed.
 
     Only sets the flag; nothing is deleted and nothing is excluded from
     analysis because of it. It used to feed `valid`, which meant a lap 7%
     off the pace was dropped from comparisons without a word.
+
+    session_id narrows it to one session, which is how the collector
+    re-scores live: the flag is set against the fastest lap seen *so far*,
+    so a slow first lap followed by a quick one was judged against a
+    reference that did not exist yet and never revisited.
     """
     from .analysis import lap_is_outlier
     if not (_table_exists(conn, "laps") and _table_exists(conn, "sessions")):
         return 0
+    q = "SELECT id FROM sessions"
+    args: list = []
+    if session_id is not None:
+        q += " WHERE id = ?"
+        args.append(session_id)
     changed = 0
-    for srow in conn.execute("SELECT id FROM sessions").fetchall():
+    for srow in conn.execute(q, args).fetchall():
         sid = srow["id"]
         laps = conn.execute(
             "SELECT id, lap_time_ms, complete, out_lap, pitted"

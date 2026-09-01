@@ -322,6 +322,53 @@ def test_display_readings_survive_a_retention_pass():
             conn.close()
 
 
+def test_a_pit_lap_that_is_also_an_outlier_stays_excluded():
+    """The 10:22 lap, which is both, and the reasons are not exclusive.
+
+    Being a gross outlier used to count as explaining an old exclusion --
+    so the lap was left unpitted, and since outliers are usable under the
+    new model, a wall-clock pit time walked into lap-time comparisons. The
+    exact lap that motivated the outlier rule in the first place.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "old.db"
+        _v0_database(path, [(114054, 1), (622162, 0)])
+        conn = db.connect(path)
+        try:
+            lap = [dict(r) for r in db.list_laps(conn, limit=None)
+                   if r["lap_time_ms"] == 622162][0]
+            assert lap["pitted"] == 1, lap
+            # Not additionally flagged an outlier, and that is right: a pit
+            # lap's time is wall clock, so there is no lap time for it to be
+            # an outlier of. backfill_outliers skips pitted laps for the
+            # same reason it skips them when picking the reference.
+            assert lap["outlier"] == 0, lap
+            usable, why = db.lap_usability(lap)
+            assert usable is False, why
+            assert db.list_sessions(conn)[0]["best_ms"] == 114054
+            print("  a slow old exclusion stays out of lap-time maths")
+        finally:
+            conn.close()
+
+
+def test_a_slow_lap_that_ran_wide_is_still_given_back():
+    # Explained by the old track-limits rule, so it is re-admitted even
+    # though it is also slow -- the conservative rule must not swallow the
+    # case the whole migration exists for.
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "old.db"
+        _v0_database(path, [(114054, 1), (126769, 0)],
+                     tyres_out={2: [0] * 10 + [3] * 25 + [0] * 5})
+        conn = db.connect(path)
+        try:
+            lap = [dict(r) for r in db.list_laps(conn, limit=None)
+                   if r["lap_time_ms"] == 126769][0]
+            assert lap["pitted"] == 0, lap
+            assert db.lap_usability(lap) == (True, None), lap
+        finally:
+            conn.close()
+
+
 def test_migration_is_idempotent():
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "old.db"

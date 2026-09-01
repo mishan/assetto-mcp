@@ -825,7 +825,12 @@ def _backup_age(path: Path) -> tuple:
     # on the first hyphen instead read "20260101-120000" as stamp
     # "20260101" collision 120000, which sorted the very first backup of a
     # second as the newest of them.
-    parts = path.name.split(".ini.bak-", 1)[-1].split("-")
+    # rsplit, not split: a setup name may itself contain ".ini.bak-" --
+    # dots and hyphens are both legal in _NAME_RE -- and splitting on the
+    # FIRST marker then parsed part of the driver's own name as a timestamp,
+    # so every backup of that setup fell to the fallback age and pruning
+    # stopped keeping the newest.
+    parts = path.name.rsplit(".ini.bak-", 1)[-1].split("-")
     try:
         if len(parts) == 2:
             return (f"{parts[0]}-{parts[1]}", 0)

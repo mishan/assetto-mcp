@@ -130,7 +130,10 @@ BIND_RETRY_SECONDS = 300.0
 # How long a session in the shared DB counts as "another instance is still
 # recording this", when that session predates the collector heartbeat.
 # Generous: a driver can sit in the garage between runs, and for these rows
-# the last stored lap is the only evidence there is.
+# the only evidence is the last stored lap -- or, for a session that never
+# stored one, the moment it started. Both are ages of something that
+# happened once and cannot happen again, which is why the window has to be
+# this loose and why it is a fallback rather than the rule.
 #
 # Live sessions do not use this. A running collector touches
 # sessions.last_seen_at every few seconds, so db.SESSION_STALE_SECONDS

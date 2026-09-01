@@ -989,14 +989,23 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
     # Reported because it decides which corners exist. A comparison whose
     # corner list looks wrong is answerable now: this is the bar every lap
     # was held to, and it is not the bar lap_summary uses on its own.
-    out["corner_detection"] = dict(
-        analysis.corner_detection_note(ref, ref_detail["laps"],
-                                       spread_g=ref_detail["spread_g"]),
-        note="one lateral-g reference across every lap on both sides, so "
-             "corner membership does not depend on how hard an individual "
-             "lap was driven. lap_summary called on a single lap uses that "
-             "lap's own peak instead, so its corner list can differ from "
-             "the one here.")
+    out["corner_detection"] = analysis.corner_detection_note(
+        ref, ref_detail["laps"], spread_g=ref_detail["spread_g"])
+    out["corner_detection"]["note"] = (
+        "one lateral-g reference across every lap on both sides, so corner "
+        "membership does not depend on how hard an individual lap was "
+        "driven. lap_summary called on a single lap uses that lap's own "
+        "peak instead, so its corner list can differ from the one here."
+        if ref is not None else
+        # No lap in the comparison carried enough lateral load to
+        # contribute, so there is no shared bar and every lap fell back to
+        # its own peak. The note above would flatly contradict the `basis`
+        # beside it, and a reader debugging a corner list is exactly who
+        # reads both.
+        "no lap on either side carried enough cornering load to set a "
+        "shared reference, so each lap was detected against its own peak. "
+        "Corner membership here can depend on how hard an individual lap "
+        "was driven -- which is what a shared reference exists to prevent.")
     out["track"] = where(base_laps[0])
     out["car"] = base_laps[0].get("car")
     if dropped:

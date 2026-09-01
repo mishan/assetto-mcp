@@ -847,5 +847,31 @@ def test_lap_ids_survive_the_way_a_list_actually_arrives():
         print(" ", out["error"])
 
 
+def test_a_run_with_no_cornering_does_not_claim_a_shared_reference():
+    """corner_detection has to agree with itself.
+
+    When no lap on either side carries enough lateral load, there is no
+    shared bar: lat_g_reference returns None and every lap falls back to its
+    own peak. The note was appended unconditionally and said a single shared
+    reference had been used across both sides -- flatly contradicting the
+    `basis` field beside it, for the one reader who looks at both, which is
+    someone debugging a corner list that surprised them.
+    """
+    srv = _server()
+    sid = make_session(srv._conn, track="mugello",
+                       car="rss_formula_rss_4")
+    # A flat lap: _SAMPLE carries no lateral g at all, so nothing corners.
+    base = [_store(srv, sid, n, 113000 + n * 40) for n in (1, 2, 3)]
+    cand = [_store(srv, sid, n, 113100 + n * 40) for n in (4, 5, 6)]
+
+    out = _run(srv, base, cand)
+    cd = out["corner_detection"]
+    assert cd["basis"] == "this lap's own cornering load", cd
+    assert "laps_in_reference" not in cd, cd
+    assert "no lap on either side" in cd["note"], cd
+    assert "one lateral-g reference" not in cd["note"], cd
+    print(f"  {cd['basis']!r}; note agrees with it")
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

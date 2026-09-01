@@ -403,6 +403,43 @@ def test_a_stored_count_going_backwards_re_takes_the_baseline():
     print("  stored count fell -> baseline re-taken instead of an alarm")
 
 
+def test_the_test_helper_resets_every_piece_of_the_baseline():
+    """resetBaseline has to clear the whole baseline, not a third of it.
+
+    Asserted on the state directly rather than through behaviour, because
+    behaviour cannot currently tell the difference: baselineSession and
+    baselineLaps are reassigned unconditionally on the next call, so a
+    helper clearing only recordingBaseline produces the same answers today.
+
+    It is still worth fixing, and worth a test. The helper names a thing --
+    "the baseline" -- that now has three parts, and one that clears one part
+    is a trap for the next person: any new check that reads the stale two
+    before they are rewritten would fail in tests only, and look like the
+    code under test rather than the harness.
+    """
+    lua, api, rec = lua_harness.load()
+    api.setConnected(True)
+    api.setRunning(True)
+    api.setSession(3)
+    api.setLapCount(40)
+    api.setLaps(12)
+    api.recordingHealth()
+    assert tuple(api.baselineState()) == (40, 3, 12), \
+        tuple(api.baselineState())
+
+    api.resetBaseline()
+    lap, session, laps = api.baselineState()
+    assert lap is None and session is None and laps == 0, (lap, session, laps)
+
+    # And a fresh recording still measures itself from where it starts.
+    api.setLapCount(41)
+    api.setLaps(0)
+    state, detail = api.recordingHealth()
+    assert state == "recording", (state, detail)
+    assert api.baseline() == 41, api.baseline()
+    print("  resetBaseline clears the lap, the session and the stored count")
+
+
 def test_the_lap_count_helper_survives_a_car_that_is_not_there_yet():
     """ac.getCar(0) can return nil early in load, and recordingHealth already
     reads `car and car.lapCount` for that reason. The test helper indexed it
@@ -434,7 +471,6 @@ def test_the_lap_count_helper_survives_a_car_that_is_not_there_yet():
     assert api2.recordingHealth()[0] is not None
     print(f"  car present -> {with_car!r}; loaded without a car -> helper "
           f"returns False and health still answers")
-
 
 if __name__ == "__main__":
     if SKIP:

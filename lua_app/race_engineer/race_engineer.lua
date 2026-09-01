@@ -1063,8 +1063,24 @@ script.__test = {
   recordingHealth = function() return recordingHealth() end,
   -- The baseline is remembered across calls, so a test that wants to start
   -- from "recording has only just begun" has to be able to say so.
-  resetBaseline = function() recordingBaseline = nil end,
+  --
+  -- All three pieces, not just the lap count. What the warning compares
+  -- against is now (baseline, session, stored laps) together, and clearing
+  -- one of them leaves a test half-reset -- which would look like a fresh
+  -- recording and behave like a continuing one. That is the exact confusion
+  -- the session and lap-count checks were added to remove, so a helper that
+  -- reintroduces it in the tests is worse than no helper.
+  resetBaseline = function()
+    recordingBaseline = nil
+    baselineSession = nil
+    baselineLaps = 0
+  end,
   baseline = function() return recordingBaseline end,
+  -- All three, so a test can assert the reset rather than infer it from
+  -- behaviour that happens to be identical either way.
+  baselineState = function()
+    return recordingBaseline, baselineSession, baselineLaps
+  end,
   setLaps = function(n) status.laps = n end,
   setConnected = function(v) status.connected = v end,
   setSession = function(n) status.sessionId = n end,

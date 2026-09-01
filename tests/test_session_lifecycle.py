@@ -510,6 +510,68 @@ def test_a_collector_that_loses_its_claim_stops_writing():
             col.stop()
 
 
+def test_a_shared_stop_reaches_the_instance_actually_recording():
+    """The whole point of putting `enabled` in the database.
+
+    stop_recording is normally typed into whichever chat the driver has
+    open, and that is normally NOT the process holding the recorder. The
+    holder is inside _loop, which does not return to the outer loop while a
+    session is live -- and the outer loop was the only place the flag was
+    read. So the driver could switch recording off, be told it had stopped,
+    and have the holder keep writing laps until the game closed.
+    """
+    with temp_db() as path:
+        sim = FakeSim()
+        holder = Collector(path, lambda: sim)
+        holder.HEARTBEAT_SECONDS = 0.01
+        holder.STANDBY_RETRY_SECONDS = 0.05
+        try:
+            holder.start()
+            wait_for(lambda: holder.session_id is not None, "a session")
+            tick(sim, holder)
+            complete_lap(sim, holder, 0, stored=False)
+            tick(sim, holder)
+            complete_lap(sim, holder, 113000)
+            assert holder.laps_recorded == 1
+
+            # Another instance's stop_recording: the flag, and nothing else.
+            # No stop() on this collector, because the driver never touched
+            # this process.
+            other = db.connect(path)
+            try:
+                db.set_recorder_enabled(other, False)
+            finally:
+                other.close()
+
+            wait_for(lambda: not holder.holds_recorder,
+                     "the holder to stand down", timeout=10)
+            assert "switched off" in holder.status, holder.status
+            # Not an error: it did what it was told.
+            assert holder.last_error is None, holder.last_error
+
+            # And it really has stopped writing. Driven by hand rather than
+            # through tick(), which waits for a sample that must never
+            # arrive -- the absence is the assertion.
+            before = holder.laps_recorded
+            samples_before = holder.samples_taken
+            for _ in range(8):
+                sim.graphics.normalizedCarPosition = (
+                    sim.graphics.normalizedCarPosition + 0.1) % 1.0
+                sim.physics.packetId += 1
+                time.sleep(0.02)
+            sim.graphics.iLastTime = 112800
+            sim.graphics.completedLaps += 1
+            time.sleep(0.3)
+            assert holder.laps_recorded == before, (
+                f"{holder.laps_recorded - before} lap(s) stored after "
+                f"recording was switched off")
+            assert holder.samples_taken == samples_before, (
+                "still sampling after being switched off")
+            print(f"  holder stood down: {holder.status!r}")
+        finally:
+            holder.stop()
+
+
 def test_stopping_recording_is_shared_and_survives_a_restart():
     """stop_recording used to stop one process until the next restart.
 

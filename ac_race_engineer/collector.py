@@ -57,6 +57,12 @@ WHEELS_PER_CAR = 4
 DAMAGE_ZONES = 5
 WORLD_AXES = 3
 
+# Why a collector that was recording stopped. A sentinel rather than a bare
+# string because one of the two callers has to tell them apart: standing
+# down because someone switched recording off is not a failure and must not
+# be reported as last_error, while losing the claim is.
+SWITCHED_OFF = "recording was switched off by stop_recording"
+
 
 def _seq(p, field: str, n: int) -> tuple | None:
     """`n` values from a fixed-size shared-memory array, or None.
@@ -235,24 +241,41 @@ class Collector:
         self.status = status
         self._announced.set()
 
-    def _beat(self, force: bool = False) -> bool:
-        """Re-assert the claim and the session heartbeat, on a timer.
+    def _beat(self, force: bool = False) -> str | None:
+        """Re-assert the claim and the heartbeat, and check we still may.
 
-        False means the claim is gone -- another instance took it after we
-        went quiet for longer than db.RECORDER_STALE_SECONDS -- and the
-        caller must stop writing laps at once. Two collectors storing the
-        same laps is the failure this whole mechanism exists to prevent,
-        and losing a claim is the one way it can still happen.
+        None means carry on. A string is the reason to stop writing, and
+        both reasons are things another process decided while this one was
+        inside the recording loop:
+
+        * the claim is gone -- another instance took it after we went quiet
+          for longer than db.RECORDER_STALE_SECONDS. Two collectors storing
+          the same laps is the failure this whole mechanism exists to
+          prevent, and losing a claim is the one way it can still happen.
+        * recording was switched off. `enabled` is shared precisely so that
+          stop_recording reaches whichever process is holding the recorder
+          rather than whichever chat received the call -- and the holder is
+          normally inside _loop, which is the one place that never returns
+          to the outer loop where the flag was being read. So a driver in
+          any other chat could call stop_recording, be told recording had
+          stopped, and have the holder carry on writing laps until the game
+          closed. The flag has to be read where the writing happens.
+
+        Both checks share the heartbeat's timer, so this costs one extra
+        query every HEARTBEAT_SECONDS rather than one per sample.
         """
         now = time.monotonic()
         if not force and now - self._last_beat < self.HEARTBEAT_SECONDS:
-            return True
+            return None
         self._last_beat = now
         if not db.renew_recorder(self._conn, self._owner):
-            return False
+            return ("another instance took over recording; this one stopped "
+                    "to avoid storing every lap twice")
+        if not db.recorder_enabled(self._conn):
+            return SWITCHED_OFF
         if self.session_id is not None:
             db.touch_session(self._conn, self.session_id)
-        return True
+        return None
 
     # ------------------------------------------------------------------
 
@@ -301,6 +324,12 @@ class Collector:
                     db.release_recorder(self._conn, self._owner)
                     self.holds_recorder = False
                     self.standby_owner = None
+                    # Cleared, because being switched off is not a failure
+                    # and there may be an old one sitting here. A collector
+                    # doing exactly what it was told, reporting the reason
+                    # some earlier problem gave, is how recording_status
+                    # sends someone after a fault that is not there.
+                    self.last_error = None
                     self._announce("standby (recording is switched off)")
                     if self._stop.wait(self.STANDBY_RETRY_SECONDS):
                         break
@@ -329,6 +358,11 @@ class Collector:
                     # game open yet.
                     self._announce("waiting for Assetto Corsa")
                     self.last_error = str(e)
+                    # Result ignored on purpose: this path goes straight back
+                    # round the outer loop, which re-reads both the enabled
+                    # flag and the claim before doing anything. _loop is the
+                    # only place that has to act on it, because it is the
+                    # only place that does not come back here.
                     self._beat()
                     if self._stop.wait(self.SIM_RETRY_SECONDS):
                         break
@@ -384,14 +418,21 @@ class Collector:
         last_pos = None
 
         while not self._stop.is_set():
-            # Before anything is read, let alone written. Losing the claim
-            # means another instance believes it is recording this session,
-            # and the only safe response is to stop being the second writer.
-            if not self._beat():
-                self.last_error = ("another instance took over recording;"
-                                   " this one stopped to avoid storing every"
-                                   " lap twice")
-                self.status = "standby (lost the recorder claim)"
+            # Before anything is read, let alone written. Both reasons this
+            # can refuse were decided by another process while we were in
+            # here: the claim taken over, or recording switched off. This is
+            # the only place either is noticed, because this loop does not
+            # return to the outer one while a session is live.
+            stand_down = self._beat()
+            if stand_down:
+                # Being switched off is not an error, so it does not go in
+                # last_error. Losing the claim is: something stalled this
+                # process for RECORDER_STALE_SECONDS and somebody should
+                # know. The outer loop announces the switched-off case
+                # properly on its next pass.
+                self.last_error = (None if stand_down == SWITCHED_OFF
+                                   else stand_down)
+                self.status = f"standby ({stand_down})"
                 self.holds_recorder = False
                 return
 

@@ -300,7 +300,13 @@ class Bridge:
         #
         # A genuine other instance produces laps within a few minutes. One
         # that has not is not recording, whatever its row says.
-        if latest["last_lap_at"]:
+        # `is not None`, not truthiness: last_lap_at is a timestamp or NULL,
+        # and the branches mean "this session has produced laps" against "it
+        # never has". A falsy-but-real timestamp would take the second one
+        # and be given the tight window. A completed_at of 0.0 is not
+        # something this code produces, but the check should say which
+        # question it is asking rather than lean on that.
+        if latest["last_lap_at"] is not None:
             age = time.time() - latest["last_lap_at"]
             limit = OTHER_INSTANCE_STALE_SECONDS
         else:

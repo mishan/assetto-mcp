@@ -19,7 +19,7 @@ from support import (FakeCollector, age_session, clear_heartbeat,  # noqa: E402
                      get, heartbeat_session, make_session, post,
                      run_module, temp_db)
 
-from ac_race_engineer import bridge as B, db  # noqa: E402
+from assetto_mcp import bridge as B, db  # noqa: E402
 
 
 def _bridge(path, collector):

@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import make_session, run_module  # noqa: E402
 
-from ac_race_engineer import analysis, db  # noqa: E402
+from assetto_mcp import analysis, db  # noqa: E402
 
 # The real figures from the RSS Formula 4 at Mugello.
 MUGELLO_M = 5245.0
@@ -336,7 +336,7 @@ def test_set_fuel_basis_checks_its_own_arguments():
 # no coverage at all.
 _SERVER_PROBE = """
 import json
-from ac_race_engineer import db, server
+from assetto_mcp import db, server
 
 conn = server._conn
 sid = db.create_session(conn, car="rss_formula_rss_4", track="mugello",
@@ -361,8 +361,8 @@ def _run_probe(source: str) -> dict:
     """Run a probe against a throwaway data directory and return its JSON."""
     with tempfile.TemporaryDirectory() as d:
         env = dict(os.environ)
-        env["AC_ENGINEER_DATA"] = d
-        env["AC_ENGINEER_BRIDGE_PORT"] = "0"  # never the real one
+        env["ASSETTO_MCP_DATA"] = d
+        env["ASSETTO_MCP_BRIDGE_PORT"] = "0"  # never the real one
         env["PYTHONPATH"] = os.pathsep.join(
             [str(Path(__file__).resolve().parent.parent),
              env.get("PYTHONPATH", "")])
@@ -409,7 +409,7 @@ def test_the_tool_layer_survives_a_read_only_fuel_entry():
 # of the session and called it "the game's maxFuel".
 _PROVENANCE_PROBE = """
 import json
-from ac_race_engineer import db, server
+from assetto_mcp import db, server
 
 conn = server._conn
 facts = {}

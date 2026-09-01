@@ -17,8 +17,8 @@ from support import (FakeSim, complete_lap, go_live, go_off,  # noqa: E402
                      restart_from_menu, run_collector, run_module, temp_db,
                      tick, wait_for)
 
-from ac_race_engineer import db  # noqa: E402
-from ac_race_engineer.collector import Collector  # noqa: E402
+from assetto_mcp import db  # noqa: E402
+from assetto_mcp.collector import Collector  # noqa: E402
 
 
 def test_restart_from_the_menu_starts_a_new_session():

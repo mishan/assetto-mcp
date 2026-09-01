@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import make_session, run_module, temp_db  # noqa: E402
 
-from ac_race_engineer import db  # noqa: E402
+from assetto_mcp import db  # noqa: E402
 
 # The schema as it stood before laps carried their own setup name.
 V0_SCHEMA = """

@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import make_session, run_module  # noqa: E402
 
-from ac_race_engineer import analysis, db  # noqa: E402
+from assetto_mcp import analysis, db  # noqa: E402
 
 
 def _lap(lap_ms, balance, load_pct, fl_temp=100.0, corners=None):
@@ -666,9 +666,9 @@ def _server():
     global _SERVER
     if _SERVER is None:
         d = tempfile.mkdtemp(prefix="ac-compare-runs-")
-        os.environ["AC_ENGINEER_DATA"] = d
+        os.environ["ASSETTO_MCP_DATA"] = d
         os.environ["AC_DOCS_DIR"] = d
-        os.environ["AC_ENGINEER_BRIDGE_PORT"] = "0"
+        os.environ["ASSETTO_MCP_BRIDGE_PORT"] = "0"
         # Importing the server now starts recording, which is right in the
         # game and wrong here: these tests exercise the tool layer over a
         # database they build themselves, and a collector polling for
@@ -678,9 +678,9 @@ def _server():
         # Set before the import because the decision is made at import time,
         # and that is the point -- an import with side effects can only be
         # opted out of before it happens.
-        os.environ["AC_ENGINEER_NO_AUTOSTART"] = "1"
+        os.environ["ASSETTO_MCP_NO_AUTOSTART"] = "1"
         import importlib
-        _SERVER = importlib.import_module("ac_race_engineer.server")
+        _SERVER = importlib.import_module("assetto_mcp.server")
         atexit.register(_SERVER._bridge.stop)
     return _SERVER
 

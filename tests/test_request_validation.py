@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from support import (FakeCollector, make_session, post,  # noqa: E402
                      run_module, temp_db)
 
-from ac_race_engineer import bridge as B, db  # noqa: E402
+from assetto_mcp import bridge as B, db  # noqa: E402
 
 
 def _recording_bridge(path, conn):
@@ -136,7 +136,7 @@ def test_batch_cap_exceeds_the_lua_clients_buffer():
     """
     assert B.MAX_RIVAL_BATCH >= B.RIVAL_BUFFER_MAX_CLIENT
     lua = (Path(__file__).resolve().parents[1]
-           / "lua_app/race_engineer/race_engineer.lua").read_text(
+           / "lua_app/assetto_mcp/assetto_mcp.lua").read_text(
                encoding="utf-8", errors="replace")
     for line in lua.splitlines():
         if "RIVAL_BUFFER_MAX" in line and "local" in line and "=" in line:

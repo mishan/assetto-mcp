@@ -2,11 +2,14 @@
 
 Run on the machine running Assetto Corsa:
 
-    python -m ac_race_engineer.server
+    python -m assetto_mcp.server
 
 Environment:
     AC_DOCS_DIR   AC documents dir (default: ~/Documents/Assetto Corsa)
-    AC_ENGINEER_DATA  data dir for DB + ranges (default: ~/.ac-race-engineer)
+    ASSETTO_MCP_DATA  data dir for DB + ranges (default: ~/.assetto-mcp)
+
+The ASSETTO_MCP_* variables were spelled AC_ENGINEER_* before the rename and
+are still read under both names; see config.py.
 """
 
 import json
@@ -18,18 +21,17 @@ try:  # mcp SDK 2.x
 except ImportError:  # mcp SDK 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import analysis, db, setups, suspension
+from . import analysis, config, db, setups, suspension
 from .collector import Collector
 
 AC_DOCS_DIR = Path(os.environ.get(
     "AC_DOCS_DIR", Path.home() / "Documents" / "Assetto Corsa"))
-DATA_DIR = Path(os.environ.get(
-    "AC_ENGINEER_DATA", Path.home() / ".ac-race-engineer"))
+DATA_DIR = config.data_dir()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 RANGES_DIR = DATA_DIR / "ranges"
 RANGES_DIR.mkdir(exist_ok=True)
 
-mcp = FastMCP("ac-race-engineer")
+mcp = FastMCP("assetto-mcp")
 DB_PATH = DATA_DIR / "telemetry.db"
 _conn = db.connect(DB_PATH)
 
@@ -43,7 +45,7 @@ _collector = Collector(DB_PATH, _sim_factory)
 
 from .bridge import Bridge  # noqa: E402
 
-BRIDGE_PORT = int(os.environ.get("AC_ENGINEER_BRIDGE_PORT", "9666"))
+BRIDGE_PORT = int(config.env("BRIDGE_PORT", "9666"))
 _bridge = Bridge(DB_PATH, _collector, BRIDGE_PORT)
 _bridge.start()
 
@@ -63,7 +65,7 @@ _bridge.start()
 # collectors reading one game and writing every lap once each. It also
 # reads the shared enabled flag, so a server restarted after
 # stop_recording comes back stopped rather than quietly resuming.
-if os.environ.get("AC_ENGINEER_NO_AUTOSTART") != "1":
+if config.env("NO_AUTOSTART") != "1":
     _collector.start()
 
 
@@ -587,7 +589,7 @@ def suspension_capture_status() -> str:
     if not laps:
         out["status"] = "no suspension data in this session"
         out["what_to_check"] = [
-            "Is the Race Engineer app enabled in the in-game apps sidebar?",
+            "Is the Assetto MCP app enabled in the in-game apps sidebar?",
             "Is it the current version? Suspension capture was added after "
             "the first release -- re-run install-windows.bat to update it.",
             "Does the app's status window show a bridge connection?",
@@ -1084,7 +1086,7 @@ def get_driver_notes(session_id: int | None = None, limit: int = 50,
 
 @mcp.tool()
 def send_driver_message(text: str) -> str:
-    """Show a short message on the driver's in-game Race Engineer overlay
+    """Show a short message on the driver's in-game Assetto MCP overlay
     (e.g. 'claude_v2 saved: softer front ARB, +0.5psi rears - pit and load
     it'). Keep it to a sentence or two; the driver is driving. The message
     stays up until dismissed, and is replaced by any newer message."""

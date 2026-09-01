@@ -22,14 +22,17 @@ Without --apply it only shows what it would do.
 """
 
 import argparse
-import os
 import sqlite3
 import sys
 from pathlib import Path
 
-# Same resolution order as server.py, so this follows a moved data dir.
-DATA_DIR = Path(os.environ.get(
-    "AC_ENGINEER_DATA", Path.home() / ".ac-race-engineer"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from assetto_mcp import config  # noqa: E402
+
+# Resolved by the same code the server uses, so this follows both a moved
+# data dir and a pre-rename one.
+DATA_DIR = config.data_dir()
 DB_PATH = DATA_DIR / "telemetry.db"
 
 

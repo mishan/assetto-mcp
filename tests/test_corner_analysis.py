@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import run_module  # noqa: E402
 
-from ac_race_engineer import analysis  # noqa: E402
+from assetto_mcp import analysis  # noqa: E402
 
 CLEAN = {"slip_fl": 1.4, "slip_fr": 1.4, "slip_rl": 0.5, "slip_rr": 0.5}
 

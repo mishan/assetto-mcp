@@ -1,544 +1,246 @@
 # assetto-mcp
 
-MCP server that turns Claude into a race engineer for original Assetto Corsa.
-It reads AC's shared memory telemetry, stores laps in SQLite, reduces them to
-engineer-grade summaries, and can read/write setup files that appear directly
-in the in-game setup menu.
+Turn an AI assistant into a race engineer for Assetto Corsa.
 
-Runs on the Windows machine running Assetto Corsa. Original AC only (uses the
-`acpmf_*` shared memory layout, not ACC's).
+Drive a few laps, then ask it what the car is doing. It reads AC's live
+telemetry, stores every lap, reduces them to the numbers an engineer actually
+reasons about — corner minimum speeds, brake points, tyre pressures and temps,
+understeer/oversteer balance, damper behaviour — and writes revised setups that
+appear straight in your in-game setup menu.
 
-## Install (Windows — the easy way)
+Then you drive again, and it tells you whether the change actually worked or
+whether you just had a good lap.
 
-**Prerequisite:** Python 3.10+ from [python.org](https://www.python.org/downloads/).
-On the installer's first screen tick **"Add python.exe to PATH"**. Don't use
-the Microsoft Store build — its sandboxing breaks shared-memory access.
+> Runs on the Windows PC that runs Assetto Corsa. **Original AC only** — it uses
+> the `acpmf_*` shared memory layout, not ACC's.
 
-Then, in this folder: **right-click `install-windows.bat` → Open** (or just
+---
+
+## What you need
+
+- **Assetto Corsa** on Windows, with [Custom Shaders Patch][csp] (you already
+  have it if you use Content Manager with CSP enabled)
+- **An MCP client** — anything that can launch a local stdio MCP server:
+  Claude Desktop, Claude Code, ChatGPT Desktop, Cursor, Windsurf, VS Code with
+  Copilot, or [LM Studio][lms] if you'd rather run the model locally too. This
+  is a standard MCP server and doesn't care which one you use.
+- **Python 3.10 or newer** from [python.org][py] — on the installer's first
+  screen, tick **"Add python.exe to PATH"**. Don't use the Microsoft Store
+  build; its sandboxing breaks shared-memory access.
+
+[csp]: https://acstuff.ru/patch/
+[py]: https://www.python.org/downloads/
+[lms]: https://lmstudio.ai/docs/app/mcp
+
+## Install
+
+In this folder: **right-click `install-windows.bat` → Open** (or just
 double-click it).
 
-That's it. The installer finds Python, installs the package, writes the Claude
-Desktop config (merging with any MCP servers you already have, and taking a
-backup first), locates your Assetto Corsa install, and copies the in-game Lua
-app into place. Re-run it any time after a `git pull`; it updates in place.
+The installer finds Python, installs the package, locates your Assetto Corsa
+install, copies the in-game app into place, and registers the server with
+**Claude Desktop** — merging with any MCP servers you already have, and taking
+a backup first. Re-run it any time after a `git pull`; it updates in place.
 
-If it can't find Assetto Corsa, tell it where to look. Flags go on the `.bat`,
-not the `.ps1` — Windows blocks `.ps1` files from running directly under the
-default execution policy, and the `.bat` exists to work around exactly that:
+Then **fully quit your client and reopen it.** For Claude Desktop, closing the
+window isn't enough — right-click the tray icon (bottom right, possibly hidden
+under the `^` arrow) and choose Quit.
+
+**Using a different client?** Add `-SkipClientConfig`. Everything else installs
+the same way, and the installer prints the two lines you need to paste into
+your client's config:
 
 ```
-install-windows.bat -AcPath "D:\Games\steamapps\common\assettocorsa"
+install-windows.bat -SkipClientConfig
 ```
 
-Other flags: `-SkipLuaApp`, `-Uninstall`.
+[docs/INSTALL.md](docs/INSTALL.md) has the config snippet for each client.
 
-**After installing, fully quit Claude Desktop and reopen it.** Closing the
-window isn't enough — right-click the Claude icon in the system tray (bottom
-right, possibly hidden under the `^` arrow) and choose Quit.
+Other flags: `-AcPath "D:\Games\steamapps\common\assettocorsa"` if it can't
+find the game, `-SkipLuaApp`, `-Uninstall`.
 
-## Install (manual)
+*Prefer to do the whole thing by hand? Also [docs/INSTALL.md](docs/INSTALL.md).
+Something went wrong? Run `diagnose.bat`, then see
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).*
 
-```powershell
-python -m pip install -e .
-```
+---
 
-Then add the server to `claude_desktop_config.json`. The fastest way to open
-that file is **Claude Desktop → Settings → Developer → Edit Config**, which
-creates it if missing and opens the containing folder — no filesystem
-archaeology required.
+## Using it
 
-<details>
-<summary>Where that file actually lives, and why <code>%APPDATA%</code> may not work for you</summary>
+Recording starts by itself and waits for the game, so there is nothing to
+remember to switch on.
 
-`%APPDATA%` is an *environment variable*, not a literal path. It expands to
-`C:\Users\<you>\AppData\Roaming` — and `AppData` is a **hidden** folder, so
-browsing to it in Explorer shows nothing unless you enable View → Hidden items.
+**1. Get on track and check the assistant can see you.**
 
-The bigger gotcha: `%VAR%` is **cmd.exe syntax**. Windows Terminal defaults to
-**PowerShell**, where the same variable is spelled `$env:VAR`. So:
+> *"Confirm you can see my session."*
 
-| Where | What to type |
+**2. Drive 3–5 laps.** They store as they complete. Out-laps are skipped, and
+scrappy laps are marked so they don't poison your best-lap numbers.
+
+**3. Ask what the car is doing.**
+
+> *"Summarize my last lap and read my current setup."*
+
+You'll get per-corner minimum speed and brake points, tyre pressures and
+temperatures, ride height and damper behaviour, and a slip-balance number —
+positive means understeer, negative means oversteer.
+
+**4. Talk it through, and have it write a setup.**
+
+> *"It pushes on entry at the second-to-last corner. Try something and save it
+> as `claude_v1`."*
+
+Give new setups new names — an existing file of that name is overwritten
+without warning. When the in-game app is running, values are also clamped to
+what your car will actually accept, so the game can't silently ignore them.
+Details: [docs/SETUP-RANGES.md](docs/SETUP-RANGES.md).
+
+**5. Pit, load the setup — then say you loaded it.**
+
+> *"I've loaded claude_v1."*
+
+This step matters. Nothing in shared memory reveals which setup is on the car,
+so this is the only way laps get labelled correctly.
+
+⚠️ **Name your baseline before you drive it.** Saying "I've loaded claude_v1"
+also backfills that name onto any lap in the session that has no setup name
+yet — including the baseline you just drove — which destroys the very
+comparison you're setting up. So start the session with *"I'm on the stock
+setup, call it `baseline`"*. Laps that already carry a *different* name are
+safe. This is a known trap; see [BACKLOG.md](BACKLOG.md) item 2.
+
+**6. Drive again, and ask whether it worked.**
+
+> *"Compare my best lap on the new setup against lap 14."*
+
+Corner-by-corner deltas in minimum speed and brake point. For more than one lap
+a side, ask it to compare the two runs — it judges the change against your own
+lap-to-lap spread, so "faster" has to beat "you were just quicker that lap".
+
+**7. Ask where you actually drove.**
+
+> *"Where was my line different between those two laps?"*
+
+### While you're driving
+
+The in-game app (right edge of the screen → apps sidebar) gives you:
+
+- **Four complaint buttons** — Understeer, Oversteer, Braking, Traction — each
+  bindable to a wheel button in the app's Settings window. Press one the moment
+  you feel it and it records exactly where on track you were. Those get
+  correlated with the telemetry: *"you flagged understeer twice at the same corner —
+  that's where front slip exceeds rear by 0.09."*
+- **A status overlay** — recording state and laps stored, so you never alt-tab
+  to check. If laps are finishing and none are landing, it says so plainly
+  rather than repeating whatever the server claims.
+- **Messages back from the assistant** — *"claude_v2 saved — pit and load it."*
+
+---
+
+## What gets logged
+
+**Everything stays on your machine.** It's a SQLite file at
+`~/.assetto-mcp/telemetry.db`, the in-game app talks to the server over
+localhost only, and nothing is uploaded anywhere.
+
+While recording, at 25 Hz:
+
+- **Car state** — speed, throttle, brake, steering, gear, RPM, lateral and
+  longitudinal acceleration
+- **Tyres** — per-wheel slip, pressure, core temperature and wear
+- **Chassis** — front and rear ride height, world position, heading, pitch and
+  roll, how many tyres are off track, and bodywork damage
+- **Electronics** — whether TC and ABS are actually intervening
+- **From the in-game app** — suspension travel, wheel loads and plank wear, at
+  up to 333 Hz. Only the last 20 laps of a session are kept; these are by far
+  the biggest rows in the database.
+
+Per session it also stores the car, track and layout, tyre compound, air and
+road temperature, track length, the car's fuel consumption and tank size, the
+setup name you gave it, and a copy of every setup value currently on the car —
+that copy is what lets it work out later which setup a lap was driven on. Per
+lap: the time, and whether it counted.
+
+Two things worth knowing:
+
+- **Complaint tags** record which button you pressed, where on track, on which
+  lap, and at what speed.
+- **Other cars on track are logged too** — car index, driver name, car model,
+  lap times, and speed/gear/throttle/brake traces — because that's what makes
+  "compare me to the car ahead" work. This covers AI opponents as well as
+  multiplayer, so in an online session other people's names end up in your
+  local database.
+
+Setup files are read from and written to your normal Assetto Corsa setup
+folder. Only files whose name you ask for are written — but an existing setup
+of that name is overwritten without warning, so don't reuse a name you care
+about.
+
+`diagnose.bat` writes a report that redacts other MCP servers' secrets on a
+best-effort basis, but still contains your username and absolute paths. Skim it
+before sharing it.
+
+---
+
+## Going deeper
+
+| | |
 |---|---|
-| PowerShell / Windows Terminal | `notepad $env:APPDATA\Claude\claude_desktop_config.json` |
-| cmd.exe | `notepad %APPDATA%\Claude\claude_desktop_config.json` |
-| Explorer address bar | `%APPDATA%\Claude` *(Explorer expands it too)* |
-| Win+R (Run dialog) | `%APPDATA%\Claude` |
-
-To open the folder rather than the file, use `explorer $env:APPDATA\Claude`
-in PowerShell.
-</details>
-
-<details>
-<summary><strong>On a packaged Claude Desktop install, that path is a lie</strong></summary>
-
-Claude Desktop for Windows is commonly an **MSIX package** — including the
-build you download straight from Anthropic's site, not just the Microsoft Store
-one. MSIX *can* give a package a private, redirected view of `%APPDATA%`
-(whether it does depends on how the package was built, so treat this as "check
-both" rather than a rule). When redirection is in play the app writes and
-reads:
-
-```
-%LOCALAPPDATA%\Packages\Claude_<hash>\LocalCache\Roaming\Claude\claude_desktop_config.json
-```
-
-Once a file exists in that redirect layer it **shadows** the real
-`%APPDATA%\Claude` copy. So you can edit
-`%APPDATA%\Claude\claude_desktop_config.json` all day, get valid JSON and a
-correct Python path, and the app will still show no tools — it never opens that
-file. The `logs` folder moves with it, too, so a missing
-`%APPDATA%\Claude\logs` is the tell.
-
-To find yours:
-
-```powershell
-Get-ChildItem "$env:LOCALAPPDATA\Packages\Claude*" -Directory |
-  ForEach-Object { Join-Path $_.FullName 'LocalCache\Roaming\Claude' }
-```
-
-`install-windows.bat` finds every config location, picks the one the running
-Claude Desktop actually reads, writes the entry **there only**, and removes any
-stale `ac-race-engineer` entry from the others. That last part matters: a config
-in two places means two Claude surfaces each launching their own copy of this
-server, and only one of them can hold the bridge port. It tells you which one it
-chose and why.
-
-The safest manual route is **Claude Desktop → Settings → Developer → Edit
-Config**, which always opens the file the running app actually reads.
-</details>
-
-```json
-{
-  "mcpServers": {
-    "ac-race-engineer": {
-      "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
-      "args": ["-m", "ac_race_engineer.server"]
-    }
-  }
-}
-```
-
-Use the **absolute path** to `python.exe`, not bare `"python"`. Claude Desktop
-launches MCP servers without your shell's `PATH`, so a bare command frequently
-fails silently. Get the correct path with:
-
-```powershell
-py -c "import sys; print(sys.executable)"
-```
-
-Don't use `(Get-Command python).Source` — on stock Windows that often returns
-`...\WindowsApps\python.exe`, the Microsoft Store alias stub, which is the
-wrong answer. Remember JSON needs backslashes doubled (`\\`).
-
-(If you use Claude Code instead:
-`claude mcp add ac-race-engineer -- python -m ac_race_engineer.server`)
-
-Optional environment overrides:
-
-- `AC_DOCS_DIR` — AC documents folder (default `~/Documents/Assetto Corsa`)
-- `AC_ENGINEER_DATA` — DB + ranges location (default `~/.ac-race-engineer`)
-- `AC_ENGINEER_BRIDGE_PORT` — in-game app bridge port (default `9666`)
-- `AC_ENGINEER_NO_AUTOSTART` — set to `1` to stop this instance recording on
-  startup. Rarely wanted: instances already coordinate so only one records.
-
-## Troubleshooting
-
-**Claude doesn't list the tools.** Confirm you fully quit and reopened Claude
-Desktop (tray icon → Quit). Then read the server log:
-
-```powershell
-notepad $env:APPDATA\Claude\logs\mcp-server-ac-race-engineer.log
-```
-
-**...and there is no `logs` folder there.** That means Claude Desktop is the
-MSIX-packaged build (the normal case, whatever you downloaded) and is reading a
-different config entirely — see the MSIX note in the install section above. Re-run
-`install-windows.bat`. Both the config and the logs live under:
-
-```powershell
-Get-ChildItem "$env:LOCALAPPDATA\Packages\Claude*\LocalCache\Roaming\Claude" -Recurse -Filter 'mcp-server-*.log'
-```
-
-**Two Pythons.** `pip install -e .` records the pointer to this repo in *one*
-interpreter's `site-packages`. If `command` in the config names a different
-Python, `-m ac_race_engineer.server` dies with `ModuleNotFoundError` and Claude
-shows nothing rather than an error. Check with:
-
-```powershell
-& "<the command path from your config>" -c "import ac_race_engineer; print('ok')"
-```
-
-`diagnose.bat` in this folder checks all of the above — every config location,
-JSON validity, BOM, every Python on the box, who owns bridge port 9666, and a
-cold-start of the server on a scratch port — and writes `diagnose-report.txt`.
-
-Other MCP servers' secrets are redacted from that report on a best-effort
-basis (`env` values become `<redacted>`, token-shaped strings are masked), but
-it still contains your username and absolute paths, and redaction is pattern
-matching rather than a guarantee. **Skim it before sharing it.**
-
-**Typing `python` opens the Microsoft Store** (or says "not recognized").
-Windows ships an app-execution-alias stub at
-`%LOCALAPPDATA%\Microsoft\WindowsApps\python.exe` that hijacks the name when no
-real Python is on `PATH`. Install Python from python.org with "Add python.exe to
-PATH" ticked, or use the `py` launcher (`py -3 -m pip install -e .`) — the
-python.org installer sets that up by default. You can also kill the stub in
-Settings → Apps → Advanced app settings → App execution aliases.
-
-The installer already ignores anything under `WindowsApps`, so this only bites
-you on a manual install.
-
-**`.ps1 cannot be loaded because running scripts is disabled`.** That's the
-execution policy. Use `install-windows.bat` instead — it bypasses the policy
-for that one script without changing any system setting.
-
-**Setup values don't stick in-game.** You're writing outside the car's legal
-range and AC is silently ignoring them — see the next section.
-
-## The tuning loop
-
-1. Start AC, get on track.
-2. Tell Claude: "confirm you can see the session" (`live_snapshot`).
-   **Recording is already running** — see the next section — so
-   `start_recording` is only needed to undo a `stop_recording`.
-3. Drive 3–5 laps. Laps store automatically as they complete. A lap is marked
-   invalid — still stored and readable, just excluded from best-lap maths — if
-   it had an off-track excursion (>2 tyres out), included a pit visit, or came
-   in grossly slower than the session's reference (25s, or 25% for longer
-   tracks). That last rule is why a 10:22 "lap" no longer becomes your
-   session best.
-4. "Summarize my last lap and read my current setup"
-   (`list_laps`, `lap_summary`, `read_setup`). The summary includes per-corner
-   min speed, brake points, tyre pressures/temps, and a slip-balance metric
-   (positive = understeer, negative = oversteer).
-5. Discuss what the car is doing; Claude writes a revised setup with
-   `write_setup` (e.g. as `claude_v1`).
-6. Pit, load `claude_v1` from the setup screen, and **tell Claude you've loaded
-   it** (`set_session_setup`). Nothing in shared memory reveals the loaded
-   setup, so this is the only way it can be recorded. Laps from this point are
-   tagged `claude_v1`; laps already stored keep the setup they were driven on,
-   so the baseline stays the baseline.
-7. Drive again, then "compare my best lap on the new setup against lap N"
-   (`compare_laps`) — corner-by-corner min speed and brake point deltas show
-   whether the change actually worked. `lap_summary` reports each lap's setup.
-   For more than a lap a side, `compare_runs` judges the change against your
-   own lap-to-lap spread.
-8. "Where did I actually drive?" (`driving_line`) — see below.
-
-A few things worth knowing:
-
-- **Complaint tags pressed while nothing is recording are still saved**, but
-  with no session attached — they'd otherwise be guessed onto whatever session
-  ran last, which could be a different circuit. `get_driver_notes` says how
-  many are orphaned; pass `all_sessions=True` to see them.
-- **If `lap_summary` reports `slip_quality`**, some telemetry ticks were
-  discarded as glitched (AC occasionally emits a wheelSlip in the tens of
-  thousands). It tells you how many corners were affected and how big the
-  worst spike was, so you can judge whether the balance number is trustworthy.
-- **`accel_samples_dropped`** is the same idea for the acceleration channels:
-  AC sometimes emits a 10g spike from a reset or a kerb strike, and one of
-  those used to inflate `peak_lat_g` for the lap *and* the noise estimate for
-  every comparison the lap took part in. Spikes are now dropped rather than
-  clamped — reporting the ceiling would be a claim the car pulled it — and the
-  count is stated next to `samples` so you can see how much of the lap it was.
-- **`corner_detection`** appears alongside every corner list and says which
-  lateral-g bar produced it. It is not the same bar in every tool: a
-  `lap_summary` read on its own uses that lap's own cornering load, while
-  `compare_laps` and `compare_runs` use one shared across every lap being
-  compared, so that corner membership doesn't depend on how hard an
-  individual lap was driven. The same lap can therefore carry a different
-  number of corners in the two payloads, and this is how you tell why.
-
-## Recording runs by itself
-
-The collector starts with the server and waits for Assetto Corsa rather than
-failing when it isn't there. You do not have to remember to start it, and a
-server restart mid-session doesn't silently end recording — which is how
-sixteen laps went missing across three evenings.
-
-Claude Desktop runs one copy of this server per chat surface, so several are
-usually alive at once. Only one records: they contend for a claim in the
-shared database, and the rest sit in **standby**, ready to take over within
-seconds if the holder's process dies. `recording_status` reports `state`
-(`recording`, `waiting`, `standby`, `never_started`, `died`,
-`stopped_by_request`) with a note saying what it means — read that rather
-than inferring from `running`.
-
-`stop_recording` applies to every instance and survives a restart, because
-"stop recording" is an instruction about the car and not about whichever chat
-you happened to type it into. `start_recording` turns it back on. Set
-`AC_ENGINEER_NO_AUTOSTART=1` to keep one instance out of it entirely.
-
-The in-game overlay cross-checks all of this against the game's own lap
-counter: if laps are finishing and none are landing, it says **NOT STORING
-LAPS** rather than repeating whatever the server claims.
-
-## Where you actually drove
-
-`driving_line` slices the lap by track position and reports, per slice, where
-the car was in the world, how fast, the mean front ride height, and how much
-that ride height moved within the slice — the last of which is a bump map,
-since smooth tarmac holds the car at a steady height and broken tarmac
-doesn't.
-
-Track position has always said where the car was *along* the lap. This says
-where it was *across* it, which is the whole of what a line is, so "I took a
-wider entry there" is finally something the tooling can check. Pass a second
-lap for `separation_m`: how far apart the two cars were at the same point of
-the circuit.
-
-A slice the car never reached comes back null rather than interpolated — a
-gap in a driving line is worth seeing, and inventing a point draws the car
-through somewhere it never went. Laps recorded before schema v8 report
-`has_position: false`; there is nothing to backfill from.
-
-## Setup value clamping
-
-AC **silently ignores** setup values outside the ranges defined in the car's
-`setup.ini`. The server clamps and snaps to each car's legal min/max/step so
-that can't happen.
-
-**With the in-game app running, this needs no setup at all.** The app reads
-`ac.getSetupSpinners()`, which reports every adjustable entry — legal
-min/max/step, current value, units — keyed by the same section names the
-setup files use, for whatever car is loaded. Ask Claude for `setup_ranges`
-to see them.
-
-That also settles the units question. A stored value and the number on the
-setup screen aren't always the same: camber is stored as tenths of a degree,
-ride height as a click index. The game reports `display_multiplier` and
-`show_clicks_mode` per entry, so neither has to be inferred.
-
-Two further consequences:
-
-- **`identify_setup` works out which saved setup is on the car** by comparing
-  live values against your saved files. Shared memory exposes only brake bias
-  and fuel, which can't separate setups differing in ARB or camber — the
-  setup menu exposes everything, so the match is exact. Several identical
-  setups are reported as several rather than resolved by guessing.
-- **`ac.getCarSetupState()`** tells you whether AC considers the setup legal,
-  so a silently-ignored value shows up as `illegal` instead of as a change
-  that mysteriously did nothing.
-
-### The spinner does not move on a grid
-
-AC's setup spinner adds or subtracts `step` from wherever it already is and
-clamps at the ends, so the reachable values are **two ladders that miss each
-other**, not `min + n*step`.
-
-The RSS Formula 4's rear wheel rate is MIN 53, MAX 88, STEP 17. Counting up
-gives 53, 70, 87, 88. Counting back down from 88 gives 71, 54, 53. Six
-reachable values, of which a grid anchored at the minimum can express three —
-and 54 is not one of them.
-
-That mattered: asked to write 54, a grid-snapping `write_setup` returned 53
-and reported it as clamping, so a 2% softer spring looked like the request
-being tidied up. Values are now snapped to what the spinner can actually
-reach, and `write_setup` only reports `clamped` when it genuinely changed
-something.
-
-<details>
-<summary>Fallback: a ranges file, for when the in-game app isn't running</summary>
-
-1. In Content Manager: car page → unpack data (or use QuickBMS).
-2. Copy the car's `setup.ini` into the ranges folder, named after the car's
-   folder name — e.g. `ks_mazda_mx5_cup.ini`.
-
-```powershell
-explorer $env:USERPROFILE\.ac-race-engineer\ranges
-```
-
-(cmd.exe: `explorer %USERPROFILE%\.ac-race-engineer\ranges`)
-
-Game-reported ranges always win over this file. Note that encrypted car data
-may refuse to unpack at all, which is the main reason the in-game route is
-preferred. `write_setup` reports `ranges_source` as `game`, `file` or `none`.
-</details>
-
-## In-game app (CSP Lua)
-
-`install-windows.bat` copies this in for you. To do it by hand, copy
-`lua_app/race_engineer/` to `assettocorsa/apps/lua/race_engineer/` (requires
-Custom Shaders Patch; you already have it if you use Content Manager with CSP
-enabled). Enable it from the in-game apps sidebar — move the mouse to the right
-edge of the screen while in a session.
-
-Not sure where Assetto Corsa is installed? In Steam, right-click Assetto Corsa
-→ **Manage → Browse local files**.
-
-What it does:
-
-- **Complaint tags while driving** — Understeer / Oversteer / Braking /
-  Traction buttons, each bindable to a wheel button via the app's Settings
-  window (they show up as CSP control bindings). Pressing one records your
-  exact spline position, lap, and speed. Claude reads them with
-  `get_driver_notes` and correlates them with corner telemetry: "you flagged
-  understeer twice at spline 0.34 — that's the corner where front slip
-  exceeds rear by 0.09".
-- **Status overlay** — recording indicator + laps stored, so you never
-  alt-tab to check.
-- **Messages from Claude** — `send_driver_message` puts a note on the
-  overlay ("claude_v2 saved — pit and load it"); dismiss with OK.
-
-The app talks to the server's HTTP bridge on `127.0.0.1:9666` (change with
-`AC_ENGINEER_BRIDGE_PORT`, and edit `BASE` in the Lua to match). The bridge
-binds localhost only.
-
-## Suspension
-
-Stock shared memory exposes no suspension travel, no wheel load and no ride
-height, so all of this comes from the in-game Lua app. Ask Claude for
-`suspension_report` after a lap, or look at the `suspension` block that
-`lap_summary` now includes.
-
-Three questions, in the order you'd ask them:
-
-- **Are the dampers doing the right thing?** A velocity histogram per axle,
-  split bump vs rebound. Most of a lap should sit in the low-speed bins;
-  a fat high-speed bump tail means the valving is packing down over kerbs.
-- **Is the car running low enough, or too low?** Min/median/max ride height
-  front and rear, rake, and the five places on track where it runs lowest,
-  plus AC's plank wear as a bottoming indicator.
-- **Which axle takes the load transfer?** The front's share of total lateral
-  load transfer. Above 50% biases toward understeer, and it should agree
-  with the slip-balance metric — when those two disagree, something else is
-  going on and that's worth knowing.
-
-### Two capture tiers, and why the report tells you which one it used
-
-| Tier | Rate | Good for | Not good for |
-|---|---|---|---|
-| `worker` | 333 Hz | everything, including damper valving | — |
-| `app` | render rate, 60–144 Hz | ride height, loads, roll balance | damper histograms |
-
-The app tries to start a **CSP physics worker** — a script CSP runs on the
-physics thread at 333Hz — and falls back to sampling on the render thread if
-physics scripting isn't available. That fallback matters: damper velocity is
-a fast signal, and differentiating a 60Hz sample of it aliases exactly the
-band the valving lives in. A histogram built that way describes body motion,
-not dampers. Rather than quietly present one as the other, the report
-labels the tier and adds a caution when it's render-rate.
-
-The app's own window shows which tier it got (`◆` worker, `○` online,
-`◇` render-rate fallback), and `suspension_capture_status` explains it from
-Claude's side.
-
-> ### Damper histograms are single-player only
->
-> **CSP does not allow scripts on the physics thread in an online session**,
-> and that is the right call — the physics thread decides what the car does,
-> so a script running on it is a cheat vector. In multiplayer you will get
-> the `app` tier no matter what, and there is no setting that changes it.
->
-> The app detects an online session and says so plainly rather than
-> reporting a physics API failure, because nothing is broken: this is the
-> rule working. Do damper work in a solo practice session on the same car
-> and track, then race with whatever you learned.
->
-> **Everything else keeps working online.** Ride height, rake, wheel loads
-> and roll balance are read on the render thread and never needed the
-> worker — and those are the channels that answer "which axle takes the
-> load transfer", which is usually the question that matters.
-
-### The sign convention
-
-CSP documents neither the units nor the direction of suspension travel, and
-whether a rising number means compression decides whether "add bump" or
-"add rebound" is the right advice. So it isn't assumed — it's **inferred
-from your data**: under braking the front suspension compresses, which is
-about as dependable as vehicle dynamics gets, so the report compares where
-the front axle sits on the brakes against where it sits off them. If a lap
-has no usable braking, the direction is reported as unknown and the
-bump/rebound split is withheld rather than guessed. `sign_convention` in the
-report shows the reasoning and a confidence figure.
-
-## Tests
-
-```
-python run_tests.py            everything, one line per module
-python run_tests.py -v         one line per test, with each test's output
-python run_tests.py -k damper  only tests matching a regex
-python run_tests.py --isolate  each module in its own process
-python run_tests.py --lua      syntax-check the in-game Lua app too
-python run_tests.py --list     show what would run
-```
-
-No dependencies — it runs on the gaming PC, which has Python because the
-server needs it and no reason to have anything else. `pytest tests/ -q`
-works as well and gives better assertion diffs.
-
-Everything runs without Windows or Assetto Corsa: the collector is driven
-through a fake SimInfo and the bridge is exercised over real HTTP on an
-ephemeral localhost port. `--isolate` is the mode CI uses to prove each
-module still runs on its own, since that's the path the gaming PC takes.
-
-## Layout
-
-```
-ac_race_engineer/
-  sim_info.py   shared memory structs (physics / graphics / static)
-  collector.py  background sampler -> SQLite, lap boundary detection
-  db.py         schema + storage
-  analysis.py   corner detection, lap summaries, lap comparison
-  setups.py     setup INI read/write, range clamping
-  bridge.py     localhost HTTP bridge for the in-game app
-  server.py     MCP tools
-  suspension.py damper histograms, ride height, roll balance
-lua_app/
-  race_engineer/  CSP Lua in-game app (copy to apps/lua/)
-    race_engineer.lua      the app itself, render thread
-    suspension_worker.lua  CSP physics worker, 333Hz damper sampling
-install-windows.ps1  one-shot Windows installer
-install-windows.bat  double-clickable wrapper for the above
-diagnose.ps1 / .bat  what-is-broken report
-run_tests.py         run and summarise the suite, no dependencies
-tests/               behavior-named test modules + shared harness
-scripts/
-  relabel_laps.py    fix laps stamped with the wrong setup name
-BACKLOG.md           what is known to be broken, worst-first
-```
-
-`scripts/relabel_laps.py` is deliberately not an MCP tool. `set_session_setup`
-refuses to overwrite a setup name a lap already carries, because a late
-correction applied to the wrong half of an A/B split destroys the comparison
-it exists to enable. The one case where overwriting is right is a label that
-was wrong when it was written — and that is rare, destructive, and worth
-making someone type:
-
-```
-python scripts/relabel_laps.py 87,88,89,90 claude_press_v1
-python scripts/relabel_laps.py 87,88,89,90 claude_press_v1 --apply
-```
-
-Without `--apply` it only shows what it would change.
-
-## Notes / future ideas
-
-- Sampling is 25Hz — plenty for setup work while keeping the DB tiny.
-  Bump `TARGET_HZ` in collector.py if you want finer traces.
-- Out-laps (no valid time) are skipped automatically.
-- Corners are detected from lateral g, not speed minima: a fast sweeper
-  barely dents the speed trace but pulls as hard as anything on the lap, and
-  the old detector excluded it by construction. Each corner reports entry,
-  apex, exit, peak lateral g and a turn sign. The sign says which corners
-  turn the same way — it is deliberately not labelled left or right,
-  because AC does not document which sign is which, and a consistent sign is
-  more useful than a label that is right half the time.
-- The lateral-g bar a corner has to clear is shared across every lap in a
-  comparison rather than taken per lap, so corner membership stops depending
-  on how hard each individual lap was driven. It reduces one-sided corners
-  rather than eliminating them: a gently driven lap can still genuinely fall
-  below a bar the others set. `corner_detection` in every payload says which
-  bar was used and how many laps produced it.
-- A per-track corner-name map would still make advice read nicer
-  ("T3/Variante" vs "corner at 0.34").
-- **BACKLOG.md** is the list of what is known to be broken or missing, ranked
-  by whether it destroys data the driver has already produced. Read it before
-  starting anything; the top item is still that lap validity is inferred from
-  `numberOfTyresOut > 2` rather than read from the game, which vanilla AC
-  does not expose.
-- Suspension capture is in — see the section above. The remaining gap is
-  true damper *velocity* as a first-class channel: CSP only exposes that
-  inside a per-car physics script (`script.lua` in the car's data folder,
-  requires extended physics). The physics worker gets damper *travel* at
-  333Hz, which is close enough to differentiate honestly.
+| [docs/INSTALL.md](docs/INSTALL.md) | Manual install, config file locations, environment variables, upgrading from `ac-race-engineer` |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | When your client shows no tools, when laps stop landing, and the rest |
+| [docs/SETUP-RANGES.md](docs/SETUP-RANGES.md) | How setup values are clamped, why AC's spinner isn't a grid |
+| [docs/INTERNALS.md](docs/INTERNALS.md) | Corner detection, data-quality flags, driving line, suspension capture tiers |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Running the tests, CI, schema changes |
+| [BACKLOG.md](BACKLOG.md) | What's known to be broken, worst first, with where it bit |
+
+---
+
+## Planned improvements
+
+- **Read lap validity from the game** instead of inferring it from wheels-off.
+  Today a lap the game counted can still be marked invalid, and an invalid lap
+  is dropped from every comparison. This is the top item in the backlog.
+- **Entry-phase corner metrics** — trail braking, rotation and steering between
+  the brake point and the apex. That's where most spins live, and nothing
+  currently measures it.
+- **Detect a change in consistency**, not just a change in mean pace. A setup
+  that stops you spinning may not move your average lap time at all, and the
+  current statistics call that "within noise".
+- **Use the channels already being recorded** — tyre wear across a stint, TC
+  and ABS intervention, body roll. All logged, none read yet.
+- **Report the number your setup screen shows.** Stored values and displayed
+  values differ per car and per field, and the tool currently guesses.
+- **Per-track corner names**, so advice reads "T3 / Variante" rather than
+  "the corner at 0.34".
+
+---
+
+## Feedback and pull requests
+
+This is built by one driver against two cars and three circuits, so the places
+it's wrong are mostly the places it hasn't been. If a number disagrees with what
+you feel in the car, that's worth reporting — the driver has been right about
+that more often than the tooling has.
+
+**Please open an issue** for anything that surprised you: a lap marked invalid
+that shouldn't have been, a setup value that didn't stick, a car whose ranges
+come out wrong, an analysis that said "within noise" about a change you're
+certain you felt. Say which car and track, and include the lap numbers if you
+have them.
+
+**Pull requests are very welcome.** `python run_tests.py` needs no dependencies
+and runs everywhere — no Windows and no Assetto Corsa required, because the
+collector is driven through a fake shared-memory source and the in-game app runs
+against a stubbed CSP API. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md), and
+[BACKLOG.md](BACKLOG.md) if you'd like somewhere to start.
+
+Support for another MCP client is a particularly welcome PR: the server itself
+is client-agnostic, and `install-claude-desktop.ps1` is the only file that knows
+about a specific one.
+
+---
+
+## License
+
+[MIT](LICENSE). Not affiliated with Kunos Simulazioni, Assetto Corsa, or the
+Custom Shaders Patch project.

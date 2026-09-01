@@ -1,6 +1,6 @@
 -- Physics worker: samples damper travel at AC's physics rate (333Hz).
 --
--- Started by race_engineer.lua via physics.startPhysicsWorker(). This runs
+-- Started by assetto_mcp.lua via physics.startPhysicsWorker(). This runs
 -- on the physics thread, so it must stay cheap -- slow code here degrades
 -- physics for the whole simulation, not just this app.
 --
@@ -17,9 +17,9 @@
 local BUFFER = 1024        -- ~3 seconds at 333Hz, plenty for a render frame
                            -- to be late without losing samples
 
--- Layout must match race_engineer.lua exactly, field for field.
+-- Layout must match assetto_mcp.lua exactly, field for field.
 local shared = ac.connect({
-  ac.StructItem.key('ac_race_engineer.suspension'),
+  ac.StructItem.key('assetto_mcp.suspension'),
   -- writeIndex only ever climbs; the app tracks its own read position and
   -- works out what it missed from the difference. The worker cannot know
   -- what the app has read, so it does not try to count drops itself.

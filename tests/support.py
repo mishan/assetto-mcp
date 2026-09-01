@@ -17,8 +17,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ac_race_engineer import db  # noqa: E402
-from ac_race_engineer.collector import Collector  # noqa: E402
+from assetto_mcp import db  # noqa: E402
+from assetto_mcp.collector import Collector  # noqa: E402
 
 AC_OFF = 0
 AC_LIVE = 2

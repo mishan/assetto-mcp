@@ -1,7 +1,10 @@
 [project]
-name = "ac-race-engineer"
+name = "assetto-mcp"
 version = "0.1.0"
-description = "MCP server exposing Assetto Corsa telemetry and setup files to Claude"
+description = "MCP server exposing Assetto Corsa telemetry and setup files to an AI assistant"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Misha Nasledov", email = "misha@nasledov.com" }]
 requires-python = ">=3.10"
 dependencies = ["mcp>=1.0.0"]
 
@@ -16,14 +19,14 @@ dependencies = ["mcp>=1.0.0"]
 test = ["pytest>=7", "lupa>=2.0", "luaparser>=3.2"]
 
 [project.scripts]
-ac-race-engineer = "ac_race_engineer.server:main"
+assetto-mcp = "assetto_mcp.server:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["ac_race_engineer"]
+packages = ["assetto_mcp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -40,5 +43,5 @@ pythonpath = [".", "tests"]
 filterwarnings = [
     # ctypes layout is load-bearing in sim_info; a deprecation there should
     # fail the build rather than scroll past.
-    "error::DeprecationWarning:ac_race_engineer.*",
+    "error::DeprecationWarning:assetto_mcp.*",
 ]

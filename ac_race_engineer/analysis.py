@@ -246,12 +246,12 @@ def lat_g_reference_detail(
     behaviour this function exists to replace, from a call that appeared to
     work.
 
-<<<<<<< HEAD
     Pass every lap that is going to be compared. `reference` is None when
     none of them carries enough lateral load to have corners at all, which
     leaves detect_corners on its per-lap fallback. That is the real
     "nothing here corners" answer, and it should not be reachable by a
     typo as well.
+
     The median rather than the mean or the max: one scrappy lap with a big
     correction on it, or one lap driven far harder than the rest, should not
     move the bar for the whole run. The median of five laps is unmoved by

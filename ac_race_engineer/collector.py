@@ -340,8 +340,17 @@ class Collector:
                     # Not an error, and not something the driver has to fix.
                     # Another server process is recording; this one waits in
                     # case that process dies.
+                    #
+                    # last_error cleared for the same reason as in the
+                    # switched-off branch above: an instance that is healthy
+                    # and correctly standing aside must not keep reporting
+                    # whatever went wrong before it got here. A transient
+                    # failure to open shared memory, then a standby, and
+                    # recording_status would show a working collector next
+                    # to a stale reason to worry about it.
                     self.holds_recorder = False
                     self.standby_owner = claim["owner"]
+                    self.last_error = None
                     self._announce("standby (another instance is recording)")
                     if self._stop.wait(self.STANDBY_RETRY_SECONDS):
                         break

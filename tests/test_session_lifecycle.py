@@ -28,8 +28,7 @@ def test_restart_from_the_menu_starts_a_new_session():
     session: same session_id, lap numbers starting over, and two different
     track states averaged together.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         script = [
             lambda s, c: tick(s, c),
             lambda s, c: (tick(s, c), complete_lap(s, c, 114000)),
@@ -50,8 +49,7 @@ def test_restart_from_the_menu_starts_a_new_session():
 
 
 def test_leaving_the_session_starts_a_new_one():
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         script = [
             lambda s, c: tick(s, c),
             lambda s, c: (tick(s, c), complete_lap(s, c, 114000)),
@@ -68,8 +66,7 @@ def test_leaving_the_session_starts_a_new_one():
 
 
 def test_status_stops_claiming_to_record_once_ac_is_off():
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         seen = {}
         script = [
             lambda s, c: tick(s, c),
@@ -91,8 +88,7 @@ def test_stopping_clears_the_current_session():
     against a session that ended -- which is harder to spot than filing them
     against nothing, because the data looks perfectly plausible.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         sim = FakeSim()
         col = Collector(path, lambda: sim)
         col.start()
@@ -310,8 +306,7 @@ def test_restarting_clears_the_previous_runs_error():
 
 def test_a_missing_game_is_waited_for_rather_than_fatal():
     """AC not being open yet is a state, not a failure."""
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         sim = FakeSim()
         attempts = {"n": 0}
 
@@ -364,8 +359,7 @@ def test_stop_is_immediate_while_waiting_for_the_game():
 
 def test_a_crash_in_the_recording_loop_is_not_the_end_of_recording():
     """One bad read used to retire the collector for the whole process."""
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         good = FakeSim()
         made = {"n": 0}
 
@@ -402,8 +396,7 @@ def test_a_crash_in_the_recording_loop_is_not_the_end_of_recording():
 
 
 def test_only_one_of_two_collectors_records():
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         sim = FakeSim()
         a = Collector(path, lambda: sim)
         b = Collector(path, lambda: sim)
@@ -449,8 +442,7 @@ def test_a_standby_takes_over_when_the_holder_stops():
     nothing picks the claim up, that is the sixteen-laps failure again with
     an extra step.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         sim = FakeSim()
         a = Collector(path, lambda: sim)
         b = Collector(path, lambda: sim)
@@ -487,8 +479,7 @@ def test_a_collector_that_loses_its_claim_stops_writing():
     something has stalled this process badly -- and the wrong response is to
     carry on and be the second writer.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         sim = FakeSim()
         col = Collector(path, lambda: sim)
         col.HEARTBEAT_SECONDS = 0.01
@@ -591,8 +582,7 @@ def test_stopping_recording_is_shared_and_survives_a_restart():
     chat the driver was typing into and left the others recording -- and
     the host undid it the moment it recycled the server.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         sim = FakeSim()
         conn = db.connect(path)
         db.set_recorder_enabled(conn, False)
@@ -629,6 +619,51 @@ def test_a_database_that_cannot_be_opened_says_so():
         assert col.status.startswith("error"), col.status
         assert col.last_error, "no reason given"
         print(f"  {col.status!r}: {col.last_error!r}")
+
+
+def test_standing_aside_does_not_keep_reporting_an_old_error():
+    """Healthy standby must not carry a stale reason to worry.
+
+    Both standby branches are states, not failures: another instance holds
+    the recorder, or recording is switched off. A transient problem before
+    either -- shared memory briefly unavailable, say -- left last_error set,
+    and recording_status then showed a collector doing exactly the right
+    thing next to an error explaining nothing about it.
+    """
+    with temp_db() as path:
+        sim = FakeSim()
+        holder = Collector(path, lambda: sim)
+        standby = Collector(path, lambda: sim)
+        standby.STANDBY_RETRY_SECONDS = 0.05
+        try:
+            holder.start()
+            wait_for(lambda: holder.holds_recorder, "the holder to claim")
+
+            standby.start()
+            wait_for(lambda: standby.standby_owner is not None,
+                     "the second collector to stand aside")
+            # Set while it is already standing by, not before start() --
+            # start() clears last_error itself, so setting it first proves
+            # nothing about the standby branch.
+            standby.last_error = "shared memory was briefly unavailable"
+            wait_for(lambda: standby.last_error is None,
+                     "standby to drop the stale error", timeout=10)
+            assert "another instance" in standby.status, standby.status
+
+            # And the switched-off branch, which had this already.
+            conn = db.connect(path)
+            try:
+                db.set_recorder_enabled(conn, False)
+            finally:
+                conn.close()
+            holder.last_error = "something that already happened"
+            wait_for(lambda: "switched off" in holder.status,
+                     "the holder to stand down", timeout=10)
+            assert holder.last_error is None, holder.last_error
+            print("  both standby states report no error")
+        finally:
+            holder.stop()
+            standby.stop()
 
 
 if __name__ == "__main__":

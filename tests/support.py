@@ -9,6 +9,7 @@ import contextlib
 import http.client
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -70,31 +71,78 @@ def temp_db(name: str = "t.db"):
 
     Reporting the leak here makes it fail on the machine the author is
     actually using, at the test that caused it, with the handle named.
+
+    It also does its own removal rather than letting TemporaryDirectory do
+    it, and that is the half that works on Windows. A background thread
+    finishing is not a leak -- Collector.stop() joins for ten seconds and
+    then RETURNS whether or not the thread went, by design, saying so in
+    last_error -- so on a slow runner the directory is deleted out from
+    under a thread that is still closing its connection. That is the
+    NotADirectoryError this whole helper keeps being asked about, and no
+    amount of handle-checking catches it on Windows, where /proc does not
+    exist and _open_handles can only answer "no idea".
+
+    So: wait for the thing to be deletable, and only call it a failure once
+    it has had longer than stop() itself waits.
     """
-    with tempfile.TemporaryDirectory() as d:
-        directory = Path(d)
+    directory = Path(tempfile.mkdtemp(prefix="ac-test-"))
+    try:
+        yield directory / name
+    finally:
+        _release(directory)
+
+
+# Longer than Collector.stop()'s ten-second join, so a thread that took the
+# full join and a moment more still finishes inside it. Nothing waits this
+# long in the normal case -- the first attempt succeeds.
+RELEASE_TIMEOUT = 20.0
+
+
+def _release(directory: Path) -> None:
+    """Remove `directory`, reporting anything still holding it open.
+
+    Two different failures, in the order they can be diagnosed:
+
+    First a leaked handle, which only Linux can name. A short grace before
+    reporting, because the bridge is a threading HTTP server: shutdown()
+    stops it accepting, but a handler already inside a request keeps its own
+    connection until it returns. That is a drain, not a leak, and calling it
+    one would make the guard as flaky as the failure it replaces.
+
+    Then the removal itself, retried, which is what Windows needs and what
+    POSIX never notices.
+    """
+    deadline = time.monotonic() + 2.0
+    leaked = _open_handles(directory)
+    while leaked and time.monotonic() < deadline:
+        time.sleep(0.02)
+        leaked = _open_handles(directory)
+    if leaked:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise AssertionError(
+            "database handles were still open when the test finished, "
+            "which fails the Windows CI leg on teardown and nowhere "
+            "else:\n  " + "\n  ".join(leaked)
+            + "\nClose every connection this test opened.")
+
+    deadline = time.monotonic() + RELEASE_TIMEOUT
+    last: OSError | None = None
+    while True:
         try:
-            yield directory / name
-        finally:
-            # A short grace before reporting. The bridge is a threading HTTP
-            # server: shutdown() stops it accepting, but a handler already
-            # inside a request keeps its own connection until it returns,
-            # and each handler opens one. That is a drain, not a leak, and
-            # calling it a leak would make the guard exactly as flaky as the
-            # failure it exists to replace. A real leak has nobody left to
-            # close it and is still there at the end of this.
-            deadline = time.monotonic() + 2.0
-            leaked = _open_handles(directory)
-            while leaked and time.monotonic() < deadline:
-                time.sleep(0.02)
-                leaked = _open_handles(directory)
-            if leaked:
-                raise AssertionError(
-                    "database handles were still open when the test "
-                    "finished, which fails the Windows CI leg on teardown "
-                    "and nowhere else:\n  "
-                    + "\n  ".join(leaked)
-                    + "\nClose every connection this test opened.")
+            shutil.rmtree(directory)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as e:                # WinError 32 / 267, mostly
+            last = e
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
+    shutil.rmtree(directory, ignore_errors=True)
+    raise AssertionError(
+        f"{directory} could not be removed within {RELEASE_TIMEOUT:.0f}s: "
+        f"{last}\nSomething is still holding a file open -- on Windows that "
+        f"is usually a collector or bridge thread that outlived the test.")
 
 
 # --- fake shared memory -------------------------------------------------

@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import (FakeCollector, age_session, make_session,  # noqa: E402
-                     post as _post, run_module)
+                     post as _post, run_module, temp_db)
 
 from ac_race_engineer import analysis, db  # noqa: E402
 from ac_race_engineer.bridge import Bridge  # noqa: E402
@@ -72,8 +72,7 @@ def _my_samples(offset_kmh=0.0):
 
 
 def test_bridge_accepts_and_stores_batch():
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         db.connect(path).close()
         b = Bridge(path, _recording(1), port=0)
         b.start()
@@ -100,8 +99,7 @@ def test_bridge_accepts_and_stores_batch():
 
 def test_malformed_cars_skipped_not_fatal():
     """One bad car must not cost us the other nineteen."""
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         db.connect(path).close()
         b = Bridge(path, _recording(1), port=0)
         b.start()
@@ -129,8 +127,7 @@ def test_batch_refused_when_nothing_is_recording():
     session is the case that matters: there is somewhere to put the data,
     and it is the wrong place.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         stale = make_session(conn, "monza")
         age_session(conn, stale, 3 * 86400)
@@ -154,8 +151,7 @@ def test_batch_refused_when_nothing_is_recording():
 
 def test_batch_accepted_for_another_instances_live_session():
     """The other half of the same rule: a live session elsewhere counts."""
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         live = make_session(conn, "mugello")
 
@@ -242,8 +238,7 @@ def test_a_rivals_lap_time_is_tied_to_the_lap_it_belongs_to():
 
 
 def test_oversized_batch_rejected():
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         db.connect(path).close()
         b = Bridge(path, _recording(1), port=0)
         b.start()

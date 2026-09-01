@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import make_session, run_module  # noqa: E402
+from support import make_session, run_module, temp_db  # noqa: E402
 
 from ac_race_engineer import db  # noqa: E402
 
@@ -421,8 +421,7 @@ def test_a_failed_sample_write_leaves_no_half_stored_lap():
     other connection blocks on. The collector catches exceptions from this
     and carries on, which is precisely the caller that would do it.
     """
-    with tempfile.TemporaryDirectory() as tmp:
-        path = Path(tmp) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         sid = make_session(conn)
         good = tuple(range(len(db.SAMPLE_COLUMNS) - 1))

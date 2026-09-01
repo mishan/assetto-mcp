@@ -14,8 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import (complete_lap, enter_pits, leave_pits,  # noqa: E402
-                     make_session, run_collector, run_module, tick,
-                     wait_for)
+                     make_session, run_collector, run_module, temp_db,
+                     tick, wait_for)
 
 from ac_race_engineer import analysis, db  # noqa: E402
 from ac_race_engineer.collector import _is_outlier  # noqa: E402
@@ -65,8 +65,7 @@ def test_reference_lap_does_not_depend_on_lap_validity():
 
 
 def test_lap_containing_a_pit_visit_is_invalid():
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         script = [
             lambda s, c: tick(s, c),
             # Lap 1: clean flying lap.
@@ -103,8 +102,7 @@ def test_pit_stop_alone_invalidates_a_lap():
     quick_stop = ref + 20_000            # inside the outlier allowance
     assert _is_outlier(quick_stop, ref) is False
     # So if this lap is invalid, it can only be because of the pit visit.
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         script = [
             lambda s, c: tick(s, c),
             lambda s, c: (tick(s, c), complete_lap(s, c, ref)),
@@ -142,8 +140,7 @@ def test_an_abandoned_lap_is_kept_marked_incomplete():
     to be recorded. It is now stored with complete=0 so it can never be
     mistaken for a real lap time.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
 
         def drive_then_crash(sim, col):
             # tick() advances norm_pos by 0.1 a step, so start low enough
@@ -181,8 +178,7 @@ def test_crossing_the_line_is_not_mistaken_for_a_teleport():
     an early version produced a phantom 400ms 'abandoned lap' at the start
     of every single lap.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
 
         def lap(sim, col):
             sim.graphics.normalizedCarPosition = 0.98

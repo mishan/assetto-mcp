@@ -16,7 +16,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import (FakeCollector, age_session, clear_heartbeat,  # noqa: E402
-                     get, heartbeat_session, make_session, post, run_module)
+                     get, heartbeat_session, make_session, post,
+                     run_module, temp_db)
 
 from ac_race_engineer import bridge as B, db  # noqa: E402
 
@@ -31,8 +32,7 @@ def _bridge(path, collector):
 
 def test_a_stale_session_is_never_written_to():
     """Nothing has touched this session for three days. It is not live."""
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         sid = make_session(conn, "monza")
         age_session(conn, sid, 3 * 86400)
@@ -67,8 +67,7 @@ def test_status_and_writes_agree_after_the_collector_stops():
     Reproduced before the fix: /status reported session 2 (Mugello) while
     the same request cycle filed the note into session 1 (Monza).
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         old = make_session(conn, "monza")
         new = make_session(conn, "mugello")
@@ -94,8 +93,7 @@ def test_status_and_writes_agree_after_the_collector_stops():
 
 
 def test_this_instances_own_recording_takes_precedence():
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         mine = make_session(conn, "mugello")
         make_session(conn, "spa")     # newer, but another instance's
@@ -114,8 +112,7 @@ def test_this_instances_own_recording_takes_precedence():
 def test_another_instances_recording_is_reported_and_used():
     """The overlay saying "not recording" while laps are being stored was
     the single most misleading thing this tool did."""
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         theirs = make_session(conn, "mugello")
 
@@ -156,8 +153,7 @@ def test_a_collector_that_went_quiet_stops_claiming_to_record():
     The heartbeat is what separates the two. It stops when the collector
     does, so this is now noticed in seconds rather than minutes.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         sid = make_session(conn)          # no laps stored, ever
         col = FakeCollector(session_id=None)
@@ -192,8 +188,7 @@ def test_an_out_lap_is_not_mistaken_for_a_dead_session():
     An hour, because a session can be that old and still not have stored a
     lap. What settles it is that the collector is still talking.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         sid = make_session(conn)          # no laps stored yet
         col = FakeCollector(session_id=None)
@@ -218,8 +213,7 @@ def test_a_session_from_before_the_heartbeat_falls_back_to_its_laps():
     look like one being recorded right now, so these keep the old rule:
     the last stored lap, and the generous window it needs.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         sid = make_session(conn)
         db.store_lap(conn, sid, 1, 113000, True, [])

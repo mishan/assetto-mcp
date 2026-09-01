@@ -14,7 +14,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import FakeCollector, make_session, post, run_module  # noqa: E402
+from support import (FakeCollector, make_session, post,  # noqa: E402
+                     run_module, temp_db)
 
 from ac_race_engineer import bridge as B, db  # noqa: E402
 
@@ -51,8 +52,7 @@ def test_absurd_optional_fields_cost_one_car_not_the_batch():
     The exception escaped the per-item skip, the connection closed in the
     finally rolled the transaction back, and all 1400 samples went with it.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         br, _ = _recording_bridge(path, conn)
         try:
@@ -75,8 +75,7 @@ def test_absurd_optional_fields_cost_one_car_not_the_batch():
 
 
 def test_driver_name_is_not_repr_of_a_non_string():
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         br, sid = _recording_bridge(path, conn)
         try:
@@ -95,8 +94,7 @@ def test_driver_name_is_not_repr_of_a_non_string():
 
 
 def test_non_object_bodies_are_rejected_not_crashed():
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         br, _ = _recording_bridge(path, conn)
         try:
@@ -116,8 +114,7 @@ def test_oversized_body_is_refused_with_an_answer():
 
     A 400 the client never reads is indistinguishable from a crash.
     """
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         br, _ = _recording_bridge(path, conn)
         try:
@@ -156,8 +153,7 @@ def test_batch_cap_exceeds_the_lua_clients_buffer():
 
 
 def test_note_fields_are_range_checked():
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         br, _ = _recording_bridge(path, conn)
         try:
@@ -178,8 +174,7 @@ def test_note_fields_are_range_checked():
 
 
 def test_ack_ids_are_validated():
-    with tempfile.TemporaryDirectory() as d:
-        path = Path(d) / "t.db"
+    with temp_db() as path:
         conn = db.connect(path)
         br, _ = _recording_bridge(path, conn)
         try:

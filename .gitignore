@@ -13,6 +13,11 @@ ranges/
 # of the Claude Desktop config.
 diagnose-report.txt
 
+# Session reports written for the driver to read. Generated from the
+# database, so they are output rather than source -- and they date badly,
+# since the analysis that produced them keeps changing underneath.
+exports/
+
 # Vendored CSP references, kept locally for lookups. Ilja's shipped SDK
 # definitions and tobi/ac-tracer are other people's code -- useful to read
 # here, not ours to redistribute.

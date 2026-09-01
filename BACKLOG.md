@@ -133,14 +133,14 @@ figures.
 
 ---
 
-## 6. Five newly logged channels that nothing reads
+## 6. Newly logged channels that nothing reads
 
 **Status:** open, and self-inflicted.
 
-Schema v8 and v9 added `pos_x/y/z`, `heading`, `pitch`, `roll`, `tc_active`,
-`abs_active`, `wear_fl/fr/rl/rr` and `damage`. Only position has a reader
-(`analysis.driving_line`). The rest go into the database and no analysis
-touches them.
+Schema v8 and v9 added thirteen columns — `pos_x/y/z`, `heading`, `pitch`,
+`roll`, `tc_active`, `abs_active`, `wear_fl/fr/rl/rr` and `damage`. Only
+position has a reader (`analysis.driving_line`). The rest go into the
+database and no analysis touches them.
 
 Highest value first:
 

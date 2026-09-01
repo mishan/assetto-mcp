@@ -187,5 +187,118 @@ def test_existing_rows_and_queries_survive_the_upgrade():
         conn.close()
 
 
+# --- v8: position, attitude, electronics -------------------------------
+#
+# The one thing every analysis was blind to: norm_pos says where the car is
+# ALONG the lap, nothing said where it was across it. carCoordinates was
+# being read 25 times a second and discarded, so no lap before this
+# migration has a driving line and none ever can.
+
+V8_COLUMNS = ("pos_x", "pos_y", "pos_z", "heading", "pitch", "roll",
+              "tc_active", "abs_active")
+
+
+def test_the_new_sample_columns_arrive_on_an_upgraded_database():
+    """The failure this whole module exists for: ALTER, not CREATE."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "old.db"
+        _v0_database(path, [(114054, 1)])
+        conn = db.connect(path)
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(samples)")}
+        for c in V8_COLUMNS:
+            assert c in cols, f"{c} missing after upgrade"
+        print(f"  {len(V8_COLUMNS)} columns added to an existing samples table")
+        conn.close()
+
+
+def test_a_migration_survives_a_database_with_no_samples_table():
+    """A half-built database must not abort the whole migration.
+
+    ALTER TABLE on a table that does not exist raises, and one raise takes
+    every later step with it AND leaves user_version un-bumped -- so the
+    database is stuck below the current schema permanently, not just this
+    once. This is the real shape: sessions and laps present, samples never
+    created, which is what a database that only ever held imported rows
+    looks like.
+
+    Note for later: the v1 step ALTERs `laps` unguarded and has the same
+    hole. It needs a database with sessions but no laps to trigger, which
+    nothing produces today, so it is a latent bug rather than a live one.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "partial.db"
+        raw = sqlite3.connect(path)
+        raw.executescript(
+            "CREATE TABLE sessions (id INTEGER PRIMARY KEY,"
+            " started_at REAL NOT NULL, car TEXT NOT NULL,"
+            " track TEXT NOT NULL, track_config TEXT NOT NULL DEFAULT '',"
+            " tyre_compound TEXT NOT NULL DEFAULT '',"
+            " air_temp REAL, road_temp REAL, setup_name TEXT DEFAULT '');"
+            "CREATE TABLE laps (id INTEGER PRIMARY KEY,"
+            " session_id INTEGER NOT NULL, lap_number INTEGER NOT NULL,"
+            " lap_time_ms INTEGER NOT NULL, valid INTEGER NOT NULL DEFAULT 1,"
+            " completed_at REAL NOT NULL);")
+        raw.commit()
+        raw.close()
+        conn = db.connect(path)          # must not raise
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == \
+            db.SCHEMA_VERSION
+        print("  a database with no samples table migrates to "
+              f"v{db.SCHEMA_VERSION}")
+        conn.close()
+
+
+def test_old_samples_read_as_not_recorded_rather_than_as_the_origin():
+    """NULL, not 0. A coordinate of zero is a place on the track map.
+
+    Backfilling is impossible -- the data was never captured -- so the only
+    honest value is one a reader can recognise as absent.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "old.db"
+        _v0_database(path, [(114054, 1)])
+        raw = sqlite3.connect(path)
+        raw.execute("INSERT INTO samples (lap_id, t_ms) VALUES (1, 500)")
+        raw.commit()
+        raw.close()
+
+        conn = db.connect(path)
+        row = conn.execute(
+            "SELECT pos_x, pos_z, roll FROM samples").fetchone()
+        assert row[0] is None and row[1] is None and row[2] is None, tuple(row)
+        print("  pre-v8 samples report NULL position, not 0,0")
+        conn.close()
+
+
+def test_a_short_sample_tuple_is_padded_and_a_long_one_is_refused():
+    """An older writer must keep working; a mismatched one must not.
+
+    Padding is what lets a caller written against an earlier layout store
+    valid samples whose unknown fields read as absent. Silently accepting a
+    tuple that is too long would instead mean the columns had shifted and
+    every value after the mismatch was being written to the wrong field.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        conn = db.connect(Path(tmp) / "new.db")
+        sid = make_session(conn)
+        short = (100, 0.5, 120.0, 1.0, 0.0, 0.1, 4, 9000, 0.5, 0.2,
+                 0.4, 0.4, 0.3, 0.3, 26.0, 26.0, 26.0, 26.0,
+                 85.0, 85.0, 85.0, 85.0, 0.02, 0.024, 0)
+        lap_id = db.store_lap(conn, sid, 1, 114000, True, [short])
+        row = conn.execute("SELECT speed_kmh, pos_x FROM samples"
+                           " WHERE lap_id = ?", (lap_id,)).fetchone()
+        assert row["speed_kmh"] == 120.0, tuple(row)
+        assert row["pos_x"] is None, tuple(row)
+
+        try:
+            db.store_lap(conn, sid, 2, 114000, True, [short + (1,) * 20])
+        except sqlite3.Error:
+            pass
+        else:
+            raise AssertionError("an over-long sample tuple was accepted")
+        print("  short tuple padded with NULL, over-long tuple refused")
+        conn.close()
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

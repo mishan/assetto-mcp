@@ -40,6 +40,17 @@ class _Phys:
         self.numberOfTyresOut = 0
         self.airTemp = 25.0
         self.roadTemp = 36.0
+        # Attitude and electronics activity, added with schema v8. Distinct
+        # non-zero values so a test can tell a stored reading from a default.
+        self.heading = 0.5
+        self.pitch = 0.01
+        self.roll = -0.02
+        self.tc = 0.3
+        self.abs = 0.4
+        # Wear counts down from 100 in AC. Distinct per corner so a test can
+        # catch a collector that stores one wheel's value four times.
+        self.tyreWear = [99.5, 99.4, 99.2, 99.1]
+        self.carDamage = [0.0] * 5
 
 
 class _Graph:
@@ -50,6 +61,11 @@ class _Graph:
         self.normalizedCarPosition = 0.0
         self.isInPitLane = 0
         self.tyreCompound = "F200 (S)"
+        # World position: the only source of lateral placement, and so the
+        # only source of a driving line. Advanced by tick() alongside
+        # normalizedCarPosition so a stored lap traces a path rather than
+        # repeating one point.
+        self.carCoordinates = [100.0, 5.0, -200.0]
 
 
 class _Static:
@@ -108,15 +124,19 @@ def wait_for(predicate, what, timeout=15.0, interval=0.002):
     raise TimedOut(f"timed out after {timeout}s waiting for {what}")
 
 
-def run_collector(script, db_path):
+def run_collector(script, db_path, sim=None):
     """Drive a Collector through `script`, a list of fn(sim, col) steps.
 
     The collector is fully stopped before returning, so callers can delete
     the database afterwards. Leaving its thread alive with the connection
     open is how a temp-directory cleanup turned into a NotADirectoryError
     from a thread nobody was watching.
+
+    Pass `sim` to supply a modified stub -- an older shared-memory layout
+    with fields removed, say.
     """
-    sim = FakeSim()
+    if sim is None:
+        sim = FakeSim()
     col = Collector(db_path, lambda: sim)
     col.start()
     try:
@@ -138,6 +158,14 @@ def tick(sim, col, n=6):
         before = col.samples_taken
         sim.graphics.normalizedCarPosition = (
             sim.graphics.normalizedCarPosition + 0.1) % 1.0
+        # Move in the world too, so a recorded lap is a path. A stationary
+        # coordinate would let a collector that stored the same sample every
+        # tick pass a test about storing position. Guarded because one test
+        # removes the field to stand in for an older shared-memory layout.
+        coords = getattr(sim.graphics, "carCoordinates", None)
+        if coords is not None:
+            coords[0] += 12.0
+            coords[2] -= 5.0
         sim.physics.packetId += 1
         wait_for(lambda: col.samples_taken > before, "a sample to be taken")
 

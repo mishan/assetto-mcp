@@ -16,7 +16,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -84,7 +84,31 @@ CREATE TABLE IF NOT EXISTS samples (
     core_fl REAL NOT NULL, core_fr REAL NOT NULL,
     core_rl REAL NOT NULL, core_rr REAL NOT NULL,
     ride_f REAL NOT NULL, ride_r REAL NOT NULL,
-    tyres_out INTEGER NOT NULL
+    tyres_out INTEGER NOT NULL,
+    -- World position. norm_pos says where the car is ALONG the lap; these
+    -- say where it is across it, which is the whole of what a driving line
+    -- is and the one thing every earlier analysis was blind to. Nullable
+    -- on purpose: laps recorded before v8 have no position and never will,
+    -- and 0,0,0 would be a claim that the car was at the track origin.
+    pos_x REAL, pos_y REAL, pos_z REAL,
+    -- Body attitude. roll settles the body-control arguments that ride
+    -- height and anti-roll bars have only let us reason about indirectly.
+    heading REAL, pitch REAL, roll REAL,
+    -- What the electronics are actually doing, rather than what the setup
+    -- screen says they are set to. A TC level means nothing without knowing
+    -- whether it ever intervenes.
+    tc_active REAL, abs_active REAL,
+    -- Tyre wear, per corner. Separate from carDamage, which is bodywork --
+    -- a distinction worth keeping straight, because wear is the one that
+    -- happens on every lap of every session and underpins any stint or
+    -- strategy question.
+    wear_fl REAL, wear_fr REAL, wear_rl REAL, wear_rr REAL,
+    -- Bodywork damage, summed across AC's five zones. Zero for the whole
+    -- session when the server has damage disabled, which is the usual case
+    -- here -- so this confirms contact when it is on and says nothing when
+    -- it is off. It is not a substitute for detecting a wall from the speed
+    -- trace, which works either way.
+    damage REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_samples_lap ON samples(lap_id, t_ms);
@@ -223,6 +247,10 @@ SAMPLE_COLUMNS = [
     "press_fl", "press_fr", "press_rl", "press_rr",
     "core_fl", "core_fr", "core_rl", "core_rr",
     "ride_f", "ride_r", "tyres_out",
+    "pos_x", "pos_y", "pos_z",
+    "heading", "pitch", "roll",
+    "tc_active", "abs_active",
+    "wear_fl", "wear_fr", "wear_rl", "wear_rr", "damage",
 ]
 
 
@@ -234,6 +262,24 @@ def _table_exists(conn, name: str) -> bool:
 
 def _columns(conn, table: str) -> set[str]:
     return {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _add_column(conn, table: str, col: str, decl: str) -> bool:
+    """Add a column if the table exists and doesn't already have it.
+
+    Guarded on the table existing because ALTER on a missing one raises,
+    and a raise inside _migrate does more damage than losing that step: it
+    aborts every later step too AND leaves user_version un-bumped, so the
+    database is stuck below the current schema permanently rather than
+    just this once. A database can legitimately be missing a table -- one
+    that has only ever held imported rows, or a half-built fixture -- and
+    CREATE TABLE IF NOT EXISTS runs straight after this and creates it
+    complete, so there is nothing to repair.
+    """
+    if not _table_exists(conn, table) or col in _columns(conn, table):
+        return False
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+    return True
 
 
 def _migrate(conn) -> list[str]:
@@ -258,9 +304,8 @@ def _migrate(conn) -> list[str]:
 
     if version < 1:
         # v1: setup attribution moved from sessions to laps.
-        if "setup_name" not in _columns(conn, "laps"):
-            conn.execute("ALTER TABLE laps ADD COLUMN"
-                         " setup_name TEXT NOT NULL DEFAULT ''")
+        if _add_column(conn, "laps", "setup_name",
+                       "TEXT NOT NULL DEFAULT ''"):
             # Best available guess for history: whatever the session was
             # last stamped with. Wrong for sessions where the setup changed
             # mid-run, but strictly better than empty, and from here on laps
@@ -290,17 +335,15 @@ def _migrate(conn) -> list[str]:
     if version < 4:
         # v4: laps.complete, so an abandoned lap can be stored rather than
         # thrown away. Existing rows all reached the line by definition.
-        if "complete" not in _columns(conn, "laps"):
-            conn.execute("ALTER TABLE laps ADD COLUMN"
-                         " complete INTEGER NOT NULL DEFAULT 1")
+        if _add_column(conn, "laps", "complete",
+                       "INTEGER NOT NULL DEFAULT 1"):
             log.append("laps.complete added; existing laps marked complete")
 
     if version < 5:
         # v5: the fuel basis, so liters per lap stops being a hand
         # calculation that has to be redone for every track.
         for col in ("track_length_m", "km_per_liter"):
-            if col not in _columns(conn, "sessions"):
-                conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} REAL")
+            if _add_column(conn, "sessions", col, "REAL"):
                 log.append(f"sessions.{col} added")
 
     if version < 6:
@@ -309,8 +352,7 @@ def _migrate(conn) -> list[str]:
         # AC's fuel-usage multiplier, which decides whether a stop is needed
         # and which nothing had ever read.
         for col in ("max_fuel_liters", "fuel_rate"):
-            if col not in _columns(conn, "sessions"):
-                conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} REAL")
+            if _add_column(conn, "sessions", col, "REAL"):
                 log.append(f"sessions.{col} added")
 
     if version < 7:
@@ -327,6 +369,32 @@ def _migrate(conn) -> list[str]:
             conn.execute("ALTER TABLE sessions"
                          " RENAME COLUMN max_fuel_litres TO max_fuel_liters")
             log.append("sessions.max_fuel_litres renamed to max_fuel_liters")
+
+    if version < 8:
+        # v8: position, attitude and electronics activity. All of it was
+        # already being read from shared memory 25 times a second and
+        # discarded -- carCoordinates in particular, which is the only
+        # source of lateral position and therefore of a driving line.
+        #
+        # Nullable, and deliberately not backfilled: there is nothing to
+        # backfill from. Every lap recorded before this migration has no
+        # position and cannot acquire one, so a reader has to be able to
+        # tell "not recorded" from "at the origin".
+        for col in ("pos_x", "pos_y", "pos_z",
+                    "heading", "pitch", "roll",
+                    "tc_active", "abs_active"):
+            if _add_column(conn, "samples", col, "REAL"):
+                log.append(f"samples.{col} added")
+
+    if version < 9:
+        # v9: tyre wear and bodywork damage. Both were mapped in the physics
+        # struct from the beginning and never read. Wear is the one that
+        # matters day to day -- it changes every lap whatever the server
+        # settings, and no stint or pit-strategy question can be answered
+        # without it.
+        for col in ("wear_fl", "wear_fr", "wear_rl", "wear_rr", "damage"):
+            if _add_column(conn, "samples", col, "REAL"):
+                log.append(f"samples.{col} added")
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
@@ -716,10 +784,23 @@ def store_lap(conn, session_id: int, lap_number: int, lap_time_ms: int,
     )
     lap_id = cur.lastrowid
     placeholders = ",".join("?" * len(SAMPLE_COLUMNS))
+    # A short sample tuple is padded with NULL rather than refused. The
+    # trailing columns are the nullable ones added by later migrations, so a
+    # caller written against an earlier layout -- an older collector, a test
+    # fixture, a replay of stored rows -- still writes valid samples, and
+    # the fields it never knew about read as "not recorded" rather than as
+    # zeroes. A tuple that is too LONG is a real mismatch and still raises.
+    width = len(SAMPLE_COLUMNS) - 1          # minus lap_id, prepended below
+    rows = []
+    for s in samples:
+        s = tuple(s)
+        if len(s) < width:
+            s += (None,) * (width - len(s))
+        rows.append((lap_id, *s))
     conn.executemany(
         f"INSERT INTO samples ({','.join(SAMPLE_COLUMNS)})"
         f" VALUES ({placeholders})",
-        [(lap_id, *s) for s in samples],
+        rows,
     )
     conn.commit()
     return lap_id

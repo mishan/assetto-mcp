@@ -600,5 +600,27 @@ def test_a_lap_read_on_its_own_is_unchanged():
             == len(analysis.detect_corners(_lap())) == 4)
 
 
+def test_a_flat_list_of_samples_is_refused_rather_than_answered():
+    """The call-site mistake this function is easiest to make.
+
+    Every other function here takes a flat list of samples; this one takes
+    one entry per lap. Given the flat version, each "lap" is a single dict,
+    len(dict) < 50 skips all of them, and the answer is None -- which
+    detect_corners reads as "no shared bar" and silently falls back to the
+    per-lap threshold. That is precisely the behaviour the shared reference
+    exists to remove, arrived at from a call that looked like it worked.
+    """
+    laps = [_lap(), _lap()]
+    assert analysis.lat_g_reference(laps) is not None
+
+    try:
+        analysis.lat_g_reference(_lap())      # flat, the likely typo
+    except TypeError as e:
+        assert "one entry per lap" in str(e), e
+        print(f"  refused: {str(e)[:60]}...")
+    else:
+        raise AssertionError("a flat sample list was accepted")
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

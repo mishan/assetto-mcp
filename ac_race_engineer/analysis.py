@@ -199,13 +199,21 @@ def lat_g_reference(
     """One cornering load for a set of laps, to detect corners against.
 
     `sample_sets` is one entry per lap, each the sample list that lap's other
-    analysis takes -- not a flat list of samples. Annotated because the two
-    are easy to confuse at a call site and the flat version does not fail,
-    it just returns a reference computed over one enormous "lap".
+    analysis takes -- NOT a flat list of samples, which is the shape every
+    other function in this module wants and therefore the mistake a call
+    site is most likely to make.
+
+    That misuse is refused rather than absorbed. Passed a flat list, every
+    "lap" is a single sample dict, `len(dict) < 50` skips all of them, and
+    the answer is None -- which detect_corners reads as "no shared bar" and
+    quietly falls back to per-lap thresholds. The caller would get the exact
+    behaviour this function exists to replace, from a call that appeared to
+    work.
 
     Pass every lap that is going to be compared. Returns None when none of
     them carries enough lateral load to have corners at all, which leaves
-    detect_corners on its per-lap fallback.
+    detect_corners on its per-lap fallback. That is the real "nothing here
+    corners" answer, and it should not be reachable by a typo as well.
 
     The median rather than the mean or the max: one scrappy lap with a big
     correction on it, or one lap driven far harder than the rest, should not
@@ -214,6 +222,12 @@ def lat_g_reference(
     """
     peaks = []
     for samples in sample_sets:
+        if isinstance(samples, dict):
+            raise TypeError(
+                "lat_g_reference takes one entry per lap, each a list of "
+                "samples; this looks like a flat list of samples. Left "
+                "alone it returns None, which drops every lap back to its "
+                "own corner-detection threshold without saying so.")
         if not samples or len(samples) < 50:
             continue
         lat, _ = _lat_g_trace(samples)

@@ -138,6 +138,8 @@ Optional environment overrides:
 - `AC_DOCS_DIR` — AC documents folder (default `~/Documents/Assetto Corsa`)
 - `AC_ENGINEER_DATA` — DB + ranges location (default `~/.ac-race-engineer`)
 - `AC_ENGINEER_BRIDGE_PORT` — in-game app bridge port (default `9666`)
+- `AC_ENGINEER_NO_AUTOSTART` — set to `1` to stop this instance recording on
+  startup. Rarely wanted: instances already coordinate so only one records.
 
 ## Troubleshooting
 
@@ -196,8 +198,9 @@ range and AC is silently ignoring them — see the next section.
 ## The tuning loop
 
 1. Start AC, get on track.
-2. Tell Claude: "start recording and confirm you can see the session"
-   (`start_recording`, `live_snapshot`).
+2. Tell Claude: "confirm you can see the session" (`live_snapshot`).
+   **Recording is already running** — see the next section — so
+   `start_recording` is only needed to undo a `stop_recording`.
 3. Drive 3–5 laps. Laps store automatically as they complete. A lap is marked
    invalid — still stored and readable, just excluded from best-lap maths — if
    it had an off-track excursion (>2 tyres out), included a pit visit, or came
@@ -218,8 +221,11 @@ range and AC is silently ignoring them — see the next section.
 7. Drive again, then "compare my best lap on the new setup against lap N"
    (`compare_laps`) — corner-by-corner min speed and brake point deltas show
    whether the change actually worked. `lap_summary` reports each lap's setup.
+   For more than a lap a side, `compare_runs` judges the change against your
+   own lap-to-lap spread.
+8. "Where did I actually drive?" (`driving_line`) — see below.
 
-Two things worth knowing:
+A few things worth knowing:
 
 - **Complaint tags pressed while nothing is recording are still saved**, but
   with no session attached — they'd otherwise be guessed onto whatever session
@@ -229,6 +235,62 @@ Two things worth knowing:
   discarded as glitched (AC occasionally emits a wheelSlip in the tens of
   thousands). It tells you how many corners were affected and how big the
   worst spike was, so you can judge whether the balance number is trustworthy.
+- **`accel_samples_dropped`** is the same idea for the acceleration channels:
+  AC sometimes emits a 10g spike from a reset or a kerb strike, and one of
+  those used to inflate `peak_lat_g` for the lap *and* the noise estimate for
+  every comparison the lap took part in. Spikes are now dropped rather than
+  clamped — reporting the ceiling would be a claim the car pulled it — and the
+  count is stated next to `samples` so you can see how much of the lap it was.
+- **`corner_detection`** appears alongside every corner list and says which
+  lateral-g bar produced it. It is not the same bar in every tool: a
+  `lap_summary` read on its own uses that lap's own cornering load, while
+  `compare_laps` and `compare_runs` use one shared across every lap being
+  compared, so that corner membership doesn't depend on how hard an
+  individual lap was driven. The same lap can therefore carry a different
+  number of corners in the two payloads, and this is how you tell why.
+
+## Recording runs by itself
+
+The collector starts with the server and waits for Assetto Corsa rather than
+failing when it isn't there. You do not have to remember to start it, and a
+server restart mid-session doesn't silently end recording — which is how
+sixteen laps went missing across three evenings.
+
+Claude Desktop runs one copy of this server per chat surface, so several are
+usually alive at once. Only one records: they contend for a claim in the
+shared database, and the rest sit in **standby**, ready to take over within
+seconds if the holder's process dies. `recording_status` reports `state`
+(`recording`, `waiting`, `standby`, `never_started`, `died`,
+`stopped_by_request`) with a note saying what it means — read that rather
+than inferring from `running`.
+
+`stop_recording` applies to every instance and survives a restart, because
+"stop recording" is an instruction about the car and not about whichever chat
+you happened to type it into. `start_recording` turns it back on. Set
+`AC_ENGINEER_NO_AUTOSTART=1` to keep one instance out of it entirely.
+
+The in-game overlay cross-checks all of this against the game's own lap
+counter: if laps are finishing and none are landing, it says **NOT STORING
+LAPS** rather than repeating whatever the server claims.
+
+## Where you actually drove
+
+`driving_line` slices the lap by track position and reports, per slice, where
+the car was in the world, how fast, the mean front ride height, and how much
+that ride height moved within the slice — the last of which is a bump map,
+since smooth tarmac holds the car at a steady height and broken tarmac
+doesn't.
+
+Track position has always said where the car was *along* the lap. This says
+where it was *across* it, which is the whole of what a line is, so "I took a
+wider entry there" is finally something the tooling can check. Pass a second
+lap for `separation_m`: how far apart the two cars were at the same point of
+the circuit.
+
+A slice the car never reached comes back null rather than interpolated — a
+gap in a driving line is worth seeing, and inventing a point draws the car
+through somewhere it never went. Laps recorded before schema v8 report
+`has_position: false`; there is nothing to backfill from.
 
 ## Setup value clamping
 
@@ -257,6 +319,23 @@ Two further consequences:
 - **`ac.getCarSetupState()`** tells you whether AC considers the setup legal,
   so a silently-ignored value shows up as `illegal` instead of as a change
   that mysteriously did nothing.
+
+### The spinner does not move on a grid
+
+AC's setup spinner adds or subtracts `step` from wherever it already is and
+clamps at the ends, so the reachable values are **two ladders that miss each
+other**, not `min + n*step`.
+
+The RSS Formula 4's rear wheel rate is MIN 53, MAX 88, STEP 17. Counting up
+gives 53, 70, 87, 88. Counting back down from 88 gives 71, 54, 53. Six
+reachable values, of which a grid anchored at the minimum can express three —
+and 54 is not one of them.
+
+That mattered: asked to write 54, a grid-snapping `write_setup` returned 53
+and reported it as clamping, so a 2% softer spring looked like the request
+being tidied up. Values are now snapped to what the spinner can actually
+reach, and `write_setup` only reports `clamped` when it genuinely changed
+something.
 
 <details>
 <summary>Fallback: a ranges file, for when the in-game app isn't running</summary>
@@ -414,7 +493,24 @@ install-windows.bat  double-clickable wrapper for the above
 diagnose.ps1 / .bat  what-is-broken report
 run_tests.py         run and summarise the suite, no dependencies
 tests/               behavior-named test modules + shared harness
+scripts/
+  relabel_laps.py    fix laps stamped with the wrong setup name
+BACKLOG.md           what is known to be broken, worst-first
 ```
+
+`scripts/relabel_laps.py` is deliberately not an MCP tool. `set_session_setup`
+refuses to overwrite a setup name a lap already carries, because a late
+correction applied to the wrong half of an A/B split destroys the comparison
+it exists to enable. The one case where overwriting is right is a label that
+was wrong when it was written — and that is rare, destructive, and worth
+making someone type:
+
+```
+python scripts/relabel_laps.py 87,88,89,90 claude_press_v1
+python scripts/relabel_laps.py 87,88,89,90 claude_press_v1 --apply
+```
+
+Without `--apply` it only shows what it would change.
 
 ## Notes / future ideas
 
@@ -428,8 +524,19 @@ tests/               behavior-named test modules + shared harness
   turn the same way — it is deliberately not labelled left or right,
   because AC does not document which sign is which, and a consistent sign is
   more useful than a label that is right half the time.
+- The lateral-g bar a corner has to clear is shared across every lap in a
+  comparison rather than taken per lap, so corner membership stops depending
+  on how hard each individual lap was driven. It reduces one-sided corners
+  rather than eliminating them: a gently driven lap can still genuinely fall
+  below a bar the others set. `corner_detection` in every payload says which
+  bar was used and how many laps produced it.
 - A per-track corner-name map would still make advice read nicer
   ("T3/Variante" vs "corner at 0.34").
+- **BACKLOG.md** is the list of what is known to be broken or missing, ranked
+  by whether it destroys data the driver has already produced. Read it before
+  starting anything; the top item is still that lap validity is inferred from
+  `numberOfTyresOut > 2` rather than read from the game, which vanilla AC
+  does not expose.
 - Suspension capture is in — see the section above. The remaining gap is
   true damper *velocity* as a first-class channel: CSP only exposes that
   inside a per-car physics script (`script.lua` in the car's data folder,

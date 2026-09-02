@@ -703,6 +703,10 @@ def lap_summary(lap: dict, samples: list[dict],
         # was always true and read as though it had been checked.
         "usable_for_timing": usable,
         "not_usable_because": not_usable_because,
+        # Above 1, this lap's trace has been decimated to keep the database
+        # within its size budget: 2 means every second sample survives. The
+        # lap and its numbers are intact; the resolution is not.
+        "sample_stride": lap.get("sample_stride") or 1,
         # How many telemetry samples this lap is made of. Reported so
         # accel_samples_dropped below has something to be read against: "12
         # dropped" means nothing without it, and it is the denominator for

@@ -22,7 +22,7 @@ try:  # mcp SDK 2.x
 except ImportError:  # mcp SDK 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import analysis, config, db, setups, suspension
+from . import analysis, config, db, retention, setups, suspension
 from .collector import Collector
 
 AC_DOCS_DIR = Path(os.environ.get(
@@ -183,6 +183,14 @@ def recording_status() -> str:
         out["state_note"] = why
     if _collector.out_laps_recorded:
         out["out_laps_recorded"] = _collector.out_laps_recorded
+    # A pass that just decimated a season of traces has to say so. It is
+    # the one thing here that reduces what the driver has, and it happens
+    # without being asked.
+    if _collector.last_retention:
+        out["storage_thinned"] = _collector.last_retention.get("actions")
+        out["storage_note"] = (
+            "the database passed its size budget, so the oldest sessions' "
+            "traces were decimated. No lap was deleted. See storage_report.")
     migrations = db.MIGRATION_LOG.pop(str(DB_PATH), None)
     if migrations:
         out["database_upgraded"] = migrations
@@ -576,6 +584,25 @@ def label_laps(lap_ids: str, setup_name: str,
 
 
 @mcp.tool()
+def storage_report() -> str:
+    """What the telemetry database holds, and what it is costing on disk.
+
+    Roughly 0.4 MB per lap, almost all of it the 25 Hz traces. Nothing is
+    ever deleted: when the database passes its size budget the *oldest*
+    sessions' traces are decimated instead, one step at a time down a
+    ladder that keeps every 2nd sample, then every 4th, and so on to every
+    32nd -- so a session only reaches the coarsest step once every older
+    one is already there. Lap times, setup attribution and track-limits
+    evidence are computed before any thinning and are never touched, so a
+    thinned lap loses resolution and nothing else. `laps_thinned` says how
+    many have been through that; `sample_stride` on a lap says by how much.
+
+    The budget is ASSETTO_MCP_MAX_DB_BYTES, default 2 GB. Set it to 0 to
+    keep every sample forever."""
+    return _j(retention.storage_report(_conn, DB_PATH))
+
+
+@mcp.tool()
 def rescore_track_limits() -> str:
     """Re-derive every stored lap's track-limits verdict from its samples.
 
@@ -587,14 +614,30 @@ def rescore_track_limits() -> str:
 
     Run this after changing TRACK_LIMITS_WHEELS. Only ever recomputes;
     never deletes a lap and never touches a verdict that came from the game
-    rather than from inference."""
+    rather than from inference.
+
+    **Laps whose traces have been thinned are skipped**, and counted in
+    `laps_skipped_thinned`. Their evidence was measured at full resolution
+    and the samples behind it no longer are, so re-scoring would replace a
+    real measurement with a worse one. A new threshold therefore does NOT
+    reach those laps -- say so rather than describing the pass as covering
+    the driver's whole history."""
     changed = db.backfill_excursions(_conn)
     flagged = db.backfill_outliers(_conn)
+    skipped = _conn.execute(
+        "SELECT COUNT(*) c FROM laps WHERE sample_stride > 1"
+        " AND invalid_source = 'inferred'").fetchone()["c"]
     out = {"laps_rescored": changed, "outliers_reflagged": flagged,
+           "laps_skipped_thinned": skipped,
            "threshold_wheels_off": db.TRACK_LIMITS_WHEELS,
            "min_excursion_ms": db.MIN_EXCURSION_MS,
            "note": "Nothing was deleted. A lap that no longer counts as "
                    "running wide is readable and comparable again."}
+    if skipped:
+        out["skipped_note"] = (
+            f"{skipped} lap(s) were NOT re-scored because retention has "
+            f"thinned their traces; they keep the verdict measured at full "
+            f"resolution. A changed threshold does not reach them.")
     return _j(out)
 
 

@@ -308,6 +308,49 @@ def test_a_slow_lap_that_ran_wide_is_still_given_back():
             conn.close()
 
 
+def test_a_v11_step_does_not_depend_on_a_v12_column():
+    """Migration steps run in order, and v11 calls backfill_excursions.
+
+    That function filters out laps whose traces retention has thinned --
+    `sample_stride`, which arrives in v12. On a database upgrading from
+    v10 the column does not exist when v11 runs, and the raise left
+    user_version un-bumped, stranding the database below the schema
+    permanently with the server unable to open it at all.
+
+    Its absence is an answer rather than an obstacle: a database that
+    predates retention has nothing thinned.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "v10.db"
+        _v0_database(path, [(114054, 1), (126769, 0)],
+                     tyres_out={2: [0] * 10 + [4] * 25 + [0] * 5})
+        raw = sqlite3.connect(path)
+        # Everything v11 needs, stamped just below it.
+        for col, decl in (("setup_name", "TEXT NOT NULL DEFAULT ''"),
+                          ("complete", "INTEGER NOT NULL DEFAULT 1")):
+            try:
+                raw.execute(f"ALTER TABLE laps ADD COLUMN {col} {decl}")
+            except sqlite3.OperationalError:
+                pass
+        raw.execute("PRAGMA user_version = 10")
+        raw.commit(); raw.close()
+
+        conn = db.connect(path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == \
+                db.SCHEMA_VERSION, "migration stopped short"
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(laps)")}
+            assert "sample_stride" in cols, cols
+            # And v11's re-scoring still happened on the way through.
+            lap = [dict(r) for r in db.list_laps(conn, limit=None)
+                   if r["lap_time_ms"] == 126769][0]
+            assert lap["invalid"] == 1 and lap["excursions"] == 1, lap
+            assert lap["sample_stride"] == 1, lap
+            print("  v10 -> v12 in one hop, with v11's backfill intact")
+        finally:
+            conn.close()
+
+
 def test_migration_is_idempotent():
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "old.db"

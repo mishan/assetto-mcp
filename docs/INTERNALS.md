@@ -4,6 +4,7 @@ How the analysis actually works, and where it is honest about not knowing.
 Read this when a number surprises you.
 
 - [Recording](#recording)
+- [Storage and retention](#storage-and-retention)
 - [Corner detection](#corner-detection)
 - [Data quality flags](#data-quality-flags)
 - [Driving line](#driving-line)
@@ -59,6 +60,7 @@ Instead a lap records facts, and the verdicts are derived:
 | `invalid` | exceeded track limits |
 | `max_tyres_out`, `excursions`, `off_track_ms` | the track-limits evidence |
 | `invalid_source` | `inferred`, or `game` if it came from the game itself |
+| `sample_stride` | 1 normally; higher if the trace has been thinned |
 
 Two questions are kept apart, because conflating them is what lost data:
 
@@ -76,16 +78,21 @@ An episode counts when at least `TRACK_LIMITS_WHEELS` (4) are off the
 surface for at least `MIN_EXCURSION_MS` (120 ms) — three consecutive samples
 at 25 Hz — so a glitched tick or two isn't a cut. Duration is measured from
 where the episode starts to where it *ends*, using each sample's own `t_ms`
-rather than an assumed rate, because the sampling interval isn't guaranteed
-— an abandoned lap stops wherever it stopped.
+rather than an assumed rate, because a thinned lap isn't 25 Hz any more.
+
+A lap whose trace has been thinned is never re-scored: its evidence was
+computed at full resolution and the samples behind it no longer are. So a
+changed threshold does not reach those laps, and `rescore_track_limits`
+reports how many it skipped for that reason rather than describing the pass
+as covering everything.
 
 The threshold was effectively 3 wheels, which is what stored a clean 2:06.769
 at Sebring as invalid — that circuit's flat kerbs put three wheels over the
 line routinely and the game counted the lap.
 
 **Because the evidence is stored, the verdict is re-derivable.** Change
-`TRACK_LIMITS_WHEELS` and run `rescore_track_limits`, and every lap ever
-driven is re-scored from its own samples. That's the point of storing
+`TRACK_LIMITS_WHEELS` and run `rescore_track_limits`, and every lap still
+holding a full-resolution trace is re-scored from its own samples. That's the point of storing
 evidence rather than a decision: the v11 migration did this to the existing
 database and gave back laps that had been wrongly marked, without re-driving
 anything.
@@ -95,6 +102,52 @@ lap validity in shared memory. CSP does — `ac.onLapCompleted` hands a
 physics worker the game's own `valid` and `cuts` — and that's reachable from
 the worker this project already runs, but it isn't wired up yet and it would
 be single-player only. See [BACKLOG.md](../BACKLOG.md) item 1.
+
+---
+
+## Storage and retention
+
+A lap costs roughly **0.4 MB**, almost all of it the 25 Hz sample rows — so
+about **12 MB per hour** of driving. Left alone that grows without bound in
+the driver's home directory.
+
+Deleting old sessions would be the obvious answer and the wrong one: a
+reference lap from three months ago is exactly what a change gets measured
+against, and coming back to a circuit after a season away is precisely when
+the old run matters.
+
+**No lap is deleted.** When the database passes its budget, the *oldest*
+sessions' traces are **thinned** — decimated to every 2nd, 4th, 8th, 16th
+then 32nd sample — and the stride is recorded on the lap. Lap times, setup
+attribution and track-limits evidence are computed before any thinning and
+are never touched, so a thinned lap loses resolution and nothing else.
+
+The ladder has a floor, and that is why the budget is a **target, not a
+guarantee**: because lap rows and their facts are kept forever, a database
+of nothing but fully-thinned laps still grows, slowly. `enforce_budget`
+says so when it runs out of room rather than reporting success.
+
+Order of sacrifice, worst value per byte first:
+
+1. **Rival samples** from older sessions — they answer "how did I compare to
+   the car ahead" only while that race is the one being discussed.
+2. **Suspension samples** from older sessions — already capped at 20 laps
+   per session, and by far the heaviest rows at 333 Hz.
+3. **Car samples**, oldest session first, one stride step at a time, so a
+   session only reaches 1-in-32 once every older one is already there.
+
+The current session is never thinned. `ASSETTO_MCP_MAX_DB_BYTES` sets the
+budget (default 2 GB); `0` disables budget-driven thinning entirely, though
+the per-session cap on suspension samples applies either way. A pass runs once at
+session start, so the cost lands while the car is in the garage rather than
+between two flying laps. `storage_report` says what's stored and what has
+been thinned; `sample_stride` on a lap says by how much.
+
+Progress during a pass is *estimated* from rows removed rather than measured
+from the file. Deleted pages sit on the freelist and in the WAL until a
+VACUUM, so re-measuring after each step reads "no progress" every time and
+runs to the bottom of the ladder however little was needed — and VACUUMing
+per step would rewrite the whole database once per rung.
 
 ---
 

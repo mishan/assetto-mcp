@@ -122,10 +122,9 @@ def test_a_lap_with_no_samples_is_unknown_not_clean():
 
 
 def test_duration_uses_the_samples_own_clock():
-    # The sampling interval is not guaranteed, and an assumed rate would
-    # report a fraction of the real time off track. Ten samples 320ms apart,
-    # still off track at the end, so the run closes one interval past the
-    # last.
+    # A thinned lap is not 25Hz any more, and an assumed rate would report
+    # an eighth of the real time off track. Ten samples 320ms apart, still
+    # off track at the end, so the run is closed one interval past the last.
     thinned = [(i * 320, 4) for i in range(10)]
     s = db.score_excursions(thinned)
     assert s["off_track_ms"] == 10 * 320, s

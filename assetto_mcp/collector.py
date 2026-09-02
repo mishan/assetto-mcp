@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 
-from . import analysis, db
+from . import analysis, db, retention
 
 TARGET_HZ = 25  # plenty for setup work; keeps the DB small
 
@@ -146,6 +146,7 @@ class Collector:
         self.laps_recorded = 0
         self.abandoned_laps = 0
         self.out_laps_recorded = 0
+        self.last_retention: dict | None = None
         self.last_error: str | None = None
         # Observable progress. These exist so "has the collector noticed
         # yet?" is answerable rather than something callers have to guess at
@@ -415,6 +416,48 @@ class Collector:
             self._conn.close()
             self._conn = None
 
+    def _housekeeping(self) -> str | None:
+        """One retention pass, at session start. Returns a stand-down reason.
+
+        A string means STOP: the pass took long enough that another instance
+        took the claim, and the caller must leave the loop before writing
+        anything. That is the whole reason the heartbeat is forced on the way
+        out -- discarding its answer left this collector carrying on into
+        sampling while a second one recorded the same laps, which is the
+        failure the claim exists to prevent.
+
+        Three other guards:
+
+        - Only the claim holder runs it. A standby thinning the database
+          underneath the one actually recording is contention for no benefit.
+        - The heartbeat is forced either side. A VACUUM over a
+          multi-gigabyte file can exceed RECORDER_STALE_SECONDS.
+        - Anything raised is recorded and swallowed. Housekeeping must never
+          be the reason a session is not recorded.
+
+        It still costs a pause while the car is in the garage, which is why
+        it is here and not between two flying laps.
+        """
+        if not self.holds_recorder:
+            return None
+        # Cleared on every pass, not only on one that acted. Left set, one
+        # thinning event made every later recording_status say a pass had
+        # just decimated traces, for the rest of the process's life.
+        self.last_retention = None
+        try:
+            stand_down = self._beat(force=True)
+            if stand_down:
+                return stand_down
+            result = retention.enforce_budget(self._conn, self._db_path)
+            if result.get("acted"):
+                self.last_retention = result
+        except Exception as e:
+            self.last_error = f"retention pass failed: {e}"
+        try:
+            return self._beat(force=True)
+        except Exception:
+            return None
+
     def _loop(self, sim, AC_LIVE):
         interval = 1.0 / TARGET_HZ
         session_started = False
@@ -501,6 +544,21 @@ class Collector:
                     air_temp=p.airTemp, road_temp=p.roadTemp,
                 )
                 session_started = True
+                # A retention pass can outlast the claim, and the answer has
+                # to be acted on: carrying on here means two collectors
+                # writing the same laps, which is the one failure the claim
+                # exists to prevent. Handled exactly like the beat at the top
+                # of the loop.
+                stand_down = self._housekeeping()
+                if stand_down:
+                    self.last_error = (None if stand_down == SWITCHED_OFF
+                                       else stand_down)
+                    self.status = f"standby ({stand_down})"
+                    self.holds_recorder = False
+                    if self.session_id is not None:
+                        self.last_session_id = self.session_id
+                        self.session_id = None
+                    return
                 last_completed = g.completedLaps
                 last_pos = None
                 lap_samples = []

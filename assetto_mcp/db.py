@@ -16,7 +16,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # How many wheels have to be off the valid surface before a lap counts as
 # having exceeded track limits.
@@ -150,7 +150,13 @@ CREATE TABLE IF NOT EXISTS laps (
     -- (a lap stored with no samples), which is not the same as zero.
     max_tyres_out INTEGER,      -- worst wheel count off track in the lap
     excursions INTEGER,         -- distinct episodes over the threshold
-    off_track_ms INTEGER        -- total time over the threshold
+    off_track_ms INTEGER,       -- total time over the threshold
+
+    -- 1 means the samples for this lap have been decimated to reclaim
+    -- space; the trace is coarser than it was recorded. 1 is untouched.
+    -- Kept on the lap so a trace can say how much of itself is missing
+    -- rather than quietly reading as a lap driven at 5Hz.
+    sample_stride INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS samples (
@@ -582,6 +588,17 @@ def _migrate(conn) -> list[str]:
             log.append(f"{flagged} stored lap(s) marked as gross outliers "
                        "(still stored, still comparable)")
 
+    if version < 12:
+        # v12: laps.sample_stride, which only means anything once retention
+        # exists -- 1 is a trace at the rate it was recorded, higher is one
+        # that has been decimated to reclaim space. Its own step rather than
+        # part of v11 so that the lap model and the thing that thins it can
+        # be read, and reverted, separately.
+        if _add_column(conn, "laps", "sample_stride",
+                       "INTEGER NOT NULL DEFAULT 1"):
+            log.append("laps.sample_stride added; existing traces are at "
+                       "the rate they were recorded")
+
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     return log
@@ -686,8 +703,8 @@ def score_excursions(pairs: list[tuple]) -> dict:
     Returns max_tyres_out, excursions, off_track_ms and the derived
     `invalid`. An episode has to last MIN_EXCURSION_MS to count, so one
     glitched tick is not an excursion; the duration uses each sample's own
-    t_ms rather than assuming a rate, because the sampling interval is not
-    guaranteed -- an abandoned lap stops wherever it stopped.
+    t_ms rather than assuming a rate, because a thinned lap is not 25Hz any
+    more and neither is an incomplete one at the moment it was abandoned.
 
     Two columns rather than whole sample rows on purpose: this runs over
     every lap in the database during the v11 migration, and selecting the
@@ -720,8 +737,8 @@ def score_excursions(pairs: list[tuple]) -> dict:
     def _typical_interval(pairs):
         """The median gap between samples, for closing a run that never ended.
 
-        Measured rather than assumed: 25Hz is nominal, and an abandoned lap
-        stops wherever it stopped.
+        Measured rather than assumed: 25Hz is nominal, a thinned trace is a
+        multiple of it, and an abandoned lap stops wherever it stopped.
         """
         if len(pairs) < 2:
             return 0
@@ -732,8 +749,9 @@ def score_excursions(pairs: list[tuple]) -> dict:
     def close(run_start, end_t):
         """An episode's duration runs to where it *ended*, not to its last
         off-track sample. Measuring to the last off sample loses one tick
-        per episode -- 40ms at 25Hz -- and made MIN_EXCURSION_MS need four
-        consecutive samples where it reads as three."""
+        per episode -- 40ms at 25Hz, 320ms on a thinned trace -- and made
+        MIN_EXCURSION_MS need four consecutive samples where it reads as
+        three."""
         span = end_t - run_start
         return (1, span) if span >= MIN_EXCURSION_MS else (0, 0)
 
@@ -795,8 +813,15 @@ def backfill_excursions(conn, lap_ids: list[int] | None = None) -> int:
     recomputes from the samples every time, which is how a change to
     TRACK_LIMITS_WHEELS reaches laps driven under the old one.
 
-    It refuses to touch a lap whose `invalid_source` is 'game': that is a
-    measurement, this is inference, and inference does not overrule it.
+    Two things it refuses to touch:
+
+    - A lap whose `invalid_source` is 'game'. That is a measurement; this
+      is inference, and inference does not overrule it.
+    - A lap whose trace has been **thinned**. Its evidence was computed at
+      full resolution and the samples behind it no longer are, so
+      re-scoring would quietly replace a real measurement with a worse one
+      -- at stride 8 an excursion shorter than about 640ms vanishes
+      entirely and the lap becomes permanently "clean".
     """
     # A database old enough to be migrating to v11 may predate tyres_out,
     # or the laps table itself in a half-built file. Refusing to open the
@@ -808,8 +833,14 @@ def backfill_excursions(conn, lap_ids: list[int] | None = None) -> int:
     if not {"t_ms", "tyres_out"} <= set(_columns(conn, "samples")):
         return 0
 
+    # sample_stride arrives in v12, and the v11 step calls this function --
+    # so on an upgrade from v10 it does not exist yet. Its absence is not an
+    # obstacle but an answer: a database that predates retention has nothing
+    # thinned, so every lap is at full resolution and eligible.
+    thinned_guard = (" AND sample_stride = 1"
+                     if "sample_stride" in set(_columns(conn, "laps")) else "")
     q = ("SELECT id, invalid, max_tyres_out, excursions, off_track_ms"
-         " FROM laps WHERE invalid_source = 'inferred'")
+         " FROM laps WHERE invalid_source = 'inferred'" + thinned_guard)
     args: list = []
     if lap_ids is not None:
         if not lap_ids:

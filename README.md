@@ -183,6 +183,26 @@ folder. Only files whose name you ask for are written, and reusing the name of
 an existing setup is refused unless you say to overwrite it — in which case the
 old file is kept alongside as `<name>.ini.bak-<timestamp>`.
 
+### How big it gets
+
+About **0.4 MB per lap**, so roughly **12 MB per hour** of driving.
+
+**No lap is ever deleted**, and neither is anything derived from one — lap
+times, setups and the off-track evidence stay exactly as recorded. When the
+database passes its size budget (2 GB by default), the *oldest* sessions'
+traces are thinned instead: every 2nd sample, then 4th, and so on. An old lap
+gets coarser, never absent.
+
+Two things that *are* dropped outright, from older sessions only: the traces of
+other cars on track, and the high-rate suspension samples. Both answer
+questions about the session they were recorded in and not much after it.
+
+Because lap rows are kept forever, the budget is a target rather than a hard
+ceiling — a database of nothing but fully-thinned laps still grows, slowly.
+Ask for a storage report to see where you are. `ASSETTO_MCP_MAX_DB_BYTES`
+changes the budget; `0` turns off budget-driven thinning entirely (the
+per-session cap on suspension samples stays either way).
+
 `diagnose.bat` writes a report that redacts other MCP servers' secrets on a
 best-effort basis, but still contains your username and absolute paths. Skim it
 before sharing it.

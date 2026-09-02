@@ -204,6 +204,7 @@ Config**, which always opens the file the running app actually reads.
 | `ASSETTO_MCP_DATA` | `~/.assetto-mcp` | Database + car range files |
 | `ASSETTO_MCP_BRIDGE_PORT` | `9666` | In-game app bridge port |
 | `ASSETTO_MCP_NO_AUTOSTART` | unset | `1` stops *this* instance recording on startup. Rarely wanted: instances already coordinate so only one records. |
+| `ASSETTO_MCP_MAX_DB_BYTES` | `2147483648` (2 GB) | Size budget for the telemetry database. Over it, the oldest sessions' traces are thinned; laps are never deleted. `0` keeps every sample forever. |
 
 Set them in the `env` block of your client's server entry, if it has one, or in
 your Windows environment.

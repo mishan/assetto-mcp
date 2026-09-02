@@ -599,11 +599,17 @@ def claim_recorder(conn, owner: str,
     racing for a free slot cannot both win: SQLite serialises the writes and
     the loser's WHERE no longer matches.
 
-    `<=` on the staleness bound so an age of exactly stale_after is taken
-    over rather than left for the next poll. In practice these are float
-    timestamps and landing on the boundary has essentially no chance, so
-    this is about the comparison matching the sentence above it rather than
-    about a case anyone will hit.
+    `stale_after <= 0` means "take it regardless of who holds it". That is
+    a different question from "is the holder stale", and it needs its own
+    branch: expressed as a cutoff it becomes `heartbeat_at <= now`, which a
+    holder renewing faster than this round trip can always defeat, so an
+    unconditional takeover was refused without ever saying so.
+
+    Otherwise `<=` on the staleness bound, so an age of exactly stale_after
+    is taken over rather than left for the next poll. In practice these are
+    float timestamps and landing on the boundary has essentially no chance,
+    so this is about the comparison matching the sentence above it rather
+    than about a case anyone will hit.
 
     The real bound on takeover latency is not here anyway: it is
     RECORDER_STALE_SECONDS plus however long the standby waits between
@@ -611,15 +617,34 @@ def claim_recorder(conn, owner: str,
     dead holder until someone next asks. That is the number to change if
     takeover ever needs to be quicker.
     """
-    now = time.time()
     _recorder_row(conn)
+    # Read the clock AFTER the row exists, so the staleness cutoff is not
+    # computed before a SELECT that the holder can beat us to. The window is
+    # still not zero -- SQLite serialises the write, and the holder may
+    # renew inside it -- but every millisecond spent between reading `now`
+    # and taking the lock is a millisecond in which a perfectly live holder
+    # can be judged against a cutoff that has already gone stale.
+    now = time.time()
     with conn:
-        conn.execute(
-            "UPDATE recorder SET owner = ?, claimed_at = ?, heartbeat_at = ?"
-            " WHERE id = 1 AND (owner = '' OR owner = ?"
-            "                   OR heartbeat_at IS NULL"
-            "                   OR heartbeat_at <= ?)",
-            (owner, now, now, owner, now - stale_after))
+        if stale_after <= 0:
+            # "Take it regardless of who has it." A cutoff cannot express
+            # that: `heartbeat_at <= now` is unsatisfiable against a holder
+            # beating faster than the round trip, so the caller asking for
+            # an unconditional takeover got a silent refusal instead. The
+            # only caller is a test forcing the takeover it wants to
+            # observe, and refusing it made that test time out rather than
+            # fail -- which reads like the collector never noticing.
+            conn.execute(
+                "UPDATE recorder SET owner = ?, claimed_at = ?,"
+                " heartbeat_at = ? WHERE id = 1", (owner, now, now))
+        else:
+            conn.execute(
+                "UPDATE recorder SET owner = ?, claimed_at = ?,"
+                " heartbeat_at = ?"
+                " WHERE id = 1 AND (owner = '' OR owner = ?"
+                "                   OR heartbeat_at IS NULL"
+                "                   OR heartbeat_at <= ?)",
+                (owner, now, now, owner, now - stale_after))
     r = _recorder_row(conn)
     beat = r["heartbeat_at"]
     return {"held": r["owner"] == owner,

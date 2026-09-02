@@ -472,6 +472,61 @@ def test_a_standby_takes_over_when_the_holder_stops():
             b.stop()
 
 
+def test_a_forced_takeover_beats_a_holder_that_is_beating_fast():
+    """`stale_after=0` means "take it regardless of who has it".
+
+    Expressed as a staleness cutoff that becomes `heartbeat_at <= now`,
+    which a holder renewing faster than the round trip always defeats: the
+    caller reads the clock, does a SELECT, then queues behind the holder's
+    write. Measured at 6.7ms of drift, which a 10ms heartbeat wins about
+    half the time -- so the refusal was silent and intermittent, and the
+    test that relies on forcing a takeover timed out instead of failing,
+    which reads like the collector never noticing.
+    """
+    with temp_db() as path:
+        holder = db.connect(path)
+        watcher = db.connect(path)
+        try:
+            assert db.claim_recorder(holder, "holder")["held"]
+            # A holder renewing continuously, exactly as the collector does
+            # with a short HEARTBEAT_SECONDS.
+            for i in range(50):
+                # Every step is asserted, including the two that only set
+                # up the next round: a hand-back that quietly failed would
+                # leave the holder unheld, and then the takeover under test
+                # would be succeeding against nobody.
+                assert db.renew_recorder(holder, "holder"), \
+                    f"holder lost its claim before round {i}"
+                taken = db.claim_recorder(watcher, "someone-else",
+                                          stale_after=0.0)
+                assert taken["held"], taken
+                assert taken["owner"] == "someone-else", taken
+                # Hand it back and go again.
+                back = db.claim_recorder(holder, "holder", stale_after=0.0)
+                assert back["held"] and back["owner"] == "holder", back
+            print("  50 forced takeovers against a live holder, no refusals")
+        finally:
+            holder.close()
+            watcher.close()
+
+
+def test_a_live_holder_still_keeps_its_claim():
+    # The forced path must not have loosened the ordinary one: a holder
+    # that is beating keeps the claim against a normal staleness check.
+    with temp_db() as path:
+        holder = db.connect(path)
+        other = db.connect(path)
+        try:
+            assert db.claim_recorder(holder, "holder")["held"]
+            db.renew_recorder(holder, "holder")
+            r = db.claim_recorder(other, "other")
+            assert r["held"] is False, r
+            assert r["owner"] == "holder", r
+        finally:
+            holder.close()
+            other.close()
+
+
 def test_a_collector_that_loses_its_claim_stops_writing():
     """Losing it means another instance believes it is recording this.
 

@@ -181,6 +181,8 @@ def recording_status() -> str:
     }
     if why:
         out["state_note"] = why
+    if _collector.out_laps_recorded:
+        out["out_laps_recorded"] = _collector.out_laps_recorded
     migrations = db.MIGRATION_LOG.pop(str(DB_PATH), None)
     if migrations:
         out["database_upgraded"] = migrations
@@ -574,6 +576,29 @@ def label_laps(lap_ids: str, setup_name: str,
 
 
 @mcp.tool()
+def rescore_track_limits() -> str:
+    """Re-derive every stored lap's track-limits verdict from its samples.
+
+    The evidence -- wheels off the surface, at 25 Hz -- is kept per lap, so
+    the verdict is a threshold applied to it rather than something decided
+    when the lap was driven. That means it can be corrected retroactively,
+    which is the point: laps wrongly marked as running wide can be given
+    back rather than re-driven.
+
+    Run this after changing TRACK_LIMITS_WHEELS. Only ever recomputes;
+    never deletes a lap and never touches a verdict that came from the game
+    rather than from inference."""
+    changed = db.backfill_excursions(_conn)
+    flagged = db.backfill_outliers(_conn)
+    out = {"laps_rescored": changed, "outliers_reflagged": flagged,
+           "threshold_wheels_off": db.TRACK_LIMITS_WHEELS,
+           "min_excursion_ms": db.MIN_EXCURSION_MS,
+           "note": "Nothing was deleted. A lap that no longer counts as "
+                   "running wide is readable and comparable again."}
+    return _j(out)
+
+
+@mcp.tool()
 def list_laps(session_id: int | None = None, limit: int = 20) -> str:
     """List recorded laps (most recent first), optionally for one session.
     Returns lap ids to use with lap_summary / compare_laps."""
@@ -753,13 +778,43 @@ def driving_line(lap_id: int, compare_lap_id: int | None = None,
 def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
     """Corner-by-corner comparison of two laps on the same track: min speed
     deltas, brake point deltas, and slip balance changes. Use to evaluate
-    whether a setup change actually helped."""
+    whether a setup change actually helped.
+
+    Both laps are compared whatever they are -- an out-lap and a lap that
+    ended in the barrier still have real corner speeds on them. But if
+    either lap's *time* is not a lap time, `time_delta_ms` is meaningless
+    and `lap_time_warning` says so. Read it before quoting a delta."""
     a, b = db.get_lap(_conn, lap_id_a), db.get_lap(_conn, lap_id_b)
     if not a or not b:
         return _j({"error": "one or both lap ids not found"})
-    return _j(analysis.compare_laps(
+    out = analysis.compare_laps(
         a, db.get_samples(_conn, lap_id_a),
-        b, db.get_samples(_conn, lap_id_b)))
+        b, db.get_samples(_conn, lap_id_b))
+    warning = _lap_time_warning({"A": a, "B": b})
+    if warning:
+        out["lap_time_warning"] = warning
+    return _j(out)
+
+
+def _lap_time_warning(laps: dict) -> str | None:
+    """Why a delta between these laps' times means nothing, if it doesn't.
+
+    Storing out-laps and pit laps made them reachable by id, which is the
+    point -- their telemetry is real. Their stored `lap_time_ms` is not a
+    lap time though: zero for an out-lap, wall-clock elapsed for an
+    abandoned one, wall-clock-plus-a-pit-stop for a pit lap. Any tool that
+    subtracts one from another has to say so rather than print the number.
+    """
+    bad = []
+    for side, lap in laps.items():
+        ok, why = db.lap_usability(dict(lap))
+        if not ok:
+            bad.append(f"{side} (lap {lap.get('lap_number')}): {why}")
+    if not bad:
+        return None
+    return ("a time difference between these laps is not a lap-time "
+            "difference -- " + "; ".join(bad) + ". The corner-by-corner "
+            "figures are still real; the time is not.")
 
 
 def _live_fuel_facts() -> tuple[dict, str | None]:
@@ -890,7 +945,8 @@ def fuel_plan(race_laps: int, stops: int = 1,
 
 @mcp.tool()
 def compare_runs(baseline_laps: str, candidate_laps: str,
-                 include_invalid: bool = False) -> str:
+                 clean_laps_only: bool = False,
+                 include_invalid: bool | None = None) -> str:
     """Did a setup change actually do anything, given lap-to-lap noise?
 
     Pass two comma-separated lists of lap ids -- the laps before a change
@@ -920,10 +976,26 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
     cleared 95% on its own but not the corrected level, which means run it
     again with more laps rather than that nothing happened.
 
-    Both sides must be the same car at the same track and layout, and laps
-    that were invalidated or abandoned before the line are dropped and
-    named. include_invalid=True keeps them, which is almost always wrong:
-    an abandoned lap's time is wall-clock elapsed, not a lap time.
+    Both sides must be the same car at the same track and layout.
+
+    **Laps that ran wide are included.** A lap that exceeded track limits is
+    still a lap: the corner speeds, brake points and tyre temperatures all
+    happened. They are counted, and listed in `ran_wide` with their
+    excursion evidence so a result that rests on them can be read as such.
+    `clean_laps_only=True` excludes them, which is worth doing when the
+    question is specifically about a clean lap time.
+
+    `include_invalid` is the old name for the same switch with the sense
+    reversed, kept so existing callers keep working. It is honoured rather
+    than ignored -- `include_invalid=false` used to mean these laps were
+    dropped, and silently including them would change an old caller's
+    answer -- and the reply says it was used.
+
+    What *is* excluded is a lap whose time is not a lap time -- abandoned
+    before the line, an out-lap, or a lap containing a pit stop. Those are
+    listed in `excluded_laps` with the reason. Nothing is dropped silently:
+    one off-track lap in a 3v3 with a true 500ms gain once turned this into
+    "within noise, change -1620ms" without a word about why.
 
     What a "within noise" is worth, measured against this driver's own
     spread and unaffected by how many corners the circuit has. A 2.2-point
@@ -936,6 +1008,21 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
     five or six laps is not evidence the change did nothing. That is not
     this tool being strict, it is what a lap time is worth as an
     instrument."""
+    # The switch was renamed when "invalid" stopped meaning "unusable": a
+    # lap that ran wide is still a lap, so the question became whether to
+    # restrict to clean ones rather than whether to admit bad ones.
+    deprecated_note = None
+    if include_invalid is not None:
+        if clean_laps_only and include_invalid:
+            return _j({"error": "clean_laps_only=true and "
+                                "include_invalid=true contradict each other; "
+                                "pass clean_laps_only alone"})
+        clean_laps_only = clean_laps_only or not include_invalid
+        deprecated_note = (
+            f"include_invalid is deprecated; it was read as "
+            f"clean_laps_only={str(clean_laps_only).lower()}. Pass "
+            f"clean_laps_only instead.")
+
     def ids(raw):
         out = []
         for part in str(raw).split(","):
@@ -998,29 +1085,36 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
                             f"and tyre behavior only mean the same thing "
                             f"within one car at one layout."})
 
-    # Invalid and abandoned laps, dropped by name. Both flags were sitting
-    # in the row unread: one off-track lap in a 3v3 with a true 500ms gain
-    # turned it into "within noise", change -1620ms; one lap abandoned
-    # before the line -- whose stored lap_time_ms is wall-clock elapsed, not
-    # a lap time -- turned it into "within noise", change +17630ms.
+    # Two different questions, kept apart. "Is this a lap time?" decides
+    # whether a lap can be compared at all; "did it run wide?" is something
+    # to report about a lap that is being compared. Conflating them dropped
+    # real driving: one off-track lap in a 3v3 with a true 500ms gain turned
+    # this into "within noise, change -1620ms" and never said why.
     dropped = []
+    ran_wide = []
 
     def usable(lap, side):
-        why = []
-        if not lap.get("complete", 1):
-            why.append("abandoned before the line, so its time is elapsed "
-                       "wall clock rather than a lap time")
-        if not lap.get("valid"):
-            why.append("invalidated -- off track or a cut")
-        if not why:
+        ok, why = db.lap_usability(lap)
+        if ok:
             return True
         dropped.append({"lap_id": lap["id"], "side": side,
                         "lap_number": lap.get("lap_number"),
-                        "reason": "; ".join(why)})
+                        "reason": why})
         return False
 
+    def note_wide(lap, side):
+        if not lap.get("invalid"):
+            return
+        ran_wide.append({
+            "lap_id": lap["id"], "side": side,
+            "lap_number": lap.get("lap_number"),
+            "max_tyres_out": lap.get("max_tyres_out"),
+            "excursions": lap.get("excursions"),
+            "off_track_ms": lap.get("off_track_ms"),
+        })
+
     def loaded(laps, side):
-        """Usable laps paired with their samples, in one pass.
+        """Comparable laps paired with their samples, in one pass.
 
         Separate from summarising because the corner-detection threshold has
         to be computed across every lap in the comparison before any single
@@ -1028,7 +1122,13 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
         """
         out = []
         for lap in laps:
-            if not include_invalid and not usable(lap, side):
+            if not usable(lap, side):
+                continue
+            if lap.get("invalid") and clean_laps_only:
+                dropped.append({
+                    "lap_id": lap["id"], "side": side,
+                    "lap_number": lap.get("lap_number"),
+                    "reason": "ran wide, and clean_laps_only was set"})
                 continue
             samples = db.get_samples(_conn, lap["id"])
             if not samples:
@@ -1036,6 +1136,10 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
                                 "lap_number": lap.get("lap_number"),
                                 "reason": "no telemetry samples stored"})
                 continue
+            # Only after the lap is definitely in. Noting it earlier put a
+            # lap with no samples in both lists, so `ran_wide_note` said it
+            # had been "counted anyway" about a lap that was excluded.
+            note_wide(lap, side)
             out.append((lap, samples))
         return out
 
@@ -1082,7 +1186,11 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
                             + ("both sides" if not base and not cand else
                                "the baseline side" if not base else
                                "the candidate side")
-                            + " after dropping invalid and abandoned laps",
+                            + ". Every lap given on that side was excluded; "
+                              "excluded_laps says why, lap by lap"
+                            + (". clean_laps_only was set -- without it the "
+                               "laps that ran wide would have been compared"
+                               if clean_laps_only else ""),
                    "excluded_laps": dropped})
 
     out = analysis.compare_runs(base, cand)
@@ -1110,12 +1218,17 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
     out["car"] = base_laps[0].get("car")
     if dropped:
         out["excluded_laps"] = dropped
-    if include_invalid:
-        out["warning"] = ("include_invalid=True: invalid and abandoned laps "
-                          "were kept, and an abandoned lap's time is elapsed "
-                          "wall clock, not a lap time")
+    if ran_wide:
+        out["ran_wide"] = ran_wide
+        out["ran_wide_note"] = (
+            f"{len(ran_wide)} of the laps compared exceeded track limits and "
+            f"were counted anyway -- the driving on them is real. Say so when "
+            f"reporting the result, and re-run with clean_laps_only=true if "
+            f"the question was specifically about a clean lap time.")
     out["baseline_setups"] = sorted({s.get("setup") or "" for s in base})
     out["candidate_setups"] = sorted({s.get("setup") or "" for s in cand})
+    if deprecated_note:
+        out["deprecated"] = deprecated_note
     return _j(out)
 
 
@@ -1149,9 +1262,13 @@ def delta_by_position(lap_id_a: int, lap_id_b: int,
             return f"{l.get('track')}/{cfg}"
         return _j({"error": f"different track layouts: {_name(a)} vs "
                             f"{_name(b)}; positions are not comparable"})
-    return _j(analysis.delta_by_position(
+    out = analysis.delta_by_position(
         a, db.get_samples(_conn, lap_id_a),
-        b, db.get_samples(_conn, lap_id_b), segments=segments))
+        b, db.get_samples(_conn, lap_id_b), segments=segments)
+    warning = _lap_time_warning({"A": a, "B": b})
+    if warning:
+        out["lap_time_warning"] = warning
+    return _j(out)
 
 
 # --- in-game app bridge ------------------------------------------------

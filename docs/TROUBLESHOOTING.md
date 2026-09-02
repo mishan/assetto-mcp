@@ -141,12 +141,19 @@ database. Ask for `recording_status` — the `state` field
 `stopped_by_request` means someone called `stop_recording`, which persists
 across restarts and across every instance; `start_recording` turns it back on.
 
-## A lap I drove clean was marked invalid
+## A lap I drove clean is marked as having run wide
 
-Known and unfixed: validity is inferred from wheels-off-track rather than read
-from the game, which vanilla AC doesn't expose. Wide flat kerbs trigger it.
-It's the top item in [BACKLOG.md](../BACKLOG.md), and worth reporting with the
-track and lap number.
+It no longer costs you anything — laps that ran wide are still compared, and
+reported as `ran_wide` with the evidence — but if the call itself looks wrong,
+`lap_summary` shows `max_tyres_out`, `excursions` and `off_track_ms` so you can
+see what it saw.
+
+Track limits are still *inferred* from wheels-off-track, because vanilla AC
+doesn't expose lap validity. The threshold is four wheels off for at least
+120 ms. If it's consistently wrong for a circuit, change
+`TRACK_LIMITS_WHEELS` in `assetto_mcp/db.py` and run `rescore_track_limits` —
+the evidence is stored per lap, so every lap you've ever driven is re-scored
+without re-driving anything. Worth reporting with the track and lap number.
 
 ## Damper histograms are missing or flagged as low-rate
 

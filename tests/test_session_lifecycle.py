@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import (FakeSim, complete_lap, go_live, go_off,  # noqa: E402
                      restart_from_menu, run_collector, run_module, temp_db,
-                     tick, wait_for)
+                     tick, timed_laps, wait_for)
 
 from assetto_mcp import db  # noqa: E402
 from assetto_mcp.collector import Collector  # noqa: E402
@@ -417,19 +417,26 @@ def test_only_one_of_two_collectors_records():
             # opened its session by now.
             wait_for(lambda: holder.session_id is not None, "a session")
             tick(sim, holder)
-            complete_lap(sim, holder, 0, stored=False)
+            complete_lap(sim, holder, 0)          # out-lap, kept + flagged
             tick(sim, holder)
             complete_lap(sim, holder, 113000)
 
             conn = db.connect(path)
-            sessions = conn.execute(
-                "SELECT COUNT(*) c FROM sessions").fetchone()["c"]
-            laps = conn.execute("SELECT COUNT(*) c FROM laps").fetchone()["c"]
-            conn.close()
+            try:
+                sessions = conn.execute(
+                    "SELECT COUNT(*) c FROM sessions").fetchone()["c"]
+                # Out-laps are stored now, so count the timed ones: the
+                # point of this test is that the lap was not written twice.
+                timed = timed_laps(conn)
+                out = [l for l in db.list_laps(conn, limit=None)
+                       if l["out_lap"]]
+            finally:
+                conn.close()
             assert sessions == 1, f"{sessions} sessions for one game session"
-            assert laps == 1, f"{laps} rows for one lap"
+            assert len(timed) == 1, f"{len(timed)} rows for one timed lap"
+            assert len(out) == 1, "the out-lap should be kept and flagged"
             assert standby.laps_recorded == 0
-            print(f"  one lap driven, {laps} stored, {sessions} session")
+            print(f"  1 timed lap + 1 out-lap stored, {sessions} session")
         finally:
             a.stop()
             b.stop()
@@ -462,10 +469,11 @@ def test_a_standby_takes_over_when_the_holder_stops():
                      "the standby to open a session")
 
             tick(sim, standby)
-            complete_lap(sim, standby, 0, stored=False)
+            complete_lap(sim, standby, 0)         # out-lap, kept + flagged
             tick(sim, standby)
             complete_lap(sim, standby, 112500)
-            assert standby.laps_recorded == 1
+            assert standby.laps_recorded == 2, "out-lap + timed lap"
+            assert standby.out_laps_recorded == 1
             print("  standby picked the claim up and recorded")
         finally:
             a.stop()
@@ -587,10 +595,10 @@ def test_a_shared_stop_reaches_the_instance_actually_recording():
             holder.start()
             wait_for(lambda: holder.session_id is not None, "a session")
             tick(sim, holder)
-            complete_lap(sim, holder, 0, stored=False)
+            complete_lap(sim, holder, 0)          # out-lap, kept + flagged
             tick(sim, holder)
             complete_lap(sim, holder, 113000)
-            assert holder.laps_recorded == 1
+            assert holder.laps_recorded == 2, "out-lap + timed lap"
 
             # Another instance's stop_recording: the flag, and nothing else.
             # No stop() on this collector, because the driver never touched

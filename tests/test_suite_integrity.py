@@ -236,5 +236,32 @@ def test_no_source_file_carries_a_merge_conflict_marker():
     print("  no conflict markers in any tracked source file")
 
 
+def test_the_backlog_names_the_schema_version_the_code_is_at():
+    """Two places state the schema version, and only one of them runs.
+
+    BACKLOG.md is the first thing read at the start of a session, and it
+    said v12 in the same change that set SCHEMA_VERSION to 13 -- so the
+    document that exists to save re-deriving things had to be re-derived.
+    Cheap to check, and the only way this is ever caught.
+    """
+    import re
+    sys.path.insert(0, str(ROOT))
+    from assetto_mcp import db
+
+    text = (ROOT / "BACKLOG.md").read_text(encoding="utf-8")
+    m = re.search(r"schema at v(\d+)", text)
+    assert m, "BACKLOG.md no longer states a schema version"
+    assert int(m.group(1)) == db.SCHEMA_VERSION, (
+        f"BACKLOG.md says schema v{m.group(1)}, "
+        f"db.SCHEMA_VERSION is {db.SCHEMA_VERSION}")
+
+    # And no entry below claims a version that does not exist yet.
+    ahead = [v for v in re.findall(r"schema v(\d+)", text)
+             if int(v) > db.SCHEMA_VERSION]
+    assert not ahead, ("BACKLOG.md cites schema versions that do not exist: "
+                       f"{sorted(set(ahead))}")
+    print(f"  BACKLOG.md and db.py agree on schema v{db.SCHEMA_VERSION}")
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

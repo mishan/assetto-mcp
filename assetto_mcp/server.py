@@ -427,19 +427,263 @@ def setup_ranges(car: str | None = None) -> str:
     shows. Camber stored as tenths of a degree and ride height stored as a
     click index are both explained by these fields.
 
-    Populated by the in-game app; no need to unpack data.acd."""
+    Populated by the in-game app; no need to unpack data.acd.
+
+    Each entry also carries `display`, which is what the setup SCREEN shows
+    for a stored value. Read its `source`: "observed" is fitted from
+    readings off the actual screen, "game" is the multiplier applied as
+    documented, and "unknown" means nothing here can say -- do not fill that
+    in from the numbers beside it. `record_display_value` is how unknown
+    becomes observed."""
+    car = _resolve_car(car)
     if car is None:
-        sid = _active_session(None)
-        session = db.get_session(_conn, sid) if sid else None
-        if not session:
-            return _j({"error": "no active session; pass car explicitly"})
-        car = session["car"]
+        return _j({"error": "no active session; pass car explicitly"})
     rows = db.setup_range_details(_conn, car)
-    if not rows:
+    display = db.setup_display(_conn, car)
+    if not rows and not display:
         return _j({"car": car, "ranges": [],
                    "note": "nothing stored yet -- the in-game app posts "
                            "these once it sees the setup menu."})
-    return _j({"car": car, "count": len(rows), "ranges": rows})
+    for row in rows:
+        conv = display.get(row["name"])
+        if conv:
+            row["display"] = setups.describe_display(conv)
+    # Entries known only from a reading or a note. setup_display keeps them
+    # deliberately -- a reading is worth having whether or not the app was
+    # running -- and listing only the spinner rows threw them away again.
+    #
+    # Given the SAME keys as a real row, with None where the game has said
+    # nothing. A list whose entries have different shapes makes every reader
+    # guess which kind it is holding, and the docstring above promises that
+    # each entry carries min, max and step. None says "not known" in a field
+    # that exists; a missing key says nothing at all, twice.
+    named = {r["name"] for r in rows}
+    for name in sorted(set(display) - named):
+        conv = display[name]
+        rows.append({
+            "car": car, "name": name, "label": "",
+            "min_value": None, "max_value": None, "step": None,
+            "display_multiplier": None, "show_clicks_mode": None,
+            "units": conv.get("units", ""), "read_only": None,
+            "updated_at": None, "from_game": False,
+            "display": setups.describe_display(conv),
+        })
+    for row in rows:
+        row.setdefault("from_game", True)
+    unknown = sorted(r["name"] for r in rows
+                     if (r.get("display") or {}).get("source") == "unknown")
+    out = {"car": car, "count": len(rows), "ranges": rows}
+    if not any(r.get("min_value") is not None for r in rows):
+        out["note"] = (
+            "no ranges from the game yet -- the in-game app posts these once "
+            "it sees the setup menu. What is listed here is only what has "
+            "been recorded by hand.")
+    if unknown:
+        out["display_unknown"] = unknown
+        out["display_note"] = (
+            f"{len(unknown)} entr(y/ies) have no known screen display. Say so "
+            f"rather than deriving one from min/max/step, and offer to record "
+            f"what the driver reads with record_display_value.")
+    return _j(out)
+
+
+def _resolve_car(car: str | None, session_id: int | None = None) -> str | None:
+    if car is not None:
+        return car
+    sid = _active_session(session_id)
+    session = db.get_session(_conn, sid) if sid else None
+    return session["car"] if session else None
+
+
+@mcp.tool()
+def record_display_value(field: str, displayed: float,
+                         stored: float | None = None,
+                         car: str | None = None,
+                         note: str | None = None,
+                         session_id: int | None = None) -> str:
+    """Record what the setup SCREEN shows for a stored setup value.
+
+    The one thing nothing here can work out for itself. The game reports a
+    display_multiplier and it has been wrong about a negated axis, a scale,
+    and a zero that isn't at zero -- five corrections in one evening, every
+    one of them this tool stating a display it had inferred.
+
+    field: the setup section name, e.g. "TOE_OUT_LF" or "ARB_FRONT".
+    displayed: the number on the setup screen right now.
+    stored: the underlying value. Omit it and the live value the in-game
+      app reported is used, which is the usual case -- ask the driver for
+      one number, not two.
+    note: for what is not a number at all, e.g. "1 = MOST intervention".
+
+    Two readings at different spinner positions pin the mapping exactly.
+    One is enough when the game's scale is right and only the zero is off.
+    Ask for a second reading at a different position when you want the
+    scale confirmed; `basis` in the result says which you have."""
+    car = _resolve_car(car, session_id)
+    if car is None:
+        return _j({"error": "no active session; pass car explicitly"})
+
+    if stored is None:
+        sid = _active_session(session_id)
+        session = db.get_session(_conn, sid) if sid else None
+        # The live value belongs to whatever car the session is running. If
+        # that is not the car being talked about, taking it would file one
+        # car's spinner position under another's name -- a wrong reading,
+        # recorded confidently, which is worse than no reading.
+        if session and session["car"] != car:
+            return _j({
+                "error": f"the live session is running {session['car']}, not "
+                         f"{car}, so its setup values are not this car's. "
+                         f"Pass `stored` explicitly.",
+                "session_car": session["car"]})
+        live = db.setup_values(_conn, sid) if sid else {}
+        if field not in live:
+            return _j({
+                "error": f"no live value for {field}, so `stored` cannot be "
+                         f"inferred. Pass it explicitly, or open the setup "
+                         f"screen with the in-game app running.",
+                "fields_with_live_values": sorted(live)[:40]})
+        stored = live[field]
+
+    db.record_display_observation(_conn, car, field, stored, displayed)
+    if note:
+        db.record_display_note(_conn, car, field, note)
+
+    conv = db.setup_display(_conn, car).get(field, {})
+    obs = db.display_observations(_conn, car, field).get(field, [])
+    out = {"ok": True, "car": car, "field": field,
+           "recorded": {"stored": stored, "displayed": displayed},
+           "observations": [{"stored": s, "displayed": d} for s, d in obs],
+           "display": setups.describe_display(conv)}
+
+    mapping = conv.get("mapping")
+    if not mapping:
+        # Kept, but it does not answer the question yet -- and this is the
+        # case that matters most. A click-index entry has no multiplier to
+        # borrow a scale from, so one reading fits nothing. Reporting plain
+        # success here told the driver it had worked, left the entry
+        # "unknown", and advised doing the thing that had just been done.
+        out["ok"] = False
+        out["still_unknown"] = (
+            f"Recorded, but one reading is not enough for {field}: the game "
+            f"gives no scale for it, so there is nothing to anchor a single "
+            f"point against. Ask for a reading at a DIFFERENT spinner "
+            f"position, or run the spinner to both ends and use "
+            f"record_display_range.")
+    elif mapping["points"] < 2 or "why_partial" in mapping:
+        out["next"] = (
+            "One spinner position, so the zero is measured and the scale is "
+            "the game's. A reading at a different position would settle the "
+            "scale too -- worth asking for if this entry has surprised you "
+            "before.")
+    if not conv.get("from_game"):
+        out["warning"] = (
+            f"the in-game app has never reported {field} for {car}. Check the "
+            f"spelling against setup_ranges: a typo is recorded just as "
+            f"willingly as a real entry, and then never surfaces again.")
+    return _j(out)
+
+
+@mcp.tool()
+def record_display_note(field: str, note: str,
+                        car: str | None = None,
+                        session_id: int | None = None) -> str:
+    """Record something about a setup entry that is not a number.
+
+    Traction control counts 1 as the MOST intervention and 11 as the least.
+    No multiplier can express that, it has been re-derived backwards more
+    than once, and it needs no reading off the screen -- so it gets its own
+    tool rather than riding on a numeric observation that would have to be
+    invented to carry it.
+
+    The note is shown wherever that entry is reported."""
+    car = _resolve_car(car, session_id)
+    if car is None:
+        return _j({"error": "no active session; pass car explicitly"})
+    db.record_display_note(_conn, car, field, note)
+    conv = db.setup_display(_conn, car).get(field, {})
+    return _j({"ok": True, "car": car, "field": field, "note": note,
+               "display": setups.describe_display(conv)})
+
+
+@mcp.tool()
+def record_display_range(field: str, displayed_at_min: float,
+                         displayed_at_max: float,
+                         car: str | None = None,
+                         note: str | None = None,
+                         session_id: int | None = None) -> str:
+    """Record what the screen shows at both ends of a spinner.
+
+    The fast path: the stored min and max are already known from the game,
+    so two numbers read off the screen pin the mapping completely -- scale,
+    sign and zero -- in one exchange. Run the spinner to each limit and
+    read it off.
+
+    Use record_display_value instead when the driver is already sitting at
+    some position and you only want one number."""
+    car = _resolve_car(car, session_id)
+    if car is None:
+        return _j({"error": "no active session; pass car explicitly"})
+    entry = next((r for r in db.setup_range_details(_conn, car)
+                  if r["name"] == field), None)
+    if entry is None:
+        return _j({"error": f"no range known for {field} on {car}, so there "
+                            f"is nothing to anchor these readings to. Open "
+                            f"the setup screen with the in-game app running, "
+                            f"or use record_display_value with an explicit "
+                            f"stored value."})
+    lo, hi = sorted((entry["min_value"], entry["max_value"]))
+    if lo == hi:
+        return _j({"error": f"{field} has min == max ({lo}), so its two ends "
+                            f"are the same position and cannot define a line"})
+    if displayed_at_min == displayed_at_max:
+        # A horizontal line would report every value of this entry as one
+        # number with "observed" beside it -- the original failure wearing a
+        # badge that says trust me.
+        return _j({
+            "error": f"both ends were read as {displayed_at_min}, which "
+                     f"cannot define a scale. Either the screen rounds this "
+                     f"entry to a value that does not change across its "
+                     f"range, or the same number was read twice.",
+            "what_to_do": "check the reading at each end again; if the "
+                          "screen really does show one number throughout, "
+                          "say so with record_display_note instead."})
+    db.record_display_observation(_conn, car, field, lo, displayed_at_min)
+    db.record_display_observation(_conn, car, field, hi, displayed_at_max)
+    if note:
+        db.record_display_note(_conn, car, field, note)
+    conv = db.setup_display(_conn, car).get(field, {})
+    out = {"ok": True, "car": car, "field": field,
+           "anchored_to": {"stored_min": lo, "stored_max": hi},
+           "display": setups.describe_display(conv)}
+    if entry.get("read_only"):
+        out["warning"] = (
+            f"{field} is read-only, so its spinner cannot be run to either "
+            f"end. Check these readings came from that entry.")
+    return _j(out)
+
+
+@mcp.tool()
+def forget_display_value(field: str, car: str | None = None,
+                         keep_note: bool = False,
+                         session_id: int | None = None) -> str:
+    """Forget everything recorded about one setup entry's display.
+
+    For a misreading. A wrong observation is worse than none, because the
+    mapping fitted from it is then stated with confidence.
+
+    Clears the note as well by default -- "start again" should leave nothing
+    behind. keep_note=True keeps it, for when only the numbers were wrong."""
+    car = _resolve_car(car, session_id)
+    if car is None:
+        return _j({"error": "no active session; pass car explicitly"})
+    gone = db.forget_display_observations(_conn, car, field)
+    note_gone = 0 if keep_note else db.forget_display_note(_conn, car, field)
+    return _j({"ok": True, "car": car, "field": field,
+               "observations_removed": gone,
+               "note_removed": bool(note_gone),
+               "display": setups.describe_display(
+                   db.setup_display(_conn, car).get(field, {}))})
 
 
 @mcp.tool()
@@ -1396,6 +1640,14 @@ def write_setup(car: str, track: str, name: str, values_json: str,
 
     Values are clamped and snapped to the car's legal min/max/step. Ranges
     come from the in-game app when it is running, or from a ranges file.
+
+    `displays_as` says what each written value reads as on the setup
+    SCREEN, which is often a different number from the stored one. Read its
+    `source` before repeating it: "observed" was read off the screen,
+    "game" is the multiplier applied as documented and has been wrong
+    before, and "unknown" means say so rather than deriving something.
+    `display_unknown` lists those; `record_display_value` fixes them for
+    good.
 
     This refuses rather than write something that fails silently in the
     garage. A refusal is not a retry prompt: each one carries `do_this` with

@@ -16,7 +16,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # How many wheels have to be off the valid surface before a lap counts as
 # having exceeded track limits.
@@ -292,6 +292,49 @@ CREATE TABLE IF NOT EXISTS setup_ranges (
     units TEXT NOT NULL DEFAULT '',
     read_only INTEGER NOT NULL DEFAULT 0,
     updated_at REAL NOT NULL,
+    PRIMARY KEY (car, name)
+);
+
+-- What the setup screen ACTUALLY shows for a stored value, observed rather
+-- than derived.
+--
+-- The game reports display_multiplier and show_clicks_mode above, and they
+-- are not enough. A stored 20 can read as 20 clicks, as 2.0 degrees, or as
+-- -2.0 degrees; the NSX stores 10 for 0.00 degrees of toe, so the offset is
+-- wrong as well as the scale; the F4 negates the front axle. Five driver
+-- corrections in one evening, every one of them the tool stating a display
+-- it had inferred and got wrong.
+--
+-- So the mapping is fitted from observations the driver reads off the
+-- screen. Two distinct stored values give slope and offset outright; one
+-- gives the offset against the game's own multiplier, which is the NSX case
+-- and needs a single number.
+--
+-- What cannot be fitted at all lives in display_notes below.
+CREATE TABLE IF NOT EXISTS display_observations (
+    car TEXT NOT NULL,
+    name TEXT NOT NULL,             -- setup INI section name
+    stored REAL NOT NULL,
+    displayed REAL NOT NULL,
+    units TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'driver',
+    noted_at REAL NOT NULL,
+    -- One reading per stored value: re-reading the same spinner position
+    -- corrects the earlier answer rather than adding a second opinion the
+    -- fit would then have to choose between.
+    PRIMARY KEY (car, name, stored)
+);
+
+-- Facts about an entry that are not a number, and so cannot be fitted:
+-- which direction the scale runs, what the units really are. Traction
+-- control counts 1 as MOST intervention and 11 as least, which no slope and
+-- offset can express and which was re-derived wrongly more than once. One
+-- row per entry, replaced wholesale.
+CREATE TABLE IF NOT EXISTS display_notes (
+    car TEXT NOT NULL,
+    name TEXT NOT NULL,
+    note TEXT NOT NULL,
+    noted_at REAL NOT NULL,
     PRIMARY KEY (car, name)
 );
 
@@ -598,6 +641,11 @@ def _migrate(conn) -> list[str]:
                        "INTEGER NOT NULL DEFAULT 1"):
             log.append("laps.sample_stride added; existing traces are at "
                        "the rate they were recorded")
+
+    # v13 adds display_observations and display_notes, both new tables --
+    # CREATE TABLE IF NOT EXISTS in SCHEMA covers them, so there is no ALTER
+    # step. Recorded so the next person can see the version was accounted
+    # for rather than skipped.
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
@@ -1292,22 +1340,121 @@ def setup_ranges(conn, car: str) -> dict:
             for r in rows}
 
 
+def record_display_observation(conn, car: str, name: str, stored: float,
+                               displayed: float, units: str = "",
+                               source: str = "driver") -> None:
+    """Record what the setup screen shows for one stored value.
+
+    Replaces any earlier reading at the same stored value: re-reading a
+    spinner position corrects the previous answer rather than adding a
+    second opinion the fit would then have to choose between.
+    """
+    conn.execute(
+        "INSERT INTO display_observations"
+        " (car, name, stored, displayed, units, source, noted_at)"
+        " VALUES (?,?,?,?,?,?,?)"
+        " ON CONFLICT(car, name, stored) DO UPDATE SET"
+        " displayed = excluded.displayed, units = excluded.units,"
+        " source = excluded.source, noted_at = excluded.noted_at",
+        (car, name, float(stored), float(displayed), units or "", source,
+         time.time()))
+    conn.commit()
+
+
+def record_display_note(conn, car: str, name: str, note: str) -> None:
+    conn.execute(
+        "INSERT INTO display_notes (car, name, note, noted_at)"
+        " VALUES (?,?,?,?) ON CONFLICT(car, name) DO UPDATE SET"
+        " note = excluded.note, noted_at = excluded.noted_at",
+        (car, name, note, time.time()))
+    conn.commit()
+
+
+def display_observations(conn, car: str, name: str | None = None) -> dict:
+    """{SECTION: [(stored, displayed), ...]} for a car."""
+    q = ("SELECT name, stored, displayed FROM display_observations"
+         " WHERE car = ?")
+    args: list = [car]
+    if name is not None:
+        q += " AND name = ?"
+        args.append(name)
+    out: dict = {}
+    for r in conn.execute(q + " ORDER BY name, stored", args):
+        out.setdefault(r["name"], []).append((r["stored"], r["displayed"]))
+    return out
+
+
+def display_notes(conn, car: str) -> dict:
+    return {r["name"]: r["note"] for r in conn.execute(
+        "SELECT name, note FROM display_notes WHERE car = ?", (car,))}
+
+
+def forget_display_observations(conn, car: str, name: str) -> int:
+    """Drop every reading for one entry. Returns how many went.
+
+    The escape hatch for a misread. A wrong observation is worse than none,
+    because a fitted mapping is stated with confidence.
+    """
+    cur = conn.execute(
+        "DELETE FROM display_observations WHERE car = ? AND name = ?",
+        (car, name))
+    conn.commit()
+    return cur.rowcount
+
+
+def forget_display_note(conn, car: str, name: str) -> int:
+    cur = conn.execute(
+        "DELETE FROM display_notes WHERE car = ? AND name = ?", (car, name))
+    conn.commit()
+    return cur.rowcount
+
+
 def setup_display(conn, car: str) -> dict:
-    """{SECTION: {units, display_multiplier, show_clicks_mode}} for a car.
+    """{SECTION: {units, display_multiplier, show_clicks_mode, mapping, note}}.
 
     Kept separate from setup_ranges because these do not clamp anything --
     they say how a stored number appears on the setup screen. A value stored
     as 20 can read as 20 clicks or -2.0 degrees, and a report that says
     "wrote 20" without saying which is how a setup that looks fine and isn't
     gets written.
+
+    `mapping` is the stored -> displayed line fitted from readings off the
+    actual screen, and it takes precedence over the game's own multiplier.
+    That multiplier has been wrong about a negated axis, a non-zero zero and
+    a scale; a reading is a measurement.
     """
+    from .setups import fit_display
     rows = conn.execute(
         "SELECT name, units, display_multiplier, show_clicks_mode"
-        " FROM setup_ranges WHERE car = ?", (car,))
-    return {r["name"]: {"units": r["units"] or "",
-                        "display_multiplier": r["display_multiplier"],
-                        "show_clicks_mode": r["show_clicks_mode"]}
-            for r in rows}
+        " FROM setup_ranges WHERE car = ?", (car,)).fetchall()
+    observed = display_observations(conn, car)
+    notes = display_notes(conn, car)
+
+    # Every entry with a reading or a note, even one the game never
+    # described: a reading is worth keeping whether or not the in-game app
+    # was running when the spinner data would have arrived.
+    out = {name: {"units": "", "display_multiplier": None,
+                  "show_clicks_mode": None,
+                  # Whether the game ever described this entry. Without it a
+                  # NULL multiplier is ambiguous -- "no conversion" from the
+                  # game, or "nobody said" for an entry that exists only
+                  # because someone left a note on it -- and the second was
+                  # being reported as the first.
+                  "from_game": False}
+           for name in set(list(observed) + list(notes)
+                           + [r["name"] for r in rows])}
+    for r in rows:
+        out[r["name"]].update(units=r["units"] or "",
+                              display_multiplier=r["display_multiplier"],
+                              show_clicks_mode=r["show_clicks_mode"],
+                              from_game=True)
+    for name, pairs in observed.items():
+        fitted = fit_display(pairs, out[name].get("display_multiplier"))
+        if fitted:
+            out[name]["mapping"] = fitted
+    for name, note in notes.items():
+        out[name]["note"] = note
+    return out
 
 
 def setup_range_details(conn, car: str) -> list[dict]:

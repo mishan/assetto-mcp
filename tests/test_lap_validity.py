@@ -64,7 +64,15 @@ def test_reference_lap_does_not_depend_on_lap_validity():
     print("  reference takes all laps, not just valid ones")
 
 
-def test_lap_containing_a_pit_visit_is_invalid():
+def test_a_lap_containing_a_pit_visit_is_kept_but_is_not_a_lap_time():
+    """The pit visit is recorded as a fact, not folded into one verdict.
+
+    A pit lap's time is wall-clock nonsense, so nothing may rank or average
+    it -- but the driving either side of the stop is real telemetry and it
+    is kept. This used to set `valid = 0`, one flag meaning "off track OR
+    pitted OR grossly slow", and everything downstream threw all three away
+    together without saying which it was.
+    """
     with temp_db() as path:
         script = [
             lambda s, c: tick(s, c),
@@ -81,27 +89,37 @@ def test_lap_containing_a_pit_visit_is_invalid():
         run_collector(script, path)
 
         conn = db.connect(path)
-        laps = sorted(db.list_laps(conn), key=lambda r: r["id"])
-        times = [(l["lap_time_ms"], bool(l["valid"])) for l in laps]
-        print("  stored laps:", times)
-        assert (114000, True) in times, times
-        pit_lap = [t for t in times if t[0] == 622162]
-        assert pit_lap and pit_lap[0][1] is False, "pit lap should be invalid"
-        conn.close()
+        try:
+            laps = {l["lap_time_ms"]: l for l in db.list_laps(conn, limit=None)}
+            print("  stored laps:", sorted(laps))
+            assert 114000 in laps and 622162 in laps, sorted(laps)
+
+            pit = dict(laps[622162])
+            assert pit["pitted"] == 1, pit
+            usable, why = db.lap_usability(pit)
+            assert usable is False and "pit" in why, why
+            assert db.get_samples(conn, pit["id"]), \
+                "the telemetry either side of the stop is still real"
+            # Not marked as having run wide, because it didn't. That is a
+            # different question and now has its own field.
+            assert pit["invalid"] == 0, pit
+            assert db.lap_usability(dict(laps[114000]))[0] is True
+            print("  pit lap kept and flagged, not confused with a cut")
+        finally:
+            conn.close()
 
 
-def test_pit_stop_alone_invalidates_a_lap():
+def test_a_quick_pit_stop_is_caught_by_the_pit_flag_not_the_outlier_rule():
     """Isolated from the outlier rule, which used to mask it.
 
     The pit lap in the test above is also a 5.4x outlier, so either
     mechanism could be deleted and the assertion would still hold. A quick
-    tyre change or a drive-through produces a lap that is only a few seconds
-    off -- which is the case the pit rule actually exists for.
+    tyre change or a drive-through produces a lap only a few seconds off --
+    which is the case the pit flag actually exists for.
     """
     ref = 114000
     quick_stop = ref + 20_000            # inside the outlier allowance
     assert _is_outlier(quick_stop, ref) is False
-    # So if this lap is invalid, it can only be because of the pit visit.
     with temp_db() as path:
         script = [
             lambda s, c: tick(s, c),
@@ -113,11 +131,16 @@ def test_pit_stop_alone_invalidates_a_lap():
         ]
         run_collector(script, path)
         conn = db.connect(path)
-        by_time = {l["lap_time_ms"]: bool(l["valid"])
-                   for l in db.list_laps(conn)}
-        assert by_time.get(quick_stop) is False, by_time
-        print("  a quick pit stop invalidates its lap on its own:", by_time)
-        conn.close()
+        try:
+            laps = {l["lap_time_ms"]: dict(l)
+                    for l in db.list_laps(conn, limit=None)}
+            stop = laps[quick_stop]
+            assert stop["pitted"] == 1, stop
+            assert stop["outlier"] == 0, "not slow enough to be an outlier"
+            assert db.lap_usability(stop)[0] is False
+            print("  a quick stop is excluded by the pit flag alone")
+        finally:
+            conn.close()
 
 
 def test_invalid_laps_are_excluded_from_best_but_still_listed():
@@ -162,7 +185,8 @@ def test_an_abandoned_lap_is_kept_marked_incomplete():
         done = [l for l in laps if l["complete"]]
         gone = [l for l in laps if not l["complete"]]
         assert len(gone) == 1, laps
-        assert gone[0]["valid"] == 0, "an unfinished lap is never valid"
+        assert db.lap_usability(dict(gone[0]))[0] is False, \
+            "an unfinished lap's elapsed time is not a lap time"
         assert db.get_samples(conn, gone[0]["id"]), \
             "the whole point is that its samples survive"
         assert any(l["lap_time_ms"] == 113000 for l in done)
@@ -192,6 +216,35 @@ def test_crossing_the_line_is_not_mistaken_for_a_teleport():
             f"{col.abandoned_laps} normal line crossing(s) recorded as "
             f"abandoned laps")
         print("  3 line crossings, 0 false abandonments")
+
+
+def test_a_slow_first_lap_is_re_flagged_once_a_quick_one_follows():
+    """The flag was set against a reference that did not exist yet.
+
+    Outlier status is judged against the fastest lap seen SO FAR. A first
+    lap of 3:10 followed by a 1:53 was stored clean and nothing ever went
+    back for it, so a warm-up lap sat in the session looking representative.
+    """
+    with temp_db() as path:
+        script = [
+            lambda s, c: tick(s, c),
+            lambda s, c: (tick(s, c), complete_lap(s, c, 190000)),
+            lambda s, c: tick(s, c),
+            lambda s, c: (tick(s, c), complete_lap(s, c, 113000)),
+        ]
+        run_collector(script, path)
+        conn = db.connect(path)
+        try:
+            laps = {l["lap_time_ms"]: dict(l)
+                    for l in db.list_laps(conn, limit=None)}
+            assert laps[190000]["outlier"] == 1, \
+                "the slow lap should have been re-flagged when the best fell"
+            assert laps[113000]["outlier"] == 0, laps[113000]
+            # Still stored and still comparable -- flagged, not hidden.
+            assert db.lap_usability(laps[190000])[0] is True
+            print("  first-lap outlier re-flagged live, without a backfill")
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

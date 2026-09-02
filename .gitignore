@@ -24,3 +24,7 @@ exports/
 .lua-sdk/
 ac-tracer/
 tobi-ac-tracer-csp-lua.md
+
+# Vendored CSP references, cloned by hand for API research. Not ours to ship.
+/acc-lua-sdk/
+/acc-lua-internal/

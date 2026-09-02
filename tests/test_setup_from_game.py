@@ -318,12 +318,27 @@ def test_a_written_value_says_what_it_reads_as_on_the_setup_screen():
         # The stored values are unchanged -- the file must hold these.
         assert report["written"]["ROD_LENGTH_LF"] == 20
         assert report["written"]["CAMBER_LF"] == -32
-        # But the report says what they mean.
-        assert "click" in shown["ROD_LENGTH_LF"], shown
-        assert "-3.2 deg" in shown["CAMBER_LF"], shown
-        assert "stored -32" in shown["CAMBER_LF"], shown
-        assert shown["PRESSURE_LF"] == "26 psi", shown
-        print("  ", shown)
+
+        # A click index is the case where nothing here can know what the
+        # screen says. It used to answer "20 (click index, mode 2)", which
+        # is an admission of ignorance shaped like an answer -- and got
+        # repeated back to the driver as one.
+        rod = shown["ROD_LENGTH_LF"]
+        assert rod["source"] == "unknown", rod
+        assert rod["shown"] is None, "it must not state a displayed value"
+        assert "record_display_value" in rod["how_to_fix"], rod
+        assert report["display_unknown"] == ["ROD_LENGTH_LF"], report
+        assert "record_display_value" in report["display_note"], report
+
+        # The game's multiplier is usable but flagged as the game's.
+        camber = shown["CAMBER_LF"]
+        assert camber["source"] == "game" and camber["value"] == -3.2, camber
+        assert camber["stored"] == -32, camber
+        assert "wrong before" in camber["caveat"], camber
+
+        assert shown["PRESSURE_LF"]["source"] == "stored", shown
+        assert shown["PRESSURE_LF"]["shown"] == "26 psi", shown
+        print("   click index reported as unknown, not guessed at")
 
 
 def test_display_conventions_of_none_zero_and_one_all_mean_as_stored():
@@ -335,7 +350,8 @@ def test_display_conventions_of_none_zero_and_one_all_mean_as_stored():
         got = setups._displays_as(26, {"units": "psi",
                                        "display_multiplier": mult,
                                        "show_clicks_mode": 0})
-        assert got == "26 psi", (mult, got)
+        assert got["shown"] == "26 psi", (mult, got)
+        assert got["source"] == "stored", (mult, got)
         # No units either: the screen shows the bare stored number, which is
         # an answer. Returning None dropped the entry out of displays_as
         # entirely, so the one report that says what every written value
@@ -343,7 +359,7 @@ def test_display_conventions_of_none_zero_and_one_all_mean_as_stored():
         bare = setups._displays_as(26, {"units": "",
                                         "display_multiplier": mult,
                                         "show_clicks_mode": 0})
-        assert bare == "26", (mult, bare)
+        assert bare["shown"] == "26", (mult, bare)
     # None only when there is genuinely nothing known about the display.
     assert setups._displays_as(26, None) is None
     assert setups._displays_as(26, {}) is None

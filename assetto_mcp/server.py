@@ -14,6 +14,7 @@ are still read under both names; see config.py.
 
 import json
 import os
+import re
 from pathlib import Path
 
 try:  # mcp SDK 2.x
@@ -21,7 +22,7 @@ try:  # mcp SDK 2.x
 except ImportError:  # mcp SDK 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import analysis, config, db, setups, suspension
+from . import analysis, config, db, retention, setups, suspension
 from .collector import Collector
 
 AC_DOCS_DIR = Path(os.environ.get(
@@ -180,6 +181,16 @@ def recording_status() -> str:
     }
     if why:
         out["state_note"] = why
+    if _collector.out_laps_recorded:
+        out["out_laps_recorded"] = _collector.out_laps_recorded
+    # A pass that just decimated a season of traces has to say so. It is
+    # the one thing here that reduces what the driver has, and it happens
+    # without being asked.
+    if _collector.last_retention:
+        out["storage_thinned"] = _collector.last_retention.get("actions")
+        out["storage_note"] = (
+            "the database passed its size budget, so the oldest sessions' "
+            "traces were decimated. No lap was deleted. See storage_report.")
     migrations = db.MIGRATION_LOG.pop(str(DB_PATH), None)
     if migrations:
         out["database_upgraded"] = migrations
@@ -416,62 +427,461 @@ def setup_ranges(car: str | None = None) -> str:
     shows. Camber stored as tenths of a degree and ride height stored as a
     click index are both explained by these fields.
 
-    Populated by the in-game app; no need to unpack data.acd."""
+    Populated by the in-game app; no need to unpack data.acd.
+
+    Each entry also carries `display`, which is what the setup SCREEN shows
+    for a stored value. Read its `source`: "observed" is fitted from
+    readings off the actual screen, "game" is the multiplier applied as
+    documented, and "unknown" means nothing here can say -- do not fill that
+    in from the numbers beside it. `record_display_value` is how unknown
+    becomes observed."""
+    car = _resolve_car(car)
     if car is None:
-        sid = _active_session(None)
-        session = db.get_session(_conn, sid) if sid else None
-        if not session:
-            return _j({"error": "no active session; pass car explicitly"})
-        car = session["car"]
+        return _j({"error": "no active session; pass car explicitly"})
     rows = db.setup_range_details(_conn, car)
-    if not rows:
+    display = db.setup_display(_conn, car)
+    if not rows and not display:
         return _j({"car": car, "ranges": [],
                    "note": "nothing stored yet -- the in-game app posts "
                            "these once it sees the setup menu."})
-    return _j({"car": car, "count": len(rows), "ranges": rows})
+    for row in rows:
+        conv = display.get(row["name"])
+        if conv:
+            row["display"] = setups.describe_display(conv)
+    # Entries known only from a reading or a note. setup_display keeps them
+    # deliberately -- a reading is worth having whether or not the app was
+    # running -- and listing only the spinner rows threw them away again.
+    #
+    # Given the SAME keys as a real row, with None where the game has said
+    # nothing. A list whose entries have different shapes makes every reader
+    # guess which kind it is holding, and the docstring above promises that
+    # each entry carries min, max and step. None says "not known" in a field
+    # that exists; a missing key says nothing at all, twice.
+    named = {r["name"] for r in rows}
+    for name in sorted(set(display) - named):
+        conv = display[name]
+        rows.append({
+            "car": car, "name": name, "label": "",
+            "min_value": None, "max_value": None, "step": None,
+            "display_multiplier": None, "show_clicks_mode": None,
+            "units": conv.get("units", ""), "read_only": None,
+            "updated_at": None, "from_game": False,
+            "display": setups.describe_display(conv),
+        })
+    for row in rows:
+        row.setdefault("from_game", True)
+    unknown = sorted(r["name"] for r in rows
+                     if (r.get("display") or {}).get("source") == "unknown")
+    out = {"car": car, "count": len(rows), "ranges": rows}
+    if not any(r.get("min_value") is not None for r in rows):
+        out["note"] = (
+            "no ranges from the game yet -- the in-game app posts these once "
+            "it sees the setup menu. What is listed here is only what has "
+            "been recorded by hand.")
+    if unknown:
+        out["display_unknown"] = unknown
+        out["display_note"] = (
+            f"{len(unknown)} entr(y/ies) have no known screen display. Say so "
+            f"rather than deriving one from min/max/step, and offer to record "
+            f"what the driver reads with record_display_value.")
+    return _j(out)
+
+
+def _resolve_car(car: str | None, session_id: int | None = None) -> str | None:
+    if car is not None:
+        return car
+    sid = _active_session(session_id)
+    session = db.get_session(_conn, sid) if sid else None
+    return session["car"] if session else None
 
 
 @mcp.tool()
-def set_session_setup(setup_name: str, session_id: int | None = None,
-                      fill_unattributed: bool = True) -> str:
-    """Record the setup now on the car, so laps are attributed to it.
+def record_display_value(field: str, displayed: float,
+                         stored: float | None = None,
+                         car: str | None = None,
+                         note: str | None = None,
+                         session_id: int | None = None) -> str:
+    """Record what the setup SCREEN shows for a stored setup value.
+
+    The one thing nothing here can work out for itself. The game reports a
+    display_multiplier and it has been wrong about a negated axis, a scale,
+    and a zero that isn't at zero -- five corrections in one evening, every
+    one of them this tool stating a display it had inferred.
+
+    field: the setup section name, e.g. "TOE_OUT_LF" or "ARB_FRONT".
+    displayed: the number on the setup screen right now.
+    stored: the underlying value. Omit it and the live value the in-game
+      app reported is used, which is the usual case -- ask the driver for
+      one number, not two.
+    note: for what is not a number at all, e.g. "1 = MOST intervention".
+
+    Two readings at different spinner positions pin the mapping exactly.
+    One is enough when the game's scale is right and only the zero is off.
+    Ask for a second reading at a different position when you want the
+    scale confirmed; `basis` in the result says which you have."""
+    car = _resolve_car(car, session_id)
+    if car is None:
+        return _j({"error": "no active session; pass car explicitly"})
+
+    if stored is None:
+        sid = _active_session(session_id)
+        session = db.get_session(_conn, sid) if sid else None
+        # The live value belongs to whatever car the session is running. If
+        # that is not the car being talked about, taking it would file one
+        # car's spinner position under another's name -- a wrong reading,
+        # recorded confidently, which is worse than no reading.
+        if session and session["car"] != car:
+            return _j({
+                "error": f"the live session is running {session['car']}, not "
+                         f"{car}, so its setup values are not this car's. "
+                         f"Pass `stored` explicitly.",
+                "session_car": session["car"]})
+        live = db.setup_values(_conn, sid) if sid else {}
+        if field not in live:
+            return _j({
+                "error": f"no live value for {field}, so `stored` cannot be "
+                         f"inferred. Pass it explicitly, or open the setup "
+                         f"screen with the in-game app running.",
+                "fields_with_live_values": sorted(live)[:40]})
+        stored = live[field]
+
+    db.record_display_observation(_conn, car, field, stored, displayed)
+    if note:
+        db.record_display_note(_conn, car, field, note)
+
+    conv = db.setup_display(_conn, car).get(field, {})
+    obs = db.display_observations(_conn, car, field).get(field, [])
+    out = {"ok": True, "car": car, "field": field,
+           "recorded": {"stored": stored, "displayed": displayed},
+           "observations": [{"stored": s, "displayed": d} for s, d in obs],
+           "display": setups.describe_display(conv)}
+
+    mapping = conv.get("mapping")
+    if not mapping:
+        # Kept, but it does not answer the question yet -- and this is the
+        # case that matters most. A click-index entry has no multiplier to
+        # borrow a scale from, so one reading fits nothing. Reporting plain
+        # success here told the driver it had worked, left the entry
+        # "unknown", and advised doing the thing that had just been done.
+        out["ok"] = False
+        out["still_unknown"] = (
+            f"Recorded, but one reading is not enough for {field}: the game "
+            f"gives no scale for it, so there is nothing to anchor a single "
+            f"point against. Ask for a reading at a DIFFERENT spinner "
+            f"position, or run the spinner to both ends and use "
+            f"record_display_range.")
+    elif mapping["points"] < 2 or "why_partial" in mapping:
+        out["next"] = (
+            "One spinner position, so the zero is measured and the scale is "
+            "the game's. A reading at a different position would settle the "
+            "scale too -- worth asking for if this entry has surprised you "
+            "before.")
+    if not conv.get("from_game"):
+        out["warning"] = (
+            f"the in-game app has never reported {field} for {car}. Check the "
+            f"spelling against setup_ranges: a typo is recorded just as "
+            f"willingly as a real entry, and then never surfaces again.")
+    return _j(out)
+
+
+@mcp.tool()
+def record_display_note(field: str, note: str,
+                        car: str | None = None,
+                        session_id: int | None = None) -> str:
+    """Record something about a setup entry that is not a number.
+
+    Traction control counts 1 as the MOST intervention and 11 as the least.
+    No multiplier can express that, it has been re-derived backwards more
+    than once, and it needs no reading off the screen -- so it gets its own
+    tool rather than riding on a numeric observation that would have to be
+    invented to carry it.
+
+    The note is shown wherever that entry is reported."""
+    car = _resolve_car(car, session_id)
+    if car is None:
+        return _j({"error": "no active session; pass car explicitly"})
+    db.record_display_note(_conn, car, field, note)
+    conv = db.setup_display(_conn, car).get(field, {})
+    return _j({"ok": True, "car": car, "field": field, "note": note,
+               "display": setups.describe_display(conv)})
+
+
+@mcp.tool()
+def record_display_range(field: str, displayed_at_min: float,
+                         displayed_at_max: float,
+                         car: str | None = None,
+                         note: str | None = None,
+                         session_id: int | None = None) -> str:
+    """Record what the screen shows at both ends of a spinner.
+
+    The fast path: the stored min and max are already known from the game,
+    so two numbers read off the screen pin the mapping completely -- scale,
+    sign and zero -- in one exchange. Run the spinner to each limit and
+    read it off.
+
+    Use record_display_value instead when the driver is already sitting at
+    some position and you only want one number."""
+    car = _resolve_car(car, session_id)
+    if car is None:
+        return _j({"error": "no active session; pass car explicitly"})
+    entry = next((r for r in db.setup_range_details(_conn, car)
+                  if r["name"] == field), None)
+    if entry is None:
+        return _j({"error": f"no range known for {field} on {car}, so there "
+                            f"is nothing to anchor these readings to. Open "
+                            f"the setup screen with the in-game app running, "
+                            f"or use record_display_value with an explicit "
+                            f"stored value."})
+    lo, hi = sorted((entry["min_value"], entry["max_value"]))
+    if lo == hi:
+        return _j({"error": f"{field} has min == max ({lo}), so its two ends "
+                            f"are the same position and cannot define a line"})
+    if displayed_at_min == displayed_at_max:
+        # A horizontal line would report every value of this entry as one
+        # number with "observed" beside it -- the original failure wearing a
+        # badge that says trust me.
+        return _j({
+            "error": f"both ends were read as {displayed_at_min}, which "
+                     f"cannot define a scale. Either the screen rounds this "
+                     f"entry to a value that does not change across its "
+                     f"range, or the same number was read twice.",
+            "what_to_do": "check the reading at each end again; if the "
+                          "screen really does show one number throughout, "
+                          "say so with record_display_note instead."})
+    db.record_display_observation(_conn, car, field, lo, displayed_at_min)
+    db.record_display_observation(_conn, car, field, hi, displayed_at_max)
+    if note:
+        db.record_display_note(_conn, car, field, note)
+    conv = db.setup_display(_conn, car).get(field, {})
+    out = {"ok": True, "car": car, "field": field,
+           "anchored_to": {"stored_min": lo, "stored_max": hi},
+           "display": setups.describe_display(conv)}
+    if entry.get("read_only"):
+        out["warning"] = (
+            f"{field} is read-only, so its spinner cannot be run to either "
+            f"end. Check these readings came from that entry.")
+    return _j(out)
+
+
+@mcp.tool()
+def forget_display_value(field: str, car: str | None = None,
+                         keep_note: bool = False,
+                         session_id: int | None = None) -> str:
+    """Forget everything recorded about one setup entry's display.
+
+    For a misreading. A wrong observation is worse than none, because the
+    mapping fitted from it is then stated with confidence.
+
+    Clears the note as well by default -- "start again" should leave nothing
+    behind. keep_note=True keeps it, for when only the numbers were wrong."""
+    car = _resolve_car(car, session_id)
+    if car is None:
+        return _j({"error": "no active session; pass car explicitly"})
+    gone = db.forget_display_observations(_conn, car, field)
+    note_gone = 0 if keep_note else db.forget_display_note(_conn, car, field)
+    return _j({"ok": True, "car": car, "field": field,
+               "observations_removed": gone,
+               "note_removed": bool(note_gone),
+               "display": setups.describe_display(
+                   db.setup_display(_conn, car).get(field, {}))})
+
+
+@mcp.tool()
+def set_session_setup(setup_name: str, session_id: int | None = None) -> str:
+    """Record the setup now on the car. Applies to laps from now on only.
 
     AC's shared memory does not expose the setup loaded in the garage, so
     this has to be stated explicitly -- call it whenever the driver says
-    they've loaded a different setup, including mid-session after a pit stop.
+    they've loaded a different setup, including mid-session after a pit
+    stop, and ideally before the first lap on it.
 
-    Laps completed from now on are tagged with this name. Laps already
-    stored under a *different* setup keep it -- relabelling those would
-    destroy the A/B comparison this exists to enable. Laps stored with no
-    setup at all are filled in, since a blank is a gap rather than a
-    competing claim, and telling us after a run is the normal case.
+    **This does not touch laps already stored**, including unlabelled ones.
+    It used to fill in every unlabelled lap in the session, which sounds
+    helpful and is the exact shape of the bug it caused: the baseline run is
+    normally unlabelled too, so "I've loaded claude_v1" stamped claude_v1
+    onto the baseline and destroyed the A/B the driver was in the middle of
+    setting up. It happened twice in one week.
 
-    Pass fill_unattributed=False to leave even the blanks alone."""
+    If laps really were driven on this setup before you were told, use
+    label_laps with their ids -- naming them is the point, because only the
+    driver knows where the garage stop was."""
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
     if not db.set_session_setup(_conn, sid, setup_name):
         return _j({"error": f"no session with id {sid}"})
 
-    laps = db.list_laps(_conn, sid, limit=500)
-    blank = [l for l in laps if not (l.get("setup_name") or "")]
-    labelled_now = 0
-    if fill_unattributed and blank:
-        labelled_now = db.label_unattributed_laps(_conn, sid, setup_name)
-
-    kept = [l for l in laps
-            if (l.get("setup_name") or "") not in ("", setup_name)]
+    # A count and a list of ids, not every lap row through the sessions
+    # JOIN. This only ever needed two numbers, and a long session made it
+    # fetch and discard hundreds of full rows to get them.
+    blank = db.unlabelled_lap_ids(_conn, sid)
     out = {"ok": True, "session_id": sid, "setup_name": setup_name,
            "applies_to": "laps completed from now on",
-           "laps_already_stored": len(laps),
-           "laps_labelled_now": labelled_now}
-    if kept:
-        out["left_alone"] = sorted({l["setup_name"] for l in kept})
-        out["note"] = (f"{len(kept)} lap(s) already carry a different setup "
-                       f"and were not touched.")
-    elif labelled_now:
-        out["note"] = (f"{labelled_now} previously unattributed lap(s) in "
-                       f"this session are now labelled {setup_name}.")
+           "laps_already_stored": db.count_laps(_conn, sid)}
+    if blank:
+        out["unlabelled_laps"] = blank
+        out["note"] = (
+            f"{len(blank)} earlier lap(s) in this session have no setup "
+            f"recorded and were left alone. If some of them were driven on "
+            f"'{setup_name}', label those specific ids with label_laps. Do "
+            f"not label all of them without asking -- the ones before the "
+            f"garage stop were a different setup, and that is the "
+            f"comparison.")
+    return _j(out)
+
+
+# A run of consecutive laps is how a driver describes a stint, so "87-90"
+# has to mean four laps. Splitting on every non-digit would read it as two,
+# label half the stint and report success -- the same silent no-op that
+# "87 88 89" used to produce by becoming the single id 878889.
+_LAP_ID_TOKEN = re.compile(r"^(\d+)(?:-(\d+))?$")
+
+# A range is expanded eagerly, so a typo has to be bounded. This is far more
+# laps than any real stint and still small enough to be harmless.
+MAX_LAP_ID_RANGE = 2000
+
+
+def _parse_lap_ids(text: str) -> tuple[list[int], str]:
+    """Lap ids from "87,88", "87 88", or "87-90". Returns (ids, error)."""
+    ids: list[int] = []
+    for token in re.split(r"[,;\s]+", text.strip()):
+        if not token:
+            continue
+        m = _LAP_ID_TOKEN.match(token)
+        if not m:
+            return [], ('lap_ids must be lap id numbers or ranges, '
+                        f'e.g. "87,88,89,90" or "87-90" -- not "{token}"')
+        lo = int(m.group(1))
+        if m.group(2) is None:
+            ids.append(lo)
+            continue
+        hi = int(m.group(2))
+        if hi < lo:
+            return [], f'"{token}" runs backwards; write it as "{hi}-{lo}"'
+        if hi - lo + 1 > MAX_LAP_ID_RANGE:
+            return [], (f'"{token}" covers {hi - lo + 1} ids, more than the '
+                        f'{MAX_LAP_ID_RANGE} this accepts. List them, or '
+                        f'label them in smaller runs.')
+        ids.extend(range(lo, hi + 1))
+    if not ids:
+        return [], "no lap ids given"
+    # Duplicates would double-count in the report ("2 laps labelled" for one
+    # lap named twice), and order is the driver's, so it is kept.
+    return list(dict.fromkeys(ids)), ""
+
+
+@mcp.tool()
+def label_laps(lap_ids: str, setup_name: str,
+               session_id: int | None = None) -> str:
+    """Record which setup specific already-stored laps were driven on.
+
+    lap_ids: lap ids, e.g. "87,88,89,90" or the range "87-90".
+
+    For the normal case of realising after a run that the laps were on a
+    setup nobody had recorded. Ask the driver which laps, rather than
+    inferring it -- the boundary is a garage stop, which nothing in the
+    telemetry marks.
+
+    Only laps with *no* setup recorded are changed. A lap already carrying a
+    different name is reported back untouched, because a late correction
+    applied to the wrong half of an A/B destroys the comparison it was meant
+    to complete. Genuinely mislabelled laps are fixed with
+    scripts/relabel_laps.py, which is deliberately not a tool."""
+    ids, err = _parse_lap_ids(lap_ids)
+    if err:
+        return _j({"error": err})
+
+    sid = _active_session(session_id)
+    if sid is None:
+        return _j({"error": "no active session; pass session_id explicitly"})
+
+    # Two columns for the ids actually asked about, rather than every lap
+    # in the session. Unbounded by lap count either way: a lap old enough to
+    # fall outside a window would be reported as "not in this session",
+    # which is a false statement about the driver's own data.
+    names = db.lap_setup_names(_conn, sid, ids)
+    missing = [i for i in ids if i not in names]
+    named = {i: names[i] for i in ids
+             if names.get(i) and names[i] != setup_name}
+    already = [i for i in ids if names.get(i) == setup_name]
+    fillable = [i for i in ids if i in names and not names[i]]
+
+    labelled = db.label_unattributed_laps(_conn, sid, setup_name, fillable)
+    out = {"ok": True, "session_id": sid, "setup_name": setup_name,
+           "laps_labelled": labelled, "lap_ids_labelled": fillable}
+    if missing:
+        out["not_in_this_session"] = missing
+    if already:
+        out["already_labelled"] = already
+    if named:
+        out["left_alone"] = named
+        out["note"] = (
+            f"{len(named)} lap(s) already carry a different setup and were "
+            f"not touched. If those labels are genuinely wrong, fix them "
+            f"with scripts/relabel_laps.py.")
+    if not labelled and not already:
+        # Every id was missing or already claimed by another setup. Saying
+        # "ok" and nothing else would read as "done".
+        out["ok"] = False
+        out.setdefault("note", "Nothing was labelled.")
+    return _j(out)
+
+
+@mcp.tool()
+def storage_report() -> str:
+    """What the telemetry database holds, and what it is costing on disk.
+
+    Roughly 0.4 MB per lap, almost all of it the 25 Hz traces. Nothing is
+    ever deleted: when the database passes its size budget the *oldest*
+    sessions' traces are decimated instead, one step at a time down a
+    ladder that keeps every 2nd sample, then every 4th, and so on to every
+    32nd -- so a session only reaches the coarsest step once every older
+    one is already there. Lap times, setup attribution and track-limits
+    evidence are computed before any thinning and are never touched, so a
+    thinned lap loses resolution and nothing else. `laps_thinned` says how
+    many have been through that; `sample_stride` on a lap says by how much.
+
+    The budget is ASSETTO_MCP_MAX_DB_BYTES, default 2 GB. Set it to 0 to
+    keep every sample forever."""
+    return _j(retention.storage_report(_conn, DB_PATH))
+
+
+@mcp.tool()
+def rescore_track_limits() -> str:
+    """Re-derive every stored lap's track-limits verdict from its samples.
+
+    The evidence -- wheels off the surface, at 25 Hz -- is kept per lap, so
+    the verdict is a threshold applied to it rather than something decided
+    when the lap was driven. That means it can be corrected retroactively,
+    which is the point: laps wrongly marked as running wide can be given
+    back rather than re-driven.
+
+    Run this after changing TRACK_LIMITS_WHEELS. Only ever recomputes;
+    never deletes a lap and never touches a verdict that came from the game
+    rather than from inference.
+
+    **Laps whose traces have been thinned are skipped**, and counted in
+    `laps_skipped_thinned`. Their evidence was measured at full resolution
+    and the samples behind it no longer are, so re-scoring would replace a
+    real measurement with a worse one. A new threshold therefore does NOT
+    reach those laps -- say so rather than describing the pass as covering
+    the driver's whole history."""
+    changed = db.backfill_excursions(_conn)
+    flagged = db.backfill_outliers(_conn)
+    skipped = _conn.execute(
+        "SELECT COUNT(*) c FROM laps WHERE sample_stride > 1"
+        " AND invalid_source = 'inferred'").fetchone()["c"]
+    out = {"laps_rescored": changed, "outliers_reflagged": flagged,
+           "laps_skipped_thinned": skipped,
+           "threshold_wheels_off": db.TRACK_LIMITS_WHEELS,
+           "min_excursion_ms": db.MIN_EXCURSION_MS,
+           "note": "Nothing was deleted. A lap that no longer counts as "
+                   "running wide is readable and comparable again."}
+    if skipped:
+        out["skipped_note"] = (
+            f"{skipped} lap(s) were NOT re-scored because retention has "
+            f"thinned their traces; they keep the verdict measured at full "
+            f"resolution. A changed threshold does not reach them.")
     return _j(out)
 
 
@@ -655,13 +1065,43 @@ def driving_line(lap_id: int, compare_lap_id: int | None = None,
 def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
     """Corner-by-corner comparison of two laps on the same track: min speed
     deltas, brake point deltas, and slip balance changes. Use to evaluate
-    whether a setup change actually helped."""
+    whether a setup change actually helped.
+
+    Both laps are compared whatever they are -- an out-lap and a lap that
+    ended in the barrier still have real corner speeds on them. But if
+    either lap's *time* is not a lap time, `time_delta_ms` is meaningless
+    and `lap_time_warning` says so. Read it before quoting a delta."""
     a, b = db.get_lap(_conn, lap_id_a), db.get_lap(_conn, lap_id_b)
     if not a or not b:
         return _j({"error": "one or both lap ids not found"})
-    return _j(analysis.compare_laps(
+    out = analysis.compare_laps(
         a, db.get_samples(_conn, lap_id_a),
-        b, db.get_samples(_conn, lap_id_b)))
+        b, db.get_samples(_conn, lap_id_b))
+    warning = _lap_time_warning({"A": a, "B": b})
+    if warning:
+        out["lap_time_warning"] = warning
+    return _j(out)
+
+
+def _lap_time_warning(laps: dict) -> str | None:
+    """Why a delta between these laps' times means nothing, if it doesn't.
+
+    Storing out-laps and pit laps made them reachable by id, which is the
+    point -- their telemetry is real. Their stored `lap_time_ms` is not a
+    lap time though: zero for an out-lap, wall-clock elapsed for an
+    abandoned one, wall-clock-plus-a-pit-stop for a pit lap. Any tool that
+    subtracts one from another has to say so rather than print the number.
+    """
+    bad = []
+    for side, lap in laps.items():
+        ok, why = db.lap_usability(dict(lap))
+        if not ok:
+            bad.append(f"{side} (lap {lap.get('lap_number')}): {why}")
+    if not bad:
+        return None
+    return ("a time difference between these laps is not a lap-time "
+            "difference -- " + "; ".join(bad) + ". The corner-by-corner "
+            "figures are still real; the time is not.")
 
 
 def _live_fuel_facts() -> tuple[dict, str | None]:
@@ -792,7 +1232,8 @@ def fuel_plan(race_laps: int, stops: int = 1,
 
 @mcp.tool()
 def compare_runs(baseline_laps: str, candidate_laps: str,
-                 include_invalid: bool = False) -> str:
+                 clean_laps_only: bool = False,
+                 include_invalid: bool | None = None) -> str:
     """Did a setup change actually do anything, given lap-to-lap noise?
 
     Pass two comma-separated lists of lap ids -- the laps before a change
@@ -822,10 +1263,26 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
     cleared 95% on its own but not the corrected level, which means run it
     again with more laps rather than that nothing happened.
 
-    Both sides must be the same car at the same track and layout, and laps
-    that were invalidated or abandoned before the line are dropped and
-    named. include_invalid=True keeps them, which is almost always wrong:
-    an abandoned lap's time is wall-clock elapsed, not a lap time.
+    Both sides must be the same car at the same track and layout.
+
+    **Laps that ran wide are included.** A lap that exceeded track limits is
+    still a lap: the corner speeds, brake points and tyre temperatures all
+    happened. They are counted, and listed in `ran_wide` with their
+    excursion evidence so a result that rests on them can be read as such.
+    `clean_laps_only=True` excludes them, which is worth doing when the
+    question is specifically about a clean lap time.
+
+    `include_invalid` is the old name for the same switch with the sense
+    reversed, kept so existing callers keep working. It is honoured rather
+    than ignored -- `include_invalid=false` used to mean these laps were
+    dropped, and silently including them would change an old caller's
+    answer -- and the reply says it was used.
+
+    What *is* excluded is a lap whose time is not a lap time -- abandoned
+    before the line, an out-lap, or a lap containing a pit stop. Those are
+    listed in `excluded_laps` with the reason. Nothing is dropped silently:
+    one off-track lap in a 3v3 with a true 500ms gain once turned this into
+    "within noise, change -1620ms" without a word about why.
 
     What a "within noise" is worth, measured against this driver's own
     spread and unaffected by how many corners the circuit has. A 2.2-point
@@ -838,6 +1295,21 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
     five or six laps is not evidence the change did nothing. That is not
     this tool being strict, it is what a lap time is worth as an
     instrument."""
+    # The switch was renamed when "invalid" stopped meaning "unusable": a
+    # lap that ran wide is still a lap, so the question became whether to
+    # restrict to clean ones rather than whether to admit bad ones.
+    deprecated_note = None
+    if include_invalid is not None:
+        if clean_laps_only and include_invalid:
+            return _j({"error": "clean_laps_only=true and "
+                                "include_invalid=true contradict each other; "
+                                "pass clean_laps_only alone"})
+        clean_laps_only = clean_laps_only or not include_invalid
+        deprecated_note = (
+            f"include_invalid is deprecated; it was read as "
+            f"clean_laps_only={str(clean_laps_only).lower()}. Pass "
+            f"clean_laps_only instead.")
+
     def ids(raw):
         out = []
         for part in str(raw).split(","):
@@ -900,29 +1372,36 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
                             f"and tyre behavior only mean the same thing "
                             f"within one car at one layout."})
 
-    # Invalid and abandoned laps, dropped by name. Both flags were sitting
-    # in the row unread: one off-track lap in a 3v3 with a true 500ms gain
-    # turned it into "within noise", change -1620ms; one lap abandoned
-    # before the line -- whose stored lap_time_ms is wall-clock elapsed, not
-    # a lap time -- turned it into "within noise", change +17630ms.
+    # Two different questions, kept apart. "Is this a lap time?" decides
+    # whether a lap can be compared at all; "did it run wide?" is something
+    # to report about a lap that is being compared. Conflating them dropped
+    # real driving: one off-track lap in a 3v3 with a true 500ms gain turned
+    # this into "within noise, change -1620ms" and never said why.
     dropped = []
+    ran_wide = []
 
     def usable(lap, side):
-        why = []
-        if not lap.get("complete", 1):
-            why.append("abandoned before the line, so its time is elapsed "
-                       "wall clock rather than a lap time")
-        if not lap.get("valid"):
-            why.append("invalidated -- off track or a cut")
-        if not why:
+        ok, why = db.lap_usability(lap)
+        if ok:
             return True
         dropped.append({"lap_id": lap["id"], "side": side,
                         "lap_number": lap.get("lap_number"),
-                        "reason": "; ".join(why)})
+                        "reason": why})
         return False
 
+    def note_wide(lap, side):
+        if not lap.get("invalid"):
+            return
+        ran_wide.append({
+            "lap_id": lap["id"], "side": side,
+            "lap_number": lap.get("lap_number"),
+            "max_tyres_out": lap.get("max_tyres_out"),
+            "excursions": lap.get("excursions"),
+            "off_track_ms": lap.get("off_track_ms"),
+        })
+
     def loaded(laps, side):
-        """Usable laps paired with their samples, in one pass.
+        """Comparable laps paired with their samples, in one pass.
 
         Separate from summarising because the corner-detection threshold has
         to be computed across every lap in the comparison before any single
@@ -930,7 +1409,13 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
         """
         out = []
         for lap in laps:
-            if not include_invalid and not usable(lap, side):
+            if not usable(lap, side):
+                continue
+            if lap.get("invalid") and clean_laps_only:
+                dropped.append({
+                    "lap_id": lap["id"], "side": side,
+                    "lap_number": lap.get("lap_number"),
+                    "reason": "ran wide, and clean_laps_only was set"})
                 continue
             samples = db.get_samples(_conn, lap["id"])
             if not samples:
@@ -938,6 +1423,10 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
                                 "lap_number": lap.get("lap_number"),
                                 "reason": "no telemetry samples stored"})
                 continue
+            # Only after the lap is definitely in. Noting it earlier put a
+            # lap with no samples in both lists, so `ran_wide_note` said it
+            # had been "counted anyway" about a lap that was excluded.
+            note_wide(lap, side)
             out.append((lap, samples))
         return out
 
@@ -984,7 +1473,11 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
                             + ("both sides" if not base and not cand else
                                "the baseline side" if not base else
                                "the candidate side")
-                            + " after dropping invalid and abandoned laps",
+                            + ". Every lap given on that side was excluded; "
+                              "excluded_laps says why, lap by lap"
+                            + (". clean_laps_only was set -- without it the "
+                               "laps that ran wide would have been compared"
+                               if clean_laps_only else ""),
                    "excluded_laps": dropped})
 
     out = analysis.compare_runs(base, cand)
@@ -1012,12 +1505,17 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
     out["car"] = base_laps[0].get("car")
     if dropped:
         out["excluded_laps"] = dropped
-    if include_invalid:
-        out["warning"] = ("include_invalid=True: invalid and abandoned laps "
-                          "were kept, and an abandoned lap's time is elapsed "
-                          "wall clock, not a lap time")
+    if ran_wide:
+        out["ran_wide"] = ran_wide
+        out["ran_wide_note"] = (
+            f"{len(ran_wide)} of the laps compared exceeded track limits and "
+            f"were counted anyway -- the driving on them is real. Say so when "
+            f"reporting the result, and re-run with clean_laps_only=true if "
+            f"the question was specifically about a clean lap time.")
     out["baseline_setups"] = sorted({s.get("setup") or "" for s in base})
     out["candidate_setups"] = sorted({s.get("setup") or "" for s in cand})
+    if deprecated_note:
+        out["deprecated"] = deprecated_note
     return _j(out)
 
 
@@ -1051,9 +1549,13 @@ def delta_by_position(lap_id_a: int, lap_id_b: int,
             return f"{l.get('track')}/{cfg}"
         return _j({"error": f"different track layouts: {_name(a)} vs "
                             f"{_name(b)}; positions are not comparable"})
-    return _j(analysis.delta_by_position(
+    out = analysis.delta_by_position(
         a, db.get_samples(_conn, lap_id_a),
-        b, db.get_samples(_conn, lap_id_b), segments=segments))
+        b, db.get_samples(_conn, lap_id_b), segments=segments)
+    warning = _lap_time_warning({"A": a, "B": b})
+    if warning:
+        out["lap_time_warning"] = warning
+    return _j(out)
 
 
 # --- in-game app bridge ------------------------------------------------
@@ -1126,7 +1628,9 @@ def read_setup(car: str, track: str, name: str) -> str:
 
 @mcp.tool()
 def write_setup(car: str, track: str, name: str, values_json: str,
-                base_setup: str | None = None) -> str:
+                base_setup: str | None = None,
+                overwrite: bool = False,
+                allow_unclamped: bool = False) -> str:
     """Write a new setup file the user can load from the in-game setup menu.
 
     values_json: JSON object of {SECTION: number}, e.g.
@@ -1134,9 +1638,34 @@ def write_setup(car: str, track: str, name: str, values_json: str,
     base_setup: optional existing setup name to start from; unspecified
       sections are carried over unchanged.
 
-    If a ranges file exists for the car, values are clamped and snapped to
-    the car's legal min/max/step; otherwise they're written as-is with a
-    warning (AC silently ignores out-of-range values)."""
+    Values are clamped and snapped to the car's legal min/max/step. Ranges
+    come from the in-game app when it is running, or from a ranges file.
+
+    `displays_as` says what each written value reads as on the setup
+    SCREEN, which is often a different number from the stored one. Read its
+    `source` before repeating it: "observed" was read off the screen,
+    "game" is the multiplier applied as documented and has been wrong
+    before, and "unknown" means say so rather than deriving something.
+    `display_unknown` lists those; `record_display_value` fixes them for
+    good.
+
+    This refuses rather than write something that fails silently in the
+    garage. A refusal is not a retry prompt: each one carries `do_this` with
+    the fix that does not need a flag, and `ask_the_driver` with what only
+    they can answer. Setting `overwrite` or `allow_unclamped` on your own
+    initiative in response to a refusal defeats the check entirely, and both
+    situations are invisible from in here, which is the reason they exist.
+
+    overwrite: a setup of this name already exists. Do not assume it was
+    ours -- it may be one they built by hand, and replacing it looks like
+    nothing at all from the setup screen. Write under `suggested_name`, or
+    ask. With overwrite=true the old file is backed up alongside first.
+
+    allow_unclamped: no ranges are known for this car, so no value can be
+    checked, and AC silently ignores anything out of range -- the setup
+    would load, look right, and not do what it says. The fix is for them to
+    open the setup screen once with the in-game app running; it takes
+    seconds and makes every later write correct."""
     try:
         values = json.loads(values_json)
     except json.JSONDecodeError as e:
@@ -1151,7 +1680,33 @@ def write_setup(car: str, track: str, name: str, values_json: str,
         return _j(setups.write_setup(
             AC_DOCS_DIR, RANGES_DIR, car, track, name, values, base_setup,
             game_ranges=db.setup_ranges(_conn, car),
-            display=db.setup_display(_conn, car)))
+            display=db.setup_display(_conn, car),
+            overwrite=overwrite, allow_unclamped=allow_unclamped))
+    # Deliberately no "retry_with" field on either of these. The first
+    # version had one, and it undid the whole point: a structured field
+    # naming the override is the thing a model acts on, so both refusals
+    # became one automatic retry away from the behaviour they replaced.
+    # What each payload carries instead is the *right* fix, and the flag
+    # only in prose, described as something to ask about.
+    except setups.SetupExistsError as e:
+        out = {"error": str(e), "refused": "setup_exists",
+               "do_this": "write it under a different name",
+               "ask_the_driver": "whether the existing setup is theirs and "
+                                 "may be replaced"}
+        free = setups.free_name_for(AC_DOCS_DIR, car, track, name)
+        if free:
+            out["suggested_name"] = free
+        return _j(out)
+    except setups.UnclampedWriteError as e:
+        return _j({"error": str(e), "refused": "no_ranges",
+                   "do_this": "have the driver start Assetto Corsa with the "
+                              "in-game app enabled and open the setup screen "
+                              "once, then try again",
+                   "ask_the_driver": "do not write unclamped without saying "
+                                     "that the values cannot be checked"})
+    except setups.EmptySetupError as e:
+        return _j({"error": str(e), "refused": "empty_setup",
+                   "do_this": "check the section names with setup_ranges"})
     except (ValueError, FileNotFoundError) as e:
         return _j({"error": str(e)})
 

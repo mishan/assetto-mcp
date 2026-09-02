@@ -691,11 +691,29 @@ _SAMPLE = (180.0, 1.0, 0.0, 0.0, 4, 9000, 0.0, 0.0,
            0.4, 0.4, 0.3, 0.3, 26.0, 26.0, 26.0, 26.0,
            85.0, 85.0, 85.0, 85.0, 0.02, 0.024, 0)
 
+# Where tyres_out sits inside _SAMPLE, which begins after lap_id, t_ms and
+# norm_pos. Derived rather than written as a literal so a migration that
+# inserts a column does not silently make these tests drive off a different
+# part of the car.
+_TYRES_OUT_IN_SAMPLE = db.SAMPLE_COLUMNS.index("tyres_out") - 3
 
-def _store(srv, session_id, lap_number, lap_ms, valid=True, complete=True):
+
+def _store(srv, session_id, lap_number, lap_ms, complete=True,
+           wide=False, pitted=False, out_lap=False):
+    """Store a lap. `wide` puts four wheels off long enough to count.
+
+    Track limits are scored from the samples now rather than asserted, so a
+    test that wants an off-track lap has to actually drive one off.
+    """
     samples = [(i * 100, i / 60.0, *_SAMPLE) for i in range(60)]
-    return db.store_lap(srv._conn, session_id, lap_number, lap_ms, valid,
-                        samples, complete=complete)
+    if wide:
+        off = list(_SAMPLE)
+        off[_TYRES_OUT_IN_SAMPLE] = 4
+        for i in range(20, 30):
+            samples[i] = (i * 100, i / 60.0, *off)
+    return db.store_lap(srv._conn, session_id, lap_number, lap_ms, True,
+                        samples, complete=complete, pitted=pitted,
+                        out_lap=out_lap)
 
 
 def _run(srv, a, b, **kw):
@@ -703,39 +721,81 @@ def _run(srv, a, b, **kw):
                                        ",".join(str(i) for i in b), **kw))
 
 
-def test_an_invalidated_lap_is_dropped_and_named():
-    """One off-track lap turned a real 500ms gain into "within noise".
+def test_a_lap_that_ran_wide_is_compared_and_said_to_have_run_wide():
+    """It is still a lap. The corner speeds and brake points happened.
 
-    Measured on the 3v3 below with the invalid lap left in: change -1620ms,
-    resolution 3.4s, verdict "within noise". The flag was sitting in the row
-    the whole time and nothing read it.
+    This used to drop it, on the grounds that one off-track lap turned a
+    real 500ms gain into "within noise". True, and the wrong fix: the lap
+    was thrown out of every channel to protect one of them, and the driver
+    was told nothing. Now it is counted and reported, so a result that
+    rests on it can be read as such -- and clean_laps_only is there for
+    when the question really is about a clean lap time.
     """
     srv = _server()
     sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
     base = [_store(srv, sid, 1, 113400), _store(srv, sid, 2, 113600),
             _store(srv, sid, 3, 113300),
-            _store(srv, sid, 4, 111780, valid=False)]
+            _store(srv, sid, 4, 111780, wide=True)]
     cand = [_store(srv, sid, 5, 112900), _store(srv, sid, 6, 112700),
             _store(srv, sid, 7, 112800)]
 
     out = _run(srv, base, cand)
-    assert out["metrics"]["lap_time_ms"]["verdict"] == "moved", out["metrics"]
-    assert _close(out["metrics"]["lap_time_ms"]["change"], -633.333, 1e-3)
-    assert len(out["excluded_laps"]) == 1, out["excluded_laps"]
-    dropped = out["excluded_laps"][0]
-    assert dropped["lap_id"] == base[-1], dropped
-    assert dropped["side"] == "baseline", dropped
-    assert "invalidated" in dropped["reason"], dropped
-    print("  dropped:", dropped["reason"])
+    assert "excluded_laps" not in out, out.get("excluded_laps")
+    assert out["metrics"]["lap_time_ms"]["baseline_n"] == 4, out["metrics"]
+    wide = out["ran_wide"]
+    assert len(wide) == 1, wide
+    assert wide[0]["lap_id"] == base[-1] and wide[0]["side"] == "baseline"
+    assert wide[0]["max_tyres_out"] == 4, wide
+    assert wide[0]["excursions"] == 1, wide
+    assert "clean_laps_only" in out["ran_wide_note"]
+    print("  compared and reported:", wide[0])
 
-    # Kept when explicitly asked for, and the payload says what that did.
+    # And excluded on request, by name, with the reason.
+    clean = _run(srv, base, cand, clean_laps_only=True)
+    assert clean["metrics"]["lap_time_ms"]["baseline_n"] == 3, clean["metrics"]
+    assert len(clean["excluded_laps"]) == 1, clean["excluded_laps"]
+    assert "ran wide" in clean["excluded_laps"][0]["reason"]
+    assert clean["metrics"]["lap_time_ms"]["verdict"] == "moved", \
+        clean["metrics"]["lap_time_ms"]
+    print("  clean_laps_only:", clean["excluded_laps"][0]["reason"])
+
+
+def test_the_old_include_invalid_argument_still_works_and_says_so():
+    """Renaming a tool argument breaks every caller that passes it.
+
+    `include_invalid=false` meant "drop the laps that ran wide", which is
+    now `clean_laps_only=true`. Accepting the old name and ignoring it
+    would be worse than removing it: the call would succeed and quietly
+    include laps the caller had asked to leave out.
+    """
+    srv = _server()
+    sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
+    base = [_store(srv, sid, 1, 113400), _store(srv, sid, 2, 113600),
+            _store(srv, sid, 3, 113300),
+            _store(srv, sid, 4, 111780, wide=True)]
+    cand = [_store(srv, sid, 5, 112900), _store(srv, sid, 6, 112700),
+            _store(srv, sid, 7, 112800)]
+
+    old = _run(srv, base, cand, include_invalid=False)
+    assert old["metrics"]["lap_time_ms"]["baseline_n"] == 3, old["metrics"]
+    assert len(old["excluded_laps"]) == 1, old["excluded_laps"]
+    assert "deprecated" in old, old.keys()
+    assert "clean_laps_only" in old["deprecated"], old["deprecated"]
+
+    # include_invalid=True is the current default, and still says it is old.
     kept = _run(srv, base, cand, include_invalid=True)
-    assert "excluded_laps" not in kept, kept
-    assert kept["metrics"]["lap_time_ms"]["verdict"] == "within noise", \
-        kept["metrics"]["lap_time_ms"]
-    assert "warning" in kept, kept
-    print("  include_invalid=True:",
-          kept["metrics"]["lap_time_ms"]["change"], "ms, within noise")
+    assert kept["metrics"]["lap_time_ms"]["baseline_n"] == 4, kept["metrics"]
+    assert "deprecated" in kept, kept.keys()
+
+    # Asking for both at once, meaning opposite things, is refused rather
+    # than resolved by whichever the code happens to read second.
+    clash = _run(srv, base, cand, include_invalid=True, clean_laps_only=True)
+    assert "error" in clash and "contradict" in clash["error"], clash
+
+    # And a caller that never knew the old name sees nothing about it.
+    plain = _run(srv, base, cand)
+    assert "deprecated" not in plain, plain.keys()
+    print("  include_invalid honoured, flagged, and refused when contradicted")
 
 
 def test_a_lap_abandoned_before_the_line_is_dropped_and_named():
@@ -794,14 +854,19 @@ def test_the_track_and_car_are_stated_in_the_answer():
 
 
 def test_a_side_left_with_no_usable_laps_refuses():
+    # Unusable, not merely off track: a lap that ran wide is compared now,
+    # so a side has to be emptied by laps whose *times* are not lap times.
     srv = _server()
     sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
-    base = [_store(srv, sid, 1, 113400, valid=False),
-            _store(srv, sid, 2, 113600, valid=False)]
+    base = [_store(srv, sid, 1, 113400, pitted=True),
+            _store(srv, sid, 2, 0, out_lap=True)]
     cand = [_store(srv, sid, 3, 112900), _store(srv, sid, 4, 112700)]
     out = _run(srv, base, cand)
     assert "error" in out and "baseline" in out["error"], out
     assert len(out["excluded_laps"]) == 2, out
+    reasons = sorted(d["reason"] for d in out["excluded_laps"])
+    assert any("pit" in r for r in reasons), reasons
+    assert any("out-lap" in r for r in reasons), reasons
     print(" ", out["error"])
 
 

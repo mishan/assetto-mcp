@@ -301,14 +301,28 @@ def tick(sim, col, n=6):
 def complete_lap(sim, col, lap_time_ms, stored=True):
     """Cross the line, and wait for the lap to land in the database.
 
-    stored=False for an out-lap, which has no meaningful time and is
-    deliberately skipped.
+    Since v11 every lap is stored, out-laps included -- they are flagged
+    rather than discarded. So `stored` now only says whether to wait for
+    the write, which a caller crossing the line with no recording collector
+    must not do.
     """
     before = col.laps_recorded
     sim.graphics.iLastTime = lap_time_ms
     sim.graphics.completedLaps += 1
     if stored:
         wait_for(lambda: col.laps_recorded > before, "the lap to be stored")
+
+
+def timed_laps(conn, session_id=None):
+    """Laps whose time is a lap time -- what "how many laps" used to mean.
+
+    Out-laps, pit laps and abandoned laps are all stored now rather than
+    dropped, so a bare COUNT(*) over `laps` stopped answering the question
+    most of these tests are actually asking.
+    """
+    from assetto_mcp import db
+    return [l for l in db.list_laps(conn, session_id, limit=None)
+            if db.lap_usability(dict(l))[0]]
 
 
 def enter_pits(sim, col):

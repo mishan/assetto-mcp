@@ -15,9 +15,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import (FakeSim, complete_lap, go_live, go_off,  # noqa: E402
                      restart_from_menu, run_collector, run_module, temp_db,
-                     tick, wait_for)
+                     tick, timed_laps, wait_for)
 
-from assetto_mcp import db  # noqa: E402
+from assetto_mcp import db, retention  # noqa: E402
 from assetto_mcp.collector import Collector  # noqa: E402
 
 
@@ -417,19 +417,26 @@ def test_only_one_of_two_collectors_records():
             # opened its session by now.
             wait_for(lambda: holder.session_id is not None, "a session")
             tick(sim, holder)
-            complete_lap(sim, holder, 0, stored=False)
+            complete_lap(sim, holder, 0)          # out-lap, kept + flagged
             tick(sim, holder)
             complete_lap(sim, holder, 113000)
 
             conn = db.connect(path)
-            sessions = conn.execute(
-                "SELECT COUNT(*) c FROM sessions").fetchone()["c"]
-            laps = conn.execute("SELECT COUNT(*) c FROM laps").fetchone()["c"]
-            conn.close()
+            try:
+                sessions = conn.execute(
+                    "SELECT COUNT(*) c FROM sessions").fetchone()["c"]
+                # Out-laps are stored now, so count the timed ones: the
+                # point of this test is that the lap was not written twice.
+                timed = timed_laps(conn)
+                out = [l for l in db.list_laps(conn, limit=None)
+                       if l["out_lap"]]
+            finally:
+                conn.close()
             assert sessions == 1, f"{sessions} sessions for one game session"
-            assert laps == 1, f"{laps} rows for one lap"
+            assert len(timed) == 1, f"{len(timed)} rows for one timed lap"
+            assert len(out) == 1, "the out-lap should be kept and flagged"
             assert standby.laps_recorded == 0
-            print(f"  one lap driven, {laps} stored, {sessions} session")
+            print(f"  1 timed lap + 1 out-lap stored, {sessions} session")
         finally:
             a.stop()
             b.stop()
@@ -462,14 +469,70 @@ def test_a_standby_takes_over_when_the_holder_stops():
                      "the standby to open a session")
 
             tick(sim, standby)
-            complete_lap(sim, standby, 0, stored=False)
+            complete_lap(sim, standby, 0)         # out-lap, kept + flagged
             tick(sim, standby)
             complete_lap(sim, standby, 112500)
-            assert standby.laps_recorded == 1
+            assert standby.laps_recorded == 2, "out-lap + timed lap"
+            assert standby.out_laps_recorded == 1
             print("  standby picked the claim up and recorded")
         finally:
             a.stop()
             b.stop()
+
+
+def test_a_forced_takeover_beats_a_holder_that_is_beating_fast():
+    """`stale_after=0` means "take it regardless of who has it".
+
+    Expressed as a staleness cutoff that becomes `heartbeat_at <= now`,
+    which a holder renewing faster than the round trip always defeats: the
+    caller reads the clock, does a SELECT, then queues behind the holder's
+    write. Measured at 6.7ms of drift, which a 10ms heartbeat wins about
+    half the time -- so the refusal was silent and intermittent, and the
+    test that relies on forcing a takeover timed out instead of failing,
+    which reads like the collector never noticing.
+    """
+    with temp_db() as path:
+        holder = db.connect(path)
+        watcher = db.connect(path)
+        try:
+            assert db.claim_recorder(holder, "holder")["held"]
+            # A holder renewing continuously, exactly as the collector does
+            # with a short HEARTBEAT_SECONDS.
+            for i in range(50):
+                # Every step is asserted, including the two that only set
+                # up the next round: a hand-back that quietly failed would
+                # leave the holder unheld, and then the takeover under test
+                # would be succeeding against nobody.
+                assert db.renew_recorder(holder, "holder"), \
+                    f"holder lost its claim before round {i}"
+                taken = db.claim_recorder(watcher, "someone-else",
+                                          stale_after=0.0)
+                assert taken["held"], taken
+                assert taken["owner"] == "someone-else", taken
+                # Hand it back and go again.
+                back = db.claim_recorder(holder, "holder", stale_after=0.0)
+                assert back["held"] and back["owner"] == "holder", back
+            print("  50 forced takeovers against a live holder, no refusals")
+        finally:
+            holder.close()
+            watcher.close()
+
+
+def test_a_live_holder_still_keeps_its_claim():
+    # The forced path must not have loosened the ordinary one: a holder
+    # that is beating keeps the claim against a normal staleness check.
+    with temp_db() as path:
+        holder = db.connect(path)
+        other = db.connect(path)
+        try:
+            assert db.claim_recorder(holder, "holder")["held"]
+            db.renew_recorder(holder, "holder")
+            r = db.claim_recorder(other, "other")
+            assert r["held"] is False, r
+            assert r["owner"] == "holder", r
+        finally:
+            holder.close()
+            other.close()
 
 
 def test_a_collector_that_loses_its_claim_stops_writing():
@@ -532,10 +595,10 @@ def test_a_shared_stop_reaches_the_instance_actually_recording():
             holder.start()
             wait_for(lambda: holder.session_id is not None, "a session")
             tick(sim, holder)
-            complete_lap(sim, holder, 0, stored=False)
+            complete_lap(sim, holder, 0)          # out-lap, kept + flagged
             tick(sim, holder)
             complete_lap(sim, holder, 113000)
-            assert holder.laps_recorded == 1
+            assert holder.laps_recorded == 2, "out-lap + timed lap"
 
             # Another instance's stop_recording: the flag, and nothing else.
             # No stop() on this collector, because the driver never touched
@@ -664,6 +727,66 @@ def test_standing_aside_does_not_keep_reporting_an_old_error():
         finally:
             holder.stop()
             standby.stop()
+
+
+def test_a_retention_pass_that_loses_the_claim_stops_the_collector():
+    """The forced heartbeat's answer was computed and thrown away.
+
+    A VACUUM over a large database can outlast RECORDER_STALE_SECONDS, and
+    the beat after the pass exists to notice that another instance took
+    over. Discarding it left this collector carrying on into sampling while
+    a second one recorded the same laps -- the one failure the claim exists
+    to prevent.
+    """
+    with temp_db() as path:
+        sim = FakeSim()
+        col = Collector(path, lambda: sim)
+        col._conn = db.connect(path)
+        try:
+            # Hold the claim, then hand it to somebody else mid-pass.
+            db.claim_recorder(col._conn, col._owner)
+            col.holds_recorder = True
+
+            real = retention.enforce_budget
+
+            def steal_the_claim(conn, db_path, budget=None):
+                # What a long VACUUM looks like from outside: our heartbeat
+                # goes stale and another instance takes the claim.
+                taken = db.claim_recorder(conn, "somebody-else", stale_after=0)
+                assert taken["held"], taken
+                return {"acted": False}
+
+            retention.enforce_budget = steal_the_claim
+            try:
+                stand_down = col._housekeeping()
+            finally:
+                retention.enforce_budget = real
+
+            assert stand_down, "losing the claim mid-pass must be reported"
+            print("  stand-down propagated:", stand_down)
+        finally:
+            col._conn.close()
+
+
+def test_a_retention_report_does_not_outlive_its_pass():
+    """One thinning event made every later status say it had just happened.
+
+    last_retention was only ever assigned, never cleared, so a pass that did
+    nothing left the previous pass's report standing -- for the rest of the
+    process's life.
+    """
+    with temp_db() as path:
+        sim = FakeSim()
+        col = Collector(path, lambda: sim)
+        col._conn = db.connect(path)
+        try:
+            db.claim_recorder(col._conn, col._owner)
+            col.holds_recorder = True
+            col.last_retention = {"acted": True, "actions": ["thinned 40"]}
+            col._housekeeping()          # a pass that does nothing
+            assert col.last_retention is None, col.last_retention
+        finally:
+            col._conn.close()
 
 
 if __name__ == "__main__":

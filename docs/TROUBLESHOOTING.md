@@ -106,9 +106,23 @@ break that:
 ## Setup values don't stick in-game
 
 You're writing outside the car's legal range and AC is silently ignoring them.
-This is also what happens when the in-game app *isn't* running and there's no
-ranges file — values are written unclamped, because nothing knows what the
-limits are. See [SETUP-RANGES.md](SETUP-RANGES.md).
+That should not happen any more — values are clamped to what the car accepts —
+unless the setup was written with `allow_unclamped`, which is what you get if
+you told it to write anyway after it refused. See
+[SETUP-RANGES.md](SETUP-RANGES.md).
+
+## "No setup ranges are known for this car"
+
+It's refusing to write a setup it can't check. Start Assetto Corsa with the
+in-game app enabled and open the setup screen once — the app reports every
+adjustable entry automatically — or install a ranges file. Both routes are in
+[SETUP-RANGES.md](SETUP-RANGES.md#when-there-are-no-ranges).
+
+## "already exists for &lt;car&gt; at &lt;track&gt;"
+
+It won't replace a setup file you might have made yourself. Take the suggested
+name, or say explicitly that it should overwrite — the old file is kept
+alongside as `<name>.ini.bak-<timestamp>` either way.
 
 ## A dead `ac-race-engineer` server shows up
 
@@ -127,12 +141,31 @@ database. Ask for `recording_status` — the `state` field
 `stopped_by_request` means someone called `stop_recording`, which persists
 across restarts and across every instance; `start_recording` turns it back on.
 
-## A lap I drove clean was marked invalid
+## A lap I drove clean is marked as having run wide
 
-Known and unfixed: validity is inferred from wheels-off-track rather than read
-from the game, which vanilla AC doesn't expose. Wide flat kerbs trigger it.
-It's the top item in [BACKLOG.md](../BACKLOG.md), and worth reporting with the
-track and lap number.
+It no longer costs you anything — laps that ran wide are still compared, and
+reported as `ran_wide` with the evidence — but if the call itself looks wrong,
+`lap_summary` shows `max_tyres_out`, `excursions` and `off_track_ms` so you can
+see what it saw.
+
+Track limits are still *inferred* from wheels-off-track, because vanilla AC
+doesn't expose lap validity. The threshold is four wheels off for at least
+120 ms. If it's consistently wrong for a circuit, change
+`TRACK_LIMITS_WHEELS` in `assetto_mcp/db.py` and run `rescore_track_limits` —
+the evidence is stored per lap, so laps are re-scored without re-driving
+anything.
+
+One exception: laps whose traces retention has already **thinned** keep the
+verdict measured at full resolution, and a new threshold does not reach them.
+`rescore_track_limits` reports how many it skipped for that reason. Worth
+reporting with the track and lap number.
+
+## Old laps have lower-resolution traces than I remember
+
+Expected. The database has a size budget and thins the oldest sessions' traces
+when it passes it — `sample_stride` on a lap says by how much. No lap is ever
+deleted. Ask for a storage report, and raise `ASSETTO_MCP_MAX_DB_BYTES` (or set
+it to `0`) if you'd rather keep everything.
 
 ## Damper histograms are missing or flagged as low-rate
 

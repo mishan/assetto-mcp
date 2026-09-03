@@ -1722,6 +1722,31 @@ def get_samples(conn, lap_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+WEAR_COLUMNS = ("wear_fl", "wear_fr", "wear_rl", "wear_rr")
+
+
+def lap_endpoints(conn, lap_id: int,
+                  columns=WEAR_COLUMNS) -> tuple[dict | None, dict | None]:
+    """The first and last stored sample of a lap, for named columns only.
+
+    A stint report needs two rows per lap, not three thousand. Differencing
+    endpoints by reading whole traces turned a thirteen-lap session into
+    forty thousand dicts to obtain eight numbers, on the machine that is
+    also running the game.
+
+    Column names are interpolated, so they must come from code rather than
+    from a caller -- everything that reaches here passes a module constant.
+    """
+    cols = ",".join(columns)
+    first = conn.execute(
+        f"SELECT {cols} FROM samples WHERE lap_id = ? ORDER BY t_ms LIMIT 1",
+        (lap_id,)).fetchone()
+    last = conn.execute(
+        f"SELECT {cols} FROM samples WHERE lap_id = ? ORDER BY t_ms DESC"
+        f" LIMIT 1", (lap_id,)).fetchone()
+    return (dict(first) if first else None, dict(last) if last else None)
+
+
 def count_laps(conn, session_id: int) -> int:
     return conn.execute("SELECT COUNT(*) c FROM laps WHERE session_id = ?",
                         (session_id,)).fetchone()["c"]

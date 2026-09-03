@@ -1062,6 +1062,90 @@ def driving_line(lap_id: int, compare_lap_id: int | None = None,
 
 
 @mcp.tool()
+def stint_wear(session_id: int | None = None) -> str:
+    """How much tyre each lap of a stint used, from the game's own figures.
+
+    "Did the tyres go off" has to be answered with wear, not with its
+    shadow. Hot pressure and core temperature are affected by wear and by
+    half a dozen other things, so a flat pressure trace is evidence of
+    stable pressure and nothing more.
+
+    Reports remaining and used per corner per lap, the rate per lap, and
+    whether that rate is rising across the stint -- a tyre wearing steadily
+    is not the same thing as one going off, and only the second shows up as
+    a change in rate.
+
+    AC counts wear down from 100; `used` counts up, so higher always means
+    worse. Laps recorded before schema v9 have no wear and say so."""
+    sid = _active_session(session_id)
+    if sid is None:
+        return _j({"error": "no active session; pass session_id"})
+    laps = db.list_laps(_conn, sid, limit=200)
+    if not laps:
+        return _j({"error": f"no laps in session {sid}"})
+    # Oldest first: a stint reads forwards.
+    laps = sorted(laps, key=lambda l: (l.get("lap_number") or 0, l["id"]))
+    entries = []
+    for lap in laps:
+        first, last = db.lap_endpoints(_conn, lap["id"])
+        entries.append({"lap": lap, "first": first, "last": last})
+    out = analysis.stint_wear(entries)
+    out["session_id"] = sid
+    return _j(out)
+
+
+@mcp.tool()
+def braking_report(lap_id: int, points: int = 20) -> str:
+    """What the tyres did under braking, and whether anything locked.
+
+    The question behind this is usually "is ABS aggressive enough". That
+    cannot be answered from the setup value, and it cannot currently be
+    answered from shared memory either: the fields that look like ABS and
+    TC activity hold one value for a whole lap, straights included, so
+    they are a setting or a threshold rather than a measure of
+    intervention. They are reported here as an observation, with that
+    said plainly.
+
+    What can be measured is the thing a driver actually feels. Under hard
+    braking in a straight line, this reports slip per axle, which axle is
+    nearer its limit -- that is what brake bias moves -- and any run of
+    samples where a front wheel ran away.
+
+    The straight-line filter matters: slip under combined braking and
+    cornering is high by construction, so without it every trail-braked
+    entry reads as a lockup. The lockup threshold itself is provisional
+    and has never been calibrated against a confirmed lockup, so the raw
+    distribution is reported alongside it."""
+    lap = db.get_lap(_conn, lap_id)
+    if not lap:
+        return _j({"error": f"no lap with id {lap_id}"})
+    return _j(analysis.braking_report(
+        lap, db.get_samples(_conn, lap_id), points))
+
+
+@mcp.tool()
+def attitude_report(lap_id: int) -> str:
+    """How much the car rolled and pitched, and how much per g.
+
+    Roll and pitch have been argued about all season -- anti-roll bars,
+    spring rates, ride height, whether the car is "floppy" -- and every
+    one of those arguments has been indirect, reasoned from load transfer
+    or from the driver's description.
+
+    The number that settles them is the roll gradient: degrees of body
+    roll per g of lateral acceleration. It is a direct measure of total
+    roll stiffness, so a bar or spring change should move it and a change
+    that does not move it did not do what it was meant to. Pitch gradient
+    is the same idea for dive under braking.
+
+    Laps recorded before schema v8 carry no attitude and say so."""
+    lap = db.get_lap(_conn, lap_id)
+    if not lap:
+        return _j({"error": f"no lap with id {lap_id}"})
+    return _j(analysis.attitude_report(lap, db.get_samples(_conn, lap_id)))
+
+
+@mcp.tool()
 def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
     """Corner-by-corner comparison of two laps on the same track: min speed
     deltas, brake point deltas, and slip balance changes. Use to evaluate

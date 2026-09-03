@@ -5,7 +5,7 @@ already produced. Each entry says what is wrong, where it bit, and where the
 code lives, so a future session can act without re-deriving any of it.
 
 Written after the Sebring / NSX GT3 session, and kept current since. Test
-suite stands at 411 passing with the Lua tooling installed,
+suite stands at 428 passing with the Lua tooling installed,
 schema at v13.
 
 ---
@@ -178,22 +178,82 @@ figures.
 
 ## 6. Newly logged channels that nothing reads
 
-**Status:** open, and self-inflicted.
+**Status:** mostly closed. Wear, braking and body attitude all have
+readers now. `heading` and `damage` do not.
 
 Schema v8 and v9 added thirteen columns — `pos_x/y/z`, `heading`, `pitch`,
-`roll`, `tc_active`, `abs_active`, `wear_fl/fr/rl/rr` and `damage`. Only
-position has a reader (`analysis.driving_line`). The rest go into the
-database and no analysis touches them.
+`roll`, `tc_active`, `abs_active`, `wear_fl/fr/rl/rr` and `damage`. For a
+while only position had a reader, which is the same failure as not logging
+them, one step later.
 
-Highest value first:
+**Where it bit:** the driver asked whether her tyres had gone off during a
+Sebring race. The answer given was argued from hot pressure and core
+temperature — proxies — while the game's own wear figures sat unread in the
+same rows. She also asked whether ABS was aggressive enough, and there was
+no measurement of any kind to answer with.
 
-- **Tyre wear** — degradation across a stint, and the basis of any real pit
-  strategy. Changes every lap regardless of server settings.
-- **`tc_active` / `abs_active`** — whether the electronics actually
-  intervene, rather than what the setup screen is set to. Would have settled
-  the TC argument at Sebring by measurement instead of by asking the driver.
-- **`roll`** — direct body-control measurement. Anti-roll bar and ride
-  height arguments have all been indirect so far.
+**What changed:**
+
+- `stint_wear` — remaining and used per corner per lap across a session,
+  the rate per lap, and whether that rate rises across the stint. That last
+  part is the distinction that matters: every tyre accumulates wear, and
+  only a rising rate is what a driver means by "they went off". Reported
+  counting *up* from zero, because AC counts down from 100 and a number
+  that falls as the tyre worsens gets misread once and trusted forever.
+- `electronics_report` — how often ABS and TC actually intervened, and
+  where round the lap. The ABS figure that matters is conditional: of the
+  samples where the driver was hard on the brakes, how many had ABS doing
+  something. A lap-wide percentage is dominated by straights and reads as
+  "barely intervenes" for a system working perfectly.
+- `db.lap_endpoints` reads two rows per lap instead of a whole trace, so a
+  stint report does not pull forty thousand dicts to obtain eight numbers.
+
+Both distinguish *no intervention* from *no measurement*, and *zero wear*
+from *no wear recorded* — pre-v8 and pre-v9 laps say so rather than
+reporting a confident zero.
+
+- `attitude_report` — roll and pitch in degrees, and the **roll gradient**:
+  degrees of body roll per g of lateral acceleration, fitted through the
+  origin over loaded samples only. That is a direct measure of total roll
+  stiffness, so an anti-roll bar or spring change either moves it or did
+  not do what it was meant to. Every bar argument this project has had was
+  previously settled by reasoning from load transfer. `dive_deg_per_g` is
+  the same idea for braking. Withheld, with the count said out loud, when
+  the car was never loaded enough for a slope to mean anything.
+
+### The aid fields are not what they look like
+
+`abs_active` and `tc_active` were added believing them to be the amount of
+intervention happening right now. **The first real lap falsified that:**
+both were constant to three decimal places across 3024 samples — down every
+straight and through every braking zone alike. Nothing measuring
+moment-to-moment intervention behaves that way. They are a setting or a
+slip threshold, and an `electronics_report` built on the wrong reading was
+replaced by `braking_report` before it could mislead anyone twice.
+
+The real flags exist. CSP's `ac.CarState` carries `absInAction` and
+`tractionControlInAction`, both booleans — but marked **physics-only**,
+which means a physics worker, which CSP forbids online. Exactly the
+constraint the damper histograms already live under, and the same
+worker/app tier split would apply.
+
+So `braking_report` answers "is ABS aggressive enough" the way it can be
+answered from stored data: slip per axle under **straight-line** hard
+braking, which axle is nearer its limit, and runs where a front wheel ran
+away. The steering filter is load-bearing — slip under combined braking and
+cornering is high by construction, and without it every trail-braked entry
+reads as a lockup. `LOCKUP_SLIP` is provisional and has never been
+calibrated against a lockup someone confirmed from the cockpit; the raw
+distribution is reported alongside it for that reason.
+
+**Still open:**
+
+- **`heading`** — stored, unread. Only interesting alongside position, for
+  yaw relative to the racing line.
+- **`damage`** — stored, unread. Low value while the driver races with
+  damage disabled, where it stays at zero all session. The wall detector
+  that works either way is a speed discontinuity; see item 8.
+- **The game's own aid flags**, via a physics worker, single-player only.
 
 ---
 
@@ -269,6 +329,44 @@ Damage rising would disambiguate them when damage is on.
 **`_migrate` v1 unguarded ALTER** — fixed. All six ALTER sites now go through
 `_add_column`, which no-ops on a missing table. Listed only so nobody
 re-derives it.
+
+---
+
+## Measured baselines — NSX GT3 Evo on `claude_sebring_v9`
+
+Taken on Sebring, but these are properties of the car and the setup rather
+than the circuit, so they carry to the next track. Sebring is done; the
+same car is not.
+
+**Roll gradient 0.723 deg/g. Peak roll 3.54°. Dive 0.513 deg/g.**
+(`attitude_report`, lap 202.) That is a stiff car — with the front
+anti-roll bar on its minimum stop and the rear only one step up. The
+115/120 N/mm springs are doing nearly all the work in roll.
+
+**This reframes a lot of the season's reasoning.** Weeks were spent
+arguing about anti-roll bars on a car where they are a minor term on top
+of the springs. If the question is how the car rolls, spring rate and ride
+height carry the authority. And every future bar or spring change is now a
+one-number test: the gradient moves, or the change did not do what it was
+meant to.
+
+**The front is the axle nearer locking** under straight-line braking, on
+every lap examined, with `FRONT_BIAS` at 60. Consistent, and the lever if
+that ever needs changing.
+
+**The `abs` field is not constant across sessions.** Held 0.09 through
+practice and qualifying, 0.06 through the race, on an unchanged setup
+file. Constant *within* every lap, so it is a setting or a threshold, not
+activity — but something moved it between sessions and nobody knows what.
+The driver independently reported ABS feeling less aggressive in the race.
+Worth asking, next time, whether the rotary was touched or the server
+changed it. Unexplained is not the same as unimportant.
+
+**Wear at racing pace: about 0.05%/lap front, 0.024%/lap rear**, rising to
+~0.055% rear late in a stint when the driver started carrying more speed
+through slow corners. Total over a 13-lap race: 0.7% front, 0.44% rear.
+Tyre life is a non-issue for this car over a sprint distance; do not spend
+setup effort on it.
 
 ---
 

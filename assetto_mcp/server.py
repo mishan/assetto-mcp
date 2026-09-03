@@ -1062,6 +1062,189 @@ def driving_line(lap_id: int, compare_lap_id: int | None = None,
 
 
 @mcp.tool()
+def stint_wear(session_id: int | None = None,
+               from_lap: int | None = None,
+               to_lap: int | None = None) -> str:
+    """How much tyre each stint used, from the game's own figures.
+
+    "Did the tyres go off" has to be answered with wear, not with its
+    shadow. Hot pressure and core temperature are affected by wear and by
+    half a dozen other things, so a flat pressure trace is evidence of
+    stable pressure and nothing more.
+
+    Reports remaining and used per corner per lap, the rate per lap, and
+    whether that rate is rising -- a tyre wearing steadily is not the same
+    thing as one going off, and only the second shows up as a change in
+    rate.
+
+    A session is NOT a stint. Sessions keep out-laps and pit laps on
+    purpose, and one can span a tyre change. So the laps are cut into
+    stints first, at out-laps, at pit visits, and anywhere remaining wear
+    goes back up -- and each stint is reported on its own. Without that
+    the first set's start is differenced against the last set's end and
+    the two sets are trended as one, which can call a healthy tyre gone.
+
+    Pass `from_lap` / `to_lap` (inclusive lap numbers) to report one
+    explicit range instead; it is still segmented, so a range that
+    straddles a change still comes back as two stints rather than one
+    wrong one.
+
+    AC counts wear down from 100; `used` counts up, so higher always means
+    worse. Laps recorded before schema v9 have no wear and say so."""
+    sid = _active_session(session_id)
+    if sid is None:
+        return _j({"error": "no active session; pass session_id"})
+    # A lap range has to see every lap, not the newest 200. list_laps
+    # orders by id DESCENDING before it truncates, so the cap drops the
+    # OLDEST laps -- asking for laps 1-10 of a long session would otherwise
+    # come back "no laps between 1 and 10", which is a false claim about
+    # the driver's own data rather than a missing convenience.
+    windowed = from_lap is None and to_lap is None
+    laps = db.list_laps(_conn, sid, limit=200 if windowed else None)
+    if not laps:
+        return _j({"error": f"no laps in session {sid}"})
+    truncated = windowed and len(laps) == 200
+    # Oldest first: a stint reads forwards.
+    laps = sorted(laps, key=lambda l: (l.get("lap_number") or 0, l["id"]))
+    if from_lap is not None:
+        laps = [row for row in laps
+                if (row.get("lap_number") or 0) >= from_lap]
+    if to_lap is not None:
+        laps = [row for row in laps
+                if (row.get("lap_number") or 0) <= to_lap]
+    if not laps:
+        bound = ", ".join(
+            f"{n} {v}" for n, v in (("from lap", from_lap), ("to lap", to_lap))
+            if v is not None)
+        return _j({"error": f"no laps in session {sid} {bound}"})
+    entries = []
+    for lap in laps:
+        first, last = db.lap_endpoints(_conn, lap["id"])
+        entries.append({"lap": lap, "first": first, "last": last})
+
+    # What the first stint can honestly say about why it started. Over a
+    # windowed or explicitly ranged set of laps, "first lap of the session"
+    # would be a claim about laps that were never read.
+    if from_lap is not None or to_lap is not None:
+        first_reason = ("first lap of the range asked for, which may be "
+                        "part-way through a stint")
+    elif truncated:
+        first_reason = ("first lap of the newest 200 in this session, which "
+                        "may be part-way through a stint")
+    else:
+        first_reason = "first lap of the session"
+    split = analysis.split_stints(entries, first_reason=first_reason)
+    out = {
+        "session_id": sid,
+        "laps_considered": len(entries),
+        "laps_in_no_stint": len(split["boundary_laps"]),
+        "stint_count": len(split["stints"]),
+        "boundary_laps": split["boundary_laps"],
+        "segmentation_note":
+            "laps are cut into stints at out-laps, pit visits, and any point "
+            "where remaining wear rose (a fresh set) -- either between two "
+            "laps or within one. Totals and trends below are per stint; "
+            "comparing across stints compares two different sets of tyres. "
+            "`boundary_laps` are held out of every stint and are counted in "
+            "`laps_considered` but in no stint's figures.",
+        "stints": [],
+    }
+    if from_lap is not None or to_lap is not None:
+        out["lap_range"] = {"from_lap": from_lap, "to_lap": to_lap}
+    if truncated:
+        out["laps_truncated"] = (
+            "this session has at least 200 laps and only the newest 200 "
+            "were read, so an earlier stint may be missing or cut off. Pass "
+            "from_lap/to_lap to reach the rest.")
+    for n, stint in enumerate(split["stints"], start=1):
+        report = analysis.stint_wear(stint["laps"])
+        report["stint"] = n
+        report["started_because"] = stint["started_because"]
+        report["lap_numbers"] = [e["lap"].get("lap_number")
+                                 for e in stint["laps"]]
+        out["stints"].append(report)
+    if not out["stints"]:
+        out["error"] = (f"session {sid} has laps, but every one of them is a "
+                        f"boundary lap -- a pit visit, or a lap the tyres "
+                        f"changed part-way through -- so there is no stint "
+                        f"to report. See `boundary_laps` for which and why.")
+    return _j(out)
+
+
+@mcp.tool()
+def braking_report(lap_id: int, points: int = 20) -> str:
+    """What the tyres did under braking, and whether anything locked.
+
+    The question behind this is usually "is ABS aggressive enough". That
+    cannot be answered from the setup value, and it cannot currently be
+    answered from shared memory either: the fields that look like ABS and
+    TC activity hold one value for a whole lap, straights included, so
+    they are a setting or a threshold rather than a measure of
+    intervention. They are reported here as an observation, with that
+    said plainly.
+
+    What can be measured is the thing a driver actually feels. Under hard
+    braking in a straight line, this reports slip per axle, which axle is
+    nearer its limit -- that is what brake bias moves -- and any run of
+    samples where a front wheel ran away.
+
+    The straight-line filter matters: slip under combined braking and
+    cornering is high by construction, so without it every trail-braked
+    entry reads as a lockup. The lockup threshold itself is provisional
+    and has never been calibrated against a confirmed lockup, so the raw
+    distribution is reported alongside it."""
+    lap = db.get_lap(_conn, lap_id)
+    if not lap:
+        return _j({"error": f"no lap with id {lap_id}"})
+    return _j(analysis.braking_report(
+        lap, db.get_samples(_conn, lap_id), points))
+
+
+@mcp.tool()
+def attitude_report(lap_id: int) -> str:
+    """How much the car rolled and pitched, and how much per g.
+
+    Roll and pitch have been argued about all season -- anti-roll bars,
+    spring rates, ride height, whether the car is "floppy" -- and every
+    one of those arguments has been indirect, reasoned from load transfer
+    or from the driver's description.
+
+    The number that moves those arguments on is the roll gradient: degrees
+    of body roll per g of lateral acceleration, a measure of total roll
+    stiffness. A bar or spring change should move it, and one that does
+    not move it did not do what it was meant to.
+
+    Read it as a car-AND-track number, not a property of the car alone.
+    AC reports attitude relative to the world, so it carries banking,
+    camber, road grade and the car's static tilt and rake. The fit is
+    signed with a free intercept, which puts the CONSTANT part of that in
+    `static_offset_deg` and out of the gradient -- but banking that rises
+    with cornering load is correlated with lateral g and stays in the
+    slope. So compare gradients between laps on the same track, and treat
+    a cross-track comparison as a rough one.
+
+    Check `fit_r2` before quoting a gradient: it says whether attitude was
+    linear in g at all. `gradient_caveats` (roll) and `dive_caveats`
+    (pitch) name the specific reasons a lap's fit is weaker than its
+    numbers look -- a poor fit, or a lap that never bracketed the
+    intercept because it only turned one way or was never off the brakes.
+    `dive_deg_per_g` is fitted over braking and coasting samples alone;
+    squat under power is a rear-suspension question and is left out.
+
+    `fitted_slope_deg_per_g` is the signed slope next to the magnitude.
+    Which sign means "leaning out of the corner" is AC's convention and
+    has never been verified here, so read it only for agreement: the sign
+    should be the same on every lap of a car, and a lap that disagrees
+    with its neighbours is the anomaly.
+
+    Laps recorded before schema v8 carry no attitude and say so."""
+    lap = db.get_lap(_conn, lap_id)
+    if not lap:
+        return _j({"error": f"no lap with id {lap_id}"})
+    return _j(analysis.attitude_report(lap, db.get_samples(_conn, lap_id)))
+
+
+@mcp.tool()
 def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
     """Corner-by-corner comparison of two laps on the same track: min speed
     deltas, brake point deltas, and slip balance changes. Use to evaluate

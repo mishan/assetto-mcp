@@ -2141,6 +2141,744 @@ def driving_line(lap: dict, samples: list[dict], points: int = 0,
     return out
 
 
+# --- tyre wear ----------------------------------------------------------
+#
+# AC counts tyre wear DOWN from 100. Every reading here is converted to
+# "used", counting up from zero, because a driver asking whether the tyres
+# went off wants a number that grows as they do.
+
+WEAR_CORNERS = ("fl", "fr", "rl", "rr")
+
+
+def _wear_at(sample: dict) -> dict | None:
+    """The four wear readings from one sample, or None if it carries none."""
+    out = {}
+    for w in WEAR_CORNERS:
+        v = sample.get(f"wear_{w}")
+        if not isinstance(v, (int, float)) or not math.isfinite(v):
+            return None
+        out[w] = float(v)
+    return out
+
+
+# Remaining wear rising by more than this between one lap's end and the
+# next lap's start means a fresh set went on. Tyres do not un-wear, so in
+# principle any rise is a reset -- the margin is only there so a hundredth
+# of a percent of jitter does not cut a stint in half. It is generously
+# above any noise seen and far below a real change, which puts a worn set
+# back to 100 and moves several percent at once.
+WEAR_RESET_PCT = 0.5
+
+
+def split_stints(laps: list[dict],
+                 first_reason: str = "first lap of the session") -> dict:
+    """Cut a session's laps into stints at the places the tyres changed.
+
+    A session is not a stint. Sessions deliberately retain out-laps and pit
+    laps, and one can span a tyre change, a setup change, or both. Running
+    the whole thing through `stint_wear` takes the first set's starting
+    wear and the last set's ending wear, subtracts them, and reports the
+    difference as if one set of tyres had done all of it -- and then puts
+    the two sets into a single early-against-late trend, which is where the
+    "did they go off" answer comes from. Both numbers can come out
+    confidently wrong.
+
+    `laps` are entries as `stint_wear` takes them, oldest first. Returns
+    {"stints": [{"laps": [...], "started_because": <reason>}, ...],
+    "boundary_laps": [...]}.
+
+    `first_reason` is what the first stint says about why it started. It
+    is a parameter because only the caller knows whether it was handed the
+    whole session or a slice of one -- saying "first lap of the session"
+    over a windowed or explicitly ranged set of laps is a claim about data
+    this function never saw.
+
+    Four things end a stint:
+
+    - an **out-lap**, which by definition begins a new run out of the pits;
+    - a **pit lap**, whose wear delta may straddle a tyre change made
+      halfway through it and so belongs to neither side. It is excluded
+      from the stints and reported separately rather than silently dropped;
+    - **wear rising within one lap** -- the set changed part-way through a
+      lap that carries no pit flag. Its own delta is negative and would
+      subtract from the stint total, so it is held out as a boundary too;
+    - **remaining wear rising between laps**, which only happens when a
+      fresh set went on. This catches a change the flags missed, and does
+      not depend on them being right, which matters because `pitted` is
+      *inferred* for laps migrated from before schema v10.
+    """
+    stints: list[dict] = []
+    boundaries: list[dict] = []
+    current: list[dict] = []
+    reason = first_reason
+    prev_end = None
+
+    def flush():
+        nonlocal current
+        if current:
+            stints.append({"laps": current, "started_because": reason})
+            current = []
+
+    for entry in laps:
+        lap = entry["lap"]
+        if lap.get("pitted"):
+            flush()
+            boundaries.append({
+                "lap_id": lap["id"],
+                "lap_number": lap.get("lap_number"),
+                "excluded_because": "pit visit during this lap, so its wear "
+                                    "delta may straddle a tyre change",
+            })
+            reason = "first lap after a pit visit"
+            prev_end = None
+            continue
+
+        start = _wear_at(entry.get("first")) if entry.get("first") else None
+        end = _wear_at(entry.get("last")) if entry.get("last") else None
+
+        # Wear went UP inside this lap: a set changed part-way through one
+        # that carries no pit flag. Its delta is negative, so leaving it in
+        # would subtract from the stint's total and flatten its trend.
+        if (start is not None and end is not None
+                and any(end[w] - start[w] > WEAR_RESET_PCT
+                        for w in WEAR_CORNERS)):
+            flush()
+            boundaries.append({
+                "lap_id": lap["id"],
+                "lap_number": lap.get("lap_number"),
+                "excluded_because": "tyre wear rose during this lap, so a "
+                                    "fresh set went on part-way through it "
+                                    "and its own delta spans both sets",
+            })
+            reason = "first lap after a tyre change made mid-lap"
+            prev_end = None
+            continue
+
+        if lap.get("out_lap"):
+            flush()
+            reason = "out-lap: this run began here"
+            prev_end = None
+        elif (start is not None and prev_end is not None
+                and any(start[w] - prev_end[w] > WEAR_RESET_PCT
+                        for w in WEAR_CORNERS)):
+            flush()
+            reason = ("tyre wear went back up, so a fresh set went on "
+                      "before this lap")
+
+        current.append(entry)
+        # Unconditionally, including when this lap has no end reading. A
+        # lap whose end wear is missing clears the baseline rather than
+        # leaving the previous lap's behind: keeping a stale one made the
+        # NEXT lap look like a jump back up, so a set changed on the very
+        # lap that lost its reading came out as two one-lap stints instead
+        # of one. Losing the baseline only costs a missed boundary, which
+        # is the safe direction; a stale one invents boundaries.
+        prev_end = end
+
+    flush()
+    return {"stints": stints, "boundary_laps": boundaries}
+
+
+def stint_wear(laps: list[dict]) -> dict:
+    """How much tyre each lap of a stint used, and whether it is accelerating.
+
+    Each entry in `laps` is {"lap": <lap row>, "first": <sample>,
+    "last": <sample>} -- only the two end samples are needed, so a caller
+    should not read a whole trace per lap to build this.
+
+    `laps` must be ONE stint. This function has no way to know it was
+    handed two sets of tyres, and if it is, the totals span the change and
+    the trend compares one set against the other. Callers holding a whole
+    session run it through `split_stints` first.
+
+    The question this exists for is "did the tyres go off", and the honest
+    answer needs the wear itself rather than its shadow. Until now that was
+    argued from hot pressure and core temperature, which are affected by
+    wear and by half a dozen other things -- so a flat pressure trace was
+    being read as evidence of no degradation when it is only evidence of
+    stable pressure.
+
+    AC counts wear down from 100. Reported as `used`, counting up, so more
+    always means worse.
+    """
+    rows = []
+    # The wear the stint STARTED on, which is not the same as the first
+    # measured lap's remaining_pct -- that one is taken at the end of the
+    # lap, so reporting it as "at start" quietly hid the first lap's wear
+    # and claimed the driver began on a tyre already used.
+    first_start = None
+    for entry in laps:
+        lap = entry["lap"]
+        first, last = entry.get("first"), entry.get("last")
+        start = _wear_at(first) if first else None
+        end = _wear_at(last) if last else None
+        if start is not None and first_start is None:
+            first_start = start
+        if start is None or end is None:
+            rows.append({
+                "lap_id": lap["id"],
+                "lap_number": lap.get("lap_number"),
+                "has_wear": False,
+            })
+            continue
+        rows.append({
+            "lap_id": lap["id"],
+            "lap_number": lap.get("lap_number"),
+            "lap_time": _fmt_time(lap["lap_time_ms"]),
+            "has_wear": True,
+            # An out-lap covers part of a lap's distance, so its wear is not
+            # comparable with a flying lap's. It counts towards the total --
+            # the rubber came off -- but not towards any per-lap RATE.
+            "out_lap": bool(lap.get("out_lap")),
+            # Remaining, as the game shows it, and used, counting up.
+            "remaining_pct": {w: round(end[w], 2) for w in WEAR_CORNERS},
+            "used_this_lap_pct": {
+                w: round(start[w] - end[w], 3) for w in WEAR_CORNERS},
+        })
+
+    measured = [r for r in rows if r["has_wear"]]
+    out = {"laps": rows, "laps_with_wear": len(measured),
+           "laps_without_wear": len(rows) - len(measured)}
+    if not measured:
+        out["error"] = (
+            "no lap in this set carries tyre wear. Wear recording arrived "
+            "in schema v9; laps from before it cannot be backfilled, "
+            "because the readings were never captured.")
+        return out
+
+    # Rates come from full laps only. An out-lap's shorter distance uses
+    # less rubber, and averaging it in with flying laps drags the early
+    # rate down -- which reads as a rate RISING later in the stint, the
+    # exact signal this report is asked to detect. The bias only ever
+    # points one way, because an out-lap is always at the start.
+    full = [r for r in measured if not r["out_lap"]]
+    out_laps = len(measured) - len(full)
+
+    last_seen = measured[-1]
+    total = {w: round(sum(r["used_this_lap_pct"][w] for r in measured), 2)
+             for w in WEAR_CORNERS}
+    worst = max(WEAR_CORNERS, key=lambda w: total[w])
+
+    out["summary"] = {
+        "laps_measured": len(measured),
+        "full_laps_measured": len(full),
+        "out_laps_excluded_from_rates": out_laps,
+        "remaining_at_start_pct": {
+            w: round(first_start[w], 2) for w in WEAR_CORNERS},
+        "remaining_at_end_pct": last_seen["remaining_pct"],
+        "used_total_pct": total,
+        "used_per_lap_pct": (
+            {w: round(sum(r["used_this_lap_pct"][w] for r in full)
+                      / len(full), 3) for w in WEAR_CORNERS}
+            if full else None),
+        "worst_corner": worst,
+        "note": "AC counts wear down from 100; `used` counts up, so higher "
+                "always means more worn. These are the game's own wear "
+                "figures, not an inference from pressure or temperature. "
+                "`used_total_pct` covers every measured lap; the rate and "
+                "the trend use full laps only, because an out-lap covers "
+                "less distance and would drag the early rate down.",
+    }
+    if not full:
+        out["summary"]["rate_note"] = (
+            "every measured lap in this stint was an out-lap, so there is "
+            "no full lap to state a rate from")
+
+    # Is it getting worse, or is it linear? A tyre that is degrading
+    # non-linearly uses more in the second half than the first, and that is
+    # the shape a driver means by "they went off" -- as distinct from wear
+    # that simply accumulates, which every tyre does and which costs
+    # nothing on its own.
+    if len(full) >= 4:
+        half = len(full) // 2
+        early = full[:half]
+        late = full[-half:]
+        trend = {}
+        for w in WEAR_CORNERS:
+            a = mean(r["used_this_lap_pct"][w] for r in early)
+            b = mean(r["used_this_lap_pct"][w] for r in late)
+            trend[w] = {"early_per_lap": round(a, 3),
+                        "late_per_lap": round(b, 3),
+                        "change": round(b - a, 3)}
+        out["trend"] = trend
+        out["trend_note"] = (
+            f"first half of the stint against the last half, over "
+            f"{len(full)} full laps. Wear rising late is degradation "
+            f"accelerating; a flat rate is a tyre wearing normally, which "
+            f"is not the same thing as one going off.")
+    return out
+
+
+# --- braking, and what the aid fields are not ---------------------------
+#
+# This started life as an ABS activity report, on the assumption that
+# shared memory's `abs` and `tc` were the amount of intervention happening
+# right now. The first real lap falsified it: both were constant to three
+# decimal places across 3024 samples -- down every straight and through
+# every braking zone alike. Nothing that measures moment-to-moment
+# intervention behaves that way, so they are a setting or a threshold, and
+# reporting them as activity was inventing a measurement.
+#
+# CSP does expose the real thing -- `absInAction` and
+# `tractionControlInAction`, both booleans on ac.CarState -- but they are
+# marked physics-only, which means a physics worker, which CSP forbids
+# online. Same constraint the damper histograms already live under. Until
+# that is wired up, ABS activity is unmeasured and this module says so.
+#
+# What IS measurable from data already stored is the thing the driver
+# actually described: wheels locking under braking. A tyre at the limit
+# under straight-line braking shows up as slip, and slip is recorded at
+# 25 Hz on all four corners.
+
+# Pedal travel that counts as leaning on the brakes. Below this the driver
+# is trailing off, and what the tyres do there says nothing about whether
+# ABS is set right.
+HARD_BRAKE = 0.5
+# Steering below this is straight enough that slip is longitudinal --
+# i.e. the wheel is locking rather than cornering. Without this the report
+# would flag every trail-braked corner entry as a lockup, because slip
+# under combined braking and cornering is high by construction.
+STRAIGHT_STEER = 0.15
+# Front slip above this, while braking hard in a straight line, reads as a
+# wheel getting away. PROVISIONAL: it has never been calibrated against a
+# lockup someone confirmed from the cockpit, so it is reported alongside
+# the raw distribution rather than instead of it, and the payload says so.
+LOCKUP_SLIP = 3.0
+
+AID_ACTIVE_EPS = 0.001
+def _pct(values: list[float], q: float) -> float:
+    """Nearest-rank percentile. No interpolation, no numpy."""
+    ordered = sorted(values)
+    i = min(len(ordered) - 1, max(0, int(round(q * (len(ordered) - 1)))))
+    return ordered[i]
+
+
+def _aid_field_note(samples: list[dict], field: str) -> dict | None:
+    """What a driver-aid field held, and whether it varied at all.
+
+    Reported as an observation rather than as a measurement of anything.
+    If `varies` is false the field cannot be describing intervention, and
+    the payload should not let a reader believe otherwise.
+    """
+    vals = [s.get(field) for s in samples]
+    vals = [v for v in vals
+            if isinstance(v, (int, float)) and math.isfinite(v)]
+    if not vals:
+        return None
+    lo, hi = min(vals), max(vals)
+    return {
+        "samples": len(vals),
+        "min": round(lo, 4),
+        "max": round(hi, 4),
+        "varies": (hi - lo) > AID_ACTIVE_EPS,
+    }
+
+
+def braking_report(lap: dict, samples: list[dict],
+                   points: int = 20) -> dict:
+    """What the tyres did under braking, and whether anything locked.
+
+    The question behind this is "is ABS aggressive enough", which cannot be
+    answered from the setup value and -- for now -- cannot be answered from
+    shared memory either, because the fields that look like ABS activity
+    are constant across a lap. See the notes above LOCKUP_SLIP.
+
+    What can be answered: under hard braking in a straight line, how much
+    slip did each axle carry, and did the front ever run away. Slip while
+    braking AND cornering is high by construction, so the steering filter
+    is what makes the rest of the numbers mean anything.
+    """
+    if not samples:
+        return {"error": "no samples for this lap"}
+
+    def num(s, k):
+        v = s.get(k)
+        return v if isinstance(v, (int, float)) and math.isfinite(v) else None
+
+    def _hard_straight(s) -> bool:
+        """Hard on the brakes with the wheel near straight.
+
+        One definition, used both for the axle statistics and for walking
+        the lap looking for lockup runs, so the two cannot drift apart.
+        """
+        return ((num(s, "brake") or 0.0) >= HARD_BRAKE
+                and abs(num(s, "steer") or 0.0) < STRAIGHT_STEER)
+
+    braking = [s for s in samples
+               if (num(s, "brake") or 0.0) >= HARD_BRAKE]
+    straight = [s for s in braking if _hard_straight(s)]
+
+    out = {
+        "lap_id": lap["id"],
+        "lap_time": _fmt_time(lap["lap_time_ms"]),
+        "hard_braking_samples": len(braking),
+        "straight_line_braking_samples": len(straight),
+        "thresholds": {
+            "hard_brake": HARD_BRAKE,
+            "straight_steer": STRAIGHT_STEER,
+            "lockup_slip": LOCKUP_SLIP,
+            "lockup_slip_is_calibrated": False,
+        },
+    }
+
+    if not straight:
+        out["error"] = (
+            f"no sample on this lap had brake >= {HARD_BRAKE} with steering "
+            f"under {STRAIGHT_STEER}. Everything here needs straight-line "
+            f"braking to separate a locking wheel from a cornering one.")
+        return out
+
+    axles = {}
+    for axle, corners in (("front", ("fl", "fr")), ("rear", ("rl", "rr"))):
+        vals = []
+        for s in straight:
+            got = [num(s, f"slip_{c}") for c in corners]
+            got = [v for v in got if v is not None and abs(v) <= SLIP_SANE_MAX]
+            if got:
+                vals.append(max(got))          # the worst wheel on the axle
+        if not vals:
+            continue
+        axles[axle] = {
+            "mean_slip": round(mean(vals), 3),
+            "p95_slip": round(_pct(vals, 0.95), 3),
+            "max_slip": round(max(vals), 3),
+            "samples_over_lockup_threshold": sum(
+                1 for v in vals if v > LOCKUP_SLIP),
+        }
+    out["under_straight_line_braking"] = axles
+
+    if "front" in axles and "rear" in axles:
+        f, r = axles["front"]["mean_slip"], axles["rear"]["mean_slip"]
+        out["axle_closer_to_locking"] = "front" if f > r else "rear"
+        out["axle_note"] = (
+            "the axle carrying more slip under straight-line braking is the "
+            "one nearer its limit, which is what brake bias moves")
+
+    # Lockup runs: consecutive samples *in the recorded order* that were
+    # over the threshold under hard straight-line braking.
+    #
+    # This walks the whole lap rather than the filtered `straight` list, and
+    # that is the entire point. `straight` has already dropped every
+    # coasting, cornering and light-brake sample, so two one-tick spikes in
+    # braking zones half a lap apart sit next to each other in it and would
+    # be reported as a single two-sample run -- a lockup invented out of two
+    # pieces of noise. Anything that is not hard, straight braking over the
+    # threshold ends the run, including the samples that were filtered out.
+    runs, current = [], []
+    for s in samples:
+        worst = None
+        if _hard_straight(s):
+            got = [num(s, f"slip_{c}") for c in ("fl", "fr")]
+            got = [v for v in got if v is not None and abs(v) <= SLIP_SANE_MAX]
+            worst = max(got) if got else None
+        if worst is not None and worst > LOCKUP_SLIP:
+            current.append(s)
+        elif current:
+            runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+    out["front_lockup_runs"] = [
+        {"from_pos": round(r[0].get("norm_pos", 0.0), 4),
+         "to_pos": round(r[-1].get("norm_pos", 0.0), 4),
+         "samples": len(r)}
+        for r in runs if len(r) >= 2][:8]
+    out["front_lockup_run_count"] = len(out["front_lockup_runs"])
+
+    # Where round the lap the fronts work hardest under braking.
+    points = max(10, min(LINE_MAX_POINTS, int(points)))
+    bins: list[list[dict]] = [[] for _ in range(points)]
+    for s in straight:
+        pos = s.get("norm_pos")
+        if pos is None:
+            continue
+        bins[min(points - 1, max(0, int(pos * points)))].append(s)
+    slices = []
+    for i, group in enumerate(bins):
+        vals = []
+        for s in group:
+            got = [num(s, f"slip_{c}") for c in ("fl", "fr")]
+            got = [v for v in got if v is not None and abs(v) <= SLIP_SANE_MAX]
+            if got:
+                vals.append(max(got))
+        if vals:
+            slices.append({"pos": round((i + 0.5) / points, 4),
+                           "max_front_slip": round(max(vals), 3),
+                           "samples": len(vals)})
+    slices.sort(key=lambda e: -e["max_front_slip"])
+    out["hardest_braking_slices"] = slices[:6]
+
+    # The aid fields, reported as what they are rather than as activity.
+    abs_f = _aid_field_note(samples, "abs_active")
+    tc_f = _aid_field_note(samples, "tc_active")
+    if abs_f or tc_f:
+        out["aid_fields"] = {"abs": abs_f, "tc": tc_f}
+        constant = [n for n, f in (("abs", abs_f), ("tc", tc_f))
+                    if f and not f["varies"]]
+        if constant:
+            out["aid_fields_note"] = (
+                f"{', '.join(constant)} held one value for the whole lap, "
+                f"including down the straights, so {'they are' if len(constant) > 1 else 'it is'} "
+                f"not a measure of intervention -- more likely a setting or "
+                f"a slip threshold. CSP exposes the real flags "
+                f"(absInAction, tractionControlInAction) but only to a "
+                f"physics worker, which is single-player only.")
+    return out
+
+
+# --- body attitude ------------------------------------------------------
+#
+# AC reports roll and pitch in radians. Everything here is converted to
+# degrees, because that is the unit every suspension conversation uses and
+# a payload in radians invites a factor-of-57 mistake nobody would notice.
+#
+# The attitude AC reports is ABSOLUTE -- it is the body's angle to the
+# world, not to the road surface, so it carries banking, camber, road grade
+# and whatever static tilt and rake the car sits at. None of that is
+# suspension movement. The fits below keep the signs and carry a free
+# intercept precisely so the static part lands in the intercept instead of
+# being read as roll the springs allowed.
+
+# A lap needs samples with real load on them before a slope means anything:
+# these are the thresholds that count a sample as loaded. They no longer
+# filter what is fitted -- the low-g samples are what anchor the intercept
+# -- only whether there was enough load on the lap to fit at all.
+ROLL_MIN_LAT_G = 0.5
+BRAKE_MIN_LON_G = 0.5
+# Enough loaded samples that a gradient means something. A handful of
+# points through a fitted line is not a measurement.
+GRADIENT_MIN_SAMPLES = 40
+
+
+def _fit_line(pairs: list[tuple[float, float]]) -> dict | None:
+    """Ordinary least squares with a free intercept: y = slope*x + offset.
+
+    Both the sign of x and the sign of y are kept, and the intercept is
+    free, and both of those are load-bearing.
+
+    An earlier version fitted |roll| against |lateral g| through the
+    origin, which does not measure suspension roll at all. The attitude AC
+    reports is absolute, so it carries track banking, camber and whatever
+    static tilt the car sits at -- a car with a fixed 0.4 degrees of lean
+    and no suspension travel whatsoever still produced a confident positive
+    gradient. Taking absolutes made it worse than that: a sample where the
+    body leant *into* the corner, against the load, was folded onto the
+    same side as one leaning out and counted as supporting the fit.
+
+    With signs kept, roll opposing the load subtracts from the slope the
+    way it should, and the intercept absorbs the static offset instead of
+    the slope absorbing it. Returns the slope, the intercept, and r2 --
+    r2 says whether a straight line described the data at all, which is
+    what stops a meaningless slope being quoted as a measurement.
+    """
+    n = len(pairs)
+    if n < 2:
+        return None
+    mx = sum(x for x, _ in pairs) / n
+    my = sum(y for _, y in pairs) / n
+    sxx = sum((x - mx) ** 2 for x, _ in pairs)
+    if sxx <= 1e-12:
+        return None                      # no spread in load: nothing to fit
+    sxy = sum((x - mx) * (y - my) for x, y in pairs)
+    slope = sxy / sxx
+    offset = my - slope * mx
+    syy = sum((y - my) ** 2 for _, y in pairs)
+    r2 = (sxy * sxy) / (sxx * syy) if syy > 1e-12 else None
+    return {"slope": slope, "offset": offset,
+            "r2": None if r2 is None else max(0.0, min(1.0, r2))}
+
+
+def attitude_report(lap: dict, samples: list[dict]) -> dict:
+    """Body roll and pitch, and how much of each the car gives up per g.
+
+    Every anti-roll bar and spring argument this project has had was
+    settled -- or more often not settled -- by reasoning from load transfer
+    or from what the car felt like. Roll gradient is the direct
+    measurement: degrees of roll per g of lateral acceleration is total
+    roll stiffness, so a bar change either moves it or did not do what it
+    was meant to.
+    """
+    if not samples:
+        return {"error": "no samples for this lap"}
+
+    def num(s, k):
+        v = s.get(k)
+        return v if isinstance(v, (int, float)) and math.isfinite(v) else None
+
+    rolls = [(num(s, "roll"), num(s, "acc_lat")) for s in samples]
+    rolls = [(math.degrees(r), g) for r, g in rolls
+             if r is not None and g is not None and abs(g) <= LAT_G_SANE_MAX]
+    pitches = [(num(s, "pitch"), num(s, "acc_lon")) for s in samples]
+    pitches = [(math.degrees(p), g) for p, g in pitches
+               if p is not None and g is not None and abs(g) <= LON_G_SANE_MAX]
+
+    if not rolls and not pitches:
+        return {
+            "lap_id": lap["id"],
+            "has_attitude": False,
+            "error": "this lap has no roll or pitch recorded. Attitude "
+                     "arrived in schema v8; earlier laps cannot be "
+                     "backfilled because the readings were never captured.",
+        }
+
+    out = {
+        "lap_id": lap["id"],
+        "lap_time": _fmt_time(lap["lap_time_ms"]),
+        "has_attitude": True,
+        "units": "degrees; AC reports radians and these are converted",
+    }
+
+    if rolls:
+        # Signed, and fitted over every sane sample rather than only the
+        # loaded ones. The low-g samples are what pin the intercept -- the
+        # attitude the car holds when nothing is loading it, which is
+        # static tilt plus whatever the road is doing underneath it. Fitting
+        # loaded samples alone leaves the intercept to be extrapolated from
+        # points that are all far from zero.
+        loaded = [(g, r) for r, g in rolls if abs(g) >= ROLL_MIN_LAT_G]
+        entry = {
+            "max_abs_deg": round(max(abs(r) for r, _ in rolls), 2),
+            "loaded_samples": len(loaded),
+            "loaded_both_directions": (
+                any(g >= ROLL_MIN_LAT_G for g, _ in loaded)
+                and any(g <= -ROLL_MIN_LAT_G for g, _ in loaded)),
+        }
+        fit = (_fit_line([(g, r) for r, g in rolls])
+               if len(loaded) >= GRADIENT_MIN_SAMPLES else None)
+        if fit is not None:
+            entry["gradient_deg_per_g"] = round(abs(fit["slope"]), 3)
+            entry["static_offset_deg"] = round(fit["offset"], 3)
+            entry["fit_r2"] = (None if fit["r2"] is None
+                               else round(fit["r2"], 3))
+            entry["gradient_note"] = (
+                f"degrees of body roll per g of lateral acceleration, from "
+                f"a signed least-squares fit of roll against lateral g with "
+                f"a free intercept, over {len(rolls)} samples of which "
+                f"{len(loaded)} carried at least {ROLL_MIN_LAT_G}g of "
+                f"lateral load either way. Lower is a "
+                f"stiffer car in roll, and this is what an anti-roll bar "
+                f"change should move. `static_offset_deg` is the roll the "
+                f"car holds at zero lateral g -- static tilt, road camber "
+                f"and banking -- which is NOT suspension roll and is why "
+                f"the fit carries an intercept instead of being forced "
+                f"through the origin. The intercept removes the CONSTANT "
+                f"part of that only -- banking that rises with cornering "
+                f"load is correlated with lateral g and still lands in the "
+                f"slope, so this is a car-plus-track number and comparisons "
+                f"belong within one track.")
+            # The signed slope, kept because the magnitude alone cannot show
+            # a lap where roll ran the wrong way against load. Which sign
+            # means "leaning out of the corner" is AC's convention and this
+            # project has never verified it, so no direction is claimed --
+            # what is usable is that the sign should be the SAME on every
+            # lap of a car, and a lap that disagrees with its neighbours is
+            # the anomaly.
+            entry["fitted_slope_deg_per_g"] = round(fit["slope"], 3)
+            entry["gradient_caveats"] = caveats = []
+            if not entry["loaded_both_directions"]:
+                caveats.append(
+                    "every loaded sample was a corner in the same "
+                    "direction, so the intercept is extrapolated rather "
+                    "than bracketed and the split between static offset "
+                    "and roll is weaker than the numbers suggest")
+            if entry["fit_r2"] is not None and entry["fit_r2"] < 0.5:
+                caveats.append(
+                    f"r2 {entry['fit_r2']} -- roll was not close to linear "
+                    f"in lateral g on this lap, so the gradient is a poor "
+                    f"summary of it. Banking, kerbs or a bottoming car all "
+                    f"do this.")
+            if not caveats:
+                del entry["gradient_caveats"]
+        else:
+            entry["gradient_deg_per_g"] = None
+            entry["gradient_note"] = (
+                f"only {len(loaded)} samples at {ROLL_MIN_LAT_G}g or more of "
+                f"lateral load, "
+                f"under the {GRADIENT_MIN_SAMPLES} needed for a gradient "
+                f"worth quoting"
+                if len(loaded) < GRADIENT_MIN_SAMPLES else
+                f"{len(loaded)} samples carried at least "
+                f"{ROLL_MIN_LAT_G}g, but "
+                f"lateral g barely varied across them, so there is no "
+                f"spread to fit a slope through")
+        out["roll"] = entry
+
+    if pitches:
+        # Same argument as roll, and the same trap: absolute pitch carries
+        # static rake and the grade of the road.
+        #
+        # Fitted over braking and coasting only -- every sample at or below
+        # zero longitudinal g. Squat under power is a different suspension
+        # question, rear springs and anti-squat, and folding it in would
+        # make a number labelled "dive" partly a measurement of the rear of
+        # the car. The cut is at zero rather than at -BRAKE_MIN_LON_G
+        # because the near-zero samples are what pin the intercept; without
+        # them it would be extrapolated from braking points alone.
+        braking = [(g, p) for p, g in pitches if g <= -BRAKE_MIN_LON_G]
+        fitted = [(g, p) for p, g in pitches if g <= 0.0]
+        # Samples near zero longitudinal load. Without them the intercept
+        # is extrapolated from braking points alone -- the same weakness
+        # roll has on a track that only turns one way.
+        unloaded = [1 for g, _ in fitted if g > -BRAKE_MIN_LON_G]
+        entry = {
+            "max_abs_deg": round(max(abs(p) for p, _ in pitches), 2),
+            "braking_samples": len(braking),
+            "unloaded_samples": len(unloaded),
+        }
+        fit = (_fit_line(fitted)
+               if len(braking) >= GRADIENT_MIN_SAMPLES else None)
+        if fit is not None:
+            entry["dive_deg_per_g"] = round(abs(fit["slope"]), 3)
+            entry["static_offset_deg"] = round(fit["offset"], 3)
+            entry["fit_r2"] = (None if fit["r2"] is None
+                               else round(fit["r2"], 3))
+            entry["dive_note"] = (
+                f"degrees of nose-down pitch per g of braking, from a "
+                f"signed fit with a free intercept over {len(fitted)} "
+                f"samples at or below zero longitudinal g, {len(braking)} "
+                f"of them braking harder than {BRAKE_MIN_LON_G}g. Every "
+                f"sample under power is excluded: squat is a "
+                f"rear-suspension question and does not belong in a dive "
+                f"figure. Front spring and damper changes "
+                f"should move this; it is also what puts the splitter on "
+                f"the ground. `static_offset_deg` is the rake the car sits "
+                f"at with no longitudinal load, road grade included, and is "
+                f"not dive -- though grade that varies with where the "
+                f"driver brakes is correlated with braking g and still "
+                f"lands in the slope.")
+            # Signed, for the same reason as roll: which sign is nose-down
+            # is AC's convention and unverified here, so the useful check is
+            # that it agrees across laps of the same car.
+            entry["fitted_slope_deg_per_g"] = round(fit["slope"], 3)
+            entry["dive_caveats"] = caveats = []
+            if not unloaded:
+                caveats.append(
+                    "every fitted sample was under braking, so the "
+                    "intercept is extrapolated rather than bracketed and "
+                    "the split between static rake and dive is weaker than "
+                    "the numbers suggest")
+            if entry["fit_r2"] is not None and entry["fit_r2"] < 0.5:
+                caveats.append(
+                    f"r2 {entry['fit_r2']} -- pitch was not close to linear "
+                    f"in longitudinal g on this lap, so the gradient is a "
+                    f"poor summary of it")
+            if not caveats:
+                del entry["dive_caveats"]
+        else:
+            entry["dive_deg_per_g"] = None
+            entry["dive_note"] = (
+                f"only {len(braking)} samples braking above "
+                f"{BRAKE_MIN_LON_G}g, under the {GRADIENT_MIN_SAMPLES} "
+                f"needed for a dive figure worth quoting"
+                if len(braking) < GRADIENT_MIN_SAMPLES else
+                f"{len(braking)} braking samples, but longitudinal g barely "
+                f"varied across them, so there is no spread to fit a slope "
+                f"through")
+        out["pitch"] = entry
+
+    return out
+
+
 def compare_laps(lap_a: dict, samples_a: list[dict],
                  lap_b: dict, samples_b: list[dict]) -> dict:
     """Corner-by-corner comparison of two laps, matched by track position."""

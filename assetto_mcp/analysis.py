@@ -303,7 +303,8 @@ def lat_g_reference(
 
 def corner_detection_note(reference: float | None, laps: int,
                           own_peak: float | None = None,
-                          spread_g: float | None = None) -> dict:
+                          spread_g: float | None = None,
+                          shared_basis: str | None = None) -> dict:
     """What bar the corners on this payload were found against.
 
     Reported everywhere corners are, because it decides which corners exist
@@ -328,7 +329,14 @@ def corner_detection_note(reference: float | None, laps: int,
     shared = reference is not None
     bar = reference if shared else (own_peak or 0.0)
     out = {
-        "basis": "shared across the laps being compared" if shared
+        # `shared_basis` names which laps shared it. It exists because the
+        # answer is no longer always "the laps being compared": a single
+        # lap read through lap_summary is now held to the bar its session's
+        # turn numbering was built against, and a payload that called that
+        # "the laps being compared" would be describing a comparison the
+        # reader never asked for.
+        "basis": (f"shared across "
+                  f"{shared_basis or 'the laps being compared'}") if shared
                  else "this lap's own cornering load",
         "lat_g_reference": round(bar, 3),
         "threshold_g": round(max(bar * CORNER_LAT_G_FRACTION,
@@ -490,6 +498,153 @@ def detect_corners(samples: list[dict],
     return corners
 
 
+# How far an apex may wander between laps and still be the same piece of
+# road. 1% of a lap, about 50m at Mugello. compare_runs has taken this as
+# its corner_tolerance since it stopped bucketing, and the turn numbers use
+# the same figure deliberately: "T7" and the corner comparison at that apex
+# have to be the same piece of road by construction, not by coincidence.
+CORNER_TOLERANCE = 0.01
+
+# How many laps have to have cornered on a piece of road before it is given
+# a turn number. Repeatability, not a majority: an event invents a corner on
+# one lap, driving does it on every lap it happens on.
+#
+# A majority rule was the first attempt and it refuses a real turn. Pool a
+# two-lap baseline with a two-lap candidate, as compare_runs does, and a
+# corner the candidate drove on both its laps and the baseline's detector
+# never found sits at exactly half -- so the one corner the comparison most
+# wants to name is the one it would have left unnamed.
+CORNER_MAP_MIN_LAPS_SEEN = 2
+
+# Below this many laps even that is too strong: of two laps, a corner found
+# once is half the evidence there is rather than an outlier, and refusing it
+# leaves a real turn unnumbered on the lap that drove it.
+CORNER_MAP_MIN_LAPS = 3
+
+
+def _median_field(obs: list[dict], field: str) -> float | None:
+    """The median of one corner field over a cluster's observations.
+
+    Median rather than mean because a brake point is the field most likely
+    to be missing on some laps and wildly out on one: a lift-and-coast lap
+    contributes a brake_point_pos half a corner early, and the mean would
+    carry a quarter of that into a number the driver reads as "where this
+    turn is braked for".
+    """
+    vals = [c[field] for c in obs
+            if isinstance(c.get(field), (int, float))]
+    return round(median(vals), 4) if vals else None
+
+
+def corner_map(lap_corners: list[list[dict]],
+               tolerance: float = CORNER_TOLERANCE) -> dict:
+    """Number the pieces of road a run corners on: T1, T2, T3...
+
+    detect_corners numbers its output 1..n in the order it found corners on
+    ONE lap, which is an index into that lap's list and not an identity. A
+    light corner that falls under the bar on lap 4 shifts every number after
+    it, so corner 5 on one lap and corner 5 on the next need not be the same
+    piece of road -- the same failure that made compare_runs match corners
+    by position instead of by index. A number that cannot be quoted twice
+    cannot be quoted to a driver at all.
+
+    Pooling every lap's corners first is what turns the number into an
+    identity. The grouping is _corner_clusters, the one compare_runs already
+    pairs corners with, so a turn number means the same road as a corner
+    lead at the same apex.
+
+    A cluster is numbered only where more than one lap cornered on it.
+    One-lap clusters are returned under `unnumbered` rather than dropped --
+    they are real observations and worth seeing -- but they must not take a
+    number: a spin violent enough for the detector to carve out as its own
+    corner (which is how one at Sebring was eventually spotted) would
+    otherwise renumber every turn after it on the strength of one lap.
+    Below CORNER_MAP_MIN_LAPS that bar is dropped too; see the constants.
+
+    Two limits worth knowing, both shared with compare_runs and neither
+    hidden by the payload. A corner the start/finish line runs through is
+    two pieces of road here, because positions do not wrap. And a turn the
+    detector never sees -- a kink taken flat, below the lateral-g bar -- is
+    not in the map, so these numbers are the corners this run *drove*, which
+    is not always the circuit's own numbering.
+    """
+    laps = [{"corners": cs or []} for cs in lap_corners]
+    total = len(laps)
+    kept, minor = [], []
+    for g in _corner_clusters(laps, tolerance):
+        obs = [o[2] for o in g]
+        # Distinct laps, not observations. _corner_clusters caps a cluster
+        # at one corner per lap, so these agree today -- counting laps says
+        # what the rule below actually needs, and keeps it honest if that
+        # ever changes.
+        seen = len({o[1] for o in g})
+        signs = [c["turn_sign"] for c in obs if c.get("turn_sign") in (1, -1)]
+        entry = {
+            "apex_pos": round(median(o[0] for o in g), 4),
+            "entry_pos": _median_field(obs, "entry_pos"),
+            "exit_pos": _median_field(obs, "exit_pos"),
+            "brake_point_pos": _median_field(obs, "brake_point_pos"),
+            # None on a tie rather than a coin toss: a cluster holding as
+            # many left-handers as right ones has pooled two corners, and
+            # saying so is more use than picking one of them.
+            "turn_sign": (None if not signs or sum(signs) == 0
+                          else (1 if sum(signs) > 0 else -1)),
+            "laps_seen": seen,
+            "laps_total": total,
+        }
+        if total < CORNER_MAP_MIN_LAPS or seen >= CORNER_MAP_MIN_LAPS_SEEN:
+            kept.append(entry)
+        else:
+            minor.append(entry)
+
+    turns = [{"turn": f"T{n}", "number": n, **e}
+             for n, e in enumerate(kept, 1)]
+    return {
+        "turns": turns,
+        "laps": total,
+        "tolerance": tolerance,
+        "unnumbered": minor,
+        "note": "turn numbers come from the corners these laps drove, in "
+                "track order from the start/finish line. They are this "
+                "run's numbering, not the circuit's official one -- a kink "
+                "the detector never sees is not numbered here, and a "
+                "circuit that numbers one of its corners 3A is numbered "
+                "straight through.",
+    }
+
+
+def label_corners(corners: list[dict], turns: list[dict],
+                  tolerance: float = CORNER_TOLERANCE) -> int:
+    """Stamp `turn` on each corner of one lap from a corner map.
+
+    Nearest first and one-to-one, the pairing _compare_corners uses. Taking
+    each corner's nearest turn independently lets two corners of the same
+    lap both claim T4, and a payload naming the same turn twice is worse
+    than one that says it does not know.
+
+    `turn` is set on every corner, None where nothing matched, so a reader
+    never has to tell "this corner has no number" from "this payload was
+    never labelled". Returns how many were labelled.
+    """
+    for c in corners:
+        c["turn"] = None
+    pairs = sorted(
+        (abs(c["apex_pos"] - t["apex_pos"]), i, j)
+        for i, c in enumerate(corners)
+        if isinstance(c.get("apex_pos"), (int, float))
+        for j, t in enumerate(turns)
+        if abs(c["apex_pos"] - t["apex_pos"]) <= tolerance)
+    taken_c, taken_t, labelled = set(), set(), 0
+    for _, i, j in pairs:
+        if i in taken_c or j in taken_t:
+            continue
+        taken_c.add(i)
+        taken_t.add(j)
+        corners[i]["turn"] = turns[j]["turn"]
+        labelled += 1
+    return labelled
+
+
 def _brake_zone_start(samples, apex_idx: int, floor_idx: int) -> int | None:
     """Index where braking for this corner began, or None if it never did.
 
@@ -606,7 +761,9 @@ def _corner_stats(samples, apex_idx, exit_idx, brake_floor_idx=0) -> dict:
 def lap_summary(lap: dict, samples: list[dict],
                 reference_peak_g: float | None = None,
                 reference_laps: int = 0,
-                reference_spread_g: float | None = None) -> dict:
+                reference_spread_g: float | None = None,
+                turns: list[dict] | None = None,
+                reference_basis: str | None = None) -> dict:
     """Everything an engineer needs to know about one lap, in ~1KB.
 
     reference_peak_g comes from lat_g_reference over every lap being looked
@@ -618,6 +775,12 @@ def lap_summary(lap: dict, samples: list[dict],
     difference is otherwise invisible: the same lap read here and read
     inside compare_runs can carry different corners, and a driver comparing
     the two payloads has no way to see why.
+
+    `turns` is a corner_map's turn list, and it is what puts T-numbers on
+    this lap's corners. Pass the map built from the same laps the reference
+    came from: a map built against a different bar holds corners this lap
+    was never judged for, and the labelling would then be matching apexes
+    across two different corner lists.
     """
     if not samples:
         return {"error": "no samples for this lap"}
@@ -645,6 +808,13 @@ def lap_summary(lap: dict, samples: list[dict],
         or not _is_sane(s.get("acc_lon"), LON_G_SANE_MAX))
 
     corners = detect_corners(samples, reference_peak_g)
+    # `corner` on each of these is this lap's ordinal and moves with what
+    # the detector found; `turn` is the same piece of road on every lap of
+    # the run. `is not None` so an empty map still stamps turn: None on
+    # every corner -- "the map has no number for this" is an answer, and it
+    # should not arrive as a missing key.
+    if turns is not None:
+        label_corners(corners, turns)
     # own_peak only when there is no shared reference, because that is the
     # only case corner_detection_note reports it in. Computing it always
     # meant smoothing and median-filtering the lateral-g trace a second
@@ -654,7 +824,7 @@ def lap_summary(lap: dict, samples: list[dict],
         reference_peak_g, reference_laps,
         own_peak=(None if reference_peak_g is not None
                   else _lat_g_peak(_lat_g_trace(samples)[0])),
-        spread_g=reference_spread_g)
+        spread_g=reference_spread_g, shared_basis=reference_basis)
     slip_balances = [c["slip_balance"] for c in corners
                      if c["slip_balance"] is not None]
 
@@ -1668,7 +1838,7 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
 
 
 def compare_runs(baseline: list[dict], candidate: list[dict],
-                 corner_tolerance: float = 0.01) -> dict:
+                 corner_tolerance: float = CORNER_TOLERANCE) -> dict:
     """Did a setup change do anything, given how repeatable the driver is?
 
     Lap time is the noisiest instrument on the car. Measured spread across
@@ -1725,6 +1895,20 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
     corners, unmatched, compared = _compare_corners(
         baseline, candidate, corner_tolerance)
 
+    # One map over both sides, for the same reason there is one lateral-g
+    # bar over both: numbered per side, the piece of road that is T7 in the
+    # baseline could be T6 in the candidate, and a payload that names the
+    # same corner two different things inside itself is worse than one that
+    # only gives apex positions. The unmatched list is labelled too -- a
+    # corner found on one side only is exactly the one a reader wants to
+    # name, and it is the reason the two sides can disagree about numbering
+    # in the first place.
+    turn_map = corner_map(
+        [l.get("corners") or [] for l in baseline + candidate],
+        corner_tolerance)
+    label_corners(corners, turn_map["turns"], corner_tolerance)
+    label_corners(unmatched, turn_map["turns"], corner_tolerance)
+
     # The confirmatory family: the metrics, and nothing else. Corners are
     # measured the same way and judged separately, because "where did it
     # change" is not another answer to "did anything change" -- and because
@@ -1779,12 +1963,17 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
         head += (f". Suggestive but not confirmed, and worth more laps: "
                  f"{', '.join(suggestive)}")
     if flagged:
-        where = ", ".join(f"{c['apex_pos']:.3f}" for c in
-                          [c for c in ranked
-                           if any(t.get("lead") == "worth a look"
-                                  for t in c["tests"])][:4])
+        # The turn number where there is one, the apex position where there
+        # is not. A lead the map has no number for is still a lead, and
+        # dropping it from this sentence to keep the format tidy would hide
+        # exactly the corners the detector is least sure about.
+        where = ", ".join(
+            c.get("turn") or f"{c['apex_pos']:.3f}" for c in
+            [c for c in ranked
+             if any(t.get("lead") == "worth a look"
+                    for t in c["tests"])][:4])
         head += (f". Separately, {flagged} corner(s) stand out as "
-                 f"exploratory leads (apex {where}) -- uncorrected, not "
+                 f"exploratory leads ({where}) -- uncorrected, not "
                  f"findings, and about 5% of quiet corners do this")
     summary = head
 
@@ -1810,13 +1999,21 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
         "metrics": metrics,
         "corners_compared": compared,
         "corner_leads": [
-            {"apex_pos": round(c["apex_pos"], 4),
+            {"turn": c.get("turn"), "apex_pos": round(c["apex_pos"], 4),
              **{t["channel"]: {k: v for k, v in t.items()
                                if k not in ("channel", _TEST)}
                 for t in c["tests"]}}
             for c in shown],
         "corner_leads_note": leads_note,
         "corners_in_one_run_only": unmatched[:12],
+        # Where each label is, so a reader can place T7 without holding a
+        # second payload beside this one. Apex only: the full map -- brake
+        # points, extent, how many laps each turn was seen on -- is what
+        # the track_corners tool is for, and repeating it here would cost
+        # more than the labels are worth.
+        "turns": [{"turn": t["turn"], "apex_pos": t["apex_pos"]}
+                  for t in turn_map["turns"]],
+        "turns_note": turn_map["note"],
         "multiple_comparisons": {
             "method": "holm-bonferroni",
             "family": "the run metrics; corner tests are exploratory",
@@ -2911,6 +3108,13 @@ def compare_laps(lap_a: dict, samples_a: list[dict],
                     and best["slip_balance"] is not None else None),
             })
 
+    # Numbered across both laps at once, for the same reason there is one
+    # detection bar across both: numbering each lap on its own would let the
+    # same piece of road be T5 on one side of a delta and T4 on the other,
+    # inside a payload whose whole job is to put the two side by side.
+    turn_map = corner_map([ca, cb])
+    label_corners(matched, turn_map["turns"])
+
     return {
         "lap_a": {"id": lap_a["id"], "time": _fmt_time(lap_a["lap_time_ms"])},
         "lap_b": {"id": lap_b["id"], "time": _fmt_time(lap_b["lap_time_ms"])},
@@ -2923,5 +3127,12 @@ def compare_laps(lap_a: dict, samples_a: list[dict],
             ref, detail["laps"], spread_g=detail["spread_g"]),
         "corners_found": {"lap_a": len(ca), "lap_b": len(cb),
                           "matched": len(matched)},
+        # Where the labels on those corners are. Two laps is a thin basis
+        # for a numbering and this tool always has exactly two, so the table
+        # travels with the payload rather than being looked up elsewhere
+        # against a different set of laps.
+        "turns": [{"turn": t["turn"], "apex_pos": t["apex_pos"]}
+                  for t in turn_map["turns"]],
+        "turns_note": turn_map["note"],
         "corners": matched,
     }

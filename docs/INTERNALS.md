@@ -163,15 +163,54 @@ labelled left or right, because AC does not document which sign is which, and a
 consistent sign is more useful than a label that is right half the time.
 
 **`corner_detection`** appears alongside every corner list and says which
-lateral-g bar produced it. It is not the same bar in every tool: a
-`lap_summary` read on its own uses that lap's own cornering load, while
-`compare_laps` and `compare_runs` use one shared across every lap being
-compared, so that corner membership doesn't depend on how hard an individual
-lap was driven. The same lap can therefore carry a different number of corners
-in the two payloads, and this is how you tell why.
+lateral-g bar produced it. It is not the same bar in every tool: `lap_summary`
+uses the one shared across its session's laps — the same bar its turn numbers
+were built against — while `compare_laps` and `compare_runs` use one shared
+across every lap being compared. Either way corner membership doesn't depend
+on how hard an individual lap was driven, but the two bars are different
+numbers, so the same lap can carry a different number of corners in the two
+payloads. This is how you tell why. A lap handed to `analysis.lap_summary`
+with no reference at all still falls back to its own peak, and says so.
 
 The shared bar reduces one-sided corners rather than eliminating them: a gently
 driven lap can still genuinely fall below a bar the others set.
+
+### Turn numbers
+
+Every corner also carries a **`turn`** — `T1`, `T2`, `T3` in track order from
+the start/finish line. `corner` beside it is only that lap's ordinal: a light
+corner missed on one lap closes the gap and shifts every number after it, so
+"corner 5" is not reliably the same piece of road twice. `turn` is, because it
+comes from the corners pooled across a whole session and matched by position.
+It is what to quote to a driver.
+
+`track_corners` is the table: where each turn starts, apexes and ends, where
+it is braked for, which way it turns and how many laps cornered there.
+`compare_runs` and `compare_laps` label their corners too, from the laps they
+were given rather than from the session — each of those payloads carries its
+own `turns` table so the labels in it can be placed without a second call.
+
+Three things the numbering does not claim.
+
+- **It is not the circuit's official numbering.** A kink taken flat carries
+  too little lateral load to be detected, so nothing numbers it, and a circuit
+  that calls a corner 3A is numbered straight through. There is no track
+  database behind this; it is what the car drove.
+- **It is per session, not per circuit.** A session is one car in one set of
+  conditions, so all its laps share a lateral-g bar. Pooling across sessions
+  would pool a road car's 1.1 g with a formula car's 3.4 g, and the bar that
+  followed would erase the road car's lighter corners outright. Two sessions
+  at the same circuit can therefore number differently; every payload carrying
+  turn labels says which laps produced the numbering.
+- **A corner only one lap drove takes no number.** It comes back under
+  `unnumbered` instead. A spin violent enough for the detector to carve out as
+  its own corner — which is how one at Sebring was eventually spotted — would
+  otherwise renumber every turn after it on the strength of one lap. Corners
+  a lap drove that the numbering has no entry for report `turn: null` rather
+  than dropping the key.
+
+A corner the start/finish line runs through is two pieces of road here, because
+positions don't wrap. `compare_runs` has always matched corners the same way.
 
 ---
 

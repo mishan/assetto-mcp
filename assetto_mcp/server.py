@@ -118,6 +118,12 @@ def _active_session(explicit: int | None = None) -> int | None:
 # a corner, and it bounds what the first lap_summary call on a race pays.
 CORNER_MAP_LAPS = 8
 
+# How many laps to read per query while looking for those eight. Usability
+# is decided in Python (db.lap_usability), so the search pages rather than
+# filtering in SQL -- a second copy of that rule in a WHERE clause is one
+# that drifts. One page covers any ordinary session.
+CORNER_MAP_PAGE = 32
+
 # Keyed by session, and holding the exact lap ids the numbering was built
 # from beside it. Not by session id alone: a session gains laps while it is
 # being driven, and a cached numbering that outlived its own basis would
@@ -147,6 +153,24 @@ def _corner_map_from(lap_ids: list[int]) -> dict:
     return out
 
 
+def _newest_usable_lap_ids(session_id: int, want: int) -> list[int]:
+    """The newest `want` usable laps of a session, reading no more than needed.
+
+    This runs on every lap_summary call, cached or not, because the lap ids
+    are the cache key. Reading the whole session to keep eight made a long
+    race pay for every lap in it each time a single lap was summarised.
+    """
+    ids, offset = [], 0
+    while len(ids) < want:
+        page = db.list_laps(_conn, session_id, limit=CORNER_MAP_PAGE,
+                            offset=offset)
+        ids += [l["id"] for l in page if db.lap_usability(l)[0]]
+        if len(page) < CORNER_MAP_PAGE:
+            break
+        offset += len(page)
+    return ids[:want]
+
+
 def _session_corner_map(session_id: int, lap_id: int | None = None) -> dict:
     """This session's turn numbering, from its most recent usable laps.
 
@@ -162,9 +186,7 @@ def _session_corner_map(session_id: int, lap_id: int | None = None) -> dict:
     carrying these labels says which laps produced them, so a disagreement
     is visible rather than silent.
     """
-    laps = [l for l in db.list_laps(_conn, session_id, limit=None)
-            if db.lap_usability(l)[0]][:CORNER_MAP_LAPS]
-    ids = [l["id"] for l in laps]
+    ids = _newest_usable_lap_ids(session_id, CORNER_MAP_LAPS)
     if not ids and lap_id is not None:
         # Every lap of the session is an out-lap, an in-lap or a lap that
         # ended in the barrier. The requested lap is then all the evidence

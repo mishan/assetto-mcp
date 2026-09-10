@@ -1097,6 +1097,30 @@ def test_a_lap_is_detected_against_the_bar_its_turn_numbers_came_from():
     print(f"  basis: {detection['basis']}")
 
 
+def test_the_numbering_pages_back_past_laps_it_cannot_use():
+    """Newest usable laps, however far back they are.
+
+    The search reads a page of laps at a time instead of the whole session,
+    so a session whose newest laps are all out-laps is the case that proves
+    it keeps paging: stopping at the first page would find nothing to number
+    and report a session that plainly cornered as one that never did.
+    """
+    srv = _server()
+    sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
+    usable = [db.store_lap(srv._conn, sid, n, 113000 + n, True, _cornering())
+              for n in range(1, 4)]
+    newer = srv.CORNER_MAP_PAGE + 5
+    for n in range(4, 4 + newer):
+        db.store_lap(srv._conn, sid, n, 113000, True,
+                     [(i * 100, i / 60.0, *_SAMPLE) for i in range(60)],
+                     out_lap=True)
+
+    out = json.loads(_tool(srv, "track_corners")(session_id=sid))
+    assert sorted(out["built_from_laps"]) == usable, out["built_from_laps"]
+    assert [t["turn"] for t in out["turns"]] == ["T1", "T2", "T3"], out
+    print(f"  {newer} out-laps on top; built from laps {usable}")
+
+
 def test_a_session_with_nothing_to_number_says_which_kind_of_nothing():
     """"No turns" has two causes and they need different answers.
 

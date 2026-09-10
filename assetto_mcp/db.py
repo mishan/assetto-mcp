@@ -1684,13 +1684,18 @@ def _store_lap(conn, session_id, lap_number, lap_time_ms, samples,
     return lap_id
 
 
-def list_laps(conn, session_id: int | None = None, limit: int | None = 50):
+def list_laps(conn, session_id: int | None = None, limit: int | None = 50,
+              offset: int = 0):
     """Laps, newest first. limit=None means every one of them.
 
     The explicit None matters for callers that report on what they did *not*
     touch: a lap outside a window would otherwise be described as not
     existing, which is a false claim about the driver's own data rather than
     a missing convenience.
+
+    `offset` skips that many of the newest laps, for a caller paging back
+    until it has found enough of something. It only applies with a limit;
+    with limit=None every lap is returned regardless.
     """
     q = ("SELECT laps.*, sessions.car, sessions.track, sessions.track_config,"
          " laps.setup_name"
@@ -1701,8 +1706,8 @@ def list_laps(conn, session_id: int | None = None, limit: int | None = 50):
         args.append(session_id)
     q += " ORDER BY laps.id DESC"
     if limit is not None:
-        q += " LIMIT ?"
-        args.append(limit)
+        q += " LIMIT ? OFFSET ?"
+        args += [limit, offset]
     return [dict(r) for r in conn.execute(q, args)]
 
 

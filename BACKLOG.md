@@ -5,7 +5,7 @@ already produced. Each entry says what is wrong, where it bit, and where the
 code lives, so a future session can act without re-deriving any of it.
 
 Written after the Sebring / NSX GT3 session, and kept current since. Test
-suite stands at 454 passing with the Lua tooling installed,
+suite stands at 467 passing with the Lua tooling installed,
 schema at v13.
 
 ---
@@ -384,6 +384,62 @@ Damage rising would disambiguate them when damage is on.
 **`_migrate` v1 unguarded ALTER** — fixed. All six ALTER sites now go through
 `_add_column`, which no-ops on a missing table. Listed only so nobody
 re-derives it.
+
+---
+
+## 9. Turn numbers are the run's, not the circuit's
+
+**Status:** numbering built (`analysis.corner_map`, `label_corners`, the
+`track_corners` tool). What is open is everything that would make the
+numbers agree with the circuit's own.
+
+Corners now carry a stable `turn` — `T1`, `T2`, `T3` in track order —
+pooled across a session's laps rather than indexed per lap, so the same
+piece of road has the same name on every lap of a session. That is enough
+to talk to a driver with. Three things it is not:
+
+- **Not the circuit's numbering.** A kink taken flat is under the
+  lateral-g bar, so it is not detected and not numbered, and every corner
+  after it is one lower than the circuit says. A circuit that calls a
+  corner 3A — Sonoma T3/T3A, Mosport 5C — is numbered straight through.
+- **Not shared between sessions.** The bar is per session because it is per
+  car; two sessions at one circuit can number differently, and only the
+  `built_from_laps` in each payload makes that visible.
+- **Not on every payload.** `braking_report`'s lockup runs and hardest
+  braking slices, `driving_line`'s slices and `attitude_report` still speak
+  in bare positions. Labelling those means attributing a position in a
+  braking zone to the turn it is braking *for*, which the map has the
+  `brake_point_pos` for and nothing does yet.
+
+**What a real numbering would take.** Surveyed 2026-09-09, and no source
+covers Assetto Corsa's mod long tail:
+
+- [tobi/track-atlas](https://github.com/tobi/track-atlas) — MIT, 40
+  circuits, one entry per layout. Corners carry `number`, `code` (which
+  does hold `2a`, `5c`, `9a`), name layers, and `marker` — a lap fraction
+  0-1, directly comparable to AC's `normalizedCarPosition`. Has Mugello,
+  Suzuka, Sebring, Silverstone, Monza, Spa. No Sonoma. Geometry is
+  OSM-derived and ODbL, so distributing it needs attribution.
+- [Lovely-Sim-Racing/lovely-track-data](https://github.com/Lovely-Sim-Racing/lovely-track-data)
+  — the upstream track-atlas re-publishes, and the better shape: files are
+  keyed by SimHub track id, which for AC *is* the folder name in
+  `sessions.track` (`rt_lime_rock_park`), with `turn: [{name, marker}]`.
+  But its AC coverage is one track, and the repository carries no LICENSE
+  file at all, so it cannot be vendored.
+- CrewChief's `trackLandmarksData.json` is keyed per sim including AC
+  (`ks_silverstone:national`) but holds names, not numbers, and no license.
+- `content/tracks/<track>/[<layout>/]data/sections.ini` —
+  `[SECTION_0] IN=0.88 OUT=1 TEXT=...`, IN/OUT in `norm_pos`, so it is the
+  only format already in AC's own coordinate space and needs no alignment
+  at all. Kunos does not ship it; the OverTake "Corner names (track
+  description)" pack supplies it for the Kunos set and many mods,
+  hand-installed.
+
+So the shape of the fix is a per-`(track, track_config)` override read from
+the install's own `sections.ini` when it is there, hand-written when it is
+not, matched to the detected corners by order and turn direction rather
+than by absolute position — an imported lap fraction is another sim's
+spline, good for ordering and not for a 50 m tolerance.
 
 ---
 

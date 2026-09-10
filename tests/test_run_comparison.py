@@ -531,6 +531,67 @@ def test_corners_are_matched_by_position_not_by_index():
     print(f"  flagged {sorted(flagged)} and left the unchanged corner alone")
 
 
+def test_corner_leads_are_named_by_turn_number():
+    """A lead has to be quotable, and an apex position is not.
+
+    "0.858" is a number a driver cannot act on. The same corner is T3 in
+    every payload of this comparison -- the leads, the turns table, and the
+    summary sentence a model reads out.
+    """
+    base = [_lap(113400, 1.0, 58.0, corners=[_corner(0.140, 0.5, 100.0),
+                                             _corner(0.691, 1.10, 110.0),
+                                             _corner(0.858, 1.20, 120.0)]),
+            _lap(113500, 1.0, 58.0, corners=[_corner(0.142, 0.5, 100.4),
+                                             _corner(0.689, 1.12, 110.4),
+                                             _corner(0.861, 1.22, 119.5)])]
+    cand = [_lap(113400, 0.9, 56.0, corners=[_corner(0.140, 0.5, 100.2),
+                                             _corner(0.690, 1.09, 110.2),
+                                             _corner(0.857, 0.60, 132.0)]),
+            _lap(113500, 0.9, 56.0, corners=[_corner(0.142, 0.5, 100.1),
+                                             _corner(0.692, 1.11, 110.6),
+                                             _corner(0.859, 0.62, 131.4)])]
+    out = analysis.compare_runs(base, cand)
+
+    named = [t["turn"] for t in out["turns"]]
+    assert named == ["T1", "T2", "T3"], out["turns"]
+    at = {t["turn"]: t["apex_pos"] for t in out["turns"]}
+    assert _close(at["T3"], 0.8588, 1e-3), out["turns"]
+
+    for lead in out["corner_leads"]:
+        assert _close(lead["apex_pos"], at[lead["turn"]], 0.01), lead
+    moved = next(c for c in out["corner_leads"]
+                 if _close(c["apex_pos"], 0.8588, 1e-3))
+    assert moved["turn"] == "T3", moved
+    assert "T3" in out["summary"], out["summary"]
+    print(f"  the corner that moved is T3 in the leads and in: "
+          f"...{out['summary'].split('Separately')[-1][:60]}...")
+
+
+def test_a_corner_only_one_run_drove_is_still_numbered():
+    """Two laps a side, and the candidate found a corner the baseline did not.
+
+    Pooled, that corner is on exactly half the laps. Under a majority rule
+    it took no number -- so the one corner in the payload that most needs a
+    name, the one under corners_in_one_run_only, was the one left with only
+    an apex position. Numbering asks for repeatability instead: two laps
+    drove it, which is driving rather than an event.
+    """
+    base = [_lap(113400, 1.0, 58.0, corners=[_corner(0.691, 1.10, 110.0)]),
+            _lap(113500, 1.0, 58.0, corners=[_corner(0.689, 1.12, 110.4)])]
+    cand = [_lap(113400, 0.9, 56.0, corners=[_corner(0.140, 0.5, 100.0),
+                                             _corner(0.690, 1.09, 110.2)]),
+            _lap(113500, 0.9, 56.0, corners=[_corner(0.142, 0.5, 100.4),
+                                             _corner(0.692, 1.11, 110.6)])]
+    out = analysis.compare_runs(base, cand)
+
+    assert [t["turn"] for t in out["turns"]] == ["T1", "T2"], out["turns"]
+    only = out["corners_in_one_run_only"]
+    assert len(only) == 1, only
+    assert only[0]["side"] == "candidate" and only[0]["turn"] == "T1", only
+    print(f"  candidate-only corner named {only[0]['turn']} at "
+          f"{only[0]['apex_pos']}")
+
+
 def test_apexes_a_meter_apart_are_the_same_corner():
     """0.0299, 0.0300 and 0.0301 are one corner, not two.
 
@@ -936,6 +997,126 @@ def test_a_run_with_no_cornering_does_not_claim_a_shared_reference():
     assert "no lap on either side" in cd["note"], cd
     assert "one lateral-g reference" not in cd["note"], cd
     print(f"  {cd['basis']!r}; note agrees with it")
+
+
+# --- turn numbering, through the tools ----------------------------------
+#
+# analysis.corner_map is tested on corner dicts in test_delta_and_corners.
+# What is tested here is the wiring: that the numbering a session gets is
+# the same numbering every lap of it is labelled against, which is a
+# property of the server and not of the analysis.
+
+_CORNERS = ((0.15, 2.4, 1), (0.45, 2.2, 1), (0.80, 2.6, -1))
+
+
+def _cornering(n=600, corners=_CORNERS, skip=()):
+    """Samples for a lap that corners at these positions.
+
+    `skip` drops a corner by its 1-based place, standing in for the light
+    corner a lap's detector loses under the bar. Triangular rather than
+    smooth: the shape does not matter here, only that the lateral load is
+    over the threshold for more than CORNER_MIN_SAMPLES ticks.
+    """
+    half = 0.04
+    rows = []
+    for i in range(n):
+        pos = i / n
+        lat = 0.0
+        for k, (apex, g, sign) in enumerate(corners, 1):
+            d = abs(pos - apex)
+            if k not in skip and d < half:
+                lat = sign * g * (1.0 - d / half)
+        turning = abs(lat) > 0.4
+        rows.append((i * 100, pos, 220.0 * (1.0 - min(0.6, abs(lat) / 4.0)),
+                     0.0 if turning else 1.0, 0.8 if turning else 0.0,
+                     0.5 if turning else 0.0, 3 if turning else 6, 9000,
+                     lat, -1.0 if turning else 0.2,
+                     1.4, 1.4, 0.5, 0.5, 26.0, 26.0, 26.0, 26.0,
+                     85.0, 85.0, 85.0, 85.0, 0.02, 0.024, 0))
+    return rows
+
+
+def _tool(srv, name):
+    """The function behind an MCP tool, whatever the decorator returns."""
+    fn = getattr(srv, name)
+    return getattr(fn, "fn", fn)
+
+
+def test_the_tools_number_the_turns_and_label_every_laps_corners():
+    """One numbering per session, and every lap read against it.
+
+    The lap here misses its middle corner, the way a lap near the detection
+    bar does. Its own corner list closes the gap -- the third corner becomes
+    its second -- so this is exactly the lap that used to make "corner 2"
+    mean two different pieces of road inside one session.
+    """
+    srv = _server()
+    sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
+    for n in range(1, 4):
+        db.store_lap(srv._conn, sid, n, 113000 + n, True, _cornering())
+    thin = db.store_lap(srv._conn, sid, 4, 113400, True,
+                        _cornering(skip=(2,)))
+
+    turns = json.loads(_tool(srv, "track_corners")(session_id=sid))
+    assert [t["turn"] for t in turns["turns"]] == ["T1", "T2", "T3"], turns
+    apexes = [t["apex_pos"] for t in turns["turns"]]
+    want = (0.15, 0.45, 0.80)
+    assert all(abs(a - b) < 0.02 for a, b in zip(apexes, want)), apexes
+    assert turns["built_from_laps"], turns
+    assert turns["turns"][2]["turn_sign"] == -1, turns["turns"][2]
+
+    lap = json.loads(_tool(srv, "lap_summary")(lap_id=thin))
+    assert [c["turn"] for c in lap["corners"]] == ["T1", "T3"], lap["corners"]
+    assert [c["corner"] for c in lap["corners"]] == [1, 2], lap["corners"]
+    # Same numbering in both payloads, not two maps that happen to agree.
+    assert abs(lap["corners"][1]["apex_pos"] - apexes[2]) < 0.02, \
+        lap["corners"]
+    print(f"  turns {[t['turn'] for t in turns['turns']]} at {apexes}; "
+          f"the lap missing T2 reports T1, T3")
+
+
+def test_a_lap_is_detected_against_the_bar_its_turn_numbers_came_from():
+    """Corners and their numbers have to come from the same threshold.
+
+    lap_summary used to hold a single lap to its own peak lateral g, which
+    is a different bar from the one the session's numbering was built
+    against -- so a corner could exist on the lap and not in the map, or
+    the reverse, and the labelling would be matching apexes across two
+    different corner lists. The payload says which bar it used.
+    """
+    srv = _server()
+    sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
+    ids = [db.store_lap(srv._conn, sid, n, 113000 + n, True, _cornering())
+           for n in range(1, 4)]
+
+    lap = json.loads(_tool(srv, "lap_summary")(lap_id=ids[0]))
+    detection = lap["corner_detection"]
+    assert detection["basis"].startswith("shared across"), detection
+    assert "turn numbers" in detection["basis"], detection
+    assert detection["laps_in_reference"] == 3, detection
+    print(f"  basis: {detection['basis']}")
+
+
+def test_a_session_with_nothing_to_number_says_which_kind_of_nothing():
+    """"No turns" has two causes and they need different answers.
+
+    A session with no usable laps is answered by driving one. A session
+    whose laps carry no cornering load at all is answered by looking at the
+    laps -- and reporting the first for the second sent a reader hunting a
+    bug in corner detection on a session that had never stored a flying lap.
+    """
+    srv = _server()
+    empty = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
+    out = json.loads(_tool(srv, "track_corners")(session_id=empty))
+    assert out["turns"] == [] and "no laps" in out["error"], out
+
+    flat = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
+    db.store_lap(srv._conn, flat, 1, 113000, True,
+                 [(i * 100, i / 60.0, *_SAMPLE) for i in range(60)])
+    out = json.loads(_tool(srv, "track_corners")(session_id=flat))
+    assert out["turns"] == [], out
+    assert "cornering load" in out["error"], out
+    print(f"  {out['error']}")
 
 
 if __name__ == "__main__":

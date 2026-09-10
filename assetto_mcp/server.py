@@ -112,6 +112,75 @@ def _active_session(explicit: int | None = None) -> int | None:
     return _bridge.active_session_id()
 
 
+# How many laps a session's turn numbering is built from. Every one costs a
+# full sample load, so this is a budget as much as a sample size: eight is
+# well clear of the two laps analysis.corner_map wants before it will number
+# a corner, and it bounds what the first lap_summary call on a race pays.
+CORNER_MAP_LAPS = 8
+
+# Keyed by session, and holding the exact lap ids the numbering was built
+# from beside it. Not by session id alone: a session gains laps while it is
+# being driven, and a cached numbering that outlived its own basis would
+# keep answering about a circuit the newer laps had already contradicted.
+_corner_maps: dict[int, tuple[tuple[int, ...], dict]] = {}
+
+
+def _corner_map_from(lap_ids: list[int]) -> dict:
+    """Turn numbers for a set of laps, plus the bar they were found against.
+
+    The lateral-g reference comes back with the map because the two cannot
+    be separated: corners found against one bar cannot be numbered by a map
+    built against another, so whatever labels these laps also has to say
+    which threshold produced them.
+    """
+    sets, used = [], []
+    for lap_id in lap_ids:
+        samples = db.get_samples(_conn, lap_id)
+        if samples:
+            sets.append(samples)
+            used.append(lap_id)
+    detail = analysis.lat_g_reference_detail(sets)
+    out = analysis.corner_map(
+        [analysis.detect_corners(s, detail["reference"]) for s in sets])
+    out["reference"] = detail
+    out["basis_lap_ids"] = used
+    return out
+
+
+def _session_corner_map(session_id: int, lap_id: int | None = None) -> dict:
+    """This session's turn numbering, from its most recent usable laps.
+
+    Scoped to a session rather than to a circuit, and that is the whole of
+    what these numbers promise. A session is one car in one set of
+    conditions, so every lap in it is held to the same lateral-g bar and
+    the same corners exist on all of them. A map pooled across sessions
+    would pool a road car's 1.1g with a formula car's 3.4g, and the bar
+    that followed would erase the slower car's lighter corners outright.
+
+    The cost of that choice is that two sessions at the same circuit can
+    number differently if the detector saw different corners. Every payload
+    carrying these labels says which laps produced them, so a disagreement
+    is visible rather than silent.
+    """
+    laps = [l for l in db.list_laps(_conn, session_id, limit=None)
+            if db.lap_usability(l)[0]][:CORNER_MAP_LAPS]
+    ids = [l["id"] for l in laps]
+    if not ids and lap_id is not None:
+        # Every lap of the session is an out-lap, an in-lap or a lap that
+        # ended in the barrier. The requested lap is then all the evidence
+        # there is, and numbering from it alone beats answering with no
+        # numbers -- as long as the payload says how thin that basis is,
+        # which basis_lap_ids does.
+        ids = [lap_id]
+    key = tuple(ids)
+    cached = _corner_maps.get(session_id)
+    if cached and cached[0] == key:
+        return cached[1]
+    cmap = _corner_map_from(ids)
+    _corner_maps[session_id] = (key, cmap)
+    return cmap
+
+
 def _collector_state() -> tuple[str, str]:
     """Why the collector is not running, when it isn't. Returns (state, why).
 
@@ -907,12 +976,38 @@ def lap_summary(lap_id: int) -> str:
     left/right -- AC does not document which sign is which, so do not
     describe a turn_sign of 1 as a right-hander.
 
+    Every corner also carries `turn` -- T1, T2, T3 in track order from the
+    start/finish line -- which is the label to quote to a driver. `corner`
+    beside it is only this lap's ordinal: a light corner that falls under
+    the detection bar on one lap shifts every number after it, so corner 5
+    is not reliably the same piece of road twice. `turn` is, because it
+    comes from the corners pooled across this session's laps. It is null
+    where this session's numbering has no entry for a corner this lap
+    drove. Call track_corners for where each turn is.
+
+    The numbering is this session's, not the circuit's official one: a kink
+    the detector never sees is not numbered, and a circuit that calls one of
+    its corners 3A is numbered straight through.
+
     Includes a few suspension headlines when the in-game app captured them;
     call suspension_report for the full damper histograms and ride height."""
     lap = db.get_lap(_conn, lap_id)
     if not lap:
         return _j({"error": f"no lap with id {lap_id}"})
-    out = analysis.lap_summary(lap, db.get_samples(_conn, lap_id))
+    # The session's bar, not this lap's own peak, and the two go together:
+    # corners have to be found against the same threshold the numbering was
+    # built against or the labels are being matched across two different
+    # corner lists. It also ends the older oddity that the same lap read
+    # here and read inside compare_runs could carry different corners --
+    # `corner_detection` in the payload names the basis either way.
+    cmap = _session_corner_map(lap["session_id"], lap_id)
+    ref = cmap["reference"]
+    out = analysis.lap_summary(
+        lap, db.get_samples(_conn, lap_id),
+        ref["reference"], reference_laps=ref["laps"],
+        reference_spread_g=ref["spread_g"], turns=cmap["turns"],
+        reference_basis="this session's laps, the ones its turn numbers "
+                        "were built from")
 
     # A pointer, not a replacement: lap_summary has a ~1KB budget and the
     # full suspension report is an order of magnitude bigger.
@@ -923,6 +1018,73 @@ def lap_summary(lap_id: int) -> str:
         compact = suspension.compact(suspension.summarise(susp_samples))
         if compact:
             out["suspension"] = compact
+    return _j(out)
+
+
+@mcp.tool()
+def track_corners(session_id: int | None = None) -> str:
+    """The turns of this session's circuit, numbered T1, T2, ... in order.
+
+    Numbered from the corners the car actually drove: every lap's detected
+    corners are pooled, grouped into pieces of road, and numbered in track
+    order from the start/finish line. The same labels appear on every corner
+    in lap_summary and on the corner leads in compare_runs, so this is the
+    table that says where T7 is.
+
+    Each turn carries where it starts, apexes and ends, where it is braked
+    for, which way it turns (as a sign -- AC does not document which sign is
+    left), and how many of the laps cornered there.
+
+    Two things this is NOT. It is not the circuit's official numbering: a
+    kink taken flat carries too little lateral load to be detected, so it is
+    not numbered here, and a circuit that calls a corner 3A is numbered
+    straight through. And it is not shared between sessions -- the numbering
+    is built per session so that one car's cornering load sets the bar, so
+    another session at the same circuit can number differently.
+    `built_from_laps` says which laps produced it.
+
+    `unnumbered` holds pieces of road only one lap cornered on. They are
+    left out of the numbering on purpose: a spin the detector carves out as
+    its own corner would otherwise renumber every turn after it on the
+    strength of that one lap."""
+    sid = _active_session(session_id)
+    if sid is None:
+        return _j({"error": "no active session; pass session_id"})
+    session = db.get_session(_conn, sid)
+    if not session:
+        return _j({"error": f"no session with id {sid}"})
+    cmap = _session_corner_map(sid)
+    ref = cmap["reference"]
+    out = {
+        "session_id": sid,
+        "car": session.get("car"),
+        "track": session["track"] + (f"/{session['track_config']}"
+                                     if session.get("track_config") else ""),
+        "turns_found": len(cmap["turns"]),
+        "built_from_laps": cmap["basis_lap_ids"],
+        "turns": cmap["turns"],
+        "unnumbered": cmap["unnumbered"],
+        "note": cmap["note"],
+    }
+    # Only when there is one. corner_detection_note with no reference
+    # describes "this lap's own cornering load", which is a sentence about
+    # a lap -- and this payload is about a session that either has no laps
+    # or has laps that never cornered. The error below says which.
+    if ref["reference"] is not None:
+        out["corner_detection"] = analysis.corner_detection_note(
+            ref["reference"], ref["laps"], spread_g=ref["spread_g"],
+            shared_basis="the laps these turn numbers were built from")
+    if not cmap["turns"]:
+        # Distinguishing the two reasons matters: one is answered by driving
+        # a lap, the other by looking at why the laps that exist were
+        # excluded. Reporting "no turns" for both sent the reader looking
+        # for a bug in corner detection on a session that had never stored
+        # a flying lap.
+        out["error"] = (
+            f"session {sid} has no laps to number corners from"
+            if not cmap["basis_lap_ids"] else
+            f"none of the {len(cmap['basis_lap_ids'])} lap(s) read carried "
+            f"enough cornering load to detect a corner on")
     return _j(out)
 
 
@@ -1249,6 +1411,11 @@ def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
     """Corner-by-corner comparison of two laps on the same track: min speed
     deltas, brake point deltas, and slip balance changes. Use to evaluate
     whether a setup change actually helped.
+
+    Each corner carries a `turn` -- T1, T2, T3 -- numbered across both laps
+    at once, with `turns` giving the apex of each. That numbering comes from
+    these two laps alone, so it can differ from the one lap_summary and
+    track_corners use for the whole session.
 
     Both laps are compared whatever they are -- an out-lap and a lap that
     ended in the barrier still have real corner speeds on them. But if

@@ -550,7 +550,14 @@ def test_compare_laps_holds_both_laps_to_one_bar():
     out = analysis.compare_laps(_meta(1, 113000), easy,
                                 _meta(2, 113480), hard)
     assert len(out["corners"]) == 4, out["corners"]
-    print(f"  {len(out['corners'])} corners matched across efforts")
+    # And numbered across both laps at once, so a delta and the turn it is
+    # a delta at cannot come from two different numberings.
+    assert [c["turn"] for c in out["corners"]] == ["T1", "T2", "T3", "T4"], \
+        out["corners"]
+    assert [t["turn"] for t in out["turns"]] == ["T1", "T2", "T3", "T4"], \
+        out["turns"]
+    print(f"  {len(out['corners'])} corners matched across efforts, "
+          f"numbered T1-T4")
 
 
 def test_one_wild_lap_does_not_move_the_reference():
@@ -906,6 +913,150 @@ def test_a_flat_list_of_samples_is_refused_rather_than_answered():
         print(f"  refused: {str(e)[:60]}...")
     else:
         raise AssertionError("a flat sample list was accepted")
+
+
+# --- turn numbering -----------------------------------------------------
+#
+# The number detect_corners puts on a corner is an index into one lap's
+# list. These tests are about the other number -- the one a driver can be
+# told twice and have mean the same piece of road both times.
+
+
+def _obs(*apexes, sign=1):
+    """Corners at these apexes, shaped the way detect_corners leaves them."""
+    return [{"apex_pos": p, "entry_pos": round(p - 0.02, 4),
+             "exit_pos": round(p + 0.02, 4),
+             "brake_point_pos": round(p - 0.05, 4),
+             "turn_sign": sign, "corner": i}
+            for i, p in enumerate(apexes, 1)]
+
+
+def test_a_corner_missed_on_one_lap_does_not_renumber_the_others():
+    """The whole reason turn numbers exist.
+
+    A light corner near the detection bar is found on three laps and missed
+    on the fourth. That lap's own numbering closes the gap -- the corner
+    after the missing one becomes corner 2 -- so "corner 3" means different
+    roads on different laps of one run. The turn number does not move.
+    """
+    laps = [_obs(0.15, 0.45, 0.70, 0.88) for _ in range(3)]
+    thin = _obs(0.15, 0.70, 0.88)          # 0.45 fell under the bar
+    turns = analysis.corner_map(laps + [thin])["turns"]
+
+    assert [t["turn"] for t in turns] == ["T1", "T2", "T3", "T4"], turns
+    assert [t["apex_pos"] for t in turns] == [0.15, 0.45, 0.70, 0.88], turns
+
+    analysis.label_corners(thin, turns)
+    assert [c["turn"] for c in thin] == ["T1", "T3", "T4"], thin
+    # And what the per-lap index says about the same three corners.
+    assert [c["corner"] for c in thin] == [1, 2, 3], thin
+    print("  a lap missing T2 still calls the next corner T3, not corner 2")
+
+
+def test_a_corner_seen_on_one_lap_of_four_takes_no_number():
+    """A spin is not a corner, however corner-shaped it looks.
+
+    The detector carves a violent enough spin out as its own corner -- which
+    is how the one at Sebring was eventually spotted. Numbered, it would
+    push every turn after it up by one on the strength of a single lap, so
+    it is reported separately instead and the lap that has it gets a null.
+    """
+    laps = [_obs(0.15, 0.45, 0.88) for _ in range(3)]
+    spun = _obs(0.15, 0.45, 0.60, 0.88)
+    cmap = analysis.corner_map(laps + [spun])
+
+    assert [t["apex_pos"] for t in cmap["turns"]] == [0.15, 0.45, 0.88], cmap
+    assert [t["turn"] for t in cmap["turns"]] == ["T1", "T2", "T3"], cmap
+    assert [u["apex_pos"] for u in cmap["unnumbered"]] == [0.60], cmap
+    assert cmap["unnumbered"][0]["laps_seen"] == 1, cmap["unnumbered"]
+
+    analysis.label_corners(spun, cmap["turns"])
+    assert [c["turn"] for c in spun] == ["T1", "T2", None, "T3"], spun
+    print("  0.60 seen on 1 lap of 4: unnumbered, and T3 is still T3")
+
+
+def test_with_two_laps_nothing_is_excluded_for_being_a_minority():
+    """A majority of two is both of them, which is not a bar worth holding.
+
+    Held to it, a corner either lap missed would go unnumbered on the run
+    that found it -- and with two laps a single miss is half the evidence
+    rather than an outlier.
+    """
+    cmap = analysis.corner_map([_obs(0.15, 0.45), _obs(0.15)])
+    assert [t["turn"] for t in cmap["turns"]] == ["T1", "T2"], cmap
+    assert cmap["unnumbered"] == [], cmap
+    print("  2 laps, 1 corner seen once: numbered anyway")
+
+
+def test_two_corners_cannot_both_claim_one_turn():
+    """Nearest-first and one-to-one, the pairing compare_runs uses.
+
+    Taking each corner's nearest turn independently, an esse the map holds
+    as one piece of road gets both its halves labelled T1, and a payload
+    naming the same turn twice is worse than one that says it does not
+    know.
+    """
+    turns = analysis.corner_map([_obs(0.300) for _ in range(3)])["turns"]
+    esse = _obs(0.298, 0.304)
+    assert analysis.label_corners(esse, turns) == 1
+    assert [c["turn"] for c in esse] == ["T1", None], esse
+    print("  0.298 took T1; 0.304 got null rather than a second T1")
+
+
+def test_a_turn_carries_where_it_is_and_which_way_it_goes():
+    turns = analysis.corner_map(
+        [_obs(0.15, sign=-1) for _ in range(3)])["turns"]
+    t = turns[0]
+    assert t["entry_pos"] < t["apex_pos"] < t["exit_pos"], t
+    assert t["brake_point_pos"] < t["entry_pos"], t
+    assert t["turn_sign"] == -1, t
+    assert (t["laps_seen"], t["laps_total"]) == (3, 3), t
+
+
+def test_the_map_numbers_the_corners_a_real_lap_drove():
+    """End to end from samples, on the fixture the detector is tested on."""
+    laps = [_lap(), _lap(), _lap()]
+    ref = analysis.lat_g_reference(laps)
+    detected = [analysis.detect_corners(s, ref) for s in laps]
+    cmap = analysis.corner_map(detected)
+
+    assert [t["turn"] for t in cmap["turns"]] == ["T1", "T2", "T3", "T4"]
+    apexes = [t["apex_pos"] for t in cmap["turns"]]
+    assert all(abs(a - b) < 0.02 for a, b in
+               zip(apexes, (0.15, 0.45, 0.70, 0.88))), apexes
+    # The fast sweeper at 0.70 is T3: the corner the old detector could not
+    # see at all is a named piece of road now.
+    assert cmap["turns"][2]["turn_sign"] == -1, cmap["turns"][2]
+
+    summary = analysis.lap_summary(_meta(1, 113000), laps[0], ref,
+                                   reference_laps=3, turns=cmap["turns"])
+    assert [c["turn"] for c in summary["corners"]] == ["T1", "T2", "T3", "T4"]
+    print(f"  four corners numbered from samples: {apexes}")
+
+
+def test_lap_summary_says_a_corner_has_no_number_rather_than_omitting_it():
+    """Every corner carries `turn`, null included.
+
+    A missing key and a null read the same way to something scanning the
+    payload, and they mean opposite things: one is "this run never numbered
+    its corners", the other is "this corner is not in the numbering".
+    """
+    laps = [_lap(), _lap(), _lap()]
+    ref = analysis.lat_g_reference(laps)
+    summary = analysis.lap_summary(_meta(1, 113000), laps[0], ref,
+                                   reference_laps=3, turns=[])
+    assert summary["corners"], summary
+    for c in summary["corners"]:
+        assert "turn" in c and c["turn"] is None, c
+    print("  empty map: every corner says turn: null")
+
+
+def test_a_lap_read_without_a_map_is_left_alone():
+    """turns=None is not the same request as turns=[]."""
+    summary = analysis.lap_summary(_meta(1, 113000), _lap())
+    assert all("turn" not in c for c in summary["corners"]), summary
+    assert (summary["corner_detection"]["basis"]
+            == "this lap's own cornering load"), summary["corner_detection"]
 
 
 if __name__ == "__main__":

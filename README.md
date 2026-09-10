@@ -86,6 +86,13 @@ You'll get per-corner minimum speed and brake points, tyre pressures and
 temperatures, ride height and damper behaviour, and a slip-balance number —
 positive means understeer, negative means oversteer.
 
+Corners come back numbered — **T1, T2, T3** in track order — so you and the
+assistant can name the same one. Ask for `track_corners` to see where each
+turn is. The numbering is what your car actually drove, not the circuit's
+official one: a kink taken flat carries too little load to be detected and
+isn't in it, and a circuit that calls a corner 3A is numbered straight
+through.
+
 **4. Talk it through, and have it write a setup.**
 
 > *"It pushes on entry at the second-to-last corner. Try something and save it
@@ -249,8 +256,10 @@ before sharing it.
 - **Fill in the display registry.** It no longer guesses what your setup
   screen shows — it says "unknown" and asks — but it only knows a car once
   you've read a couple of values off the screen for it.
-- **Per-track corner names**, so advice reads "T3 / Variante" rather than
-  "the corner at 0.34".
+- **Per-track corner names and the circuit's own numbering.** Corners are
+  numbered now, but from what the car drove — so advice reads "T3" rather
+  than "the corner at 0.34", and not yet "T3 / Variante", nor T3A where the
+  circuit has one.
 
 ---
 

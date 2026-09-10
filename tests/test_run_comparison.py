@@ -1111,6 +1111,50 @@ def test_a_run_with_spins_does_not_invent_consistency_changes():
     print(f"  {moved} of {trials} null runs with spins called it moved")
 
 
+def test_the_smallest_p_is_what_the_code_can_actually_return():
+    """Exact below the enumeration cap, the drawn estimate's floor above it.
+
+    Ten laps a side is 184756 relabellings, so they are drawn, and a drawn
+    p is (hits + 1) / (draws + 1): never under 1/20001, even though one
+    relabelling in 184756 is rarer. Reporting the rarer figure would
+    promise a p the estimate cannot produce.
+    """
+    assert analysis._smallest_permutation_p(6, 6) == 2 / 924
+    floor = 1 / (analysis.PERMUTATION_DRAWS + 1)
+    assert analysis._smallest_permutation_p(10, 10) == floor
+    assert 2 / 184756 < floor
+
+
+def test_a_threshold_no_lap_count_can_meet_is_said_not_searched_for():
+    """A family big enough to push 0.05/m under the drawn floor.
+
+    No number of laps gets a drawn p below 1/20001, so the search for how
+    many laps it would take has no answer -- and used to loop forever
+    looking for one.
+    """
+    c = analysis._measure_consistency([1.0, -1.0, 0.8], [0.0, 0.1, -0.1],
+                                      family_size=5000)
+    assert c["verdict"] == "too few laps to test", c
+    assert c["laps_needed_a_side"] is None, c
+
+
+def test_the_leads_note_counts_the_channels_and_tests_it_had():
+    """Five channels a corner now, and the null-lead rate rises with them.
+
+    The note said "up to two channels each" and quoted 77.6% -- the rate
+    measured for thirty tests -- after the entry channels had taken a
+    corner to five.
+    """
+    base = [_lap(113400, 1.0, 58.0, corners=[_entered(0.4, 1.10, b)])
+            for b in (-0.20, -0.21, -0.19)]
+    cand = [_lap(113400, 1.0, 58.0, corners=[_entered(0.4, 1.12, b)])
+            for b in (0.10, 0.11, 0.09)]
+    note = analysis.compare_runs(base, cand)["corner_leads_note"]
+    assert f"up to {len(analysis.CORNER_CHANNELS)} channels" in note, note
+    assert "two channels" not in note and "77.6" not in note, note
+    print(f"  ...{note[note.index('compared on'):][:90]}...")
+
+
 # --- entry phase, through the comparison --------------------------------
 
 

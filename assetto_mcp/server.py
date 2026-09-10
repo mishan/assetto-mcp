@@ -1627,16 +1627,20 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
 
     The metrics are one family, corrected together: read
     `p_value_adjusted` against 0.05 rather than each metric's own
-    `p_value`. Up to eight are tested, not always eight -- a channel the
-    laps never carried is not tested and is not counted, and suspension is
-    the one that does not arrive from shared memory alone -- so read
-    `tests_in_family` in the payload for the number the correction was
-    actually made at. Only a metric may be described as having moved.
+    `p_value`. Up to eight means are tested, not always eight -- a channel
+    the laps never carried is not tested and is not counted, and suspension
+    is the one that does not arrive from shared memory alone -- plus
+    `lap_time_consistency` once each side has enough laps for it to be able
+    to reject (six, at the usual family). Read `tests_in_family` in the
+    payload for the number the correction was actually made at. Only a
+    metric may be described as having moved.
 
     `corner_leads` is EXPLORATORY and asserts nothing. Those p-values are
     uncorrected, roughly 5% of unchanged corner tests come back "worth a
-    look", and 77.6% of fifteen-corner runs with nothing changed at all
-    carried at least one. A lead says where to look when a metric moved;
+    look", and a run tests up to five channels a corner, so most runs with
+    nothing changed at all carry at least one -- `corner_leads_note` gives
+    the figure for the run in hand. A lead says where to look when a metric
+    moved;
     it is not a finding on its own, and must not be reported as one.
 
     Read `resolution` alongside any "within noise" answer: it is the

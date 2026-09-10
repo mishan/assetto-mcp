@@ -776,9 +776,10 @@ def _entry_phase(samples, brake_idx, entry_idx, apex_idx) -> dict | None:
 
     steps = _heading_steps(phase)
     rates = [math.degrees(d) / dt for d, dt in steps]
-    # Three ticks either side of each, so one noisy heading reading does
-    # not decide the peak. Signed before the magnitude is taken, so a
-    # jitter back and forth averages out instead of adding up.
+    # One tick either side of each -- a three-sample window -- so one noisy
+    # heading reading does not decide the peak. Signed before the magnitude
+    # is taken, so a jitter back and forth averages out instead of adding
+    # up.
     smoothed = [mean(rates[max(0, i - 1):i + 2]) for i in range(len(rates))]
     return {
         "from": source,
@@ -1645,11 +1646,19 @@ def _smallest_permutation_p(n1: int, n2: int) -> float:
     result can be rarer than one relabelling in all of them -- two when the
     sides are the same size, because swapping the sides gives the same
     ratio turned over.
+
+    Past PERMUTATION_EXACT_MAX the relabellings are drawn rather than
+    enumerated, and a drawn estimate is (hits + 1) / (draws + 1): never
+    below one in the draws, however lopsided the laps. That floor sits
+    above the theoretical one, and it is the one this code can actually
+    return, so the larger of the two is what is reported. Quoting the
+    theoretical minimum there would promise a p the estimate cannot reach.
     """
     total = math.comb(n1 + n2, n1)
+    theoretical = (2.0 if n1 == n2 else 1.0) / total
     if total > PERMUTATION_EXACT_MAX:
-        return 1.0 / (PERMUTATION_DRAWS + 1)
-    return (2.0 if n1 == n2 else 1.0) / total
+        return max(theoretical, 1.0 / (PERMUTATION_DRAWS + 1))
+    return theoretical
 
 
 def _permutation_spread_p(base: list[float], cand: list[float]) -> float:
@@ -1756,9 +1765,14 @@ def _measure_consistency(base: list[float], cand: list[float],
     smallest = _smallest_permutation_p(n1, n2)
     strictest = FAMILY_ALPHA / family_size
     if smallest > strictest:
-        need = 2
-        while _smallest_permutation_p(need, need) > strictest:
-            need += 1
+        # More laps cannot take p below the drawn estimate's own floor, so a
+        # threshold stricter than that has no lap count that meets it -- and
+        # searching for one would never end.
+        need = None
+        if strictest >= 1.0 / (PERMUTATION_DRAWS + 1):
+            need = 2
+            while _smallest_permutation_p(need, need) > strictest:
+                need += 1
         return {**out, "verdict": "too few laps to test",
                 "smallest_possible_p": _sig(smallest),
                 "laps_needed_a_side": need,
@@ -1856,10 +1870,13 @@ def _explore(entries, alpha=FAMILY_ALPHA):
     in the payload asserts them: `lead` says where to look next, and the
     word "moved" is reserved for the confirmatory metrics. The price is
     stated rather than paid quietly: 5% of quiet corner tests come back as
-    a lead, and over 2500 null runs at fifteen corners 77.6% of payloads
-    carried at least one. A lead standing alone under eight metrics that
-    all read "within noise" is most likely one of those, which is why the
-    payload says so in the same breath as the lead.
+    a lead, and over 2500 null runs at fifteen corners -- two channels a
+    corner, thirty tests -- 77.6% of payloads carried at least one. The
+    entry channels make it up to five a corner and the rate climbs with
+    the count, which is why the payload's note computes it for the run it
+    describes instead of quoting this. A lead standing alone under eight
+    metrics that all read "within noise" is most likely one of those, which
+    is why the payload says so in the same breath as the lead.
 
     `resolution` and `power` here come from the uncorrected 95%, which is
     the level the lead was picked at, so they mean the same thing they mean
@@ -2306,15 +2323,25 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
                  f"findings, and about 5% of quiet corners do this")
     summary = head
 
+    # The chance a run with nothing changed carries at least one lead,
+    # counting this run's corner tests as independent. They are not quite
+    # -- the channels of one corner move together -- so it runs a little
+    # high: over 2500 null runs of thirty tests the measured rate was
+    # 77.6% against 78.5% counted this way. Computed rather than quoted,
+    # because the entry channels took a corner from two tests to five and
+    # a fixed figure for thirty was understating it by the time they did.
+    null_lead_pct = round(100 * (1 - (1 - FAMILY_ALPHA) ** len(leads)))
     leads_note = (
         f"EXPLORATORY, not findings. {compared} corner(s) were compared on "
-        f"up to two channels each; the {len(shown)} with the largest effect "
+        f"up to {len(CORNER_CHANNELS)} channels each, {len(leads)} tests in "
+        f"all; the {len(shown)} with the largest effect "
         f"size are listed, largest first, and {flagged} of all those "
         f"compared cleared an uncorrected 95%. These p-values are NOT "
         f"corrected for how many corners were looked at, so roughly 5% of "
-        f"unchanged corner tests come back 'worth a look' and 77.6% of "
-        f"fifteen-corner runs with nothing changed at all carried at least "
-        f"one. A lead says where to look when a metric moved; standing "
+        f"unchanged corner tests come back 'worth a look', and with "
+        f"{len(leads)} of them about {null_lead_pct}% of runs with nothing "
+        f"changed at all would carry at least one. A lead says where to "
+        f"look when a metric moved; standing "
         f"alone under metrics that all read 'within noise', the likeliest "
         f"explanation is that 5%. effect_size is the change in units of "
         f"that corner's own lap-to-lap spread."

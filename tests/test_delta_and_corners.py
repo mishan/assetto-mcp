@@ -1051,6 +1051,21 @@ def test_lap_summary_says_a_corner_has_no_number_rather_than_omitting_it():
     print("  empty map: every corner says turn: null")
 
 
+def test_lap_summary_carries_the_entry_phase_and_any_contact():
+    """Wiring: detect_corners passes turn-in down, lap_summary reads damage."""
+    samples = _lap()
+    for i, s in enumerate(samples):
+        s["damage"] = 3.0 if i >= 600 else 0.0
+    out = analysis.lap_summary(_meta(1, 113000), samples)
+    for c in out["corners"]:
+        assert c["entry_phase"]["from"] in ("brake point", "turn-in"), c
+    assert out["contacts"] == [{"pos": 0.5, "damage_added": 3.0}], \
+        out["contacts"]
+
+    clean = analysis.lap_summary(_meta(2, 113000), _lap())
+    assert clean["contacts"] is None, clean["contacts"]
+
+
 def test_a_lap_read_without_a_map_is_left_alone():
     """turns=None is not the same request as turns=[]."""
     summary = analysis.lap_summary(_meta(1, 113000), _lap())

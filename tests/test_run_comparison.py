@@ -999,6 +999,189 @@ def test_a_run_with_no_cornering_does_not_claim_a_shared_reference():
     print(f"  {cd['basis']!r}; note agrees with it")
 
 
+# --- lap-time consistency -----------------------------------------------
+
+
+def _times(*secs, base=113.0):
+    """Lap summaries that differ only in lap time, `secs` off `base`."""
+    return [_lap(round((base + v) * 1000), 1.0, 58.0) for v in secs]
+
+
+def test_a_run_that_tightens_up_is_confirmed():
+    """The question the means cannot ask.
+
+    Eight laps a side at the same average pace, and the candidate's spread
+    has collapsed. Lap time's mean reads "within noise", which is true and
+    beside the point; the spread test is what says the change did
+    something.
+    """
+    base = _times(1.0, -0.8, 0.9, -1.1, 0.7, -0.6, 1.2, -0.9)
+    cand = _times(0.05, -0.04, 0.02, -0.03, 0.06, -0.05, 0.01, 0.0)
+    out = analysis.compare_runs(base, cand)
+    c = out["metrics"]["lap_time_consistency"]
+
+    assert c["direction"] == "tighter", c
+    assert c["verdict"] == "moved", c
+    # The most lopsided of all C(16, 8) = 12870 relabellings, and its mirror.
+    assert c["p_value"] == analysis._sig(2 / 12870), c
+    assert out["metrics"]["lap_time_ms"]["verdict"] == "within noise"
+    assert out["multiple_comparisons"]["tests_in_family"] == 9, \
+        out["multiple_comparisons"]
+    assert "lap-time consistency (tighter)" in out["summary"], out["summary"]
+    print(f"  sd {c['baseline_sd']} -> {c['candidate_sd']} ms, "
+          f"p {c['p_value']}, {c['verdict']}")
+
+
+def test_one_spin_in_a_run_is_not_a_change_in_consistency():
+    """The F test's failure, pinned.
+
+    One lap in six lost five seconds and the rest are as repeatable as the
+    other run. A variance-ratio F test calls that a change in spread; under
+    no change at all it does so in over 40% of runs where a spin happens
+    now and then. Relabelling the laps knows that a spin landing in one run
+    rather than the other is a coin toss.
+    """
+    base = _times(0.2, -0.3, 0.1, 5.0, -0.2, 0.3)
+    cand = _times(0.25, -0.2, 0.15, -0.35, 0.3, -0.1)
+    c = analysis.compare_runs(base, cand)["metrics"]["lap_time_consistency"]
+    assert c["verdict"] != "moved", c
+    assert c["p_value"] > 0.05, c
+    print(f"  one 5s spin: p {c['p_value']}, {c['verdict']}")
+
+
+def test_removing_two_spins_from_six_laps_is_not_yet_evidence():
+    """Sebring v9, and why no valid test would have confirmed it.
+
+    Six laps inside a second after a run where two of six spun. If one lap
+    in three spins by chance, six laps without one happens 9% of the time,
+    so these laps cannot separate "the setup fixed it" from "not this
+    time". The payload has to say "within noise" here. It is the honest
+    answer, and the backlog entry that asked for an F test was asking for a
+    test that gets this case right by being wrong four times in ten.
+    """
+    base = _times(0.1, -0.2, 0.3, 5.1, -0.1, 6.4)
+    cand = _times(0.0, 0.4, -0.3, 0.6, -0.2, 0.2)
+    c = analysis.compare_runs(base, cand)["metrics"]["lap_time_consistency"]
+    assert c["direction"] == "tighter", c
+    assert c["verdict"] == "within noise", c
+    assert c["p_value"] > 0.2, c
+    print(f"  the Sebring shape: p {c['p_value']}")
+
+
+def test_too_few_laps_to_test_says_how_many_it_would_take():
+    """Three laps a side cannot confirm a change in spread of any size.
+
+    Twenty relabellings, two of them the most lopsided: nothing can come in
+    under p = 0.1. Counting that test in the family would have raised every
+    other metric's bar for a test that could never reject, so it is left
+    out, and the family stays at eight.
+    """
+    base = _times(1.0, -1.0, 0.8)
+    cand = _times(0.02, -0.01, 0.0)
+    out = analysis.compare_runs(base, cand)
+    c = out["metrics"]["lap_time_consistency"]
+    assert c["verdict"] == "too few laps to test", c
+    assert c["smallest_possible_p"] == 0.1, c
+    assert c["laps_needed_a_side"] == 6, c
+    assert "p_value" not in c, c
+    assert out["multiple_comparisons"]["tests_in_family"] == 8, \
+        out["multiple_comparisons"]
+    print(f"  3 a side: {c['verdict']}, needs {c['laps_needed_a_side']}")
+
+
+def test_a_run_with_spins_does_not_invent_consistency_changes():
+    """Nothing changed, spins happen, six laps a side, 150 times.
+
+    The lap-time model the F test fails on: a 0.3s spread and a 15% chance
+    of a 3-8s spin on any lap, the same on both sides. Seeded; the design
+    simulated over 600 such runs came in at 0.3%.
+    """
+    rng = random.Random(20260910)
+
+    def run():
+        return _times(*[rng.gauss(0, 0.3)
+                        + (rng.uniform(3, 8) if rng.random() < 0.15 else 0)
+                        for _ in range(6)])
+
+    trials = 150
+    moved = sum(1 for _ in range(trials)
+                if analysis.compare_runs(run(), run())["metrics"]
+                ["lap_time_consistency"].get("verdict") == "moved")
+    assert moved <= trials * 0.05, f"{moved} of {trials} null runs moved"
+    print(f"  {moved} of {trials} null runs with spins called it moved")
+
+
+def test_the_smallest_p_is_what_the_code_can_actually_return():
+    """Exact below the enumeration cap, the drawn estimate's floor above it.
+
+    Ten laps a side is 184756 relabellings, so they are drawn, and a drawn
+    p is (hits + 1) / (draws + 1): never under 1/20001, even though one
+    relabelling in 184756 is rarer. Reporting the rarer figure would
+    promise a p the estimate cannot produce.
+    """
+    assert analysis._smallest_permutation_p(6, 6) == 2 / 924
+    floor = 1 / (analysis.PERMUTATION_DRAWS + 1)
+    assert analysis._smallest_permutation_p(10, 10) == floor
+    assert 2 / 184756 < floor
+
+
+def test_a_threshold_no_lap_count_can_meet_is_said_not_searched_for():
+    """A family big enough to push 0.05/m under the drawn floor.
+
+    No number of laps gets a drawn p below 1/20001, so the search for how
+    many laps it would take has no answer -- and used to loop forever
+    looking for one.
+    """
+    c = analysis._measure_consistency([1.0, -1.0, 0.8], [0.0, 0.1, -0.1],
+                                      family_size=5000)
+    assert c["verdict"] == "too few laps to test", c
+    assert c["laps_needed_a_side"] is None, c
+
+
+def test_the_leads_note_counts_the_channels_and_tests_it_had():
+    """Five channels a corner now, and the null-lead rate rises with them.
+
+    The note said "up to two channels each" and quoted 77.6% -- the rate
+    measured for thirty tests -- after the entry channels had taken a
+    corner to five.
+    """
+    base = [_lap(113400, 1.0, 58.0, corners=[_entered(0.4, 1.10, b)])
+            for b in (-0.20, -0.21, -0.19)]
+    cand = [_lap(113400, 1.0, 58.0, corners=[_entered(0.4, 1.12, b)])
+            for b in (0.10, 0.11, 0.09)]
+    note = analysis.compare_runs(base, cand)["corner_leads_note"]
+    assert f"up to {len(analysis.CORNER_CHANNELS)} channels" in note, note
+    assert "two channels" not in note and "77.6" not in note, note
+    print(f"  ...{note[note.index('compared on'):][:90]}...")
+
+
+# --- entry phase, through the comparison --------------------------------
+
+
+def _entered(pos, apex_bal, entry_bal):
+    return {"apex_pos": pos, "slip_balance": apex_bal, "min_speed_kmh": 110.0,
+            "entry_phase": {"from": "brake point", "slip_balance": entry_bal,
+                            "steer_norm": 0.3, "yaw_rate_peak_deg_s": 30.0}}
+
+
+def test_a_change_on_entry_shows_even_when_the_apex_did_not_move():
+    """claude_sebring_v6: a diff change aimed at entry, and nowhere to see it.
+
+    The apex balance is identical across the two runs. Only the entry
+    phase moved -- the car stopped being loose under braking -- and before
+    the entry channels existed this comparison reported no lead at all.
+    """
+    base = [_lap(113400, 1.0, 58.0, corners=[_entered(0.4, 1.10, b)])
+            for b in (-0.20, -0.21, -0.19)]
+    cand = [_lap(113400, 1.0, 58.0, corners=[_entered(0.4, 1.10, b)])
+            for b in (0.10, 0.11, 0.09)]
+    lead = analysis.compare_runs(base, cand)["corner_leads"][0]
+    assert lead["entry_slip_balance"]["lead"] == "worth a look", lead
+    assert lead["slip_balance"]["lead"] == "quiet", lead
+    print(f"  entry balance {lead['entry_slip_balance']['baseline']} -> "
+          f"{lead['entry_slip_balance']['candidate']}; apex unchanged")
+
+
 # --- turn numbering, through the tools ----------------------------------
 #
 # analysis.corner_map is tested on corner dicts in test_delta_and_corners.

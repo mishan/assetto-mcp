@@ -6,7 +6,9 @@ a lap to numbers a race engineer would actually reason about.
 Pure Python on purpose - no numpy dependency to install on the gaming PC.
 """
 
+import itertools
 import math
+import random
 from collections.abc import Iterable
 from statistics import mean, median
 
@@ -476,7 +478,7 @@ def detect_corners(samples: list[dict],
         flat = [j for j in r
                 if samples[j]["speed_kmh"] <= v_min + APEX_FLAT_TOLERANCE_KMH]
         apex = flat[len(flat) // 2]
-        stats = _corner_stats(samples, apex, exit_, prev_exit)
+        stats = _corner_stats(samples, apex, exit_, prev_exit, entry)
         prev_exit = exit_
         seg_lat = [lat[j] for j in r]
         signed_peak = max(seg_lat, key=abs)
@@ -683,7 +685,115 @@ def _brake_zone_start(samples, apex_idx: int, floor_idx: int) -> int | None:
     return start
 
 
-def _corner_stats(samples, apex_idx, exit_idx, brake_floor_idx=0) -> dict:
+# Fewest samples an entry phase needs before its figures mean anything.
+ENTRY_MIN_SAMPLES = 3
+
+# Yaw rate beyond this is not rotation, it is a reset or a teleport: a car
+# in a full spin turns at well under half of it.
+YAW_RATE_SANE_MAX_DEG_S = 360.0
+
+
+def _heading_steps(samples: list[dict]) -> list[tuple[float, float]]:
+    """(radians turned, seconds taken) between consecutive samples.
+
+    AC reports heading in radians wrapped to -pi..pi, so a car pointing
+    along the wrap turns from +3.1 to -3.1 in one tick, which is a step of
+    0.08 rad and not of 6.2. Each step is unwrapped on its own for that
+    reason, rather than differencing the raw column.
+
+    Signed as AC reports it, and which sign is left has never been checked
+    here -- so everything built from this reports magnitudes, which do not
+    need the convention. A step implying more than YAW_RATE_SANE_MAX_DEG_S
+    is dropped rather than clamped: it is a reset, and clamping would
+    report a spin that never happened.
+    """
+    steps = []
+    for a, b in zip(samples, samples[1:]):
+        vals = (a.get("heading"), b.get("heading"),
+                a.get("t_ms"), b.get("t_ms"))
+        if not all(isinstance(v, (int, float)) and math.isfinite(v)
+                   for v in vals):
+            continue
+        ha, hb, ta, tb = vals
+        if tb <= ta:
+            continue
+        d = (hb - ha + math.pi) % (2.0 * math.pi) - math.pi
+        dt = (tb - ta) / 1000.0
+        if abs(math.degrees(d) / dt) > YAW_RATE_SANE_MAX_DEG_S:
+            continue
+        steps.append((d, dt))
+    return steps
+
+
+def _entry_phase(samples, brake_idx, entry_idx, apex_idx) -> dict | None:
+    """What the car did between the brake point and the apex.
+
+    Everything else about a corner is measured at the apex, and the apex is
+    where the car has already been rotated. Trail braking, entry rotation
+    and most spins happen before it: claude_sebring_v6 moved the coast
+    differential from 40% to 60% purely for entry stability at Sunset Bend,
+    every metric read "within noise", and no corner produced a lead,
+    because nothing was looking at the part of the corner the change was
+    for.
+
+    From the brake point where there is one; from turn-in -- the start of
+    the lateral load -- on a corner taken without braking, since a sweeper
+    has an entry too. `from` says which.
+
+    - `slip_balance` is the apex figure's definition, front minus rear,
+      averaged over the phase. Negative here and positive at the apex is
+      the car that is loose on entry and pushes in the middle.
+    - `steer_norm` is mean steering over the phase, a fraction of lock.
+      A mean rather than a sum: a sum grows with how long the phase is,
+      which is a property of the brake point rather than of the steering.
+    - `rotation_deg` is how far the car turned by the apex, and
+      `yaw_rate_peak_deg_s` how fast it did at its quickest. Both from
+      heading, so both null on laps recorded before it was.
+    """
+    if brake_idx is not None and brake_idx < apex_idx:
+        start, source = brake_idx, "brake point"
+    elif entry_idx is not None and entry_idx < apex_idx:
+        start, source = entry_idx, "turn-in"
+    else:
+        return None
+    phase = samples[start:apex_idx + 1]
+    if len(phase) < ENTRY_MIN_SAMPLES:
+        return None
+
+    # Slip filtered exactly as the apex figure is, and steering taken only
+    # from the ticks whose slip survived: a tick emitting a wheelSlip of
+    # 30000 is not one to trust for anything else either.
+    balances, clean = [], []
+    for s in phase:
+        f = _sane_slip(s["slip_fl"], s["slip_fr"])
+        r = _sane_slip(s["slip_rl"], s["slip_rr"])
+        if f is not None and r is not None:
+            balances.append(f - r)
+            clean.append(s)
+    steer = [abs(s["steer"]) for s in (clean or phase)
+             if isinstance(s.get("steer"), (int, float))
+             and math.isfinite(s["steer"])]
+
+    steps = _heading_steps(phase)
+    rates = [math.degrees(d) / dt for d, dt in steps]
+    # Three ticks either side of each, so one noisy heading reading does
+    # not decide the peak. Signed before the magnitude is taken, so a
+    # jitter back and forth averages out instead of adding up.
+    smoothed = [mean(rates[max(0, i - 1):i + 2]) for i in range(len(rates))]
+    return {
+        "from": source,
+        "from_pos": round(phase[0]["norm_pos"], 4),
+        "slip_balance": round(mean(balances), 3) if balances else None,
+        "steer_norm": round(mean(steer), 2) if steer else None,
+        "yaw_rate_peak_deg_s": (round(max(abs(v) for v in smoothed), 1)
+                                if smoothed else None),
+        "rotation_deg": (round(abs(math.degrees(sum(d for d, _ in steps))), 1)
+                         if steps else None),
+    }
+
+
+def _corner_stats(samples, apex_idx, exit_idx, brake_floor_idx=0,
+                  entry_idx=None) -> dict:
     apex = samples[apex_idx]
 
     # Brake point: where braking for this corner began. See _brake_zone_start
@@ -748,6 +858,11 @@ def _corner_stats(samples, apex_idx, exit_idx, brake_floor_idx=0) -> dict:
         "front_slip": round(front_slip, 3) if front_slip is not None else None,
         "rear_slip": round(rear_slip, 3) if rear_slip is not None else None,
     }
+    # Null when there is no phase to measure: no braking and no turn-in
+    # before the apex, which a caller that did not pass entry_idx gets on
+    # every unbraked corner.
+    out["entry_phase"] = _entry_phase(samples, brake_idx, entry_idx,
+                                      apex_idx)
     if dropped:
         out["slip_samples_dropped"] = dropped
         # Magnitude, not just a count: "3 dropped" reads the same whether
@@ -755,6 +870,44 @@ def _corner_stats(samples, apex_idx, exit_idx, brake_floor_idx=0) -> dict:
         # says the ceiling is in the right place.
         out["slip_dropped_peak"] = round(worst_dropped, 1)
         out["slip_coverage_pct"] = round(100 * len(slip_pairs) / len(seg), 1)
+    return out
+
+
+# Rises in the damage sum closer together than this are one contact: a car
+# scraping along a wall adds damage on several consecutive ticks.
+CONTACT_GAP_MS = 1000
+
+
+def _contacts(samples: list[dict]) -> list[dict] | None:
+    """Where on the lap bodywork damage went up, one entry per contact.
+
+    None when the lap has no damage column at all (recorded before v9), an
+    empty list when it has one and it never rose. The empty list cannot say
+    whether there was no contact or the server had damage switched off --
+    both read zero all lap -- so nothing here claims a clean lap from it.
+
+    Only rises count. Damage falls when the car is repaired in the pits,
+    and a repair is not a negative contact.
+    """
+    vals = [(s.get("t_ms"), s.get("norm_pos"), s.get("damage"))
+            for s in samples]
+    if not any(isinstance(d, (int, float)) for _, _, d in vals):
+        return None
+    out, prev, last_t = [], None, None
+    for t, pos, d in vals:
+        if not isinstance(d, (int, float)) or not math.isfinite(d):
+            continue
+        if prev is not None and d > prev + 1e-6:
+            if (out and last_t is not None and t is not None
+                    and t - last_t <= CONTACT_GAP_MS):
+                out[-1]["damage_added"] += d - prev
+            else:
+                out.append({"pos": round(pos or 0.0, 4),
+                            "damage_added": d - prev})
+            last_t = t
+        prev = d
+    for c in out:
+        c["damage_added"] = round(c["damage_added"], 3)
     return out
 
 
@@ -844,6 +997,7 @@ def lap_summary(lap: dict, samples: list[dict],
     # One call, two fields: the pair has to agree, and it costs a lazy
     # import of db each time it is asked.
     usable, not_usable_because = _usable(lap)
+    contacts = _contacts(samples)
 
     return {
         "lap_id": lap["id"],
@@ -904,6 +1058,10 @@ def lap_summary(lap: dict, samples: list[dict],
         # adding the two channels' drops made this exceed the lap's own
         # sample count.
         "accel_samples_dropped": accel_dropped or None,
+        # Where damage went up, when it did. Null for a lap with no contact
+        # and for one where damage was off, which read the same -- so a
+        # null here is not a clean bill.
+        "contacts": contacts or None,
         "avg_ride_height_f": round(mean(s["ride_f"] for s in samples), 4),
         "avg_ride_height_r": round(mean(s["ride_r"] for s in samples), 4),
         "tyres": tyres,
@@ -1464,6 +1622,156 @@ def _measure(base, cand, floor):
     return out
 
 
+# A change in lap-time spread not worth calling a change whatever the
+# statistics say: 50ms of standard deviation is below anything a driver can
+# feel or a stopwatch argue about.
+CONSISTENCY_FLOOR_MS = 50.0
+
+# Relabellings enumerated exactly up to this many, drawn at random past it.
+# Eight laps a side is 12870 and exact; ten a side is 184756 and not worth
+# the wait for a figure the draws get to within a fraction of a percent.
+PERMUTATION_EXACT_MAX = 20000
+PERMUTATION_DRAWS = 20000
+
+# _TEST["kind"] for a test with no t distribution behind it, so _report
+# does not go looking for degrees of freedom.
+PERMUTATION = "permutation"
+
+
+def _smallest_permutation_p(n1: int, n2: int) -> float:
+    """The smallest p the spread test can return with this many laps.
+
+    Every relabelling of the laps is equally likely under no change, so no
+    result can be rarer than one relabelling in all of them -- two when the
+    sides are the same size, because swapping the sides gives the same
+    ratio turned over.
+    """
+    total = math.comb(n1 + n2, n1)
+    if total > PERMUTATION_EXACT_MAX:
+        return 1.0 / (PERMUTATION_DRAWS + 1)
+    return (2.0 if n1 == n2 else 1.0) / total
+
+
+def _permutation_spread_p(base: list[float], cand: list[float]) -> float:
+    """Two-sided p for a change in spread, by relabelling the laps.
+
+    The statistic is |log| of the ratio of the two variances, so tighter
+    and looser are judged alike. Under no change every split of these laps
+    into two runs of these sizes was as likely as the one that happened; p
+    is the share of splits at least as lopsided. Exact whatever shape the
+    lap times have, which is the point -- see _measure_consistency.
+    """
+    n1, n = len(base), len(base) + len(cand)
+    # Centred first: lap times are ~1e5 ms and their squares ~1e10, and the
+    # variances are differences of those.
+    centre = (sum(base) + sum(cand)) / n
+    xs = [v - centre for v in list(base) + list(cand)]
+    tot, tot_sq = sum(xs), sum(v * v for v in xs)
+    nb = n - n1
+
+    def stat(idx) -> float:
+        sa = sum(xs[i] for i in idx)
+        qa = sum(xs[i] * xs[i] for i in idx)
+        va = (qa - sa * sa / n1) / (n1 - 1)
+        sb, qb = tot - sa, tot_sq - qa
+        vb = (qb - sb * sb / nb) / (nb - 1)
+        if va <= 0 or vb <= 0:
+            return 0.0 if va <= 0 and vb <= 0 else math.inf
+        return abs(math.log(va / vb))
+
+    observed = stat(range(n1))
+    # Ties are "at least as lopsided", and two splits that tie exactly can
+    # differ in the last bit after this arithmetic.
+    edge = (observed - 1e-9 * max(1.0, observed)
+            if math.isfinite(observed) else observed)
+    total = math.comb(n, n1)
+    if total <= PERMUTATION_EXACT_MAX:
+        hits = sum(1 for idx in itertools.combinations(range(n), n1)
+                   if stat(idx) >= edge)
+        return hits / total
+    # Seeded, so the same laps always give the same answer.
+    rng = random.Random(0)
+    hits = sum(1 for _ in range(PERMUTATION_DRAWS)
+               if stat(rng.sample(range(n), n1)) >= edge)
+    return (hits + 1) / (PERMUTATION_DRAWS + 1)
+
+
+def _measure_consistency(base: list[float], cand: list[float],
+                         family_size: int) -> dict:
+    """Did the laps get more or less repeatable, as opposed to faster?
+
+    Every other metric compares means. A change that makes the driver more
+    consistent can leave the mean where it was while the spread collapses,
+    and a comparison of means is blind to that by construction.
+
+    The test is a permutation test on the ratio of the variances, not the
+    variance-ratio F test. The F test assumes normal lap times, and a run
+    in which a spin now and then costs five seconds is nothing like
+    normal. Simulated with a 0.3s spread and a 15% chance of a 3-8s spin
+    on any lap, identical on both sides: at six laps a side the F test
+    called the spread changed in 47% of runs at 95%, and 44% even at the
+    corrected 0.05/9. Relabelling the laps assumes nothing about their
+    shape and held 0.3% at 0.05/9 on the same runs.
+
+    What that costs is laps. The smallest p a relabelling can produce is
+    set by how many ways there are to relabel, so with few laps no result
+    can clear the bar however lopsided it is. Such a test is left out of
+    the family entirely rather than counted in it -- a test that cannot
+    reject cannot reject falsely, and counting it would only raise every
+    other metric's threshold for nothing -- and the entry says how many
+    laps would make it testable. Whether it is in is decided by the lap
+    counts alone, never by the result.
+
+    And the honest reading of the case that motivated it. Sebring v9: six
+    laps inside 0.97s after a run where two of six ended in a spin. Taken
+    as that shape, p = 0.41. If one lap in three spins by chance, a run of
+    six has no spin 9% of the time, so six laps a side cannot tell "the
+    setup stopped the spins" from "no spin happened this time" -- and a
+    test that says otherwise is the F test above, wrong four times in ten.
+    """
+    n1, _, s1 = _stats(base)
+    n2, _, s2 = _stats(cand)
+    out = {"label": "lap-time consistency", "baseline_n": n1,
+           "candidate_n": n2, "units": "ms"}
+    if n1 == 0 or n2 == 0:
+        return {**out, "verdict": "not measured"}
+    if n1 < 2 or n2 < 2:
+        return {**out, "verdict": "need at least 2 laps a side to see noise"}
+    direction = ("tighter" if s2 < s1 else "looser" if s2 > s1
+                 else "unchanged")
+    out.update({
+        "label": f"lap-time consistency ({direction})",
+        "baseline_sd": round(s1, 1),
+        "candidate_sd": round(s2, 1),
+        "change_sd": round(s2 - s1, 1),
+        "direction": direction,
+        "note": "standard deviation of lap time on each side, judged by "
+                "relabelling the laps rather than by an F test -- a spin "
+                "now and then makes lap times far from normal, and an F "
+                "test on them calls a change in spread in over 40% of runs "
+                "where nothing changed. The price is that few laps cannot "
+                "confirm anything: smallest_possible_p says how far these "
+                "laps could have gone.",
+    })
+    smallest = _smallest_permutation_p(n1, n2)
+    strictest = FAMILY_ALPHA / family_size
+    if smallest > strictest:
+        need = 2
+        while _smallest_permutation_p(need, need) > strictest:
+            need += 1
+        return {**out, "verdict": "too few laps to test",
+                "smallest_possible_p": _sig(smallest),
+                "laps_needed_a_side": need,
+                "not_in_family": f"with {n1} and {n2} laps no result could "
+                                 f"clear 0.05/{family_size}, so this was "
+                                 f"not counted among the metrics judged "
+                                 f"together and cost them nothing"}
+    out[_TEST] = {"kind": PERMUTATION, "p": _permutation_spread_p(base, cand),
+                  "diff": s2 - s1, "floor": CONSISTENCY_FLOOR_MS,
+                  "min_p": smallest}
+    return out
+
+
 def _effect(t) -> float:
     """The change in units of the channel's own lap-to-lap spread.
 
@@ -1575,6 +1883,14 @@ def _report(entry):
     """
     t = entry.pop(_TEST, None)
     if t is None:
+        return entry
+    if t.get("kind") == PERMUTATION:
+        # No resolution and no power: both are t-distribution figures, and
+        # this test has no t distribution. What it does have is a floor on
+        # p set by the lap count, which says the same kind of thing.
+        entry["p_value"] = _sig(t["p"])
+        entry["p_value_adjusted"] = _sig(t["p_adj"])
+        entry["smallest_possible_p"] = _sig(t["min_p"])
         return entry
     crit = _t_crit(t["df"], t["alpha_used"])
     entry["resolution"] = round(max(crit * t["se"], t["floor"]), 3)
@@ -1878,6 +2194,10 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
     0.02, used as a bucket width rather than a tolerance, which is 105m
     there -- wide enough to average a hairpin together with the kink after
     it and call the result one corner.
+
+    `lap_time_consistency` asks the other question -- did the laps get more
+    or less repeatable -- and joins the family only once there are enough
+    laps for it to be able to answer; see _measure_consistency.
     """
     if not baseline or not candidate:
         return {"error": "need laps on both sides of the comparison"}
@@ -1891,6 +2211,15 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
         if units:
             r["units"] = units
         metrics[key] = r
+
+    # After the means, because whether it can join the family depends on
+    # how big the family already is.
+    metrics["lap_time_consistency"] = _measure_consistency(
+        [v for v in (_dig(l, ("lap_time_ms",)) for l in baseline)
+         if v is not None],
+        [v for v in (_dig(l, ("lap_time_ms",)) for l in candidate)
+         if v is not None],
+        sum(1 for e in metrics.values() if _TEST in e) + 1)
 
     corners, unmatched, compared = _compare_corners(
         baseline, candidate, corner_tolerance)
@@ -2049,8 +2378,16 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
 
 
 # How much of a change is worth reporting at all on a corner channel, the
-# corner-level sibling of the floors in RUN_METRICS.
-CORNER_CHANNELS = [("slip_balance", 0.05), ("min_speed_kmh", 0.5)]
+# corner-level sibling of the floors in RUN_METRICS. (name, where in the
+# corner dict, floor). The entry channels are what a change aimed at corner
+# entry moves, and without them such a change had nowhere to show up.
+CORNER_CHANNELS = [
+    ("slip_balance", ("slip_balance",), 0.05),
+    ("min_speed_kmh", ("min_speed_kmh",), 0.5),
+    ("entry_slip_balance", ("entry_phase", "slip_balance"), 0.05),
+    ("entry_yaw_rate_deg_s", ("entry_phase", "yaw_rate_peak_deg_s"), 2.0),
+    ("entry_steer_norm", ("entry_phase", "steer_norm"), 0.02),
+]
 
 
 def _corner_clusters(laps: list[dict], tolerance: float) -> list[list[tuple]]:
@@ -2121,11 +2458,11 @@ def _compare_corners(baseline, candidate, tolerance):
     corners = []
     for i, j in sorted(pairs, key=lambda p: b_pos[p[0]]):
         tests = []
-        for field, floor in CORNER_CHANNELS:
-            b = [o[2][field] for o in b_groups[i]
-                 if isinstance(o[2].get(field), (int, float))]
-            c = [o[2][field] for o in c_groups[j]
-                 if isinstance(o[2].get(field), (int, float))]
+        for field, path, floor in CORNER_CHANNELS:
+            b = [v for v in (_dig(o[2], path) for o in b_groups[i])
+                 if v is not None]
+            c = [v for v in (_dig(o[2], path) for o in c_groups[j])
+                 if v is not None]
             # A corner is comparable on whichever channels it has. Requiring
             # slip balance -- which detect_corners drops whenever the slip
             # samples look like glitches -- threw away corners whose minimum

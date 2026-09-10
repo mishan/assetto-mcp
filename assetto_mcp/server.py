@@ -1011,6 +1011,18 @@ def lap_summary(lap_id: int) -> str:
     the detector never sees is not numbered, and a circuit that calls one of
     its corners 3A is numbered straight through.
 
+    `entry_phase` on each corner is the part before the apex: from the
+    brake point (or from turn-in on a corner taken without braking) to the
+    apex, with slip balance, mean steering, peak yaw rate and total
+    rotation. It is where trail braking, entry rotation and most spins
+    live, and a change aimed at entry stability shows up here when the
+    apex figures do not move. Yaw and rotation are magnitudes, from heading,
+    and null on laps recorded before heading was.
+
+    `contacts` lists where bodywork damage went up. Null when there was no
+    contact AND when the server had damage off -- both read zero -- so a
+    null is not evidence of a clean lap.
+
     Includes a few suspension headlines when the in-game app captured them;
     call suspension_report for the full damper histograms and ride height."""
     lap = db.get_lap(_conn, lap_id)

@@ -5,7 +5,7 @@ already produced. Each entry says what is wrong, where it bit, and where the
 code lives, so a future session can act without re-deriving any of it.
 
 Written after the Sebring / NSX GT3 session, and kept current since. Test
-suite stands at 467 passing with the Lua tooling installed,
+suite stands at 483 passing with the Lua tooling installed,
 schema at v13.
 
 ---
@@ -134,31 +134,57 @@ script for exactly that reason.
 
 ## 4. `compare_runs` cannot detect a change in consistency
 
-**Status:** open. Cost us the clearest result of the Sebring session.
+**Status:** built, as `lap_time_consistency` — and the fix this entry
+proposed would have been wrong.
 
-Every metric is judged by comparing means against pooled spread. When a
+Every metric was judged by comparing means against pooled spread. When a
 setup change makes the driver *more consistent*, the mean may barely move
 while the spread collapses — and the t-test is blind to it.
 
 **Where it bit:** v9 at Sebring. Six laps inside 0.97 s, zero invalidated,
 after a run where one lap in three ended in a spin. Lap time reported
 "within noise" — because the previous run's spin had inflated the baseline
-variance so far that nothing could clear it. **The change removed the very
-thing that made it detectable.**
+variance so far that nothing could clear it.
 
-**Fix:** add a variance-ratio (F) test alongside the mean comparison, with
-the same Holm correction discipline. Critical values would have to be
-computed rather than tabulated, as `_t_crit` already is — scipy is not a
-dependency and must not become one.
+**What was proposed, and why it was not built:** a variance-ratio F test.
+It assumes normal lap times, and spins make them anything but. Simulated
+with a 0.3 s spread and a 15% chance of a 3–8 s spin per lap, *identical on
+both sides*: the F test called the spread changed in 47% of six-lap runs at
+95%, and 44% at the corrected 0.05/9. Brown–Forsythe, the usual robust
+substitute, was 12% at four laps a side and had almost no power.
+
+**What changed:** a permutation test on the ratio of the variances, which
+assumes nothing about the shape and held 0.3% on the same null runs. It
+joins the Holm family only when the lap counts allow a result small enough
+to clear its threshold — six a side at the usual family of nine; below
+that it reports `too few laps to test`, the smallest p it could have
+reached and how many laps it would take, and costs the other metrics
+nothing. The two-lap headline case is untouched: family still 8.
+
+**What it found about the case that motivated it.** The Sebring v9 shape
+comes out at **p = 0.41**. If one lap in three spins by chance, six laps
+without one happens 9% of the time, so six laps a side cannot separate
+"the setup fixed it" from "not this time" — for any valid test. The F test
+would have "caught" it by being wrong four times in ten. The driver's read
+of v9 may well be right; these laps just are not evidence of it. Power is
+low in general: removing a one-in-three spin rate is confirmed 5% of the
+time at six laps a side and 6% at eight, a spread falling from 0.45 s to
+0.15 s 12% at six and 22% at eight.
+
+**Still open:** a spin is really an event, and "how often" is a count
+question a spread test answers badly. Counting incident laps per run and
+comparing rates is the natural next step — it will need more laps than
+anyone wants to drive, and should say so.
 
 ---
 
 ## 5. No entry-phase corner metrics
 
-**Status:** open.
+**Status:** built, as `entry_phase` on every corner. Not yet checked
+against a real lap.
 
 `detect_corners` and `_corner_stats` describe the apex and the region around
-it. Nothing measures the phase between the brake point and the apex, which
+it. Nothing measured the phase between the brake point and the apex, which
 is where trail braking, entry rotation and most spins live.
 
 **Where it bit:** `claude_sebring_v6` (coast diff 40% → 60%) was aimed
@@ -166,20 +192,29 @@ squarely at entry stability at Sunset Bend. Every metric read "within noise"
 and zero corners produced a lead. The tooling could not see the thing the
 change was for.
 
-The spin *was* eventually visible, but only because it was violent enough
-that the corner detector carved it out as its own corner — a side effect, not
-a measurement.
+**What changed:** each corner carries `entry_phase` — from the brake point,
+or from turn-in on a corner taken without braking — with slip balance
+averaged over the phase, mean steering, peak yaw rate and total rotation by
+the apex. Yaw and rotation come from `heading`, unwrapped step by step, as
+magnitudes so AC's sign convention does not matter; a step past 360°/s is a
+reset and is dropped. Entry slip balance, peak yaw rate and steering are
+corner channels in `compare_runs`, so a change like v6's has somewhere to
+show up as a lead.
 
-**Fix:** slip balance, yaw rate and steering integrated over
-`brake_point_pos` → `apex_pos`, reported per corner alongside the apex
-figures.
+**Not verified:** every figure here is tested on synthetic laps. Whether a
+real entry snap is visible in 25 Hz heading, and what yaw rate a normal
+entry at Sunset Bend runs at, are unmeasured. The 2°/s floor on the yaw
+channel is a guess. Look at a real v6-style run before trusting a lead
+from it.
 
 ---
 
 ## 6. Newly logged channels that nothing reads
 
-**Status:** mostly closed. Wear, braking and body attitude all have
-readers now. `heading` and `damage` do not.
+**Status:** closed for the stored channels. Wear, braking, body attitude,
+`heading` (entry yaw and rotation, item 5) and `damage` (`contacts` in
+`lap_summary`) all have readers. What remains is data the samples do not
+carry.
 
 Schema v8 and v9 added thirteen columns — `pos_x/y/z`, `heading`, `pitch`,
 `roll`, `tc_active`, `abs_active`, `wear_fl/fr/rl/rr` and `damage`. For a
@@ -303,10 +338,13 @@ distribution is reported alongside it for that reason.
 
 **Still open:**
 
-- **`heading`** — stored, unread. Only interesting alongside position, for
-  yaw relative to the racing line.
-- **`damage`** — stored, unread. Low value while the driver races with
-  damage disabled, where it stays at zero all session. The wall detector
+- **Body slip angle** — heading against the direction of travel from
+  position, which is yaw relative to the car's own path rather than a rate.
+  Needs AC's heading convention pinned against position on a real straight
+  first; nothing here has checked it.
+- **`damage` for this driver** is read now but will say nothing: she races
+  with damage disabled, where it stays at zero all session, and `contacts`
+  is deliberately null rather than "clean" in that case. The wall detector
   that works either way is a speed discontinuity; see item 8.
 - **The game's own aid flags**, via a physics worker, single-player only.
 

@@ -7,6 +7,7 @@ single such sample moved a balance of 1.4 to 6002, so what gets filtered out
 and what survives is load-bearing in both directions.
 """
 
+import math
 import sys
 from pathlib import Path
 
@@ -129,6 +130,127 @@ def test_lap_summary_flags_when_the_balance_rests_on_little_data():
         assert out["slip_quality"] is not None
         assert out["slip_quality"]["peak_dropped_slip"] == 99999.0
     print("  slip_quality surfaced alongside the lap's setup")
+
+
+# --- the entry phase ----------------------------------------------------
+
+
+def _entry(n=40, apex=30, brake_until=12, yaw_deg_s=20.0, heading=0.0,
+           rear_on_entry=0.5, with_heading=True, dt=40):
+    """A corner entry: on the brakes from sample 0, turning in from 8.
+
+    The car rotates at `yaw_deg_s` from turn-in to the apex, so the
+    rotation by the apex is 23 steps of yaw_deg_s * dt: 18.4 degrees at the
+    defaults. Heading is wrapped to -pi..pi the way AC reports it.
+    `rear_on_entry` is the rear slip before sample 20, for a car that is
+    loose under braking and settled by the apex.
+    """
+    out = []
+    h = heading
+    for i in range(n):
+        if 8 <= i <= apex:
+            h += math.radians(yaw_deg_s) * dt / 1000.0
+        h = (h + math.pi) % (2 * math.pi) - math.pi
+        rear = rear_on_entry if i < 20 else 0.5
+        s = {"t_ms": i * dt, "norm_pos": i / 100, "speed_kmh": 150.0 - i,
+             "gear": 3, "brake": 0.8 if i < brake_until else 0.0,
+             "gas": 0.0 if i < apex else 1.0,
+             "steer": 0.3 if i >= 8 else 0.0,
+             "slip_fl": 1.4, "slip_fr": 1.4, "slip_rl": rear, "slip_rr": rear}
+        if with_heading:
+            s["heading"] = h
+        out.append(s)
+    return out
+
+
+def test_the_entry_is_measured_from_the_brake_point_to_the_apex():
+    stats = analysis._corner_stats(_entry(), 30, 38)
+    e = stats["entry_phase"]
+    assert e["from"] == "brake point", e
+    assert e["from_pos"] == stats["brake_point_pos"] == 0.0, (e, stats)
+    assert abs(e["rotation_deg"] - 18.4) < 0.2, e
+    assert abs(e["yaw_rate_peak_deg_s"] - 20.0) < 0.5, e
+    assert abs(e["steer_norm"] - 0.3 * 23 / 31) < 0.01, e
+    print(f"  from {e['from']} at {e['from_pos']}: rotated "
+          f"{e['rotation_deg']} deg, peak {e['yaw_rate_peak_deg_s']} deg/s")
+
+
+def test_loose_on_entry_and_pushing_at_the_apex_are_both_visible():
+    """The shape the apex figure alone cannot show.
+
+    The rear slides more than the front under braking and the car has
+    settled into understeer by the apex. The apex balance says understeer
+    and nothing else; the entry balance says where the problem the driver
+    is complaining about actually is.
+    """
+    stats = analysis._corner_stats(_entry(rear_on_entry=2.4), 30, 38)
+    assert stats["entry_phase"]["slip_balance"] < 0 < stats["slip_balance"], \
+        stats
+    print(f"  entry {stats['entry_phase']['slip_balance']}, "
+          f"apex {stats['slip_balance']}")
+
+
+def test_heading_wrapping_past_pi_is_not_a_spin():
+    """AC wraps heading at +-pi; differenced raw, that is 6.2 rad a tick.
+
+    Started just short of pi, the car crosses the wrap part-way through the
+    entry, and the rotation has to come out the same as anywhere else.
+    """
+    e = analysis._corner_stats(_entry(heading=math.pi - 0.1), 30, 38)
+    e = e["entry_phase"]
+    assert abs(e["rotation_deg"] - 18.4) < 0.2, e
+    assert e["yaw_rate_peak_deg_s"] < 21, e
+
+
+def test_a_heading_glitch_is_dropped_not_reported_as_a_snap():
+    samples = _entry()
+    h = samples[15]["heading"] + math.pi / 2
+    samples[15]["heading"] = (h + math.pi) % (2 * math.pi) - math.pi
+    e = analysis._corner_stats(samples, 30, 38)["entry_phase"]
+    # Both steps touching the bad tick go, and with them 1.6 real degrees.
+    assert 16.0 < e["rotation_deg"] < 18.5, e
+    assert e["yaw_rate_peak_deg_s"] < 25, e
+
+
+def test_a_sweeper_taken_without_braking_is_measured_from_turn_in():
+    samples = _entry(brake_until=0)
+    e = analysis._corner_stats(samples, 30, 38, 0, 8)["entry_phase"]
+    assert e["from"] == "turn-in" and e["from_pos"] == 0.08, e
+    # And with nothing to start from at all, it says so rather than guess.
+    assert analysis._corner_stats(samples, 30, 38)["entry_phase"] is None
+
+
+def test_a_lap_without_heading_still_reports_the_rest_of_the_entry():
+    """Laps from before heading was logged: no rotation, and not zero."""
+    e = analysis._corner_stats(_entry(with_heading=False), 30, 38)
+    e = e["entry_phase"]
+    assert e["rotation_deg"] is None and e["yaw_rate_peak_deg_s"] is None, e
+    assert e["slip_balance"] is not None and e["steer_norm"] is not None, e
+
+
+# --- contacts -----------------------------------------------------------
+
+
+def _damaged(levels):
+    """Samples 40ms apart; `levels` maps an index to the damage from it."""
+    out, d = [], 0.0
+    for i in range(100):
+        d = levels.get(i, d)
+        out.append({"t_ms": i * 40, "norm_pos": i / 100, "damage": d})
+    return out
+
+
+def test_a_contact_is_reported_where_the_damage_went_up():
+    """One scrape across two ticks is one contact; a repair is not one."""
+    out = analysis._contacts(_damaged({20: 0.5, 21: 1.2, 60: 2.0, 80: 0.0}))
+    assert out == [{"pos": 0.2, "damage_added": 1.2},
+                   {"pos": 0.6, "damage_added": 0.8}], out
+    print(f"  {out}")
+
+
+def test_no_damage_and_no_damage_column_are_different_answers():
+    assert analysis._contacts(_damaged({})) == []
+    assert analysis._contacts([{"t_ms": 0, "norm_pos": 0.0}]) is None
 
 
 if __name__ == "__main__":

@@ -132,6 +132,9 @@ laps that have no setup yet, and only the ones you name.
 Corner-by-corner deltas in minimum speed and brake point. For more than one lap
 a side, ask it to compare the two runs — it judges the change against your own
 lap-to-lap spread, so "faster" has to beat "you were just quicker that lap".
+It also asks whether you got more *consistent*, which a setup that stops you
+spinning can do without moving your average pace at all — but that question
+needs about six laps a side before any answer to it can count.
 
 **7. Ask where you actually drove.**
 
@@ -245,14 +248,9 @@ before sharing it.
   from a comparison for it — but it's still inference. CSP will hand the
   game's own verdict to a physics worker, which is a thing this already runs,
   so this is wiring rather than research. Single-player only.
-- **Entry-phase corner metrics** — trail braking, rotation and steering between
-  the brake point and the apex. That's where most spins live, and nothing
-  currently measures it.
-- **Detect a change in consistency**, not just a change in mean pace. A setup
-  that stops you spinning may not move your average lap time at all, and the
-  current statistics call that "within noise".
-- **Use the channels already being recorded** — tyre wear across a stint, TC
-  and ABS intervention, body roll. All logged, none read yet.
+- **Read the game's own ABS and TC flags.** The shared-memory fields that look
+  like intervention are constant all lap, so they're a setting, not activity.
+  CSP has the real flags, but only for a physics worker — single-player only.
 - **Fill in the display registry.** It no longer guesses what your setup
   screen shows — it says "unknown" and asks — but it only knows a car once
   you've read a couple of values off the screen for it.

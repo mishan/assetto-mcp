@@ -212,6 +212,60 @@ Three things the numbering does not claim.
 A corner the start/finish line runs through is two pieces of road here, because
 positions don't wrap. `compare_runs` has always matched corners the same way.
 
+### Entry phase
+
+Everything else about a corner is measured at the apex, where the car has
+already been rotated. **`entry_phase`** covers the part before it: from the
+brake point to the apex, or from turn-in on a corner taken without braking
+(`from` says which).
+
+- `slip_balance` — front minus rear, the apex definition, averaged over the
+  phase. Negative here and positive at the apex is the car that's loose under
+  braking and pushes in the middle, which the apex figure alone reads as plain
+  understeer.
+- `steer_norm` — mean steering over the phase, as a fraction of lock. A mean
+  rather than a sum, because a sum grows with how early the brake point is.
+- `rotation_deg` and `yaw_rate_peak_deg_s` — how far the car turned by the
+  apex, and how fast at its quickest. Both come from `heading`, both are
+  magnitudes (AC's sign convention has never been checked here), and both are
+  null on laps recorded before heading was.
+
+Heading wraps at ±π, so each step is unwrapped on its own; a step implying more
+than 360°/s is a reset and is dropped, not clamped. The entry slip balance, peak
+yaw rate and steering are corner channels in `compare_runs`, so a change aimed
+at corner entry can show up as a lead when the apex figures don't move.
+
+---
+
+## Lap-time consistency
+
+`compare_runs` compares means, and a change that makes the laps more repeatable
+can leave the mean where it was. **`lap_time_consistency`** asks the other
+question: did the spread of lap times change?
+
+It is a **permutation test** on the ratio of the two runs' variances — not the
+variance-ratio F test, which assumes normal lap times. A run where a spin now
+and then costs five seconds is nothing like normal. Simulated with a 0.3 s
+spread and a 15% chance of a 3–8 s spin on any lap, the same on both sides, the
+F test called the spread changed in 47% of six-lap runs at 95% — and 44% even at
+the corrected level. Relabelling the laps assumes nothing about their shape and
+held 0.3%.
+
+The cost is laps. The smallest p a relabelling can produce is fixed by how many
+ways there are to relabel: three laps a side can never get below p = 0.1. A test
+that can't clear its threshold is left out of the Holm family altogether —
+it can't reject falsely, and counting it would only raise every other metric's
+bar — and the payload says `too few laps to test` and how many laps a side it
+would take (six, at the usual family size). Whether it's in is decided by the
+lap counts alone, never by the result.
+
+That has an uncomfortable consequence for the case that asked for this.
+Sebring v9 — six laps inside a second after a run where two of six spun — comes
+out at p = 0.41. If one lap in three spins by chance, six laps without one
+happens 9% of the time, so six laps a side can't tell "the setup fixed it" from
+"not this time". The payload says "within noise", and that is the honest
+answer.
+
 ---
 
 ## Data quality flags
@@ -223,6 +277,10 @@ averaging it away.
   occasionally emits a wheelSlip in the tens of thousands). It says how many
   corners were affected and how big the worst spike was, so you can judge
   whether the balance number is trustworthy.
+- **`contacts`** — where bodywork damage went up during the lap, one entry per
+  contact. Null both when there was no contact and when the server had damage
+  off, because both read zero all lap — so a null is not evidence of a clean
+  lap. A repair in the pits lowers damage and is not counted.
 - **`accel_samples_dropped`** — the same idea for the acceleration channels.
   AC sometimes emits a 10 g spike from a reset or a kerb strike, and one of
   those used to inflate `peak_lat_g` for the lap *and* the noise estimate for

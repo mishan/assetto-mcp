@@ -97,6 +97,33 @@ def test_bridge_accepts_and_stores_batch():
             b.stop()
 
 
+def test_an_opponent_sample_keeps_its_clock_and_position():
+    """Schema v14: the app sends both now, and neither may be lost or invented."""
+    with temp_db() as path:
+        db.connect(path).close()
+        b = Bridge(path, _recording(1), port=0)
+        b.start()
+        try:
+            cars = _lap_trace()[:3]
+            for k, c in enumerate(cars):
+                c.update(t_ms=1000 + 100 * k, pos_x=10.0 + k, pos_y=2.5,
+                         pos_z=-7.0)
+            # Nonsense in one field is not a reason to lose the sample.
+            cars[2]["pos_x"] = "north"
+            code, body = _post(b.port, "/rivals", {"cars": cars})
+            assert code == 200 and body["stored"] == 3, body
+            conn = db.connect(path)
+            try:
+                rows = db.get_rival_lap_samples(conn, 1, 1, 3)
+            finally:
+                conn.close()
+            assert [r["t_ms"] for r in rows] == [1000, 1100, 1200], rows
+            assert [r["pos_x"] for r in rows] == [10.0, 11.0, None], rows
+            assert {r["pos_z"] for r in rows} == {-7.0}, rows
+        finally:
+            b.stop()
+
+
 def test_malformed_cars_skipped_not_fatal():
     """One bad car must not cost us the other nineteen."""
     with temp_db() as path:

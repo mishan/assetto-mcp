@@ -16,7 +16,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # How many wheels have to be off the valid surface before a lap counts as
 # having exceeded track limits.
@@ -235,7 +235,10 @@ CREATE TABLE IF NOT EXISTS rival_samples (
     gear INTEGER,
     gas REAL,
     brake REAL,
-    created_at REAL NOT NULL
+    created_at REAL NOT NULL,
+    -- v14: the car's own physics clock and its world position, both
+    -- nullable -- samples from before v14 have neither.
+    t_ms INTEGER, pos_x REAL, pos_y REAL, pos_z REAL
 );
 -- UNIQUE, not just an index: the Lua app posts over HTTP and will resend a
 -- batch whose response it never saw. Without this a retry double-counts
@@ -646,6 +649,16 @@ def _migrate(conn) -> list[str]:
     # CREATE TABLE IF NOT EXISTS in SCHEMA covers them, so there is no ALTER
     # step. Recorded so the next person can see the version was accounted
     # for rather than skipped.
+
+    if version < 14:
+        # v14: an opponent sample's own clock and world position. Nullable,
+        # and nothing is backfilled -- the app never sent either before.
+        added = [c for c, d in (("t_ms", "INTEGER"), ("pos_x", "REAL"),
+                                ("pos_y", "REAL"), ("pos_z", "REAL"))
+                 if _add_column(conn, "rival_samples", c, d)]
+        if added:
+            log.append(f"rival_samples.{', '.join(added)} added; opponent "
+                       "laps recorded before this have no clock or position")
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
@@ -1814,6 +1827,7 @@ def list_sessions(conn, limit: int = 20) -> list[dict]:
 RIVAL_SAMPLE_COLUMNS = [
     "session_id", "car_index", "lap_count", "spline", "speed_kmh",
     "gear", "gas", "brake", "created_at",
+    "t_ms", "pos_x", "pos_y", "pos_z",
 ]
 
 
@@ -1885,7 +1899,8 @@ def store_rival_batch(conn, session_id, drivers: list[dict],
 
     rows = [
         (session_id, s["car_index"], s["lap_count"], s["spline"],
-         s["speed_kmh"], s.get("gear"), s.get("gas"), s.get("brake"), now)
+         s["speed_kmh"], s.get("gear"), s.get("gas"), s.get("brake"), now,
+         s.get("t_ms"), s.get("pos_x"), s.get("pos_y"), s.get("pos_z"))
         for s in samples
     ]
     stored = 0

@@ -42,6 +42,45 @@ def _posted_sources(rec):
     return out
 
 
+def test_an_opponent_carries_its_name_car_clock_position_and_lap_time():
+    """Every one of these was missing from every session ever recorded.
+
+    The app read carId, bestLapTimeMs and previousLapTimeMs off the car
+    state -- fields CSP does not have -- and this harness supplied them, so
+    the tests passed and the database filled with nameless, timeless
+    opponents. The car model now comes from ac.getCarID, and the lap time
+    from the app's own timing of the car across the line.
+    """
+    rec = lua_harness.Recorder()
+    rec.sim_fields = {"raceSessionType": 1, "carsCount": 2}
+    lua, api, rec = lua_harness.load(rec)
+    api.setRunning(True)
+    # Across the line twice: into lap 4 at t=150, into lap 5 at t=60050.
+    for lap, spline, t in ((3, 0.98, 0), (3, 0.99, 100), (4, 0.01, 200),
+                           (4, 0.50, 30000), (4, 0.99, 60000),
+                           (5, 0.01, 60100)):
+        rec.cars[1] = {"lapCount": lap, "splinePosition": spline,
+                       "timestamp": float(t), "position": (12.5, 3.0, -40.0)}
+        api.sampleRivals()
+    api.postRivals()
+
+    posts = [body for url, body in rec.posts if url.endswith("/rivals")]
+    assert posts, rec.posts
+    cars = posts[-1]["cars"]
+    assert len(cars) == 6, cars
+    first = cars[0]
+    assert first["driver_name"] == "Driver", first
+    assert first["car_model"] == "rss_formula_rss_4", first
+    # The crossings are interpolated between the samples either side of
+    # the line, so the lap is 60050 - 150, not a multiple of 100 ms.
+    assert first["best_lap_ms"] == 59900, first
+    assert first["last_lap_ms"] == 59900, first
+    assert [c["t_ms"] for c in cars] == [0, 100, 200, 30000, 60000, 60100]
+    assert all((c["pos_x"], c["pos_y"], c["pos_z"]) == (12.5, 3.0, -40.0)
+               for c in cars), cars
+    print(f"  lap timed at {first['best_lap_ms']:.0f} ms from the car's clock")
+
+
 def test_the_runtime_is_the_lua_the_game_runs():
     """CSP runs LuaJIT 2.1, which is Lua 5.1 -- not whatever lupa ships newest.
 

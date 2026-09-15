@@ -180,6 +180,9 @@ class Recorder:
         # reach it after load -- setting a global of the same name does
         # nothing. Loading the app without one is the only way in.
         self.car_available = True
+        # Per-car field overrides for ac.getCar(i), read on every call, so a
+        # test can move an opponent round the lap between samples.
+        self.cars = {}
 
 
 def load(rec: Recorder = None, patch_version="0.2.11"):
@@ -225,15 +228,25 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
         return lua.table_from({"ok": True, "stored": 0})
 
     # --- ac -------------------------------------------------------------
-    def get_car(_i=0):
+    def get_car(i=0):
         if not rec.car_available:
             return None
-        return lua.table_from({
-            "splinePosition": 0.5, "lapCount": 1, "speedKmh": 180.0,
-            "brake": 0.0, "gas": 1.0, "gear": 4, "isConnected": True,
-            "isInPitlane": False, "carId": "rss_formula_rss_4",
-            "bestLapTimeMs": 113000, "previousLapTimeMs": 113500,
-        })
+        # Only fields CSP's car state really has. This stub once carried
+        # carId, bestLapTimeMs and previousLapTimeMs -- names that exist
+        # nowhere in CSP -- so the app's reads of them passed every test and
+        # returned nil in every real session, and no opponent ever had a car
+        # model or a lap time.
+        fields = {"splinePosition": 0.5, "lapCount": 1, "speedKmh": 180.0,
+                  "brake": 0.0, "gas": 1.0, "gear": 4, "isConnected": True,
+                  "isInPitlane": False, "timestamp": 1000.0,
+                  "position": (100.0, 5.0, -200.0)}
+        fields.update(rec.cars.get(int(i or 0), {}))
+        pos = fields.pop("position", None)
+        car = lua.table_from(fields)
+        if pos is not None:
+            car["position"] = lua.table_from(
+                {"x": pos[0], "y": pos[1], "z": pos[2]})
+        return car
 
     def sim_fields():
         fields = dict(rec.sim_fields)
@@ -299,9 +312,10 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
       end
 
       ac = {
-        getCar = function(_) return py.car() end,
+        getCar = function(i) return py.car(i) end,
         getSim = function() return proxy(py.sim_fields()) end,
         getDriverName = function(_) return 'Driver' end,
+        getCarID = function(_) return 'rss_formula_rss_4' end,
         ControlButton = function(_)
           return { pressed = function() return false end,
                    configure = function() end }

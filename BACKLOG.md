@@ -5,8 +5,8 @@ already produced. Each entry says what is wrong, where it bit, and where the
 code lives, so a future session can act without re-deriving any of it.
 
 Written after the Sebring / NSX GT3 session, and kept current since. Test
-suite stands at 513 passing with the Lua tooling installed,
-schema at v13.
+suite stands at 524 passing with the Lua tooling installed,
+schema at v14.
 
 ---
 
@@ -529,6 +529,49 @@ the install's own `sections.ini` when it is there, hand-written when it is
 not, matched to the detected corners by order and turn direction rather
 than by absolute position — an imported lap fraction is another sim's
 spline, good for ordering and not for a 50 m tolerance.
+
+---
+
+## 10. Opponents had no names, cars or lap times
+
+**Status:** fixed in the in-game app, and not yet checked in a real
+session. Re-run `install-windows.bat` before the next one so the new app is
+copied into Assetto Corsa.
+
+Every session in the database, through session 41, has blank opponent
+names and car models, no best laps, and an empty `rival_laps` table — so
+nothing could say which opponent lap was a quick one.
+
+**What was wrong:** the app read `c.carId`, `c.bestLapTimeMs` and
+`c.previousLapTimeMs` off each opponent's car state. None of the three
+exists anywhere in CSP — not in the SDK, not in CSP's own scripts — so each
+read returned nil. The test harness's fake car supplied all three, so the
+tests passed. Driver names were blank as well, though `ac.getDriverName` is
+real; the likeliest reason is that the gaming PC was running an app from
+before the server-side fix of 20 August (`1eed491`). That is unconfirmed.
+
+**What changed:**
+
+- The car model comes from `ac.getCarID(i)`.
+- The app times each opponent's laps itself, from `lapCount` and the car's
+  own `timestamp`, interpolating the moment it crosses the line between the
+  samples either side. The lap it first saw a car on is not timed.
+- Every opponent sample now carries that timestamp and the car's world
+  position (schema v14), so the line map can draw an opponent's line and
+  give a time gap from real clocks rather than from speed.
+- The harness's fake car carries only fields CSP really has, and a test
+  drives an opponent across the line and checks what the app posts.
+
+**To check in the next session:** `list_rivals` shows names and car
+models; opponent best laps agree with the game's timing screen to within
+about a tenth; the line map's Rival view draws their line dashed. Not
+known: whether `timestamp` and `position` are live for remote cars online.
+Both are for car 0, which the suspension capture already relies on.
+
+Opponent laps recorded before this have no clock and no position. The line
+map times them by integrating speed over the track length, which runs
+0.1–0.9% short on laps where the true time is known, and says it is an
+estimate.
 
 ---
 

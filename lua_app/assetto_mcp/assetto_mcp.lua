@@ -72,6 +72,14 @@ local rivalPostTimer = RIVAL_POST_PHASE
 local rivalBusy = false
 local rivalDropped = 0
 local rivalSent = 0
+-- Opponent lap timing, kept across batches. The app times each opponent's
+-- laps itself, from its lap counter and the car's own clock: CSP exposes no
+-- best- or previous-lap field on another car's state, and the names this
+-- app used to read for them exist nowhere in CSP, so they were nil in every
+-- session ever recorded.
+local rivalClock = {}      -- [car_index] = { lap, spline, t, start }
+local rivalTimes = {}      -- [car_index] = { best = ms, last = ms }
+local rivalSession = nil
 local message = nil        -- { id, text } from Claude, shown until dismissed
 local ackedId = 0          -- last message id we dismissed (poll may race ack)
 local pollTimer = 0
@@ -594,12 +602,63 @@ local function postSuspension()
   if not flush(first) then flush(second) end
 end
 
+-- A CSP binding that returns a string, called defensively: absent on an
+-- older CSP, or raising, reads as the default rather than as an error on
+-- the render thread.
+local function callOr(fn, arg, default)
+  if type(fn) ~= 'function' then return default end
+  local ok, v = pcall(fn, arg)
+  if ok and type(v) == 'string' then return v end
+  return default
+end
+
+-- Time an opponent's laps from its lap counter and its own clock. The
+-- crossing is interpolated between the samples either side of the line,
+-- so sampling at 10 Hz costs a few milliseconds rather than a tenth. The
+-- lap the app first saw a car on is not timed: it joined that lap partway.
+local function timeRivalLap(i, lapCount, spline, ts)
+  local prev = rivalClock[i]
+  if ts == nil then rivalClock[i] = nil; return end
+  if prev == nil or lapCount < prev.lap then
+    rivalClock[i] = { lap = lapCount, spline = spline, t = ts, start = nil }
+    return
+  end
+  if lapCount == prev.lap + 1 then
+    local before, after = 1 - prev.spline, spline
+    local span = before + after
+    local cross = ts
+    if span > 0 and span < 0.5 then
+      cross = prev.t + (ts - prev.t) * before / span
+    end
+    if prev.start then
+      local lap = math.floor(cross - prev.start + 0.5)
+      if lap > 0 then
+        local r = rivalTimes[i] or {}
+        r.last = lap
+        if not r.best or lap < r.best then r.best = lap end
+        rivalTimes[i] = r
+      end
+    end
+    rivalClock[i] = { lap = lapCount, spline = spline, t = ts, start = cross }
+  elseif lapCount > prev.lap + 1 then
+    -- Laps went by unseen -- a pit visit, a pause -- so there is nothing to
+    -- time across.
+    rivalClock[i] = { lap = lapCount, spline = spline, t = ts, start = nil }
+  else
+    prev.spline, prev.t = spline, ts
+  end
+end
+
 -- Snapshot every car on track. Fields that AC doesn't transmit for remote
 -- cars are sent as nil rather than 0: the server distinguishes "absent" from
 -- "driver wasn't braking", and silently coercing to 0 would destroy that.
 local function sampleRivals()
   local n = ac.getSim().carsCount
   if not n or n < 2 then return end
+  -- Lap times belong to a session; a new one starts every car from nothing.
+  if status.sessionId ~= rivalSession then
+    rivalClock, rivalTimes, rivalSession = {}, {}, status.sessionId
+  end
   for i = 0, n - 1 do
     if i ~= 0 then
       local c = ac.getCar(i)
@@ -609,6 +668,15 @@ local function sampleRivals()
         if #rivalBuffer >= RIVAL_BUFFER_MAX then
           rivalDropped = rivalDropped + 1
         else
+          local lapCount = clamp(math.floor(num(c.lapCount, 0)), 0, 100000)
+          local spline = clamp(num(c.splinePosition, 0), 0, 1)
+          -- The car's own physics clock, as the suspension samples use for
+          -- car 0. A time on every sample lets the server say how far
+          -- ahead or behind a rival was, rather than estimate it from speed.
+          local ts = num(c.timestamp, nil)
+          -- World position, so the map can draw where the rival actually
+          -- went and not only how fast they were along the lap.
+          local pos = c.position
           -- Per-sample fields only. Driver name, car model and lap times
           -- describe the car, not the moment, and the server collapses them
           -- to one row per car anyway -- stamping them onto all ten samples
@@ -617,24 +685,29 @@ local function sampleRivals()
           -- below.
           rivalBuffer[#rivalBuffer + 1] = {
             car_index = i,
-            lap_count = clamp(math.floor(num(c.lapCount, 0)), 0, 100000),
-            spline = clamp(num(c.splinePosition, 0), 0, 1),
+            lap_count = lapCount,
+            spline = spline,
             speed_kmh = clamp(num(c.speedKmh, 0), 0, 1000),
             gear = num(c.gear, nil),
             gas = num(c.gas, nil),
             brake = num(c.brake, nil),
+            t_ms = ts and math.floor(ts) or nil,
+            pos_x = pos and num(pos.x, nil) or nil,
+            pos_y = pos and num(pos.y, nil) or nil,
+            pos_z = pos and num(pos.z, nil) or nil,
           }
+          timeRivalLap(i, lapCount, spline, ts)
           if not rivalMeta[i] then
             rivalMeta[i] = {
-              driver_name = ac.getDriverName(i) or '',
-              car_model = c.carId or '',
+              driver_name = callOr(ac.getDriverName, i, ''),
+              -- ac.getCarID, not c.carId: the car state has no carId field.
+              car_model = callOr(ac.getCarID, i, ''),
             }
           end
-          -- Lap times change as the session runs, so refresh them each time
-          -- rather than freezing the first value seen.
-          rivalMeta[i].best_lap_ms = num(c.bestLapTimeMs, nil)
-          rivalMeta[i].last_lap_ms = num(c.previousLapTimeMs, nil)
-          rivalMeta[i].lap_count = clamp(math.floor(num(c.lapCount, 0)), 0, 100000)
+          local times = rivalTimes[i]
+          rivalMeta[i].best_lap_ms = times and times.best or nil
+          rivalMeta[i].last_lap_ms = times and times.last or nil
+          rivalMeta[i].lap_count = lapCount
         end
       end
     end
@@ -1039,6 +1112,9 @@ end
 -- app forbids implicit globals and there is a test that enforces it.
 script.__test = {
   postSuspension = function() return postSuspension() end,
+  sampleRivals = function() return sampleRivals() end,
+  postRivals = function() return postRivals() end,
+  clearRivalBusy = function() rivalBusy = false end,
   startSuspensionWorker = function() return startSuspensionWorker() end,
   isOnlineSession = function() return isOnlineSession() end,
   clamp = function(...) return clamp(...) end,

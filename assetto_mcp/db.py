@@ -1977,6 +1977,23 @@ def get_rival_lap_samples(conn, session_id: int, car_index: int,
     return [dict(r) for r in rows]
 
 
+def well_covered_rival_laps(conn, session_id: int,
+                            car_index: int) -> list[dict]:
+    """Rival laps we saw enough of to compare against, quickest first.
+
+    Ordered by recorded lap time where we have one. A lap with no time sorts
+    last: without it there is no way to know whether it was a flyer or an
+    in-lap, and comparing against an unknown-pace lap is worse than useless.
+    """
+    times = rival_lap_times(conn, session_id, car_index)
+    laps = [dict(l, lap_time_ms=times.get(l["lap_count"]))
+            for l in rival_lap_counts(conn, session_id, car_index)
+            if l["n"] >= 20 and (l["hi"] - l["lo"]) > 0.8]
+    laps.sort(key=lambda l: (l["lap_time_ms"] is None,
+                             l["lap_time_ms"] or 0))
+    return laps
+
+
 def rival_lap_counts(conn, session_id: int, car_index: int) -> list[dict]:
     """Which laps we have samples for, and how well covered each one is.
 

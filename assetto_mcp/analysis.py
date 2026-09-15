@@ -1153,6 +1153,12 @@ def _resample_by_spline(samples: list[dict], key: str,
             for i in range(buckets)]
 
 
+def resample_by_position(samples: list[dict], key: str, pos_key: str,
+                         buckets: int) -> list[float | None]:
+    """_resample_by_spline, for callers outside this module."""
+    return _resample_by_spline(samples, key, pos_key, buckets)
+
+
 def _field_liveness(samples: list[dict], key: str) -> dict:
     """How much of `key` actually arrived, and whether it ever varies.
 

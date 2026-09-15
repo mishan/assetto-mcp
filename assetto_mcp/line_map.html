@@ -65,7 +65,7 @@ tr[aria-selected="true"] td{background:color-mix(in srgb,var(--ink) 8%,transpare
 tr.hidden td{color:var(--muted)}
 .sw{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:6px;border-radius:2px}
 .flag{color:var(--muted);font-size:11px}
-.legend{font-family:var(--font-mono);font-size:11px;color:var(--muted);display:flex;gap:6px 14px;flex-wrap:wrap;align-items:center}
+.legend{font-family:var(--font-mono);font-size:11px;color:var(--muted);display:flex;gap:6px 14px;flex-wrap:wrap;align-items:center;max-height:36vh;overflow:auto;flex-shrink:0}
 .legend i{display:inline-block;width:12px;height:3px;vertical-align:middle;margin-right:4px;border-radius:2px}
 .legend i.band{height:8px;opacity:.5}
 .legend i.dot{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--ink)}
@@ -77,6 +77,7 @@ tr.hidden td{color:var(--muted)}
 .toggles{font-size:12px;color:var(--muted);display:flex;gap:4px 12px;flex-wrap:wrap;align-items:center}
 .toggles label{display:flex;gap:4px;align-items:center;white-space:nowrap}
 .toggles .head{font:600 11px var(--font-display);letter-spacing:.08em;text-transform:uppercase}
+.toggles select{font:12px var(--font-mono);color:var(--ink);background:var(--surface);border:1px solid var(--line);padding:2px 4px;max-width:340px}
 .hint{color:var(--muted);font-size:12px}
 .hint:empty{display:none}
 @media (max-width:760px){
@@ -102,10 +103,12 @@ tr.hidden td{color:var(--muted)}
       <button data-mode="balance" aria-pressed="false">Balance</button>
       <button data-mode="gears" aria-pressed="false">Gears</button>
       <button data-mode="surface" aria-pressed="false">Surface</button>
+      <button data-mode="rival" aria-pressed="false">Rival</button>
     </div>
     <div class="legend" id="legend"></div>
     <div class="toggles" id="panels"><span class="head">Charts</span></div>
     <div class="toggles" id="marks"><span class="head">Marks</span><label><input type="checkbox" id="turns" checked> turns and brake points</label></div>
+    <div class="toggles"><span class="head">Opponent</span><select id="rival" aria-label="Opponent lap to compare against"></select></div>
     <div class="hint" id="marknote"></div>
     <div class="laps"><table><thead><tr><th></th><th>Lap</th><th>Time</th><th id="col4">&Delta; best</th><th>Setup</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
     <div class="hint" id="hint">Click a row to select a lap: the coloured views and the charts below the map follow it. Tick to show or hide. Hover the map or the charts for the nearest point.</div>
@@ -139,6 +142,10 @@ const PANELS = [
   {key:"surf", label:"surface"},
   {key:"ride", label:"ride height"},
   {key:"elev", label:"elevation"},
+  {key:"vsspeed", label:"vs opponent: speed"},
+  {key:"vsbrake", label:"vs opponent: brake"},
+  {key:"vsgas", label:"vs opponent: throttle"},
+  {key:"vsgap", label:"vs opponent: time gap"},
 ];
 const MARKS = [
   {key:"off", label:"off track"},
@@ -191,6 +198,62 @@ const ROUGHEST = (() => {
   return out;
 })();
 const SRC_NAME = { worker:"suspension travel, 333 Hz", app:"suspension travel from the in-game app, render rate", ride:"ride height at 25 Hz -- coarser" };
+
+// Opponents: each of their laps on one grid of track positions, the only axis two
+// cars sampled at different moments share. Quickest car first, quickest lap first.
+const RIVALS = DATA.rivals || [], RG = DATA.rival_grid || 1000, TRACK_M = DATA.track_length_m;
+const rivalLaps = RIVALS.flatMap(r=>r.laps.map(l=>({r, l})));
+const rivalName = r => r.name || ("car "+r.car_index);
+const curRival = () => state.rival==null ? null : rivalLaps[state.rival];
+const gi = p => Math.min(RG-1, Math.max(0, Math.floor(p*RG)));
+const gridPos = Array.from({length:RG}, (_,i)=>(i+0.5)/RG);
+// Where a pedal first crossed a threshold after being off: a braking point, or the
+// throttle coming in. At least a hundredth of a lap apart, so a stab on the pedal
+// inside one zone is not read as two zones.
+function onsets(ps, vals, thr){
+  const out=[]; let was=false;
+  for (let i=0;i<vals.length;i++){
+    const v=vals[i]; if (v==null) continue;
+    const on=v>=thr;
+    if (on && !was && (!out.length || ps[i]-out[out.length-1]>0.01)) out.push(ps[i]);
+    was=on;
+  }
+  return out;
+}
+// A lap of yours on the opponent's grid, for anything that subtracts one from the other.
+const myGridCache = new Map();
+function myGrid(l, ch){
+  const k=l.id+":"+ch; if (myGridCache.has(k)) return myGridCache.get(k);
+  const s=new Array(RG).fill(0), n=new Array(RG).fill(0);
+  l.p.forEach((p,i)=>{ const v=l[ch][i]; if (v==null) return; const b=gi(p); s[b]+=v; n[b]++; });
+  const out=s.map((v,i)=>n[i]?v/n[i]:null); myGridCache.set(k,out); return out;
+}
+// Across every step since the last reading: an empty step is still road covered.
+function integrate(v){
+  const step=TRACK_M/RG, out=[]; let t=0, last=null, lastI=null;
+  v.forEach((x,i)=>{ if (x!=null && last!=null){ const ms=(x+last)/2/3.6; if (ms>1) t+=(i-lastI)*step/ms*1000; } if (x!=null){ last=x; lastI=i; } out.push(t); });
+  return out;
+}
+// The time gap along the lap in ms, positive where you are behind. Both laps are
+// timed the same way so a method's bias falls out: the opponent's own clock against
+// yours where it has one, and speed integrated for both where it does not.
+function gapTrace(sel, rv){
+  if (!rv.tm) return null;
+  let mine, theirs=rv.tm;
+  if (rv.clock==="timed" && sel.tm.some(v=>v!=null)){
+    const g=myGrid(sel,"tm"), t0=g.find(v=>v!=null); mine=g.map(v=>v==null?null:v-t0);
+  } else if (TRACK_M){
+    mine=integrate(myGrid(sel,"v"));
+    if (rv.clock!=="estimated") theirs=integrate(rv.v);
+  } else return null;
+  return mine.map((m,i)=> m==null||theirs[i]==null ? null : m-theirs[i]);
+}
+const vsDiff = (l,i,rv) => { const t=rv.v[gi(l.p[i])]; return l.v[i]==null||t==null ? null : l.v[i]-t; };
+function vsScale(l, rv){
+  const d=[]; for (let i=0;i<l.p.length;i++){ const x=vsDiff(l,i,rv); if (x!=null) d.push(Math.abs(x)); }
+  d.sort((a,b)=>a-b); return Math.max(5, d.length ? d[Math.floor(d.length*0.95)] : 5);
+}
+const vsColor = (d,S) => d>=0 ? mix(css("--coast"), css("--set1"), d/S) : mix(css("--coast"), css("--set2"), -d/S);
 
 document.getElementById("title").textContent = "Driving Lines · " + pretty(DATA.track);
 const sessions = DATA.session_ids;
@@ -383,6 +446,23 @@ function draw(){
     // The road, not a lap: the session's median roughness drawn on the reference line.
     others();
     strokeLap(ref, (l,i)=>{ const v=SURF.rms_mm[si(l.p[i])]; return v==null ? css("--coast") : bumpColor(v); }, 6, 1);
+  } else if (state.mode==="rival"){
+    // Your lap coloured by who was quicker at each point; their line dashed where it
+    // was recorded; braking points as ticks, yours to one side and theirs the other.
+    others();
+    const cr=curRival();
+    if (sel && cr){
+      const rv=cr.l;
+      if (rv.x){
+        ctx.setLineDash([6,4]); ctx.strokeStyle=css("--set2"); ctx.lineWidth=2; ctx.beginPath(); let on=false;
+        for (let i=0;i<RG;i++){ if (rv.x[i]==null||rv.z[i]==null){ on=false; continue; } const X=px(rv.x[i]), Y=py(rv.z[i]); on?ctx.lineTo(X,Y):ctx.moveTo(X,Y); on=true; }
+        ctx.stroke(); ctx.setLineDash([]);
+      }
+      const scale=vsScale(sel, rv);
+      strokeLap(sel, (l,i)=>{ const d=vsDiff(l,i,rv); return d==null ? css("--coast") : vsColor(d, scale); }, 3.5, 1);
+      tickAt(sel, onsets(sel.p, sel.b, .2), css("--ink"), 1);
+      if (rv.inputs.brake) tickAt(sel, onsets(gridPos, rv.b, .2), css("--set2"), -1);
+    }
   } else if (sel){
     others();
     if (state.mode==="speed") strokeLap(sel,(l,i)=> l.v[i]==null ? css("--coast") : mix(css("--spd0"),css("--spd1"),(l.v[i]-vmin)/(vmax-vmin||1)),3,1);
@@ -523,6 +603,22 @@ const DRAW = {
     plot(sel, sel.y, y);
     axis("+"+(hi-lo).toFixed(0), y(hi)+7); axis("0", y(lo));
   },
+  vsspeed(sel, P){ vsPair(sel, P, "v", "speed vs opponent, km/h"); },
+  vsbrake(sel, P){ vsPair(sel, P, "b", "brake vs opponent"); },
+  vsgas(sel, P){ vsPair(sel, P, "t", "throttle vs opponent"); },
+  vsgap(sel, P){
+    panelName(P, "time gap to the opponent, s -- above the line you are behind");
+    const cr=curRival();
+    if (!cr){ text("pick an opponent's lap in the sidebar", PL+6, (P.t+P.b)/2+3); return; }
+    const g=gapTrace(sel, cr.l);
+    if (!g){ text("no time for this lap: no clock on its samples and no track length", PL+6, (P.t+P.b)/2+3); return; }
+    let m=0.5; g.forEach(v=>{ if (v!=null) m=Math.max(m, Math.abs(v)/1000); });
+    const mid=(P.t+P.b)/2, y = v => mid - (v/1000)/m*((P.b-P.t)/2);
+    sctx.strokeStyle=css("--line"); sctx.lineWidth=1; sctx.beginPath(); sctx.moveTo(PL,mid); sctx.lineTo(SW-PR,mid); sctx.stroke();
+    plotGrid(g, y, css("--ink"));
+    axis("+"+m.toFixed(1), y(m*1000)+7); axis("−"+m.toFixed(1), y(-m*1000));
+    key(P, [[cr.l.clock==="timed" ? "both laps on their own clocks" : "from speed for both laps -- about ±0.5 s over a lap", null]]);
+  },
 };
 // Two lines to a chart, in the same two colours everywhere -- left and right, or
 // front and rear -- because four lines in one chart cannot be told apart.
@@ -535,6 +631,58 @@ function pair(sel, P, a, b, name, labels, digits){
   plot(sel, sel[a], ty, css("--set1")); plot(sel, sel[b], ty, css("--set2"));
   axis(top.toFixed(digits), ty(top)+4); axis(bot.toFixed(digits), ty(bot)+2);
   key(P, [[labels[0], css("--set1")], [labels[1], css("--set2")]]);
+}
+// --- opponents on the charts and the map -----------------------------------------
+function plotGrid(vals, y, color){
+  sctx.strokeStyle=color; sctx.lineWidth=1.25; sctx.beginPath(); let on=false;
+  vals.forEach((v,i)=>{ if (v==null){ on=false; return; } const X=sx(gridPos[i]), Y=y(v); on?sctx.lineTo(X,Y):sctx.moveTo(X,Y); on=true; });
+  sctx.stroke();
+}
+// You and the opponent on one channel, one scale, two colours.
+function vsPair(sel, P, ch, name){
+  panelName(P, name);
+  const cr=curRival();
+  if (!cr){ text("pick an opponent's lap in the sidebar", PL+6, (P.t+P.b)/2+3); return; }
+  const rv=cr.l, pedal = ch!=="v", live = !pedal || rv.inputs[ch==="b" ? "brake" : "gas"];
+  const [lo,hi] = pedal ? [0,1] : lohi([...sel.v, ...rv.v]);
+  if (!isFinite(lo)){ text("none recorded", PL+6, (P.t+P.b)/2+3); return; }
+  const y = v => P.b - (v-lo)/((hi-lo)||1)*(P.b-P.t);
+  plot(sel, sel[ch], y, css("--ink"));
+  if (live) plotGrid(rv[ch], y, css("--set2"));
+  else text("not transmitted for this car", PL+6, (P.t+P.b)/2+3);
+  if (pedal){ axis("100%", y(1)+7); axis("0", y(0)); } else { axis(hi, y(hi)+7); axis(lo, y(lo)); }
+  key(P, [["you", css("--ink")], [rivalName(cr.r)+", lap "+rv.lap_count, css("--set2")]]);
+}
+function tickAt(l, positions, color, side){
+  ctx.strokeStyle=color; ctx.lineWidth=2.5; ctx.lineCap="round";
+  positions.forEach(p=>{
+    const k=at(l,p), [nx,ny]=normalAt(l,k), x=px(l.x[k]), y=py(l.z[k]);
+    ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+side*nx*11, y+side*ny*11); ctx.stroke();
+  });
+}
+function firstAt(ps, vals, lo, hi, thr){
+  for (let i=0;i<ps.length;i++){ if (ps[i]<lo) continue; if (ps[i]>hi) break; if (vals[i]!=null && vals[i]>=thr) return ps[i]; }
+  return null;
+}
+function minIn(ps, vals, lo, hi){
+  let m=null; for (let i=0;i<ps.length;i++){ if (ps[i]<lo || ps[i]>hi || vals[i]==null) continue; if (m==null || vals[i]<m) m=vals[i]; }
+  return m;
+}
+// Turn by turn: where each car got on the brakes and back on the throttle, and how
+// slow it went. Positions are differences along the lap, in metres where the track
+// length is known.
+function turnTable(sel, rv){
+  if (!TURNS.length || !sel) return "";
+  const dm = (a,b) => a==null||b==null ? "-" : TRACK_M ? signed((b-a)*TRACK_M,0)+" m" : signed(b-a,3);
+  const body = TURNS.map(t=>{
+    const entry=t.entry_pos ?? t.apex_pos, exit=t.exit_pos ?? t.apex_pos, lo=entry-0.04, hi=exit+0.03;
+    const bm=firstAt(sel.p, sel.b, lo, t.apex_pos, .2), bt=rv.inputs.brake ? firstAt(gridPos, rv.b, lo, t.apex_pos, .2) : null;
+    const tm=firstAt(sel.p, sel.t, t.apex_pos, hi, .5), tt=rv.inputs.gas ? firstAt(gridPos, rv.t, t.apex_pos, hi, .5) : null;
+    const vm=minIn(sel.p, sel.v, entry, exit), vt=minIn(gridPos, rv.v, entry, exit);
+    return "<tr><td>"+t.turn+"</td><td>"+dm(bm,bt)+"</td><td>"+(vm==null?"-":Math.round(vm))+" / "+(vt==null?"-":Math.round(vt))+"</td><td>"+dm(tm,tt)+"</td></tr>";
+  }).join("");
+  return "<table class=\"mini\"><tr><th>turn</th><th>brakes</th><th>min km/h</th><th>throttle</th></tr>"+body+"</table>"+
+    "<span>brakes and throttle: how much later the opponent did it than you, negative if earlier. min: you / them</span>";
 }
 function drawStrip(){
   sctx.clearRect(0,0,SW,SH);
@@ -595,7 +743,9 @@ cv.addEventListener("mousemove", e=>{
     tip.innerHTML="<b>Lap "+l.n+"</b> · "+(l.usable?fmt(l.ms):esc(flagOf(l)))+"<br>"+esc(setupLabel(l.setup))+
       "<br>pos "+l.p[i].toFixed(3)+" · <b>"+(l.v[i]==null?"-":l.v[i])+"</b> km/h · gear "+(l.g[i]||"N")+(l.rpm[i]==null?"":" · "+l.rpm[i]+" rpm")+
       "<br>throttle "+pct(l.t[i])+" · brake "+pct(l.b[i])+
-      (state.mode==="balance" ? "<br>balance "+(cornering(l,i)?signed(l.bal[i],2):"not cornering") : "");
+      (state.mode==="balance" ? "<br>balance "+(cornering(l,i)?signed(l.bal[i],2):"not cornering") : "")+
+      (state.mode==="rival" && curRival() ? (()=>{ const rv=curRival().l, t=rv.v[gi(l.p[i])], d=vsDiff(l,i,rv);
+        return "<br>"+esc(rivalName(curRival().r))+" "+(t==null?"-":t)+" km/h"+(d==null?"":" · you "+signed(d,0)); })() : "");
   }
   placeTip(tip, mx, my, W, H);
 });
@@ -615,6 +765,12 @@ sv.addEventListener("mousemove", e=>{
   if (on("surf")) rows.push("surface "+num(sel.surf[si(q)],2)+" mm, session "+num(SURF.rms_mm[si(q)],2));
   if (on("ride")) rows.push("ride front "+num(sel.rf[i],1)+" · rear "+num(sel.rr[i],1)+" mm · rake "+(sel.rf[i]==null||sel.rr[i]==null?"-":signed(sel.rr[i]-sel.rf[i],1)));
   if (on("elev")) { const lo=Math.min(...sel.y.filter(v=>v!=null)); rows.push("elevation +"+num(sel.y[i]==null?null:sel.y[i]-lo,1)+" m"); }
+  const cr=curRival();
+  if (cr && ["vsspeed","vsbrake","vsgas","vsgap"].some(on)){
+    const rv=cr.l, k=gi(q), g=on("vsgap") ? gapTrace(sel, rv) : null;
+    rows.push(esc(rivalName(cr.r))+": <b>"+num(rv.v[k],0)+"</b> km/h · brake "+pct(rv.b[k])+" · throttle "+pct(rv.t[k])+" · gear "+(rv.g[k]||"-"));
+    if (g && g[k]!=null) rows.push("gap <b>"+signed(g[k]/1000,2)+" s</b>"+(g[k]>0?" behind":" ahead"));
+  }
   rows.push(c ? "corner: "+(c.turn||"no turn matched")+" · peak "+c.peak_g+" g · min "+c.min_kmh+" km/h" : "not in a corner");
   stip.innerHTML=rows.join("<br>");
   placeTip(stip, mx, my, SW, SH);
@@ -635,7 +791,8 @@ function gearsText(l){
   return up.length ? median(up)+(l.limiter.length?" ("+l.limiter.length+")":"") : "-";
 }
 function surfText(l){ const m=median(l.surf.filter(v=>v!=null)); return m==null ? "-" : m.toFixed(2)+" mm"; }
-const COL4 = { corners:["Turns", turnsText], balance:["Balance", l=>signed(l.bal_med,2)], gears:["Upshift (ceiling)", gearsText], surface:["Surface", surfText] };
+function vsText(l){ const cr=curRival(); return cr && cr.l.time_ms && l.usable ? signed((l.ms-cr.l.time_ms)/1000,3) : "-"; }
+const COL4 = { corners:["Turns", turnsText], balance:["Balance", l=>signed(l.bal_med,2)], gears:["Upshift (ceiling)", gearsText], surface:["Surface", surfText], rival:["Vs opponent", vsText] };
 laps.forEach(l=>{
   const tr=document.createElement("tr"); tr.dataset.id=l.id;
   if (!l.usable) tr.title=l.why;
@@ -698,6 +855,24 @@ function legend(){
       gearTable()+
       "<span>revs are the samples either side of each change, 40 ms apart -- a few hundred rpm of play at the top of a gear</span>";
   }
+  else if(state.mode==="rival"){
+    const cr=curRival();
+    if (!cr){
+      g.innerHTML = rivalLaps.length ? "<span>pick an opponent's lap above</span>"
+        : "<span>no opponent laps in "+(sessions.length>1 ? "a map of several sessions -- opponents are compared within the session they were recorded in" : "this session")+"</span>";
+      return;
+    }
+    const r=cr.r, rv=cr.l, SRC={recorded:"recorded by the in-game app", timed:"from the lap's own clock", estimated:"estimated from speed, about ±1%"};
+    g.innerHTML="<span><i style=\"background:"+css("--set1")+"\"></i>you quicker</span>"+
+      "<span class=\"bar\" style=\"background:linear-gradient(90deg,"+css("--set1")+","+css("--coast")+","+css("--set2")+")\"></span>"+
+      "<span><i style=\"background:"+css("--set2")+"\"></i>"+esc(rivalName(r))+" quicker</span>"+
+      "<span>±"+vsScale(sel, rv).toFixed(0)+" km/h full colour</span>"+
+      "<span>"+esc(rivalName(r))+", lap "+rv.lap_count+": <b>"+fmt(rv.time_ms)+"</b> "+(rv.time_src ? SRC[rv.time_src] : "no time")+"</span>"+
+      (r.car_model ? (r.car_model!==DATA.car ? "<span><b>a different car</b>: "+esc(pretty(r.car_model))+"</span>" : "") : "<span>car not recorded -- it may not be the same car as yours</span>")+
+      (rv.x ? "<span>dashed: their line</span>" : "<span>their line was not recorded on this lap, so speed and pedals are compared by track position only</span>")+
+      (rv.inputs.brake && rv.inputs.gas ? "" : "<span>their pedals were not transmitted</span>")+
+      "<span>ticks: braking points, yours dark and theirs orange</span>"+turnTable(sel, rv);
+  }
   else if(state.mode==="surface"){
     const src = SURF.sources.map(s=>SRC_NAME[s]||s).join("; ");
     g.innerHTML="<span>"+SURF_LO.toFixed(1)+" mm <span class=\"bar\" style=\"background:linear-gradient(90deg,"+css("--bump0")+","+css("--bump1")+")\"></span> "+SURF_HI.toFixed(1)+" mm</span>"+
@@ -740,14 +915,22 @@ document.getElementById("hint").textContent += " " + (TURNS.length
   ? "Turn numbers are this session's, from the corners the car drove -- not the circuit's own numbering. Red ticks are where each turn is braked for."
   : (DATA.turns_note||""));
 // A view that is read against a chart brings that chart with it.
-const PANEL_FOR = { corners:"lat", balance:"bal", gears:"rpm", surface:"surf" };
+const PANEL_FOR = { corners:["lat"], balance:["bal"], gears:["rpm"], surface:["surf"], rival:["vsspeed","vsgap"] };
 document.querySelectorAll(".modes button").forEach(b=>b.addEventListener("click",()=>{
   state.mode=b.dataset.mode; document.querySelectorAll(".modes button").forEach(x=>x.setAttribute("aria-pressed",x===b));
-  if (PANEL_FOR[state.mode]) showPanel(PANEL_FOR[state.mode]);
+  (PANEL_FOR[state.mode]||[]).forEach(showPanel);
   legend(); refreshRows(); fit();
 }));
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{legend();refreshRows();draw();});
 new MutationObserver(()=>{legend();refreshRows();draw();}).observe(document.documentElement,{attributes:true,attributeFilter:["data-theme"]});
+// The opponent picker: every lap carried, the quickest opponent's quickest first.
+const rivalSel=document.getElementById("rival");
+rivalSel.innerHTML="<option value=\"\">none</option>"+rivalLaps.map((x,i)=>"<option value=\""+i+"\">"+esc(rivalName(x.r))+" · lap "+x.l.lap_count+" · "+
+  (x.l.time_ms ? fmt(x.l.time_ms)+(x.l.time_src==="estimated" ? " est." : "") : "no time")+"</option>").join("");
+state.rival = rivalLaps.length ? 0 : null;
+rivalSel.value = state.rival==null ? "" : "0";
+rivalSel.disabled = !rivalLaps.length;
+rivalSel.addEventListener("change", ()=>{ state.rival = rivalSel.value==="" ? null : Number(rivalSel.value); legend(); refreshRows(); draw(); });
 addEventListener("resize",fit); layoutStrip(); legend(); refreshRows(); fit();
 </script>
 </html>

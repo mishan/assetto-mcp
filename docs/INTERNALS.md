@@ -386,6 +386,29 @@ Marks can be toggled on top of any view:
   press made with no session running can't be placed, and the page says
   how many there are.
 
+### Opponents on the map
+
+The **Rival** view compares the selected lap with an opponent's lap from
+the same session, picked in the sidebar; the default is the quickest
+opponent's quickest lap. Your lap is coloured by who was quicker at each
+point, both cars' braking points are ticks on your line, and where the
+opponent's world position was recorded their line is drawn dashed. Charts
+for speed, brake, throttle and the time gap can be ticked on, and the
+legend has a turn-by-turn table: how much later the opponent braked and
+got back on the throttle, in metres, and both cars' minimum speeds.
+
+Opponents are sampled at 10 Hz and you at 25, at different moments, so
+both are compared on one grid of 500 track positions, with gaps of up to two
+steps interpolated. Each opponent carries its three quickest laps.
+
+An opponent lap's time is `recorded` (the in-game app timed it), `timed`
+(its samples carry the car's clock, since schema v14), or `estimated`
+(speed integrated over the track length: 0.1–0.9% short where the true time
+is known, and a spin can take it 5% out). The time gap uses the same method
+for both laps, so a method's bias mostly falls out. The legend warns when
+the opponent's car is a different model, or when its model was not
+recorded, and when a server did not transmit its pedals.
+
 Under the map, two charts follow the selected lap by track position. One
 is lateral g — the smoothed trace `detect_corners` reads, not the raw
 channel — against the exact threshold it was held to. The other is speed,

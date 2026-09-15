@@ -70,6 +70,24 @@ BUMP_WINDOW_MS = 250
 TRAVEL_KEYS = ("travel_fl", "travel_fr", "travel_rl", "travel_rr")
 RIDE_KEYS = ("ride_f", "ride_r")
 
+# Opponents. Each of their laps is put on one grid of track positions --
+# about 10 m a step on a 5 km circuit -- because an opponent is sampled at
+# 10 Hz and you at 25, at different moments, and the only axis the two cars
+# share is where on the lap each was. Finer than the opponent's own sampling
+# is worse, not better: at 1000 steps a 10 Hz lap left every other step
+# empty. The few quickest laps of each car are what anyone compares
+# against, and every lap carried costs file size.
+RIVAL_GRID = 500
+# Empty steps between two filled ones are interpolated up to this many --
+# a car at speed covers a step between samples -- and left empty past it,
+# where the lap was simply not seen.
+RIVAL_FILL_STEPS = 2
+RIVAL_LAPS_EACH = 3
+RIVAL_MAX_CARS = 8
+# The app clamps speed at 1000 km/h. A sample at the clamp is a car being
+# teleported to the pits or the grid, not a car being driven.
+RIVAL_TELEPORT_KMH = 999
+
 TYRES = ("fl", "fr", "rl", "rr")
 
 TURN_KEYS = ("turn", "apex_pos", "entry_pos", "exit_pos", "brake_point_pos",
@@ -291,6 +309,134 @@ def off_track(samples: list[dict]) -> list[dict]:
     return runs
 
 
+def integrate_time(speeds: list, track_length_m: float) -> list[int]:
+    """Cumulative ms along a grid of track positions, from speed alone.
+
+    For a lap with no clock on its samples. Checked against laps that have
+    one, it runs 0.1-0.9% short -- the grid follows the AI line, not the
+    line driven -- and a spin, where speed stops meaning distance covered,
+    can take it 5% out. Good enough to rank laps and to show where time went;
+    not a gap to the tenth.
+    """
+    step = track_length_m / len(speeds)
+    out, t, last, last_i = [], 0.0, None, None
+    for i, v in enumerate(speeds):
+        if v is not None and last is not None:
+            ms = (v + last) / 2 / 3.6
+            if ms > 1:
+                # Across every step since the last reading, not just one: an
+                # empty step is road the car still covered, and skipping it
+                # ran a real 2:00 lap four seconds short.
+                t += (i - last_i) * step / ms * 1000
+        if v is not None:
+            last, last_i = v, i
+        out.append(round(t))
+    return out
+
+
+def _fill_gaps(values: list, most: int = RIVAL_FILL_STEPS) -> list:
+    """Interpolate runs of up to `most` empty steps between two filled ones."""
+    out, n, i = list(values), len(values), 0
+    while i < n:
+        if out[i] is not None:
+            i += 1
+            continue
+        j = i
+        while j < n and out[j] is None:
+            j += 1
+        if 0 < i and j < n and j - i <= most:
+            a, b = out[i - 1], out[j]
+            for k in range(i, j):
+                out[k] = a + (b - a) * (k - i + 1) / (j - i + 1)
+        i = j
+    return out
+
+
+def rival_lap(samples: list[dict], track_length_m: float | None,
+              grid: int = RIVAL_GRID) -> dict:
+    """One opponent lap on the shared grid, and how its time was known.
+
+    `clock` says where the time along the lap came from: `timed`, the car's
+    own clock on every sample (recorded since schema v14), or `estimated`,
+    speed integrated over the track length. Older laps also have no world
+    position, so only newer ones can be drawn as a line.
+    """
+    samples = [s for s in samples
+               if (s.get("speed_kmh") or 0) < RIVAL_TELEPORT_KMH]
+
+    def res(key):
+        return _fill_gaps(analysis.resample_by_position(
+            samples, key, "spline", grid))
+
+    v = res("speed_kmh")
+    out = {"v": [_r(x) for x in v],
+           "t": [_r(x, 2) for x in res("gas")],
+           "b": [_r(x, 2) for x in res("brake")],
+           "g": [None if x is None else int(round(x)) for x in res("gear")]}
+    if any(s.get("pos_x") is not None and s.get("pos_z") is not None
+           for s in samples):
+        out["x"] = [_r(x, 1) for x in res("pos_x")]
+        out["z"] = [_r(x, 1) for x in res("pos_z")]
+    timed = [s for s in samples if s.get("t_ms") is not None]
+    if samples and len(timed) >= 0.9 * len(samples):
+        tm = res("t_ms")
+        first = next(x for x in tm if x is not None)
+        out["tm"] = [None if x is None else round(x - first) for x in tm]
+        out["clock"] = "timed"
+    elif track_length_m:
+        out["tm"], out["clock"] = integrate_time(v, track_length_m), "estimated"
+    else:
+        out["tm"], out["clock"] = None, None
+    # Online, a server may not transmit a remote car's pedals: the field
+    # arrives and never moves, which is absence and not a driver who never
+    # brakes.
+    out["inputs"] = {k: len({round(s[k], 3) for s in samples
+                             if s.get(k) is not None}) > 1
+                     for k in ("gas", "brake")}
+    return out
+
+
+def _grid_lap_ms(lap: dict) -> int | None:
+    """A lap time read off the grid, where the whole lap was covered."""
+    tm, v = lap["tm"], lap["v"]
+    if not tm or v[0] is None or v[-1] is None or tm[-1] is None:
+        return None
+    if sum(x is not None for x in v) < 0.95 * len(v):
+        return None
+    return round(tm[-1] * len(tm) / (len(tm) - 1))
+
+
+def rivals(conn, session_id: int, track_length_m: float | None) -> list[dict]:
+    """The opponents seen in a session, each with their few quickest laps.
+
+    Pace comes from the lap time the app recorded where there is one, from
+    the lap's own clock where its samples carry one, and from speed alone
+    otherwise -- and each lap says which, as `time_src`.
+    """
+    out = []
+    for d in db.list_rivals(conn, session_id, limit=100):
+        car, laps = d["car_index"], []
+        for l in db.well_covered_rival_laps(conn, session_id, car):
+            g = rival_lap(db.get_rival_lap_samples(
+                conn, session_id, car, l["lap_count"]), track_length_m)
+            if l["lap_time_ms"]:
+                ms, src = l["lap_time_ms"], "recorded"
+            else:
+                ms = _grid_lap_ms(g)
+                src = g["clock"] if ms else None
+            laps.append({**g, "lap_count": l["lap_count"], "time_ms": ms,
+                         "time_src": src})
+        laps.sort(key=lambda l: (l["time_ms"] is None, l["time_ms"] or 0))
+        if laps:
+            out.append({"car_index": car,
+                        "name": d.get("driver_name") or "",
+                        "car_model": d.get("car_model") or "",
+                        "laps": laps[:RIVAL_LAPS_EACH]})
+    out.sort(key=lambda r: (r["laps"][0]["time_ms"] is None,
+                            r["laps"][0]["time_ms"] or 0))
+    return out[:RIVAL_MAX_CARS]
+
+
 def build(conn, session_id: int | None = None,
           lap_ids: list[int] | None = None, *,
           every_ms: int = EVERY_MS) -> dict:
@@ -363,6 +509,7 @@ def build(conn, session_id: int | None = None,
                 "rr": [_r(None if s.get("ride_r") is None
                           else 1000 * s["ride_r"], 1) for s in samples],
                 "y": [_r(s.get("pos_y"), 1) for s in samples],
+                "tm": [s.get("t_ms") for s in samples],
                 **{f"c{w}": [_r(s.get(f"core_{w}"), 1) for s in samples]
                    for w in TYRES},
                 **{f"p{w}": [_r(s.get(f"press_{w}"), 1) for s in samples]
@@ -479,6 +626,12 @@ def build(conn, session_id: int | None = None,
     # Complaint presses, on the lap they were pressed on: a press stores how
     # many laps were complete, so it belongs to the next one. A press whose
     # lap is not drawn keeps its place on the track and says so.
+    # Opponents are compared within the session they were recorded in: the
+    # grid is that session's track, and nothing ties a car index in one
+    # session to the same car in another.
+    rival_data = (rivals(conn, session_ids[0], session.get("track_length_m"))
+                  if len(session_ids) == 1 else [])
+
     lap_ids_by_number = {(l["session"], l["n"]): l["id"] for l in drawn}
     notes = []
     for sid in session_ids:
@@ -530,6 +683,9 @@ def build(conn, session_id: int | None = None,
         "notes": notes,
         "orphan_notes": db.count_orphan_notes(conn),
         "lockup_slip": analysis.LOCKUP_SLIP,
+        "rivals": rival_data,
+        "rival_grid": RIVAL_GRID,
+        "track_length_m": session.get("track_length_m"),
     }
 
 

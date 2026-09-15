@@ -1013,6 +1013,73 @@ def test_a_turn_carries_where_it_is_and_which_way_it_goes():
     assert (t["laps_seen"], t["laps_total"]) == (3, 3), t
 
 
+def _piece(entry, apex, exit_, sign=-1, speed=150.0):
+    return {"apex_pos": apex, "entry_pos": entry, "exit_pos": exit_,
+            "brake_point_pos": round(entry - 0.02, 4), "turn_sign": sign,
+            "min_speed_kmh": speed}
+
+
+def test_a_long_corner_split_on_some_laps_is_still_one_turn():
+    """Sunset Bend, which was numbered four times.
+
+    Six laps drive it as one corner, and its slowest point wanders across
+    a lap-hundredth. On two more the lateral g sags under the bar mid-corner
+    and the detector reports two pieces. By apex distance alone the second
+    pieces are their own turn, seen on two laps -- and two is enough to be
+    numbered.
+    """
+    whole = [[_piece(0.880, 0.925 + d, 0.958)]
+             for d in (-0.004, -0.002, 0.0, 0.002, 0.004, 0.006)]
+    split = [[_piece(0.879, 0.918, 0.927, speed=149.0),
+              _piece(0.933, 0.945, 0.957, speed=158.0)] for _ in range(2)]
+    cmap = analysis.corner_map(whole + split)
+
+    assert len(cmap["turns"]) == 1, cmap["turns"]
+    assert cmap["unnumbered"] == [], cmap["unnumbered"]
+    t = cmap["turns"][0]
+    assert t["laps_seen"] == 8, t
+    assert abs(t["apex_pos"] - 0.925) < 0.01, t
+    print(f"  one turn at {t['apex_pos']}, seen on {t['laps_seen']} of 8")
+
+
+def test_an_esse_is_two_turns_even_with_its_apexes_close():
+    """Senna at Interlagos: a left then a right, apexes inside tolerance.
+
+    Chained by apex distance regardless of direction, the two halves were
+    one group, split wherever the widest gap fell -- which came out as a
+    turn seen on two laps and another on six, both on the left-hander.
+    """
+    lefts = (0.074, 0.069, 0.073, 0.063, 0.074, 0.072, 0.070, 0.062)
+    rights = (0.090, 0.079, 0.088, 0.087, 0.088, 0.082, 0.089, 0.088)
+    laps = [[_piece(0.050, l, 0.079, sign=1), _piece(0.081, r, 0.102, sign=-1)]
+            for l, r in zip(lefts, rights)]
+    turns = analysis.corner_map(laps)["turns"]
+    assert [t["turn_sign"] for t in turns] == [1, -1], turns
+    assert [t["laps_seen"] for t in turns] == [8, 8], turns
+
+
+def test_one_lap_cannot_pull_a_kink_into_the_next_turn():
+    """Kyalami: a kink three laps found, swallowed by one lap's early entry."""
+    laps = [[_piece(0.405, 0.405, 0.411, sign=1),
+             _piece(0.415, 0.432, 0.452, sign=1, speed=105.0)]
+            for _ in range(3)]
+    laps += [[_piece(0.415, 0.432 + d, 0.452, sign=1, speed=105.0)]
+             for d in (-0.002, 0.002, 0.003, 0.004)]
+    laps.append([_piece(0.404, 0.437, 0.452, sign=1, speed=105.0)])
+    turns = analysis.corner_map(laps)["turns"]
+    assert [t["laps_seen"] for t in turns] == [3, 8], turns
+
+
+def test_two_corners_one_lap_ran_together_are_still_two():
+    """The same join, the other way round: most laps saw two corners."""
+    laps = [_obs(0.40, 0.44) for _ in range(4)]
+    merged = [{"apex_pos": 0.41, "entry_pos": 0.38, "exit_pos": 0.46,
+               "turn_sign": 1}]
+    cmap = analysis.corner_map(laps + [merged])
+    assert [t["apex_pos"] for t in cmap["turns"]] == [0.40, 0.44], cmap
+    assert cmap["turns"][0]["laps_seen"] == 5, cmap["turns"]
+
+
 def test_the_map_numbers_the_corners_a_real_lap_drove():
     """End to end from samples, on the fixture the detector is tested on."""
     laps = [_lap(), _lap(), _lap()]

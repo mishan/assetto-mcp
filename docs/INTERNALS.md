@@ -181,8 +181,19 @@ Every corner also carries a **`turn`** — `T1`, `T2`, `T3` in track order from
 the start/finish line. `corner` beside it is only that lap's ordinal: a light
 corner missed on one lap closes the gap and shifts every number after it, so
 "corner 5" is not reliably the same piece of road twice. `turn` is, because it
-comes from the corners pooled across a whole session and matched by position.
-It is what to quote to a driver.
+comes from the corners pooled across a whole session and grouped into pieces
+of road. It is what to quote to a driver.
+
+Corners from different laps are one piece of road when their apexes are
+close and they turn the same way, or when they cover the same stretch of
+track — at least half the shorter corner's length — on at least two laps
+on each side. The second rule matters for long corners. On a long corner the
+slowest point wanders from lap to lap, and where lateral g dips under the
+threshold mid-corner the detector reports two pieces. Sebring's Sunset Bend
+used to be numbered four times because of this. If most laps drove a piece
+of road as one corner, it gets one number, and a lap that was split keeps
+its slowest piece. The other piece still appears on that lap with
+`turn: null`. If most laps drove it as two corners, it stays two.
 
 `track_corners` is the table: where each turn starts, apexes and ends, where
 it is braked for, which way it turns and how many laps cornered there.

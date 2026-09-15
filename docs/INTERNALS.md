@@ -313,6 +313,84 @@ in a driving line is worth seeing, and inventing a point draws the car through
 somewhere it never went. Laps recorded before schema v8 report
 `has_position: false`; there is nothing to backfill from.
 
+### The line map
+
+`export_line_map` draws the same positions as a picture: every lap of a
+session, or the laps you name, in one HTML file written to `exports/` in the
+data directory. `scripts/driving_line_map.py` writes the same file from the
+command line, opening the database read-only.
+
+- **Laps** colours by lap order and picks out the fastest lap that counted —
+  a real lap time (`db.lap_usability`) inside track limits. Out-laps, pit
+  laps and abandoned laps are listed but hidden until ticked.
+- **Setup** colours by setup name, so an A/B split shows at a glance. Only
+  the first three setups driven get a colour of their own: with every line
+  able to cross every other, a fourth hue can't be told apart from its
+  neighbours, so the rest share one neutral and the table names each lap's.
+- **Speed** and **Pedals** colour one selected lap and grey the rest.
+- **Turn numbers and brake points** come from `turns.py`, the numbering
+  `lap_summary` uses. Laps from several sessions are drawn without them,
+  because each session numbers its own.
+- **Corners** shows the reasoning behind those numbers. The session's turn
+  map is drawn as blue bands, and pieces of road only one lap cornered on as
+  orange ones. Over them go the corners the detector found on the selected
+  lap, with a `?` where no turn matched. The table's Turns column counts
+  how many turns each lap matched, plus any corners no turn claims.
+- **Balance** colours the selected lap by front slip minus rear slip — the
+  corner metric's quantity and sign, point by point — but only while the
+  car is cornering, meaning lateral g is over the corner threshold. On a
+  straight both axles idle at the same slip, and under straight-line
+  braking the fronts slip more whatever the balance. Every lap shares one
+  colour scale. Zero means equal slip, which is not necessarily neutral for
+  a given car: on the NSX the median while cornering sits near +0.1. Read
+  it by comparing laps and corners with each other.
+- **Gears** colours the lap by gear and marks every shift. A shift is read
+  across the neutral AC reports mid-change, and neutral held longer than a
+  second counts as a stop, not a shift. The legend's per-gear table has
+  upshift revs (median and 10th–90th percentile) and the revs each
+  downshift landed at. The "rev ceiling" is the highest revs the car showed
+  at full throttle. No redline is recorded, so it is not necessarily the
+  limiter, and stretches held near it are marked. Revs come from the
+  samples either side of a change, 40 ms apart.
+- **Surface** is the bump map. Each suspension channel has a centred
+  quarter-second average taken off it. What is left is the road, not the
+  weight transfer, and it is reported as mm RMS per ~10 m stretch, the
+  median over the laps that counted. It uses the in-game app's suspension
+  travel where that was captured, and 25 Hz ride height where it was not.
+  Pooling removes a kerb struck once but not a kerb taken every lap, which
+  reads like a bump. The five roughest stretches are labelled.
+
+The charts under the map follow the selected lap, and any of them can be
+ticked on: lateral g, speed, revs and gear, balance, front and rear tyre
+core temperatures, surface, ride height and elevation. Tyres are two to a
+chart, left and right in the same two colours front and rear, because
+four lines in one chart can't be told apart.
+
+Marks can be toggled on top of any view:
+- **Off track:** the track-limits rule, all counted wheels out for long
+  enough to count.
+- **Lockups:** `braking_report`'s front lockup runs. Its slip threshold has
+  never been calibrated, and a spin reads as a lockup.
+- **Complaint presses:** each press sits on the lap it was pressed on. A
+  press made with no session running can't be placed, and the page says
+  how many there are.
+
+Under the map, two charts follow the selected lap by track position. One
+is lateral g — the smoothed trace `detect_corners` reads, not the raw
+channel — against the exact threshold it was held to. The other is speed,
+with brake points. Turn spans are shaded across both. A turn that appears
+split in two, or a kink that never crossed the threshold, is visible there.
+
+It draws raw samples rather than `driving_line`'s slices, thinned to one
+every 80 ms by time rather than by count, since retention has already
+thinned old laps. A lap's samples can straddle the start/finish line at
+either end, so each trace is split at every wrap and only the longest run
+drawn.
+
+The file is self-contained and fetches nothing — no web fonts, no scripts
+from anywhere — so opening it tells nobody anything. Laps from different
+cars or layouts are refused: their coordinates don't share an origin.
+
 ---
 
 ## Suspension
@@ -405,6 +483,8 @@ assetto_mcp/
   collector.py  background sampler -> SQLite, lap boundary detection
   db.py         schema + storage
   analysis.py   corner detection, lap summaries, lap comparison
+  turns.py      a session's turn numbering, shared by tools and scripts
+  line_map.py   driving-line map as one HTML file (+ line_map.html)
   setups.py     setup INI read/write, range clamping
   bridge.py     localhost HTTP bridge for the in-game app
   config.py     data dir + environment, including pre-rename fallbacks
@@ -421,6 +501,7 @@ run_tests.py         run and summarise the suite, no dependencies
 tests/               behavior-named test modules + shared harness
 scripts/
   relabel_laps.py    fix laps stamped with the wrong setup name
+  driving_line_map.py  write a session's line map without a server
 BACKLOG.md           what is known to be broken, worst-first
 ```
 

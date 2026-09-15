@@ -28,6 +28,10 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["assetto_mcp"]
 
+[tool.setuptools.package-data]
+# The line map's page, read at runtime by line_map.render.
+assetto_mcp = ["line_map.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # --strict-markers so a typo in a skipif marker is an error rather than a

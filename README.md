@@ -140,6 +140,19 @@ needs about six laps a side before any answer to it can count.
 
 > *"Where was my line different between those two laps?"*
 
+Or ask to see it:
+
+> *"Draw me a map of this session's laps."*
+
+You get a single HTML file to open in your browser. It has every lap drawn
+where you actually drove, your best line picked out, and the laps coloured
+by setup if you want to see an A/B. Pick any one lap to see it by speed,
+pedal, gear, or where the front or the rear was sliding. There's also a bump
+map of the circuit. Charts under the map show that lap's tyre temperatures,
+revs, ride height and more, and marks show where you ran wide or locked a
+wheel. Turns are numbered the same way the assistant numbers them. The file
+lives in `exports/` in the data folder and loads nothing from the internet.
+
 ### While you're driving
 
 The in-game app (right edge of the screen → apps sidebar) gives you:

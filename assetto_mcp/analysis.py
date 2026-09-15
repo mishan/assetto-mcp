@@ -125,6 +125,18 @@ def _sane_slip(*values: float) -> float | None:
     return mean(values)
 
 
+def sample_slip_balance(s: dict) -> float | None:
+    """Front slip minus rear slip at one sample; None where either axle glitched.
+
+    The corner metric's quantity and sign -- positive is the front sliding
+    more -- read at a single point instead of averaged round an apex, so a
+    whole lap can be coloured by it.
+    """
+    f = _sane_slip(s.get("slip_fl"), s.get("slip_fr"))
+    r = _sane_slip(s.get("slip_rl"), s.get("slip_rr"))
+    return None if f is None or r is None else f - r
+
+
 def _median_filter(values: list[float], window: int = 11) -> list[float]:
     """Centerd running median; window forced odd.
 
@@ -303,6 +315,33 @@ def lat_g_reference(
     return lat_g_reference_detail(sample_sets)["reference"]
 
 
+def corner_threshold(peak_g: float) -> float:
+    """The lateral g a region has to hold to be a corner, given a cornering load.
+
+    One place for the rule, because two things state it: detect_corners
+    applies it and corner_detection_note reports it, and a note that drifted
+    from the detector would describe a bar nothing was held to.
+    """
+    return max(peak_g * CORNER_LAT_G_FRACTION, CORNER_MIN_LAT_G)
+
+
+def corner_trace(samples: list[dict],
+                 reference_peak_g: float | None = None) -> dict:
+    """The lateral-g trace corner detection reads, and the bar it is held to.
+
+    For anything that has to show the reasoning rather than the result. A
+    turn split in two, or a kink that was never numbered, is explained by
+    this trace against this bar -- the same smoothed trace detect_corners
+    thresholds, not the raw channel, which would show corners crossing a
+    line the detector never saw them cross.
+    """
+    lat, dropped = _lat_g_trace(samples)
+    own = _lat_g_peak(lat)
+    bar = own if reference_peak_g is None else reference_peak_g
+    return {"lat": lat, "threshold_g": corner_threshold(bar),
+            "own_peak_g": own, "dropped": dropped}
+
+
 def corner_detection_note(reference: float | None, laps: int,
                           own_peak: float | None = None,
                           spread_g: float | None = None,
@@ -341,8 +380,7 @@ def corner_detection_note(reference: float | None, laps: int,
                   f"{shared_basis or 'the laps being compared'}") if shared
                  else "this lap's own cornering load",
         "lat_g_reference": round(bar, 3),
-        "threshold_g": round(max(bar * CORNER_LAT_G_FRACTION,
-                                 CORNER_MIN_LAT_G), 3),
+        "threshold_g": round(corner_threshold(bar), 3),
     }
     if not shared:
         return out
@@ -435,7 +473,7 @@ def detect_corners(samples: list[dict],
     # from the rest without anything saying so, which is the whole failure
     # this parameter exists to end.
     peak = own_peak if reference_peak_g is None else reference_peak_g
-    thresh = max(peak * CORNER_LAT_G_FRACTION, CORNER_MIN_LAT_G)
+    thresh = corner_threshold(peak)
 
     # A region is contiguous samples above the threshold turning the SAME
     # way. The sign test is what separates an esse into two corners rather

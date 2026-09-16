@@ -986,13 +986,23 @@ def backfill_outliers(conn, session_id: int | None = None) -> int:
 # hiding it.
 
 
+# How long any connection waits for the write lock before giving up.
+# store_lap can hold it across a few thousand sample inserts while the
+# bridge is also writing rival batches.
+#
+# Named because it is a floor for anything that puts a deadline on work
+# reaching the database: waiting less than this for something that has to
+# connect, migrate or claim is a deadline that can expire while SQLite is
+# still doing exactly what it was told to. collector.START_STATUS_TIMEOUT is
+# derived from it for that reason.
+BUSY_TIMEOUT_MS = 10_000
+
+
 def connect(db_path: str | Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
-    # store_lap can hold the write lock across a few thousand sample
-    # inserts while the bridge is also writing rival batches.
-    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA foreign_keys=ON")
     migrations = _migrate(conn)
     conn.executescript(SCHEMA)

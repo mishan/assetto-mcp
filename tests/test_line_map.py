@@ -11,6 +11,8 @@ import json
 import math
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -500,6 +502,232 @@ def test_presses_suspension_and_the_surface_reach_the_page_data():
     # kept, with no lap to sit on. Pressed with no session: counted, not placed.
     assert placed == {("understeer", first), ("oversteer", None)}, placed
     assert data["orphan_notes"] == 1
+
+
+def _rival_rows(car=1, lap=2, n=500, speed=150.0, timed=True,
+                positions=True, teleport_at=None):
+    """An opponent lap round a 500 m circle, as the bridge stores it."""
+    rows = []
+    for k in range(n):
+        pos, a = k / n, k / n * 2 * math.pi
+        brake = k % 50 < 3
+        rows.append({
+            "car_index": car, "lap_count": lap, "spline": pos,
+            "speed_kmh": 999.9 if k == teleport_at else speed,
+            "gear": 4, "gas": 0.0 if brake else 1.0,
+            "brake": 0.8 if brake else 0.0,
+            "t_ms": k * 48 if timed else None,
+            "pos_x": 500 * math.cos(a) if positions else None,
+            "pos_y": 0.0 if positions else None,
+            "pos_z": 500 * math.sin(a) if positions else None})
+    return rows
+
+
+def _rival_session(conn, rows, name="Ben B"):
+    sid = make_session(conn)
+    db.set_fuel_basis(conn, sid, track_length_m=3000.0)
+    _store(conn, sid, 1, 90000)
+    db.store_rival_batch(conn, sid, [{"car_index": rows[0]["car_index"],
+                                      "driver_name": name,
+                                      "car_model": "ks_mazda_mx5_cup",
+                                      "lap_count": rows[0]["lap_count"]}],
+                         rows)
+    return sid
+
+
+def test_integrated_time_is_distance_over_speed():
+    tm = line_map.integrate_time([108.0] * 1000, 3000.0)   # 30 m/s
+    assert abs(tm[-1] - 99900) <= 1, tm[-1]     # 999 steps of 3 m
+
+
+def _js_function(name: str) -> str:
+    """One function's source, lifted out of the page by matching its braces.
+
+    Crude on purpose: a brace inside a string literal would break it, and
+    that is the right failure -- this exists to notice when the page's copy
+    of an algorithm moves, and a silent partial match would defeat it.
+    """
+    src = line_map.TEMPLATE.read_text(encoding="utf-8")
+    start = src.index(f"function {name}(")
+    i, depth = src.index("{", start), 0
+    while True:
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start:i + 1]
+        i += 1
+
+
+def test_the_pages_integrate_matches_the_one_that_fills_its_other_side():
+    """The gap trace subtracts a JS estimate from a Python one.
+
+    When an opponent's lap has no clock, gapTrace() compares `mine`, which
+    the page integrates in JavaScript, against `theirs`, which
+    integrate_time() produced here. Its comment -- "both laps are timed the
+    same way so a method's bias falls out" -- is only true while the two
+    implementations agree, and nothing but this test says they do. A tuning
+    change to either one would tilt every gap on the page rather than fail
+    anything.
+    """
+    # The same convention as the Lua app's optional interpreter: absent on
+    # the gaming PC, where skipping is right, and a failure in CI, where a
+    # skip would be a green build over an untested page. GitHub's ubuntu and
+    # windows runners both ship node.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import lua_harness
+    node = shutil.which("node") or shutil.which("nodejs")
+    if node is None:
+        if lua_harness.strict():
+            raise RuntimeError(
+                "node is not installed, so the page's integrate() would go "
+                f"unchecked against integrate_time(). {lua_harness.STRICT_ENV} "
+                "is set, which means this is CI, where that skip is a "
+                "failure.")
+        lua_harness.skip("node is not installed")
+        return
+
+    track = 3000.0
+    # Varying speed, a stop (under the 1 m/s floor both sides apply), and
+    # gaps of one and two steps -- everything the loop branches on.
+    speeds = [None if i in (7, 20, 21) else
+              0.5 if 30 <= i < 34 else
+              60.0 + 90.0 * math.sin(i / 7.0) ** 2
+              for i in range(60)]
+    script = (f"const TRACK_M={track}, RG={len(speeds)};\n"
+              + _js_function("integrate")
+              + f"\nconsole.log(JSON.stringify(integrate({json.dumps(speeds)})));")
+    run = subprocess.run([node, "-e", script], capture_output=True,
+                         text=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    js = json.loads(run.stdout)
+    py = line_map.integrate_time(speeds, track)
+
+    assert len(js) == len(py) == len(speeds), (len(js), len(py))
+    # integrate_time rounds each step to whole ms and the page does not, so
+    # they may differ by the rounding and by nothing else.
+    worst = max(abs(a - b) for a, b in zip(js, py))
+    assert worst <= 1, f"the page and integrate_time disagree by {worst} ms"
+    assert py[-1] > 1000, py[-1]
+    print(f"  the page's integrate() tracks integrate_time() to {worst:.3f} ms "
+          f"over {py[-1]} ms of lap")
+
+
+def test_an_empty_step_is_road_still_covered():
+    """Skipping empty steps ran a real two-minute lap four seconds short."""
+    speeds = [108.0 if i % 2 == 0 else None for i in range(1000)]
+    tm = line_map.integrate_time(speeds, 3000.0)
+    assert abs(tm[-1] - 99800) <= 1, tm[-1]     # to step 998, 3 m each
+
+
+def test_short_gaps_are_filled_and_long_ones_left_empty():
+    got = line_map._fill_gaps([1.0, None, None, 4.0, None, None, None, 8.0])
+    assert got[:4] == [1.0, 2.0, 3.0, 4.0], got
+    assert got[4:7] == [None, None, None], got
+
+
+def test_an_opponent_lap_on_its_own_clock_carries_its_line():
+    with temp_db() as path:
+        conn = db.connect(path)
+        try:
+            sid = _rival_session(conn, _rival_rows())
+            data = line_map.build(conn, sid)
+        finally:
+            conn.close()
+    (rival,) = data["rivals"]
+    assert (rival["name"], rival["car_model"]) == ("Ben B", "ks_mazda_mx5_cup")
+    lap = rival["laps"][0]
+    assert lap["clock"] == "timed" and lap["time_src"] == "timed", lap["clock"]
+    assert len(lap["v"]) == line_map.RIVAL_GRID == len(lap["x"])
+    # 500 samples 48 ms apart: a 24-second lap.
+    assert abs(lap["time_ms"] - 24000) < 200, lap["time_ms"]
+    assert lap["inputs"] == {"gas": True, "brake": True}
+    assert data["track_length_m"] == 3000.0
+
+
+def test_an_opponent_lap_with_no_clock_is_timed_from_speed_and_says_so():
+    with temp_db() as path:
+        conn = db.connect(path)
+        try:
+            sid = _rival_session(conn, _rival_rows(timed=False,
+                                                   positions=False,
+                                                   teleport_at=100))
+            lap = line_map.build(conn, sid)["rivals"][0]["laps"][0]
+        finally:
+            conn.close()
+    assert lap["clock"] == "estimated" and lap["time_src"] == "estimated"
+    assert "x" not in lap, "a lap with no positions drew a line"
+    # 3 km at 150 km/h is 72 s -- and the teleport sample is not driving.
+    assert abs(lap["time_ms"] - 72000) < 720, lap["time_ms"]
+    assert max(v for v in lap["v"] if v is not None) < 999, "teleport kept"
+
+
+def test_a_lap_of_nothing_but_teleports_is_not_integrated():
+    """Filtering every sample left an empty lap, and dividing by no distance."""
+    lap = line_map.rival_lap(
+        [dict(r, speed_kmh=999.9) for r in _rival_rows()], 3000.0)
+    assert lap["clock"] is None and lap["tm"] is None, lap["clock"]
+    assert lap["v"] == [None] * line_map.RIVAL_GRID
+    assert line_map._grid_lap_ms(lap) is None
+
+
+def test_a_clock_that_never_moves_is_not_a_clock():
+    """A car reporting a constant timestamp would time a lap at zero."""
+    rows = [dict(r, t_ms=0) for r in _rival_rows()]
+    lap = line_map.rival_lap(rows, 3000.0)
+    assert lap["clock"] == "estimated", lap["clock"]
+    assert abs(line_map._grid_lap_ms(lap) - 72000) < 720
+
+
+def test_a_lap_seen_from_just_after_the_line_still_gets_a_time():
+    """Requiring the end steps gave nearly a whole lap no time at all."""
+    rows = [r for r in _rival_rows() if 0.01 <= r["spline"] <= 0.99]
+    lap = line_map.rival_lap(rows, 3000.0)
+    assert lap["clock"] == "timed", lap["clock"]
+    # 500 samples 48 ms apart, less the trimmed ends, scaled back up.
+    assert abs(line_map._grid_lap_ms(lap) - 24000) < 400
+
+
+def test_a_recorded_lap_time_outranks_an_estimate():
+    with temp_db() as path:
+        conn = db.connect(path)
+        try:
+            sid = _rival_session(conn, _rival_rows(lap=2, timed=False))
+            db.store_rival_batch(conn, sid, [], _rival_rows(lap=3,
+                                                            timed=False))
+            conn.execute("INSERT INTO rival_laps VALUES (?,?,?,?,?)",
+                         (sid, 1, 3, 71000, 0.0))
+            conn.commit()
+            laps = line_map.build(conn, sid)["rivals"][0]["laps"]
+        finally:
+            conn.close()
+    assert [(l["lap_count"], l["time_src"]) for l in laps] == [
+        (3, "recorded"), (2, "estimated")], laps
+
+
+def test_opponents_are_left_off_a_map_of_several_sessions():
+    with temp_db() as path:
+        conn = db.connect(path)
+        try:
+            first = _store(conn, _rival_session(conn, _rival_rows()), 2, 90100)
+            other = _store(conn, make_session(conn), 1, 90200)
+            data = line_map.build(conn, lap_ids=[first, other])
+        finally:
+            conn.close()
+    assert data["rivals"] == [], data["rivals"]
+
+
+def test_your_laps_carry_their_clock_for_the_time_gap():
+    with temp_db() as path:
+        conn = db.connect(path)
+        try:
+            sid = make_session(conn)
+            _store(conn, sid, 1, 90000)
+            lap = line_map.build(conn, sid, every_ms=0)["laps"][0]
+        finally:
+            conn.close()
+    assert lap["tm"][:3] == [0, 40, 80], lap["tm"][:3]
 
 
 # --- the page -----------------------------------------------------------

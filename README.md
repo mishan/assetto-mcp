@@ -150,7 +150,8 @@ by setup if you want to see an A/B. Pick any one lap to see it by speed,
 pedal, gear, or where the front or the rear was sliding. There's also a bump
 map of the circuit. Charts under the map show that lap's tyre temperatures,
 revs, ride height and more, and marks show where you ran wide or locked a
-wheel. Turns are numbered the same way the assistant numbers them. The file
+wheel. Pick an opponent to see where they braked and got back on the throttle
+compared with you. Turns are numbered the same way the assistant numbers them. The file
 lives in `exports/` in the data folder and loads nothing from the internet.
 
 ### While you're driving

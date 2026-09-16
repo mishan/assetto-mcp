@@ -164,6 +164,11 @@ class Recorder:
 
     def __init__(self):
         self.posts = []          # (path, decoded body)
+        # Both filled in by load(), which is where the Lua runtime the two
+        # of them need exists. deliver(status, body) answers the oldest post
+        # still in flight; pending_posts() counts those waiting.
+        self.deliver = None
+        self.pending_posts = None
         self.gets = []
         self.logs = []
         self.warnings = []
@@ -180,6 +185,9 @@ class Recorder:
         # reach it after load -- setting a global of the same name does
         # nothing. Loading the app without one is the only way in.
         self.car_available = True
+        # Per-car field overrides for ac.getCar(i), read on every call, so a
+        # test can move an opponent round the lap between samples.
+        self.cars = {}
 
 
 def load(rec: Recorder = None, patch_version="0.2.11"):
@@ -225,15 +233,25 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
         return lua.table_from({"ok": True, "stored": 0})
 
     # --- ac -------------------------------------------------------------
-    def get_car(_i=0):
+    def get_car(i=0):
         if not rec.car_available:
             return None
-        return lua.table_from({
-            "splinePosition": 0.5, "lapCount": 1, "speedKmh": 180.0,
-            "brake": 0.0, "gas": 1.0, "gear": 4, "isConnected": True,
-            "isInPitlane": False, "carId": "rss_formula_rss_4",
-            "bestLapTimeMs": 113000, "previousLapTimeMs": 113500,
-        })
+        # Only fields CSP's car state really has. This stub once carried
+        # carId, bestLapTimeMs and previousLapTimeMs -- names that exist
+        # nowhere in CSP -- so the app's reads of them passed every test and
+        # returned nil in every real session, and no opponent ever had a car
+        # model or a lap time.
+        fields = {"splinePosition": 0.5, "lapCount": 1, "speedKmh": 180.0,
+                  "brake": 0.0, "gas": 1.0, "gear": 4, "isConnected": True,
+                  "isInPitlane": False, "timestamp": 1000.0,
+                  "position": (100.0, 5.0, -200.0)}
+        fields.update(rec.cars.get(int(i or 0), {}))
+        pos = fields.pop("position", None)
+        car = lua.table_from(fields)
+        if pos is not None:
+            car["position"] = lua.table_from(
+                {"x": pos[0], "y": pos[1], "z": pos[2]})
+        return car
 
     def sim_fields():
         fields = dict(rec.sim_fields)
@@ -254,6 +272,19 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
         if not rec.worker_start_ok:
             raise RuntimeError(rec.worker_start_error)
         return True
+
+    def _json_parse(text):
+        """JSON.parse, for real: the app's response handling depends on it.
+
+        A fixed reply here would have meant every callback taking the same
+        branch, which is the opposite of the point -- the branches are
+        "stored fewer than I sent", "ok=false", and "a 200 I cannot read".
+        Raising on bad JSON is the honest answer too: the app wraps this in
+        pcall precisely because CSP's can raise, and that path only gets
+        exercised if this one does.
+        """
+        value = json.loads(str(text))
+        return lua.table_from(value) if isinstance(value, dict) else value
 
     def web_post(url, body):
         # Bodies reach here as the JSON the app built, so record what the
@@ -281,6 +312,7 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
         "car": get_car,
         "version": lambda: patch_version,
         "stringify": _json_stringify,
+        "parse": _json_parse,
     })
     g._physics_available = rec.physics_available
 
@@ -299,9 +331,10 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
       end
 
       ac = {
-        getCar = function(_) return py.car() end,
+        getCar = function(i) return py.car(i) end,
         getSim = function() return proxy(py.sim_fields()) end,
         getDriverName = function(_) return 'Driver' end,
+        getCarID = function(_) return 'rss_formula_rss_4' end,
         ControlButton = function(_)
           return { pressed = function() return false end,
                    configure = function() end }
@@ -327,13 +360,33 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
         }
       end
 
+      _pending = {}
       web = {
-        post = function(url, _h, body, _cb) py.post(url, body) end,
+        -- CSP's web.post is asynchronous: it returns at once and the
+        -- callback runs whenever the response arrives. The stub keeps that
+        -- shape rather than answering inline, because what the app does
+        -- while a post is in flight -- refusing to start a second one,
+        -- holding the batch it has already taken off the queue -- is part
+        -- of what these tests are for. Nothing is answered until a test
+        -- calls rec.deliver().
+        post = function(url, _h, body, cb)
+          py.post(url, body)
+          _pending[#_pending + 1] = { url = url, cb = cb }
+        end,
         get = function(url, _cb) py.get(url) end,
       }
+      _deliver = function(err, status, body)
+        local p = table.remove(_pending, 1)
+        if not p then return nil end
+        if p.cb then
+          p.cb(err, status and { status = status, body = body } or nil)
+        end
+        return p.url
+      end
+      _pending_posts = function() return #_pending end
       JSON = {
         stringify = function(t) return py.stringify(t) end,
-        parse = function(_) return { ok = true, stored = 0 } end,
+        parse = function(text) return py.parse(text) end,
       }
       vec2 = function() return {} end
       rgbm = function() return {} end
@@ -343,4 +396,20 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
     """)
 
     lua.execute((APP / "assetto_mcp.lua").read_text(encoding="utf-8"))
+
+    def deliver(status: int = 200, body=None, err=None):
+        """Answer the oldest post still in flight, the way CSP would.
+
+        `body` is given as the object the server would send and encoded
+        here, because that is what the app receives -- a string it has to
+        parse, not a table it can read. `err` set is a request that never
+        reached the server at all. Returns the URL answered, or None when
+        nothing was waiting, so a test cannot quietly answer a post that
+        was never made.
+        """
+        text = None if body is None else json.dumps(body)
+        return g._deliver(err, None if err else status, text)
+
+    rec.deliver = deliver
+    rec.pending_posts = lambda: int(g._pending_posts())
     return lua, g.script.__test, rec

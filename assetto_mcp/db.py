@@ -16,7 +16,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # How many wheels have to be off the valid surface before a lap counts as
 # having exceeded track limits.
@@ -235,7 +235,10 @@ CREATE TABLE IF NOT EXISTS rival_samples (
     gear INTEGER,
     gas REAL,
     brake REAL,
-    created_at REAL NOT NULL
+    created_at REAL NOT NULL,
+    -- v14: the car's own physics clock and its world position, both
+    -- nullable -- samples from before v14 have neither.
+    t_ms INTEGER, pos_x REAL, pos_y REAL, pos_z REAL
 );
 -- UNIQUE, not just an index: the Lua app posts over HTTP and will resend a
 -- batch whose response it never saw. Without this a retry double-counts
@@ -646,6 +649,16 @@ def _migrate(conn) -> list[str]:
     # CREATE TABLE IF NOT EXISTS in SCHEMA covers them, so there is no ALTER
     # step. Recorded so the next person can see the version was accounted
     # for rather than skipped.
+
+    if version < 14:
+        # v14: an opponent sample's own clock and world position. Nullable,
+        # and nothing is backfilled -- the app never sent either before.
+        added = [c for c, d in (("t_ms", "INTEGER"), ("pos_x", "REAL"),
+                                ("pos_y", "REAL"), ("pos_z", "REAL"))
+                 if _add_column(conn, "rival_samples", c, d)]
+        if added:
+            log.append(f"rival_samples.{', '.join(added)} added; opponent "
+                       "laps recorded before this have no clock or position")
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
@@ -1814,6 +1827,7 @@ def list_sessions(conn, limit: int = 20) -> list[dict]:
 RIVAL_SAMPLE_COLUMNS = [
     "session_id", "car_index", "lap_count", "spline", "speed_kmh",
     "gear", "gas", "brake", "created_at",
+    "t_ms", "pos_x", "pos_y", "pos_z",
 ]
 
 
@@ -1885,7 +1899,8 @@ def store_rival_batch(conn, session_id, drivers: list[dict],
 
     rows = [
         (session_id, s["car_index"], s["lap_count"], s["spline"],
-         s["speed_kmh"], s.get("gear"), s.get("gas"), s.get("brake"), now)
+         s["speed_kmh"], s.get("gear"), s.get("gas"), s.get("brake"), now,
+         s.get("t_ms"), s.get("pos_x"), s.get("pos_y"), s.get("pos_z"))
         for s in samples
     ]
     stored = 0
@@ -1962,16 +1977,55 @@ def get_rival_lap_samples(conn, session_id: int, car_index: int,
     return [dict(r) for r in rows]
 
 
+# What "well covered" means for an opponent's lap. Opponents are sampled at
+# 10 Hz, so twenty samples is two seconds of one, and eight tenths of the
+# spline is most of a circuit. Below either, a comparison silently omits the
+# corners we never saw them take.
+RIVAL_LAP_MIN_SAMPLES = 20
+RIVAL_LAP_MIN_SPAN = 0.8
+
+# The app clamps an opponent's speed before it posts (bridge.MAX_SPEED_KMH).
+# A sample at the clamp is a car being teleported to the pits or the grid,
+# not a car being driven, so it is not evidence that the lap was seen. The
+# coverage rule above discounts them for that reason: counting them let a
+# lap of nothing but teleports meet it and then be drawn from the handful of
+# real samples left.
+RIVAL_TELEPORT_KMH = 999
+
+
+def well_covered_rival_laps(conn, session_id: int,
+                            car_index: int) -> list[dict]:
+    """Rival laps we saw enough of to compare against, quickest first.
+
+    Ordered by recorded lap time where we have one. A lap with no time sorts
+    last: without it there is no way to know whether it was a flyer or an
+    in-lap, and comparing against an unknown-pace lap is worse than useless.
+    """
+    times = rival_lap_times(conn, session_id, car_index)
+    laps = [dict(l, lap_time_ms=times.get(l["lap_count"]))
+            for l in rival_lap_counts(conn, session_id, car_index)
+            if l["n"] >= RIVAL_LAP_MIN_SAMPLES
+            and (l["hi"] - l["lo"]) > RIVAL_LAP_MIN_SPAN]
+    laps.sort(key=lambda l: (l["lap_time_ms"] is None,
+                             l["lap_time_ms"] or 0))
+    return laps
+
+
 def rival_lap_counts(conn, session_id: int, car_index: int) -> list[dict]:
     """Which laps we have samples for, and how well covered each one is.
 
     Coverage matters: a lap we only saw half of would produce a comparison
-    that silently omits the corners we missed.
+    that silently omits the corners we missed. Samples at the speed clamp do
+    not count towards it -- see RIVAL_TELEPORT_KMH -- so the coverage this
+    reports is coverage of the lap as driven, which is the same set of
+    samples anything drawing the lap will have to work from.
     """
     rows = conn.execute(
         "SELECT lap_count, COUNT(*) AS n, MIN(spline) AS lo, MAX(spline) AS hi"
         " FROM rival_samples WHERE session_id = ? AND car_index = ?"
-        " GROUP BY lap_count ORDER BY lap_count", (session_id, car_index))
+        " AND speed_kmh < ?"
+        " GROUP BY lap_count ORDER BY lap_count",
+        (session_id, car_index, RIVAL_TELEPORT_KMH))
     return [dict(r) for r in rows]
 
 

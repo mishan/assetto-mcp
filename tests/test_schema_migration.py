@@ -392,6 +392,47 @@ def test_v13_adds_its_tables_to_a_real_v12_database():
             conn.close()
 
 
+def test_v14_gives_old_opponent_samples_no_clock_rather_than_zero():
+    """v14 adds the opponent clock and world position to a real v13 file.
+
+    Nothing is backfilled: the app never sent either before, so an old
+    sample has to read as having none, not as a clock of zero at the origin.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "v13.db"
+        raw = sqlite3.connect(path)
+        raw.executescript(db.SCHEMA)
+        raw.executescript("""
+            DROP TABLE rival_samples;
+            CREATE TABLE rival_samples (
+                session_id INTEGER NOT NULL, car_index INTEGER NOT NULL,
+                lap_count INTEGER NOT NULL, spline REAL NOT NULL,
+                speed_kmh REAL NOT NULL, gear INTEGER, gas REAL,
+                brake REAL, created_at REAL NOT NULL);
+            INSERT INTO rival_samples
+                VALUES (1, 2, 3, 0.5, 150.0, 4, 1.0, 0.0, 0.0);
+        """)
+        raw.execute("PRAGMA user_version = 13")
+        raw.commit()
+        raw.close()
+
+        conn = db.connect(path)
+        try:
+            assert conn.execute("PRAGMA user_version").fetchone()[0] == \
+                db.SCHEMA_VERSION, "migration stopped short"
+            (old,) = db.get_rival_lap_samples(conn, 1, 2, 3)
+            assert (old["t_ms"], old["pos_x"]) == (None, None), old
+            db.store_rival_batch(conn, 1, [], [{
+                "car_index": 2, "lap_count": 3, "spline": 0.6,
+                "speed_kmh": 151.0, "t_ms": 5000,
+                "pos_x": 1.0, "pos_y": 2.0, "pos_z": 3.0}])
+            new = db.get_rival_lap_samples(conn, 1, 2, 3)[1]
+            assert (new["t_ms"], new["pos_z"]) == (5000, 3.0), new
+            print("  v13 -> v14: old samples have no clock, new ones do")
+        finally:
+            conn.close()
+
+
 def test_display_readings_survive_a_retention_pass():
     # They are keyed on the car, not the session, so pruning a session's
     # samples must not take a car's hard-won screen readings with it.

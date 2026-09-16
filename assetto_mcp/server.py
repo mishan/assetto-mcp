@@ -337,19 +337,8 @@ def list_rivals(session_id: int | None = None, limit: int = 20) -> str:
 
 
 def _well_covered_rival_laps(sid: int, car_index: int) -> list[dict]:
-    """Rival laps we saw enough of to compare against, quickest first.
-
-    Ordered by recorded lap time where we have one. A lap with no time sorts
-    last: without it there is no way to know whether it was a flyer or an
-    in-lap, and comparing against an unknown-pace lap is worse than useless.
-    """
-    times = db.rival_lap_times(_conn, sid, car_index)
-    laps = [dict(l, lap_time_ms=times.get(l["lap_count"]))
-            for l in db.rival_lap_counts(_conn, sid, car_index)
-            if l["n"] >= 20 and (l["hi"] - l["lo"]) > 0.8]
-    laps.sort(key=lambda l: (l["lap_time_ms"] is None,
-                             l["lap_time_ms"] or 0))
-    return laps
+    """Rival laps we saw enough of to compare against, quickest first."""
+    return db.well_covered_rival_laps(_conn, sid, car_index)
 
 
 @mcp.tool()

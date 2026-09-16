@@ -195,6 +195,13 @@ MAX_LAP_MS = 24 * 60 * 60 * 1000
 GEAR_RANGE = (-2, 12)
 
 
+# Bounds for an opponent sample's clock and world position. The clock is
+# AC's physics time in ms, which a long session can take well past 32 bits;
+# 100 km covers any circuit's coordinates with room to spare.
+MAX_RIVAL_T_MS = 10**12
+MAX_WORLD_M = 100_000.0
+
+
 def _opt_str(raw, limit: int = 64) -> str:
     """A string field, or empty. Non-strings are dropped, not repr'd."""
     return raw[:limit] if isinstance(raw, str) else ""
@@ -498,6 +505,17 @@ class Bridge:
                     if sid is None:
                         return self._send(200, {"ok": False,
                                                 "reason": "not recording"})
+                    # Which session the app believed it was sampling. Its
+                    # view lags ours by a poll and by the round trip this
+                    # request is making, so a batch can arrive after the
+                    # session it belongs to has ended -- and filing it here
+                    # would put one session's opponents, names and lap
+                    # counts in another. Absent from an older app, which is
+                    # read as "no claim" rather than as a mismatch.
+                    claimed = _opt_int(body.get("session_id"), 1, 2**31 - 1)
+                    if claimed is not None and claimed != sid:
+                        return self._send(200, {"ok": False,
+                                                "reason": "session changed"})
                     raw_cars = body.get("cars")
                     if not isinstance(raw_cars, list):
                         return self._send(400, {"error": "'cars' must be a "
@@ -544,6 +562,11 @@ class Bridge:
                             "gear": _opt_int(car.get("gear"), *GEAR_RANGE),
                             "gas": _opt_float(car.get("gas"), 0.0, 1.0),
                             "brake": _opt_float(car.get("brake"), 0.0, 1.0),
+                            "t_ms": _opt_int(car.get("t_ms"), 0,
+                                             MAX_RIVAL_T_MS),
+                            **{k: _opt_float(car.get(k), -MAX_WORLD_M,
+                                             MAX_WORLD_M)
+                               for k in ("pos_x", "pos_y", "pos_z")},
                         })
 
                     conn = db.connect(bridge._db_path)

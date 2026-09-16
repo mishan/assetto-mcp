@@ -67,13 +67,18 @@ jobs:
       - name: Refuse to pass if nothing exercised the Lua app
         # The guard above proves lupa imports; strict mode proves the module
         # did not skip. This proves the tests themselves still exist and ran:
-        # --min-tests fails if fewer than nine of them executed, so deleting,
+        # --min-tests fails if fewer than that many executed, so deleting,
         # renaming or marking them out reads as a failure rather than as a
         # shorter green run. It was `pytest tests/test_lua_app.py`, which
         # reported "9 skipped" and exit 0 with lupa removed.
+        #
+        # Level with the count rather than comfortably under it: a floor with
+        # slack in it is one that lets the next few tests be dropped without
+        # saying so. Raise it when tests are added -- the same figure is used
+        # by the lua job below.
         env:
           AC_TESTS_STRICT: "1"
-        run: python run_tests.py -k "^test_lua_app\." --no-skip --min-tests 9
+        run: python run_tests.py -k "^test_lua_app\." --no-skip --min-tests 29
 
       - name: Check each module also runs standalone
         # The gaming PC has Python (the server needs it) but no reason to
@@ -152,7 +157,7 @@ jobs:
       - name: Refuse to pass if the Lua tests did not actually run
         env:
           AC_TESTS_STRICT: "1"
-        run: python run_tests.py -k "^test_lua_app\." --no-skip --min-tests 9
+        run: python run_tests.py -k "^test_lua_app\." --no-skip --min-tests 29
 
       - name: Check the implicit-globals check itself ran
         # luaparser had no guard at all: tests/test_suspension.py caught

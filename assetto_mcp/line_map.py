@@ -23,6 +23,7 @@ the driver's machine, and a page that loaded a web font would tell a third
 party every time it was opened.
 """
 
+import hashlib
 import html
 import json
 import math
@@ -151,14 +152,21 @@ def shifts(samples: list[dict]) -> list[dict]:
     Read from the last sample in the old gear to the first in the new one,
     across the neutral AC reports mid-shift. The revs either side are what
     was recorded there, so at 25 Hz they can be a few hundred rpm from the
-    instant of the change at high revs. Reverse is ignored.
+    instant of the change at high revs. Reverse ends the sequence rather
+    than being skipped over: a spin that went second, reverse, first is not
+    a downshift from second to first.
     """
     out, last = [], None
     for i, s in enumerate(samples):
         g = s.get("gear")
-        if not isinstance(g, (int, float)) or g < 1:
+        if not isinstance(g, (int, float)):
             continue
         g = int(g)
+        if g < 0:
+            last = None
+            continue
+        if g < 1:
+            continue            # neutral, which every shift passes through
         if last is not None:
             j, prev = last
             gap = (s.get("t_ms") or 0) - (samples[j].get("t_ms") or 0)
@@ -479,13 +487,22 @@ def build(conn, session_id: int | None = None,
     # Complaint presses, on the lap they were pressed on: a press stores how
     # many laps were complete, so it belongs to the next one. A press whose
     # lap is not drawn keeps its place on the track and says so.
-    lap_ids_by_number = {(l["session"], l["n"]): l["id"] for l in drawn}
+    #
+    # A lap number is not unique within a session: a lap abandoned before
+    # the line is stored at the number the next completed lap then takes. A
+    # press made on one of those cannot be told from a press on the other,
+    # so it is placed on the track and on no lap, saying which case it is.
+    by_number: dict[tuple, list] = {}
+    for l in drawn:
+        by_number.setdefault((l["session"], l["n"]), []).append(l["id"])
     notes = []
     for sid in session_ids:
         for nt in db.list_notes(conn, sid, limit=100000):
             n = nt["lap_count"] + 1
+            ids = by_number.get((sid, n), [])
             notes.append({"session": sid, "n": n,
-                          "lap_id": lap_ids_by_number.get((sid, n)),
+                          "lap_id": ids[0] if len(ids) == 1 else None,
+                          "ambiguous": len(ids) > 1,
                           "pos": round(nt["spline"], 4), "tag": nt["tag"],
                           "kmh": _r(nt.get("speed_kmh"))})
 
@@ -498,7 +515,11 @@ def build(conn, session_id: int | None = None,
     for i in range(SURFACE_SLICES):
         vals = [p[i] for p in profiles if p[i] is not None]
         pooled.append(round(median(vals), 2) if vals else None)
-    one = len(session_ids) == 1
+    # Both, because a named request can span sessions whose laps were all
+    # skipped for having no position: drawn would then be one session and
+    # the page would print its air temperature over a map that was asked
+    # for several.
+    one = len(session_ids) == 1 and len(asked) == 1
     return {
         "session_ids": session_ids,
         "from_laps": bool(lap_ids),
@@ -551,8 +572,15 @@ def default_name(data: dict) -> str:
     if not data["from_laps"]:
         return f"line-map-session-{data['session_ids'][0]}.html"
     ids = [l["id"] for l in data["laps"]]
-    tag = ("-".join(str(i) for i in ids) if len(ids) <= 6
-           else f"{ids[0]}-{ids[-1]}-{len(ids)}-laps")
+    if len(ids) <= 6:
+        tag = "-".join(str(i) for i in ids)
+    else:
+        # A digest of every id, not just the ends and the count: laps
+        # 1,10,20,30,40,50,60 and 1,2,3,4,5,6,60 otherwise name the same
+        # file, and the second export quietly replaces the first.
+        digest = hashlib.sha1(
+            ",".join(str(i) for i in ids).encode()).hexdigest()[:8]
+        tag = f"{ids[0]}-{ids[-1]}-{len(ids)}-laps-{digest}"
     return f"line-map-laps-{tag}.html"
 
 

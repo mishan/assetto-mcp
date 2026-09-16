@@ -361,6 +361,44 @@ def test_neutral_held_for_a_stop_is_not_a_shift():
     assert got == [], got
 
 
+def test_reverse_ends_the_gear_sequence():
+    """A spin that went second, reverse, first is not a downshift."""
+    got = line_map.shifts(_geared([(2, 6000)] * 3 + [(-1, 1200)] * 2 +
+                                  [(1, 3000)] * 3))
+    assert got == [], got
+
+
+def test_a_press_on_a_repeated_lap_number_is_not_guessed_at():
+    """A lap abandoned before the line takes the next lap's number.
+
+    Two laps then share a number, and nothing in a press says which of them
+    it was pressed on. It keeps its place on the track and no lap.
+    """
+    with temp_db() as path:
+        conn = db.connect(path)
+        try:
+            sid = make_session(conn)
+            _store(conn, sid, 2, 40000, complete=False)
+            _store(conn, sid, 2, 90000)
+            db.add_note(conn, sid, 1, 0.5, "understeer", 120.0)
+            data = line_map.build(conn, sid)
+        finally:
+            conn.close()
+    (note,) = data["notes"]
+    assert note["lap_id"] is None and note["ambiguous"] is True, note
+
+
+def test_two_long_lap_lists_do_not_share_a_file_name():
+    """Ends and a count are not a name: the earlier export was overwritten."""
+    def named(ids):
+        return line_map.default_name(
+            {"from_laps": True, "session_ids": [1],
+             "laps": [{"id": i} for i in ids]})
+    spread, packed = (1, 10, 20, 30, 40, 50, 60), (1, 2, 3, 4, 5, 6, 60)
+    assert named(spread) != named(packed), named(spread)
+    assert named(spread) == named(spread), "the same laps must name one file"
+
+
 def test_the_gearing_table_reads_every_counted_lap():
     laps = [line_map.shifts(_geared(
         [(3, rpm)] * 3 + [(0, 0)] + [(4, 6200)] * 3 +

@@ -156,9 +156,11 @@ const flagOf = l => !l.complete ? "abandoned" : l.out ? "out" : l.pit ? "pit" : 
 // their own: past three, lines crossing on a map stop being tellable apart, so the
 // rest share one neutral and the table names every lap's setup.
 const SLOTS = 3;
-const setups = [...new Set(laps.map(l=>l.setup))];
+// Named setups only: laps with none recorded are always the neutral, rather than
+// spending one of the three hues and pushing a real setup onto the neutral instead.
+const setups = [...new Set(laps.map(l=>l.setup))].filter(Boolean);
 const setupLabel = s => s || "no setup recorded";
-const setupColor = s => { const i=setups.indexOf(s); return i<SLOTS ? css("--set"+(i+1)) : css("--set-other"); };
+const setupColor = s => { const i=setups.indexOf(s); return s && i<SLOTS ? css("--set"+(i+1)) : css("--set-other"); };
 
 // Balance: front slip minus rear, drawn only while cornering. Positive is the front
 // sliding more. One scale for every lap, so laps can be read against each other.
@@ -252,9 +254,12 @@ function strokeLap(l, colorAt, width, alpha){
   }
   ctx.globalAlpha=1;
 }
-// The part of a lap's line between two track positions.
+// The part of a lap's line between two track positions. A range that crosses the
+// start/finish line arrives with its end before its start -- an excursion from 0.99
+// to 0.01 -- and is drawn as its two pieces rather than as nothing at all.
 function strokeRange(l, a, b, color, width, alpha){
   if (a==null || b==null) return;
+  if (a>b){ strokeRange(l, a, 1, color, width, alpha); strokeRange(l, 0, b, color, width, alpha); return; }
   ctx.strokeStyle=color; ctx.lineWidth=width; ctx.lineCap="round"; ctx.lineJoin="round"; ctx.globalAlpha=alpha;
   ctx.beginPath(); let on=false;
   for(let i=0;i<l.p.length;i++){
@@ -644,7 +649,15 @@ laps.forEach(l=>{
     "<td class=\"setup\" title=\""+esc(setupLabel(l.setup))+"\">"+esc(l.setup||"-")+"</td>"+
     "<td class=\"flag\">"+[l.wide?"wide":"", l.outlier?"outlier":""].filter(Boolean).join(" ")+"</td>";
   tr.querySelector("input").addEventListener("change", ev=>{ ev.target.checked?state.show.add(l.id):state.show.delete(l.id); tr.classList.toggle("hidden",!ev.target.checked); draw(); });
-  tr.addEventListener("click", ev=>{ if(ev.target.tagName==="INPUT") return; state.sel=l.id; refreshRows(); legend(); draw(); });
+  // Focusable and operable from the keyboard: clicking a row was the only way to
+  // select a lap, which left every chart here out of reach without a mouse.
+  tr.tabIndex=0;
+  const select = ()=>{ state.sel=l.id; refreshRows(); legend(); draw(); };
+  tr.addEventListener("click", ev=>{ if(ev.target.tagName==="INPUT") return; select(); });
+  tr.addEventListener("keydown", ev=>{
+    if (ev.target.tagName==="INPUT" || (ev.key!=="Enter" && ev.key!==" ")) return;
+    ev.preventDefault(); select();
+  });
   tr.classList.toggle("hidden",!state.show.has(l.id));
   rows.appendChild(tr);
 });
@@ -670,7 +683,9 @@ function legend(){
   if(state.mode==="lap") g.innerHTML="<span><i style=\"background:"+css("--best")+"\"></i>fastest lap that counted</span><span>lap order <span class=\"bar\" style=\"background:linear-gradient(90deg,"+css("--ramp0")+","+css("--ramp1")+")\"></span>early → late</span><span>thin = ran wide</span>";
   else if(state.mode==="setup"){
     const count = s => laps.filter(l=>l.setup===s).length;
+    const blank = laps.filter(l=>!l.setup).length;
     g.innerHTML = setups.slice(0,SLOTS).map(s=>"<span><i style=\"background:"+setupColor(s)+"\"></i><span class=\"name\">"+esc(setupLabel(s))+"</span> ("+count(s)+")</span>").join("")+
+      (blank?"<span><i style=\"background:"+css("--set-other")+"\"></i>no setup recorded ("+blank+")</span>":"")+
       (setups.length>SLOTS?"<span><i style=\"background:"+css("--set-other")+"\"></i>"+(setups.length-SLOTS)+" more setup"+(setups.length-SLOTS>1?"s":"")+", named in the table</span>":"");
   }
   else if(state.mode==="speed") g.innerHTML="<span>≤"+vmin+" km/h <span class=\"bar\" style=\"background:linear-gradient(90deg,"+css("--spd0")+","+css("--spd1")+")\"></span> "+vmax+" km/h</span>";

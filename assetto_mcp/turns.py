@@ -47,7 +47,8 @@ def basis_lap_ids(conn, session_id: int,
     is an out-lap, an in-lap or a lap that ended in the barrier -- the
     requested lap is all the evidence there is, and numbering from it alone
     beats answering with no numbers, as long as the payload says how thin
-    that basis is, which basis_lap_ids does.
+    that basis is, which the basis_lap_ids field corner_map_from returns
+    does.
     """
     ids = newest_usable_lap_ids(conn, session_id, CORNER_MAP_LAPS)
     if not ids and lap_id is not None:

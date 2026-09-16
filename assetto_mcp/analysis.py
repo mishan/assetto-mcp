@@ -2545,11 +2545,26 @@ def _corner_clusters(laps: list[dict], tolerance: float) -> list[list[tuple]]:
     # one-lap artefact could pull a real turn into its neighbour. The count
     # is per side because a split piece seen on two laps is still two
     # pieces, however many whole laps it sits inside.
+    #
+    # Support is counted against the groups proximity left, and is not
+    # recounted as those groups merge. Three pieces supported by one lap
+    # each against the other two therefore stay three turns, even though
+    # any two of them merged would clear the bar against the third. That is
+    # the safe direction to be wrong in -- a turn split in two is visible
+    # on the map and in the payload, where two turns silently welded into
+    # one are not -- but it is a limit, not an accident.
+    # Each corner's stretch and direction once, not once per pair: this loop
+    # is quadratic in observations, and re-reading four dict keys through
+    # four isinstance checks inside it was most of what it cost.
+    roads = [_road(o[2]) for o in obs]
+
     bridges: dict[tuple, tuple[set, set]] = {}
     for i, a in enumerate(obs):
+        if roads[i] is None:
+            continue
         for j in range(i + 1, len(obs)):
             b = obs[j]
-            if a[1] == b[1] or not _same_road(a[2], b[2]):
+            if a[1] == b[1] or not _same_road(roads[i], roads[j]):
                 continue
             ga, gb = find(i), find(j)
             if ga == gb:
@@ -2597,16 +2612,26 @@ def _span(c: dict) -> tuple[float, float] | None:
     return None
 
 
-def _same_road(a: dict, b: dict) -> bool:
-    """Whether two corners cover the same stretch, turning the same way.
+def _road(c: dict) -> tuple[tuple[float, float], object] | None:
+    """A corner's stretch and the way it turns, or None if it has no span.
 
-    False when either lacks a span: a corner known only by its apex can
-    still be grouped by proximity, but nothing here can say what road it
-    covered.
+    A corner known only by its apex can still be grouped by proximity, but
+    nothing here can say what road it covered, so it never bridges.
     """
-    sa, sb = _span(a), _span(b)
-    if sa is None or sb is None or a.get("turn_sign") != b.get("turn_sign"):
+    s = _span(c)
+    return None if s is None else (s, c.get("turn_sign"))
+
+
+def _same_road(ra, rb) -> bool:
+    """Whether two _road() values cover the same stretch, turning the same way.
+
+    Takes the pair already read rather than the corners, because the caller
+    compares every observation with every other and would otherwise read
+    each corner's span once per comparison instead of once.
+    """
+    if ra is None or rb is None or ra[1] != rb[1]:
         return False
+    sa, sb = ra[0], rb[0]
     shared = min(sa[1], sb[1]) - max(sa[0], sb[0])
     return shared >= CORNER_SPAN_OVERLAP * min(sa[1] - sa[0], sb[1] - sb[0])
 

@@ -361,6 +361,44 @@ def test_neutral_held_for_a_stop_is_not_a_shift():
     assert got == [], got
 
 
+def test_reverse_ends_the_gear_sequence():
+    """A spin that went second, reverse, first is not a downshift."""
+    got = line_map.shifts(_geared([(2, 6000)] * 3 + [(-1, 1200)] * 2 +
+                                  [(1, 3000)] * 3))
+    assert got == [], got
+
+
+def test_a_press_on_a_repeated_lap_number_is_not_guessed_at():
+    """A lap abandoned before the line takes the next lap's number.
+
+    Two laps then share a number, and nothing in a press says which of them
+    it was pressed on. It keeps its place on the track and no lap.
+    """
+    with temp_db() as path:
+        conn = db.connect(path)
+        try:
+            sid = make_session(conn)
+            _store(conn, sid, 2, 40000, complete=False)
+            _store(conn, sid, 2, 90000)
+            db.add_note(conn, sid, 1, 0.5, "understeer", 120.0)
+            data = line_map.build(conn, sid)
+        finally:
+            conn.close()
+    (note,) = data["notes"]
+    assert note["lap_id"] is None and note["ambiguous"] is True, note
+
+
+def test_two_long_lap_lists_do_not_share_a_file_name():
+    """Ends and a count are not a name: the earlier export was overwritten."""
+    def named(ids):
+        return line_map.default_name(
+            {"from_laps": True, "session_ids": [1],
+             "laps": [{"id": i} for i in ids]})
+    spread, packed = (1, 10, 20, 30, 40, 50, 60), (1, 2, 3, 4, 5, 6, 60)
+    assert named(spread) != named(packed), named(spread)
+    assert named(spread) == named(spread), "the same laps must name one file"
+
+
 def test_the_gearing_table_reads_every_counted_lap():
     laps = [line_map.shifts(_geared(
         [(3, rpm)] * 3 + [(0, 0)] + [(4, 6200)] * 3 +
@@ -547,6 +585,32 @@ def test_an_opponent_lap_with_no_clock_is_timed_from_speed_and_says_so():
     # 3 km at 150 km/h is 72 s -- and the teleport sample is not driving.
     assert abs(lap["time_ms"] - 72000) < 720, lap["time_ms"]
     assert max(v for v in lap["v"] if v is not None) < 999, "teleport kept"
+
+
+def test_a_lap_of_nothing_but_teleports_is_not_integrated():
+    """Filtering every sample left an empty lap, and dividing by no distance."""
+    lap = line_map.rival_lap(
+        [dict(r, speed_kmh=999.9) for r in _rival_rows()], 3000.0)
+    assert lap["clock"] is None and lap["tm"] is None, lap["clock"]
+    assert lap["v"] == [None] * line_map.RIVAL_GRID
+    assert line_map._grid_lap_ms(lap) is None
+
+
+def test_a_clock_that_never_moves_is_not_a_clock():
+    """A car reporting a constant timestamp would time a lap at zero."""
+    rows = [dict(r, t_ms=0) for r in _rival_rows()]
+    lap = line_map.rival_lap(rows, 3000.0)
+    assert lap["clock"] == "estimated", lap["clock"]
+    assert abs(line_map._grid_lap_ms(lap) - 72000) < 720
+
+
+def test_a_lap_seen_from_just_after_the_line_still_gets_a_time():
+    """Requiring the end steps gave nearly a whole lap no time at all."""
+    rows = [r for r in _rival_rows() if 0.01 <= r["spline"] <= 0.99]
+    lap = line_map.rival_lap(rows, 3000.0)
+    assert lap["clock"] == "timed", lap["clock"]
+    # 500 samples 48 ms apart, less the trimmed ends, scaled back up.
+    assert abs(line_map._grid_lap_ms(lap) - 24000) < 400
 
 
 def test_a_recorded_lap_time_outranks_an_estimate():

@@ -626,10 +626,14 @@ local function timeRivalLap(i, lapCount, spline, ts)
   if lapCount == prev.lap + 1 then
     local before, after = 1 - prev.spline, spline
     local span = before + after
-    local cross = ts
-    if span > 0 and span < 0.5 then
-      cross = prev.t + (ts - prev.t) * before / span
+    if span <= 0 or span >= 0.5 then
+      -- The lap counter moved without these two samples straddling the
+      -- line: a pit exit, a teleport, or a gap in what we saw. There is no
+      -- crossing to measure from, and timing it anyway invents a lap.
+      rivalClock[i] = { lap = lapCount, spline = spline, t = ts, start = nil }
+      return
     end
+    local cross = prev.t + (ts - prev.t) * before / span
     if prev.start then
       local lap = math.floor(cross - prev.start + 0.5)
       if lap > 0 then
@@ -656,7 +660,11 @@ local function sampleRivals()
   local n = ac.getSim().carsCount
   if not n or n < 2 then return end
   -- Lap times belong to a session; a new one starts every car from nothing.
+  -- Anything still queued belongs to the session it was sampled in, and
+  -- posting it now would file those samples, and those names and lap
+  -- counts, against this one.
   if status.sessionId ~= rivalSession then
+    rivalBuffer, rivalMeta = {}, {}
     rivalClock, rivalTimes, rivalSession = {}, {}, status.sessionId
   end
   for i = 0, n - 1 do

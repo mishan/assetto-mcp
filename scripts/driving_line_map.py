@@ -35,7 +35,8 @@ def main(argv=None):
                    help=f"least time between drawn points "
                         f"(default {line_map.EVERY_MS})")
     p.add_argument("-o", "--out",
-                   help="output .html (default exports/line-map-session-N.html)")
+                   help="output .html (default: exports/ in the data "
+                        "directory, where export_line_map writes too)")
     p.add_argument("--db", default=str(DB_PATH))
     args = p.parse_args(argv)
 
@@ -63,8 +64,10 @@ def main(argv=None):
     finally:
         conn.close()
 
-    out = line_map.write(
-        data, args.out or Path("exports") / line_map.default_name(data))
+    # The same folder the MCP tool writes to, rather than one beside
+    # wherever this was run from.
+    out = line_map.write(data, args.out or config.data_dir() / "exports"
+                         / line_map.default_name(data))
     print(f"{out}  ({len(data['laps'])} laps, "
           f"{out.stat().st_size // 1024} kB)")
     for s in data["skipped"]:

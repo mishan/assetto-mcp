@@ -2538,9 +2538,13 @@ def _corner_clusters(laps: list[dict], tolerance: float) -> list[list[tuple]]:
                 break
             j -= 1
 
-    # Then join whole groups that share road, counting the corners on each
-    # side that do. The count is per side because a split piece seen on two
-    # laps is still two pieces, however many whole laps it sits inside.
+    # Then join whole groups that share road, counting the LAPS on each side
+    # that do. Laps, not corners: a lap that split one corner into two has
+    # two corners in the group, and counting corners let that one lap meet a
+    # rule written as "two laps on each side" by itself -- which is how a
+    # one-lap artefact could pull a real turn into its neighbour. The count
+    # is per side because a split piece seen on two laps is still two
+    # pieces, however many whole laps it sits inside.
     bridges: dict[tuple, tuple[set, set]] = {}
     for i, a in enumerate(obs):
         for j in range(i + 1, len(obs)):
@@ -2550,7 +2554,8 @@ def _corner_clusters(laps: list[dict], tolerance: float) -> list[list[tuple]]:
             ga, gb = find(i), find(j)
             if ga == gb:
                 continue
-            key, (x, y) = ((ga, gb), (i, j)) if ga < gb else ((gb, ga), (j, i))
+            key, (x, y) = (((ga, gb), (a[1], b[1])) if ga < gb
+                           else ((gb, ga), (b[1], a[1])))
             sides = bridges.setdefault(key, (set(), set()))
             sides[0].add(x)
             sides[1].add(y)

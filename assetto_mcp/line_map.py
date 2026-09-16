@@ -23,6 +23,7 @@ the driver's machine, and a page that loaded a web font would tell a third
 party every time it was opened.
 """
 
+import hashlib
 import html
 import json
 import math
@@ -169,14 +170,21 @@ def shifts(samples: list[dict]) -> list[dict]:
     Read from the last sample in the old gear to the first in the new one,
     across the neutral AC reports mid-shift. The revs either side are what
     was recorded there, so at 25 Hz they can be a few hundred rpm from the
-    instant of the change at high revs. Reverse is ignored.
+    instant of the change at high revs. Reverse ends the sequence rather
+    than being skipped over: a spin that went second, reverse, first is not
+    a downshift from second to first.
     """
     out, last = [], None
     for i, s in enumerate(samples):
         g = s.get("gear")
-        if not isinstance(g, (int, float)) or g < 1:
+        if not isinstance(g, (int, float)):
             continue
         g = int(g)
+        if g < 0:
+            last = None
+            continue
+        if g < 1:
+            continue            # neutral, which every shift passes through
         if last is not None:
             j, prev = last
             gap = (s.get("t_ms") or 0) - (samples[j].get("t_ms") or 0)
@@ -363,6 +371,14 @@ def rival_lap(samples: list[dict], track_length_m: float | None,
     """
     samples = [s for s in samples
                if (s.get("speed_kmh") or 0) < RIVAL_TELEPORT_KMH]
+    if not samples:
+        # Every sample was at the clamp: a lap of being moved about rather
+        # than driven. There is nothing to resample, and integrating it
+        # would divide by a distance nobody covered.
+        empty = [None] * grid
+        return {"v": empty, "t": list(empty), "b": list(empty),
+                "g": list(empty), "tm": None, "clock": None,
+                "inputs": {"gas": False, "brake": False}}
 
     def res(key):
         return _fill_gaps(analysis.resample_by_position(
@@ -378,10 +394,14 @@ def rival_lap(samples: list[dict], track_length_m: float | None,
         out["x"] = [_r(x, 1) for x in res("pos_x")]
         out["z"] = [_r(x, 1) for x in res("pos_z")]
     timed = [s for s in samples if s.get("t_ms") is not None]
-    if samples and len(timed) >= 0.9 * len(samples):
-        tm = res("t_ms")
-        first = next(x for x in tm if x is not None)
-        out["tm"] = [None if x is None else round(x - first) for x in tm]
+    tm = res("t_ms") if len(timed) >= 0.9 * len(samples) else None
+    ticks = [x for x in (tm or []) if x is not None]
+    # A clock that runs, not merely a clock that is there: a car reporting a
+    # constant timestamp -- or zero -- would otherwise be called timed and
+    # produce a lap of no duration instead of falling back to the estimate.
+    if ticks and ticks[-1] > ticks[0] and all(
+            b >= a for a, b in zip(ticks, ticks[1:])):
+        out["tm"] = [None if x is None else round(x - ticks[0]) for x in tm]
         out["clock"] = "timed"
     elif track_length_m:
         out["tm"], out["clock"] = integrate_time(v, track_length_m), "estimated"
@@ -397,13 +417,24 @@ def rival_lap(samples: list[dict], track_length_m: float | None,
 
 
 def _grid_lap_ms(lap: dict) -> int | None:
-    """A lap time read off the grid, where the whole lap was covered."""
+    """A lap time read off the grid, scaled up to the whole lap.
+
+    From the span actually covered rather than from the first and last
+    step: a lap sampled from just after the line round to just before it
+    covers nearly the whole circuit, and requiring the end steps gave it no
+    time at all.
+    """
     tm, v = lap["tm"], lap["v"]
-    if not tm or v[0] is None or v[-1] is None or tm[-1] is None:
+    if not tm:
         return None
-    if sum(x is not None for x in v) < 0.95 * len(v):
+    seen = [i for i, x in enumerate(v)
+            if x is not None and tm[i] is not None]
+    if len(seen) < 0.95 * len(v):
         return None
-    return round(tm[-1] * len(tm) / (len(tm) - 1))
+    first, last = seen[0], seen[-1]
+    if last <= first:
+        return None
+    return round((tm[last] - tm[first]) * len(v) / (last - first))
 
 
 def rivals(conn, session_id: int, track_length_m: float | None) -> list[dict]:
@@ -626,19 +657,28 @@ def build(conn, session_id: int | None = None,
     # Complaint presses, on the lap they were pressed on: a press stores how
     # many laps were complete, so it belongs to the next one. A press whose
     # lap is not drawn keeps its place on the track and says so.
+    #
+    # A lap number is not unique within a session: a lap abandoned before
+    # the line is stored at the number the next completed lap then takes. A
+    # press made on one of those cannot be told from a press on the other,
+    # so it is placed on the track and on no lap, saying which case it is.
+    by_number: dict[tuple, list] = {}
+    for l in drawn:
+        by_number.setdefault((l["session"], l["n"]), []).append(l["id"])
+
     # Opponents are compared within the session they were recorded in: the
     # grid is that session's track, and nothing ties a car index in one
     # session to the same car in another.
     rival_data = (rivals(conn, session_ids[0], session.get("track_length_m"))
-                  if len(session_ids) == 1 else [])
-
-    lap_ids_by_number = {(l["session"], l["n"]): l["id"] for l in drawn}
+                  if len(asked) == 1 and len(session_ids) == 1 else [])
     notes = []
     for sid in session_ids:
         for nt in db.list_notes(conn, sid, limit=100000):
             n = nt["lap_count"] + 1
+            ids = by_number.get((sid, n), [])
             notes.append({"session": sid, "n": n,
-                          "lap_id": lap_ids_by_number.get((sid, n)),
+                          "lap_id": ids[0] if len(ids) == 1 else None,
+                          "ambiguous": len(ids) > 1,
                           "pos": round(nt["spline"], 4), "tag": nt["tag"],
                           "kmh": _r(nt.get("speed_kmh"))})
 
@@ -651,7 +691,11 @@ def build(conn, session_id: int | None = None,
     for i in range(SURFACE_SLICES):
         vals = [p[i] for p in profiles if p[i] is not None]
         pooled.append(round(median(vals), 2) if vals else None)
-    one = len(session_ids) == 1
+    # Both, because a named request can span sessions whose laps were all
+    # skipped for having no position: drawn would then be one session and
+    # the page would print its air temperature over a map that was asked
+    # for several.
+    one = len(session_ids) == 1 and len(asked) == 1
     return {
         "session_ids": session_ids,
         "from_laps": bool(lap_ids),
@@ -707,8 +751,15 @@ def default_name(data: dict) -> str:
     if not data["from_laps"]:
         return f"line-map-session-{data['session_ids'][0]}.html"
     ids = [l["id"] for l in data["laps"]]
-    tag = ("-".join(str(i) for i in ids) if len(ids) <= 6
-           else f"{ids[0]}-{ids[-1]}-{len(ids)}-laps")
+    if len(ids) <= 6:
+        tag = "-".join(str(i) for i in ids)
+    else:
+        # A digest of every id, not just the ends and the count: laps
+        # 1,10,20,30,40,50,60 and 1,2,3,4,5,6,60 otherwise name the same
+        # file, and the second export quietly replaces the first.
+        digest = hashlib.sha1(
+            ",".join(str(i) for i in ids).encode()).hexdigest()[:8]
+        tag = f"{ids[0]}-{ids[-1]}-{len(ids)}-laps-{digest}"
     return f"line-map-laps-{tag}.html"
 
 

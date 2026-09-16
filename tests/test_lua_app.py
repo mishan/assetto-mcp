@@ -81,6 +81,50 @@ def test_an_opponent_carries_its_name_car_clock_position_and_lap_time():
     print(f"  lap timed at {first['best_lap_ms']:.0f} ms from the car's clock")
 
 
+def _rival_batches(rec):
+    return [body for url, body in rec.posts if url.endswith("/rivals")]
+
+
+def test_a_new_session_does_not_inherit_the_last_ones_queue():
+    """Queued samples belong to the session they were sampled in."""
+    rec = lua_harness.Recorder()
+    rec.sim_fields = {"raceSessionType": 1, "carsCount": 2}
+    lua, api, rec = lua_harness.load(rec)
+    api.setRunning(True)
+    api.setSession(1)
+    rec.cars[1] = {"lapCount": 3, "splinePosition": 0.2, "timestamp": 0.0}
+    api.sampleRivals()
+    api.setSession(2)
+    rec.cars[1] = {"lapCount": 9, "splinePosition": 0.4, "timestamp": 500.0}
+    api.sampleRivals()
+    api.postRivals()
+
+    cars = _rival_batches(rec)[-1]["cars"]
+    assert [c["lap_count"] for c in cars] == [9], cars
+    print("  the first session's queued sample was dropped, not refiled")
+
+
+def test_a_lap_counter_that_moves_without_a_crossing_times_nothing():
+    """A pit exit or a teleport advances the counter without a lap."""
+    rec = lua_harness.Recorder()
+    rec.sim_fields = {"raceSessionType": 1, "carsCount": 2}
+    lua, api, rec = lua_harness.load(rec)
+    api.setRunning(True)
+    for lap, spline, t in ((3, 0.98, 0), (4, 0.01, 100),      # a real one
+                           (4, 0.50, 30000), (5, 0.60, 60000),  # not a lap
+                           (5, 0.99, 90000), (6, 0.01, 90100)):
+        rec.cars[1] = {"lapCount": lap, "splinePosition": spline,
+                       "timestamp": float(t)}
+        api.sampleRivals()
+    api.postRivals()
+
+    # Lap 5 began at a teleport, so it has no start to measure from, and
+    # the 5 -> 6 crossing cannot be timed either.
+    first = _rival_batches(rec)[-1]["cars"][0]
+    assert first.get("best_lap_ms") is None, first
+    assert first.get("last_lap_ms") is None, first
+
+
 def test_the_runtime_is_the_lua_the_game_runs():
     """CSP runs LuaJIT 2.1, which is Lua 5.1 -- not whatever lupa ships newest.
 

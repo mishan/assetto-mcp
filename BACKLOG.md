@@ -5,7 +5,7 @@ already produced. Each entry says what is wrong, where it bit, and where the
 code lives, so a future session can act without re-deriving any of it.
 
 Written after the Sebring / NSX GT3 session, and kept current since. Test
-suite stands at 524 passing with the Lua tooling installed,
+suite stands at 533 passing with the Lua tooling installed,
 schema at v14.
 
 ---

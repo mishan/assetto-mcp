@@ -1080,6 +1080,24 @@ def test_two_corners_one_lap_ran_together_are_still_two():
     assert cmap["turns"][0]["laps_seen"] == 5, cmap["turns"]
 
 
+def test_one_lap_alone_cannot_bridge_a_turn_into_its_neighbour():
+    """The span-support rule counts laps, not corners.
+
+    One lap that split a corner into two pieces has two corners in a group,
+    and counting corners let that lap meet "two on each side" by itself.
+    Four laps cornered at 0.44; a fifth spun up two overlapping pieces just
+    before it, and they would have been merged into that turn.
+    """
+    laps = [[_piece(0.42, 0.44, 0.46, sign=1)] for _ in range(4)]
+    laps.append([_piece(0.395, 0.400, 0.450, sign=1),
+                 _piece(0.400, 0.405, 0.455, sign=1)])
+    cmap = analysis.corner_map(laps)
+
+    assert [t["apex_pos"] for t in cmap["turns"]] == [0.44], cmap["turns"]
+    assert cmap["turns"][0]["laps_seen"] == 4, cmap["turns"][0]
+    assert len(cmap["unnumbered"]) == 2, cmap["unnumbered"]
+
+
 def test_the_map_numbers_the_corners_a_real_lap_drove():
     """End to end from samples, on the fixture the detector is tested on."""
     laps = [_lap(), _lap(), _lap()]

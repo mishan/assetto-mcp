@@ -163,9 +163,24 @@ class Collector:
         return self._thread is not None and self._thread.is_alive()
 
     # How long start() waits for the new thread to publish a status before
-    # returning. The thread sets one almost immediately; this only has to
-    # outlast scheduling. Bounded so a wedged thread cannot hang a tool call.
-    START_STATUS_TIMEOUT = 2.0
+    # returning.
+    #
+    # This was 2.0, on the reasoning that the thread "sets one almost
+    # immediately" and the wait only had to outlast scheduling. It does not.
+    # Before the first _announce, _run opens the database -- creating the
+    # file, running _migrate and then the schema, which is several commits --
+    # reads the enabled flag and takes the claim with another write. All of
+    # that is what this deadline covers, and any of it can block for up to
+    # db.BUSY_TIMEOUT_MS waiting for the write lock. A deadline shorter than
+    # the lock wait underneath it expires while SQLite is still doing what it
+    # was told, which is how a loaded Windows runner got "starting" back from
+    # a collector that was working.
+    #
+    # So: the lock wait, plus room for creating the file and being scheduled.
+    # Still bounded, because a wedged thread must not hang a tool call
+    # forever -- and a start_recording that takes this long has already told
+    # the driver something useful by being slow.
+    START_STATUS_TIMEOUT = db.BUSY_TIMEOUT_MS / 1000 + 5.0
 
     # How long to wait before looking for Assetto Corsa again. Long enough
     # that a closed game costs nothing, short enough that the driver never

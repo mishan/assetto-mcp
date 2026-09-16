@@ -251,6 +251,30 @@ def test_start_does_not_return_the_status_it_had_before_starting():
             col.stop()
 
 
+def test_start_waits_longer_than_the_database_may_block_it():
+    """The deadline and the lock wait underneath it have to agree.
+
+    start() waits for the collector thread to publish a status, and the
+    thread cannot publish one until it has opened the database -- creating
+    the file, migrating it, writing the schema -- read the enabled flag and
+    taken the claim. Every one of those can sit on the write lock for
+    db.BUSY_TIMEOUT_MS.
+
+    Chosen independently the two were 2s over 10s, so the deadline could
+    expire while SQLite was still doing exactly what it was told. That is
+    how a loaded Windows runner got "starting" back from a collector that
+    was working, and it is the same answer start_recording gives a driver.
+    The relationship is asserted rather than the value, so tuning either
+    number cannot quietly reopen it.
+    """
+    lock_wait = db.BUSY_TIMEOUT_MS / 1000
+    assert Collector.START_STATUS_TIMEOUT > lock_wait, (
+        f"start() gives up after {Collector.START_STATUS_TIMEOUT}s on work "
+        f"that SQLite alone may spend {lock_wait}s of")
+    print(f"  start() allows {Collector.START_STATUS_TIMEOUT}s over a "
+          f"{lock_wait}s lock wait")
+
+
 def test_a_fresh_collector_is_distinguishable_from_a_stopped_one():
     """The ambiguity that cost sixteen laps and that I misread twice.
 

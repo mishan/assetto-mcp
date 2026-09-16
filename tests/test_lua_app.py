@@ -131,6 +131,91 @@ def test_a_batch_carries_the_session_it_was_sampled_in():
     print("  queued under session 1, posted during 2, stamped 1")
 
 
+def _queue_rivals(api, rec, n, session=1):
+    """Sample `n` opponent rows into the queue, then post them."""
+    rec.sim_fields = {"raceSessionType": 1, "carsCount": 2}
+    api.setRunning(True)
+    api.setSession(session)
+    for k in range(n):
+        rec.cars[1] = {"lapCount": 3, "splinePosition": 0.1 * k,
+                       "timestamp": float(k * 100)}
+        api.sampleRivals()
+    api.postRivals()
+    assert rec.pending_posts() == 1, rec.pending_posts()
+
+
+def test_what_the_server_stored_is_what_counts_as_sent():
+    """The status line reports delivery, so it has to read the reply.
+
+    A 200 saying three of five rows were kept is two rows lost, and the app
+    is the only thing that can notice: the two the server skipped are gone
+    from both sides otherwise.
+    """
+    rec = lua_harness.Recorder()
+    lua, api, rec = lua_harness.load(rec)
+    _queue_rivals(api, rec, 5)
+
+    assert rec.deliver(200, {"ok": True, "stored": 3}).endswith("/rivals")
+    sent, dropped = api.rivalCounters()
+    assert (sent, dropped) == (3, 2), (sent, dropped)
+    print("  5 posted, 3 stored: 3 sent and 2 dropped")
+
+
+def test_a_batch_the_server_refused_is_dropped_not_sent():
+    """ok=false is the server saying it had nowhere to file the batch.
+
+    That is what a stale session now gets, and counting it as sent would
+    show a healthy status line over samples nothing kept.
+    """
+    rec = lua_harness.Recorder()
+    lua, api, rec = lua_harness.load(rec)
+    _queue_rivals(api, rec, 4)
+
+    rec.deliver(200, {"ok": False, "reason": "session changed"})
+    assert api.rivalCounters() == (0, 4), api.rivalCounters()
+    print("  a refused batch counts as 4 dropped and 0 sent")
+
+
+def test_a_reply_that_never_came_or_cannot_be_read_is_dropped():
+    """Three ways a post fails after the batch has left the queue.
+
+    postRivals takes the rows off the queue before it posts, so nothing will
+    resend them. Each of these is data lost, and the counter is the only
+    place that shows it.
+    """
+    for what, answer in (
+            ("no reply at all", dict(err="timeout")),
+            ("a 500", dict(status=500, body={"error": "boom"})),
+            ("a 200 that is not JSON", dict(status=200, body=None)),
+    ):
+        rec = lua_harness.Recorder()
+        lua, api, rec = lua_harness.load(rec)
+        _queue_rivals(api, rec, 2)
+        rec.deliver(**answer)
+        assert api.rivalCounters() == (0, 2), (what, api.rivalCounters())
+        print(f"  {what}: 2 dropped")
+
+
+def test_the_counters_start_over_with_the_session():
+    """They report this session, and the queue they describe was just dropped.
+
+    Carrying the last session's totals in makes a fresh session open having
+    apparently already lost samples, with nothing queued that could explain
+    it.
+    """
+    rec = lua_harness.Recorder()
+    lua, api, rec = lua_harness.load(rec)
+    _queue_rivals(api, rec, 3)
+    rec.deliver(200, {"ok": True, "stored": 1})
+    assert api.rivalCounters() == (1, 2), api.rivalCounters()
+
+    api.setSession(2)
+    rec.cars[1] = {"lapCount": 1, "splinePosition": 0.5, "timestamp": 0.0}
+    api.sampleRivals()
+    assert api.rivalCounters() == (0, 0), api.rivalCounters()
+    print("  session 2 opens at 0 sent, 0 dropped")
+
+
 def test_a_lap_counter_that_moves_without_a_crossing_times_nothing():
     """A pit exit or a teleport advances the counter without a lap."""
     rec = lua_harness.Recorder()

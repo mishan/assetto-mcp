@@ -1135,6 +1135,7 @@ script.__test = {
   sampleRivals = function() return sampleRivals() end,
   postRivals = function() return postRivals() end,
   clearRivalBusy = function() rivalBusy = false end,
+  rivalCounters = function() return rivalSent, rivalDropped end,
   startSuspensionWorker = function() return startSuspensionWorker() end,
   isOnlineSession = function() return isOnlineSession() end,
   clamp = function(...) return clamp(...) end,

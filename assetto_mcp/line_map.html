@@ -1,0 +1,768 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Driving Lines</title>
+<style>
+:root{
+  --ground:#eeeff0; --surface:#ffffff; --ink:#1b1e23; --muted:#646a74; --line:#d6d9dd; --track:#c9ccd1;
+  --best:#6a37e8; --ramp0:#b9d5e3; --ramp1:#0d4a72;
+  --spd0:#f4d9a6; --spd1:#8a2d04;
+  --bump0:#e6e0f3; --bump1:#4b2a9b;
+  --brake:#cf3b2f; --throttle:#2a9a5c; --coast:#8d939c;
+  --set1:#2a78d6; --set2:#eb6834; --set3:#1baf7a; --set-other:#8d939c;
+  --under:#e34948; --over:#2a78d6;
+  --focus:#1b1e23;
+  --font-display:system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-body:system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#14171b; --surface:#1c2026; --ink:#e7e9e6; --muted:#98a0a9; --line:#2b3138; --track:#353c45;
+    --best:#a88cff; --ramp0:#22485f; --ramp1:#a8dcf2;
+    --spd0:#4a2a10; --spd1:#ffc27a;
+    --bump0:#2b2540; --bump1:#cbb8ff;
+    --brake:#ff6a5c; --throttle:#4fd48a; --coast:#6c737d;
+    --set1:#3987e5; --set2:#d95926; --set3:#199e70; --set-other:#6c737d;
+    --under:#e66767; --over:#3987e5;
+    --focus:#e7e9e6;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#14171b; --surface:#1c2026; --ink:#e7e9e6; --muted:#98a0a9; --line:#2b3138; --track:#353c45;
+  --best:#a88cff; --ramp0:#22485f; --ramp1:#a8dcf2;
+  --spd0:#4a2a10; --spd1:#ffc27a;
+  --bump0:#2b2540; --bump1:#cbb8ff;
+  --brake:#ff6a5c; --throttle:#4fd48a; --coast:#6c737d;
+  --set1:#3987e5; --set2:#d95926; --set3:#199e70; --set-other:#6c737d;
+  --under:#e66767; --over:#3987e5;
+  --focus:#e7e9e6;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);font:14px/1.45 var(--font-body)}
+.wrap{display:grid;grid-template-columns:minmax(0,1fr) 440px;grid-template-rows:auto minmax(0,1fr) var(--strip-h,220px);gap:12px 16px;height:100vh;padding:16px}
+header{grid-column:1/-1;display:flex;align-items:baseline;gap:20px;flex-wrap:wrap}
+h1{margin:0;font:600 26px/1 var(--font-display);text-wrap:balance}
+.meta{color:var(--muted);font-family:var(--font-mono);font-size:12px;display:flex;gap:16px;flex-wrap:wrap}
+.meta b{color:var(--ink);font-weight:500}
+.map{grid-column:1;grid-row:2;position:relative;background:var(--surface);border:1px solid var(--line);min-height:280px}
+.strip{grid-column:1;grid-row:3;position:relative;background:var(--surface);border:1px solid var(--line);min-height:0}
+canvas{display:block;width:100%;height:100%}
+.tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--line);padding:6px 8px;font-family:var(--font-mono);font-size:12px;line-height:1.4;white-space:nowrap;display:none;box-shadow:0 2px 8px rgba(0,0,0,.12);z-index:1}
+.tip b{font-family:var(--font-display);font-size:14px;font-weight:600}
+aside{grid-column:2;grid-row:2/4;display:flex;flex-direction:column;gap:10px;min-height:0}
+.modes{display:flex;flex-wrap:wrap;border:1px solid var(--line);background:var(--surface)}
+.modes button{flex:1 0 auto;border:0;background:transparent;color:var(--muted);font:600 11px var(--font-display);letter-spacing:.04em;text-transform:uppercase;padding:8px 6px;cursor:pointer}
+.modes button[aria-pressed="true"]{background:var(--ink);color:var(--ground)}
+.modes button:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
+.laps{background:var(--surface);border:1px solid var(--line);overflow:auto;min-height:0;flex:1}
+table{border-collapse:collapse;width:100%;font-family:var(--font-mono);font-size:12px;font-variant-numeric:tabular-nums}
+th{font:600 11px var(--font-display);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);text-align:left;padding:8px 8px 6px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--surface)}
+td{padding:5px 8px;border-bottom:1px solid var(--line);cursor:pointer;white-space:nowrap}
+td.setup{max-width:180px;overflow:hidden;text-overflow:ellipsis}
+tr[aria-selected="true"] td{background:color-mix(in srgb,var(--ink) 8%,transparent)}
+tr.hidden td{color:var(--muted)}
+.sw{display:inline-block;width:14px;height:3px;vertical-align:middle;margin-right:6px;border-radius:2px}
+.flag{color:var(--muted);font-size:11px}
+.legend{font-family:var(--font-mono);font-size:11px;color:var(--muted);display:flex;gap:6px 14px;flex-wrap:wrap;align-items:center}
+.legend i{display:inline-block;width:12px;height:3px;vertical-align:middle;margin-right:4px;border-radius:2px}
+.legend i.band{height:8px;opacity:.5}
+.legend i.dot{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--ink)}
+.legend .bar{display:inline-block;width:60px;height:6px;vertical-align:middle;margin:0 4px;border-radius:3px}
+.legend .name,.legend b{color:var(--ink);font-weight:500}
+.legend table.mini{width:auto;font-size:11px}
+.legend table.mini th{position:static;font-size:10px;padding:2px 10px 2px 0;border-bottom:1px solid var(--line)}
+.legend table.mini td{padding:1px 10px 1px 0;border:0;cursor:default;color:var(--ink)}
+.toggles{font-size:12px;color:var(--muted);display:flex;gap:4px 12px;flex-wrap:wrap;align-items:center}
+.toggles label{display:flex;gap:4px;align-items:center;white-space:nowrap}
+.toggles .head{font:600 11px var(--font-display);letter-spacing:.08em;text-transform:uppercase}
+.hint{color:var(--muted);font-size:12px}
+.hint:empty{display:none}
+@media (max-width:760px){
+  .wrap{grid-template-columns:1fr;grid-template-rows:auto minmax(320px,55vh) var(--strip-h,220px) auto;height:auto}
+  .map,.strip,aside{grid-column:1} .map{grid-row:2} .strip{grid-row:3} aside{grid-row:4}
+}
+@media (prefers-reduced-motion:no-preference){.modes button{transition:background .12s}}
+</style>
+<div class="wrap" id="wrap">
+  <header>
+    <h1 id="title">Driving Lines</h1>
+    <div class="meta" id="meta"></div>
+  </header>
+  <div class="map"><canvas id="c"></canvas><div class="tip" id="tip"></div></div>
+  <div class="strip" id="strip"><canvas id="s"></canvas><div class="tip" id="stip"></div></div>
+  <aside>
+    <div class="modes" role="group" aria-label="Colour the map by">
+      <button data-mode="lap" aria-pressed="true">Laps</button>
+      <button data-mode="setup" aria-pressed="false">Setup</button>
+      <button data-mode="speed" aria-pressed="false">Speed</button>
+      <button data-mode="pedal" aria-pressed="false">Pedals</button>
+      <button data-mode="corners" aria-pressed="false">Corners</button>
+      <button data-mode="balance" aria-pressed="false">Balance</button>
+      <button data-mode="gears" aria-pressed="false">Gears</button>
+      <button data-mode="surface" aria-pressed="false">Surface</button>
+    </div>
+    <div class="legend" id="legend"></div>
+    <div class="toggles" id="panels"><span class="head">Charts</span></div>
+    <div class="toggles" id="marks"><span class="head">Marks</span><label><input type="checkbox" id="turns" checked> turns and brake points</label></div>
+    <div class="hint" id="marknote"></div>
+    <div class="laps"><table><thead><tr><th></th><th>Lap</th><th>Time</th><th id="col4">&Delta; best</th><th>Setup</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
+    <div class="hint" id="hint">Click a row to select a lap: the coloured views and the charts below the map follow it. Tick to show or hide. Hover the map or the charts for the nearest point.</div>
+  </aside>
+</div>
+<script>
+const DATA = /*__DATA__*/null;
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = ms => ms==null ? "-" : (Math.floor(ms/60000)+":"+String(Math.floor(ms%60000/1000)).padStart(2,"0")+"."+String(ms%1000).padStart(3,"0"));
+const pretty = s => (s||"").replace(/_/g," ");
+const signed = (v,d) => v==null ? "-" : (v>0?"+":v<0?"−":"")+Math.abs(v).toFixed(d);
+const hex = h => { h=h.replace("#",""); return [0,2,4].map(i=>parseInt(h.slice(i,i+2),16)); };
+const mix = (a,b,t) => { t=Math.min(1,Math.max(0,t)); return "rgb("+hex(a).map((v,i)=>Math.round(v+(hex(b)[i]-v)*t)).join(",")+")"; };
+const median = v => { const s=[...v].sort((a,b)=>a-b); return s.length ? s[Math.floor((s.length-1)/2)] : null; };
+
+const laps = DATA.laps;
+const byId = new Map(laps.map(l=>[l.id,l]));
+// Chosen by the server from each lap's own flags, not re-derived here: a
+// second copy of what counts as a lap time is one that drifts.
+const best = DATA.best==null ? null : byId.get(DATA.best);
+const ref = best || laps.find(l=>l.usable) || laps[0];
+const TURNS = DATA.turns, ONE_LAP = DATA.unnumbered, GEARING = DATA.gearing, SURF = DATA.surface;
+const PANELS = [
+  {key:"lat", label:"lateral g"},
+  {key:"speed", label:"speed"},
+  {key:"rpm", label:"revs and gear"},
+  {key:"bal", label:"balance"},
+  {key:"tyref", label:"front tyres"},
+  {key:"tyrer", label:"rear tyres"},
+  {key:"surf", label:"surface"},
+  {key:"ride", label:"ride height"},
+  {key:"elev", label:"elevation"},
+];
+const MARKS = [
+  {key:"off", label:"off track"},
+  {key:"lockups", label:"lockups"},
+  {key:"notes", label:"complaint presses"},
+];
+const state = { mode:"lap", sel: ref.id, show: new Set(laps.filter(l=>l.usable).map(l=>l.id)), turns: TURNS.length>0,
+                panels: new Set(["lat","speed"]), marks: new Set(["off","lockups","notes"]) };
+if (!state.show.size) laps.forEach(l=>state.show.add(l.id));
+
+// Why a lap has no time worth showing, in a word. The full reason is the row's tooltip.
+const flagOf = l => !l.complete ? "abandoned" : l.out ? "out" : l.pit ? "pit" : !l.usable ? "no time" : "";
+
+// Setups in the order they were first driven. Only the first three get a hue of
+// their own: past three, lines crossing on a map stop being tellable apart, so the
+// rest share one neutral and the table names every lap's setup.
+const SLOTS = 3;
+// Named setups only: laps with none recorded are always the neutral, rather than
+// spending one of the three hues and pushing a real setup onto the neutral instead.
+const setups = [...new Set(laps.map(l=>l.setup))].filter(Boolean);
+const setupLabel = s => s || "no setup recorded";
+const setupColor = s => { const i=setups.indexOf(s); return s && i<SLOTS ? css("--set"+(i+1)) : css("--set-other"); };
+
+// Balance: front slip minus rear, drawn only while cornering. Positive is the front
+// sliding more. One scale for every lap, so laps can be read against each other.
+const BAL_S = DATA.balance_scale || 0.5;
+const cornering = (l,i) => l.bal[i]!=null && Math.abs(l.lat[i]) >= l.thr;
+const balColor = v => v>=0 ? mix(css("--coast"), css("--under"), v/BAL_S) : mix(css("--coast"), css("--over"), -v/BAL_S);
+
+// Gears: one hue, light to dark from first to top gear.
+const GMAX = (GEARING && GEARING.max_gear) || Math.max(1, ...laps.flatMap(l=>l.g).filter(g=>g>0));
+const gearColor = g => mix(css("--ramp0"), css("--ramp1"), (g-1)/Math.max(1,GMAX-1));
+const upshifts = l => l.shifts.filter(s=>s.to>s.from);
+
+// Surface: the session's median roughness per stretch, one hue light to dark. The
+// scale runs from the 10th to the 98th percentile of the stretches, so one violent
+// kerb does not flatten the rest of the lap into one colour.
+const si = p => Math.min(SURF.slices-1, Math.max(0, Math.floor(p*SURF.slices)));
+const surfVals = SURF.rms_mm.filter(v=>v!=null).sort((a,b)=>a-b);
+const SURF_LO = surfVals.length ? surfVals[Math.floor(surfVals.length*0.1)] : 0;
+const SURF_HI = surfVals.length ? surfVals[Math.floor(surfVals.length*0.98)] : 1;
+const bumpColor = v => mix(css("--bump0"), css("--bump1"), (v-SURF_LO)/((SURF_HI-SURF_LO)||1));
+const turnAt = p => { const t=TURNS.find(t=>t.entry_pos!=null && p>=t.entry_pos-0.005 && p<=t.exit_pos+0.005); return t ? t.turn : null; };
+// The five roughest stretches, at least a hundredth of a lap apart.
+const ROUGHEST = (() => {
+  const order = SURF.rms_mm.map((v,i)=>[v,i]).filter(x=>x[0]!=null).sort((a,b)=>b[0]-a[0]), out=[];
+  for (const [v,i] of order){
+    const pos=(i+0.5)/SURF.slices;
+    if (out.every(o=>Math.abs(o.pos-pos)>=0.01)) out.push({pos, v});
+    if (out.length===5) break;
+  }
+  return out;
+})();
+const SRC_NAME = { worker:"suspension travel, 333 Hz", app:"suspension travel from the in-game app, render rate", ride:"ride height at 25 Hz -- coarser" };
+
+document.getElementById("title").textContent = "Driving Lines · " + pretty(DATA.track);
+const sessions = DATA.session_ids;
+document.getElementById("meta").innerHTML =
+  "<span>session"+(sessions.length>1?"s":"")+" <b>"+sessions.join(", ")+"</b></span><span><b>"+esc(pretty(DATA.car))+"</b></span>"+
+  (DATA.track_config?"<span>"+esc(DATA.track_config)+"</span>":"")+
+  (DATA.air!=null?"<span>air <b>"+DATA.air+"°</b> road <b>"+DATA.road+"°</b></span>":"")+
+  (best?"<span>best <b>"+fmt(best.ms)+"</b> lap "+best.n+"</span>":"")+
+  (DATA.skipped.length?"<span>"+DATA.skipped.length+" lap"+(DATA.skipped.length>1?"s":"")+" without position data not drawn</span>":"");
+
+// Lap colour: one hue, light to dark in lap order; the session best gets timing-screen purple.
+function lapColor(l){
+  if (best && l.id===best.id) return css("--best");
+  const i = laps.indexOf(l), n = Math.max(laps.length-1,1);
+  return mix(css("--ramp0"), css("--ramp1"), i/n);
+}
+
+let xs=[],zs=[]; laps.forEach(l=>{xs.push(...l.x);zs.push(...l.z)});
+const bx=[Math.min(...xs),Math.max(...xs)], bz=[Math.min(...zs),Math.max(...zs)];
+const cv=document.getElementById("c"), ctx=cv.getContext("2d"), tip=document.getElementById("tip");
+const sv=document.getElementById("s"), sctx=sv.getContext("2d"), stip=document.getElementById("stip");
+let W=0,H=0,S=1,OX=0,OY=0,SW=0,SH=0;
+function size(canvas, c){
+  const r=canvas.parentElement.getBoundingClientRect(), dpr=devicePixelRatio||1;
+  canvas.width=Math.max(1,r.width*dpr); canvas.height=Math.max(1,r.height*dpr); c.setTransform(dpr,0,0,dpr,0,0);
+  return [r.width, r.height];
+}
+// The chart strip grows with the panels ticked, and the panels shrink a little when
+// there are many, so the map keeps a usable share of the window.
+function layoutStrip(){
+  const n=state.panels.size, ph = n<=2 ? 88 : n===3 ? 76 : n<=5 ? 62 : 52;
+  document.getElementById("wrap").style.setProperty("--strip-h", (n ? 22+18+n*ph+(n-1)*12 : 0)+"px");
+  document.getElementById("strip").style.display = n ? "block" : "none";
+}
+function fit(){
+  [W,H]=size(cv,ctx); [SW,SH]=size(sv,sctx);
+  const pad=48, sw=bx[1]-bx[0]||1, sh=bz[1]-bz[0]||1;
+  S=Math.min((W-2*pad)/sw,(H-2*pad)/sh);
+  OX=(W-sw*S)/2 - bx[0]*S; OY=(H-sh*S)/2 - bz[0]*S;
+  draw();
+}
+const px = x => OX + x*S, py = z => OY + z*S;
+// The scale spans laps that counted, from their 1st percentile up: a pit lane, or a
+// spin on a lap that still counted, would otherwise stretch it down to walking pace
+// and wash every corner out. Anything slower shows as the slowest colour.
+const speeds = (laps.some(l=>l.usable) ? laps.filter(l=>l.usable) : laps).flatMap(l=>l.v).filter(v=>v!=null).sort((a,b)=>a-b);
+const vmin = speeds[Math.floor(speeds.length*0.01)], vmax = speeds[speeds.length-1];
+
+// One lap's line, in one colour or coloured point by point. A point whose colour
+// comes back null is left undrawn.
+function strokeLap(l, colorAt, width, alpha){
+  ctx.lineWidth=width; ctx.lineCap="round"; ctx.lineJoin="round"; ctx.globalAlpha=alpha;
+  if (typeof colorAt==="string"){
+    ctx.strokeStyle=colorAt; ctx.beginPath(); ctx.moveTo(px(l.x[0]),py(l.z[0]));
+    for(let i=1;i<l.x.length;i++) ctx.lineTo(px(l.x[i]),py(l.z[i]));
+    ctx.stroke();
+  } else {
+    for(let i=1;i<l.x.length;i++){ const c=colorAt(l,i); if(c==null) continue; ctx.strokeStyle=c; ctx.beginPath(); ctx.moveTo(px(l.x[i-1]),py(l.z[i-1])); ctx.lineTo(px(l.x[i]),py(l.z[i])); ctx.stroke(); }
+  }
+  ctx.globalAlpha=1;
+}
+// The part of a lap's line between two track positions. A range that crosses the
+// start/finish line arrives with its end before its start -- an excursion from 0.99
+// to 0.01 -- and is drawn as its two pieces rather than as nothing at all.
+function strokeRange(l, a, b, color, width, alpha){
+  if (a==null || b==null) return;
+  if (a>b){ strokeRange(l, a, 1, color, width, alpha); strokeRange(l, 0, b, color, width, alpha); return; }
+  ctx.strokeStyle=color; ctx.lineWidth=width; ctx.lineCap="round"; ctx.lineJoin="round"; ctx.globalAlpha=alpha;
+  ctx.beginPath(); let on=false;
+  for(let i=0;i<l.p.length;i++){
+    if (l.p[i]<a || l.p[i]>b){ on=false; continue; }
+    on ? ctx.lineTo(px(l.x[i]),py(l.z[i])) : ctx.moveTo(px(l.x[i]),py(l.z[i]));
+    on=true;
+  }
+  ctx.stroke(); ctx.globalAlpha=1;
+}
+// The sample of lap l nearest a track position, and the unit normal to the line there.
+function at(l, p){ let k=0, d=Infinity; for(let i=0;i<l.p.length;i++){ const e=Math.abs(l.p[i]-p); if(e<d){d=e;k=i;} } return k; }
+function normalAt(l, k){
+  const a=Math.max(k-2,0), b=Math.min(k+2,l.x.length-1);
+  const dx=px(l.x[b])-px(l.x[a]), dy=py(l.z[b])-py(l.z[a]), n=Math.hypot(dx,dy)||1;
+  return [-dy/n, dx/n];
+}
+function startFinish(){
+  const k=at(ref,0), x=px(ref.x[k]), y=py(ref.z[k]);
+  ctx.fillStyle=css("--muted"); ctx.font="600 11px "+css("--font-display");
+  ctx.beginPath(); ctx.arc(x,y,3.5,0,7); ctx.fill(); ctx.fillText("S/F", x+7, y-6);
+}
+// Labels beside the line, on the side facing away from the middle of the map, where
+// they are least likely to sit on another stretch of track. Turns close together --
+// a hairpin, a chicane -- would stack their labels, so a label that lands on an
+// earlier one moves further out. Kept inside the map, so none is cut off at an edge.
+function labeller(){
+  const placed=[], cx=W/2, cy=H/2;
+  return (l, pos, text, color) => {
+    const k=at(l,pos), x=px(l.x[k]), y=py(l.z[k]);
+    let [nx,ny]=normalAt(l,k);
+    if ((x-cx)*nx+(y-cy)*ny<0){ nx=-nx; ny=-ny; }
+    let off=20, lx, ly;
+    for (let tries=0; tries<6; tries++){
+      lx=Math.min(W-13,Math.max(13,x+nx*off)); ly=Math.min(H-13,Math.max(13,y+ny*off));
+      if (!placed.some(([a,b])=>Math.hypot(a-lx,b-ly)<24)) break;
+      off+=16;
+    }
+    placed.push([lx,ly]);
+    const d=Math.hypot(lx-x,ly-y)||1, ux=(lx-x)/d, uy=(ly-y)/d;
+    ctx.strokeStyle=css("--muted"); ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(x+ux*4,y+uy*4); ctx.lineTo(lx-ux*11,ly-uy*11); ctx.stroke();
+    ctx.fillStyle=css("--surface"); ctx.beginPath(); ctx.arc(lx,ly,11,0,7); ctx.fill();
+    ctx.strokeStyle=color||css("--line"); ctx.stroke();
+    ctx.font="600 11px "+css("--font-display"); ctx.textAlign="center"; ctx.textBaseline="middle";
+    ctx.fillStyle=color||css("--ink"); ctx.fillText(text, lx, ly+0.5);
+    ctx.textAlign="start"; ctx.textBaseline="alphabetic";
+  };
+}
+function turnMarks(label){
+  // Placed on the reference lap by track position, the way the turns were numbered.
+  TURNS.forEach(t=>{
+    if (t.brake_point_pos==null) return;
+    const k=at(ref,t.brake_point_pos), [nx,ny]=normalAt(ref,k), x=px(ref.x[k]), y=py(ref.z[k]);
+    ctx.strokeStyle=css("--brake"); ctx.lineWidth=2; ctx.lineCap="round";
+    ctx.beginPath(); ctx.moveTo(x-nx*7,y-ny*7); ctx.lineTo(x+nx*7,y+ny*7); ctx.stroke();
+  });
+  TURNS.forEach(t=>label(ref, t.apex_pos, t.turn));
+}
+// A shift on the map: a filled dot going up, a hollow one coming down.
+function shiftDot(x, y, up){
+  ctx.beginPath(); ctx.arc(x,y,3.5,0,7);
+  ctx.fillStyle = up ? css("--ink") : css("--surface"); ctx.fill();
+  ctx.strokeStyle=css("--ink"); ctx.lineWidth=1.5; ctx.stroke();
+}
+function cross(x, y){
+  ctx.strokeStyle=css("--brake"); ctx.lineWidth=2.5; ctx.lineCap="round"; ctx.beginPath();
+  ctx.moveTo(x-5,y-5); ctx.lineTo(x+5,y+5); ctx.moveTo(x+5,y-5); ctx.lineTo(x-5,y+5); ctx.stroke();
+}
+// A complaint press: the first letter of what was pressed. Dashed when the lap it
+// was pressed on is not drawn, and it is placed on the reference lap instead.
+function pin(x, y, tag, elsewhere){
+  ctx.beginPath(); ctx.arc(x,y,8,0,7); ctx.fillStyle=css("--surface"); ctx.fill();
+  if (elsewhere) ctx.setLineDash([2,2]);
+  ctx.strokeStyle=css("--ink"); ctx.lineWidth=1.5; ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle=css("--ink"); ctx.font="700 10px "+css("--font-display"); ctx.textAlign="center"; ctx.textBaseline="middle";
+  ctx.fillText((tag||"?")[0].toUpperCase(), x, y+0.5); ctx.textAlign="start"; ctx.textBaseline="alphabetic";
+}
+const notesFor = sel => DATA.notes.filter(nt => nt.lap_id==null || nt.lap_id===sel.id || state.show.has(nt.lap_id));
+function drawMarks(sel){
+  if (!sel) return;
+  // Off track as a dashed grey band: a texture rather than a hue, because every hue
+  // left is already a throttle, a turn or a setup in one view or another.
+  if (state.marks.has("off")) sel.off.forEach(r=>{ ctx.setLineDash([3,4]); strokeRange(sel, r.from, r.to, css("--muted"), 10, .8); ctx.setLineDash([]); });
+  if (state.marks.has("lockups")) sel.lockups.forEach(r=>{ const k=at(sel,r.from); cross(px(sel.x[k]), py(sel.z[k])); });
+  if (state.marks.has("notes")) notesFor(sel).forEach(nt=>{
+    const l = nt.lap_id!=null ? byId.get(nt.lap_id) : null, on = l || ref, k=at(on, nt.pos);
+    pin(px(on.x[k]), py(on.z[k]), nt.tag, !l);
+  });
+}
+let hov=null;
+function draw(){
+  ctx.clearRect(0,0,W,H);
+  const shown = laps.filter(l=>state.show.has(l.id));
+  const sel = byId.get(state.sel);
+  const label = labeller();
+  shown.forEach(l=>strokeLap(l, css("--track"), 7, .35));
+  const others = () => shown.filter(l=>l!==sel).forEach(l=>strokeLap(l, css("--coast"), 1, .25));
+  if (state.mode==="lap" || state.mode==="setup"){
+    const color = state.mode==="lap" ? lapColor : l=>setupColor(l.setup);
+    shown.filter(l=>l!==best).forEach(l=>strokeLap(l, color(l), l.wide?1.2:1.6, .9));
+    if (best && state.show.has(best.id)) strokeLap(best, color(best), 2.4, 1);
+  } else if (state.mode==="corners"){
+    // The session's turn map as bands on the reference lap; road only one lap
+    // cornered on in orange. Over them, the corners the detector found on the
+    // selected lap: a band with nothing over it is a turn this lap missed, a mark
+    // with no band under it is a corner no turn claims.
+    shown.forEach(l=>strokeLap(l, css("--coast"), 1, .25));
+    TURNS.forEach(t=>strokeRange(ref, t.entry_pos, t.exit_pos, css("--set1"), 10, .35));
+    ONE_LAP.forEach(u=>strokeRange(ref, u.entry_pos, u.exit_pos, css("--set2"), 10, .45));
+    if (sel){
+      strokeLap(sel, css("--ink"), 1.2, .5);
+      sel.corners.forEach(c=>strokeRange(sel, c.entry, c.exit, c.turn?css("--ink"):css("--set2"), 3, 1));
+    }
+  } else if (state.mode==="balance"){
+    others();
+    if (sel){
+      strokeLap(sel, css("--coast"), 1.5, .6);
+      strokeLap(sel, (l,i)=> cornering(l,i) ? balColor(l.bal[i]) : null, 3.5, 1);
+    }
+  } else if (state.mode==="gears"){
+    others();
+    if (sel){
+      sel.limiter.forEach(r=>strokeRange(sel, r.from, r.to, css("--set2"), 9, .7));
+      strokeLap(sel, (l,i)=> l.g[i]>0 ? gearColor(l.g[i]) : css("--coast"), 3, 1);
+    }
+  } else if (state.mode==="surface"){
+    // The road, not a lap: the session's median roughness drawn on the reference line.
+    others();
+    strokeLap(ref, (l,i)=>{ const v=SURF.rms_mm[si(l.p[i])]; return v==null ? css("--coast") : bumpColor(v); }, 6, 1);
+  } else if (sel){
+    others();
+    if (state.mode==="speed") strokeLap(sel,(l,i)=> l.v[i]==null ? css("--coast") : mix(css("--spd0"),css("--spd1"),(l.v[i]-vmin)/(vmax-vmin||1)),3,1);
+    else strokeLap(sel,(l,i)=> l.b[i]>0.05?css("--brake"): l.t[i]>0.5?css("--throttle"):css("--coast"),3,1);
+  }
+  drawMarks(sel);
+  if (state.turns) turnMarks(label);
+  if (state.mode==="corners" && sel) sel.corners.filter(c=>!c.turn).forEach(c=>label(sel, c.apex, "?", css("--set2")));
+  if (state.mode==="gears" && sel) sel.shifts.forEach(s=>{ const k=at(sel,s.pos); shiftDot(px(sel.x[k]), py(sel.z[k]), s.to>s.from); });
+  if (state.mode==="surface") ROUGHEST.forEach(r=>label(ref, r.pos, r.v.toFixed(1), css("--bump1")));
+  startFinish();
+  if (hov){
+    ctx.fillStyle=css("--ink"); ctx.beginPath(); ctx.arc(px(hov.l.x[hov.i]),py(hov.l.z[hov.i]),4,0,7); ctx.fill();
+    ctx.strokeStyle=css("--surface"); ctx.lineWidth=1.5; ctx.stroke();
+  }
+  drawStrip();
+}
+
+// --- the charts under the map: the selected lap by track position ---------------
+// Each chart keeps a band at its top for its name and key, clear of the data.
+const PL=56, PR=12, HEAD=15;
+const sx = p => PL + p*(SW-PL-PR);
+function panelRects(){
+  const keys=PANELS.map(p=>p.key).filter(k=>state.panels.has(k));
+  const top=22, gap=12, bottom=18, h=(SH-top-bottom-gap*Math.max(0,keys.length-1))/Math.max(1,keys.length);
+  return keys.map((key,i)=>({key, y:top+i*(h+gap), h, t:top+i*(h+gap)+HEAD, b:top+i*(h+gap)+h-3}));
+}
+function plot(l, vals, y, color){
+  sctx.strokeStyle=color||css("--ink"); sctx.lineWidth=1.25; sctx.beginPath(); let on=false;
+  vals.forEach((v,i)=>{ if(v==null){ on=false; return; } const X=sx(l.p[i]), Y=y(v); on?sctx.lineTo(X,Y):sctx.moveTo(X,Y); on=true; });
+  sctx.stroke();
+}
+function text(str, x, y, align, color){ sctx.fillStyle=color||css("--muted"); sctx.font="10px "+css("--font-mono"); sctx.textAlign=align||"left"; sctx.fillText(str, x, y); sctx.textAlign="start"; }
+const axis = (str, y) => text(str, PL-6, y, "right");
+const panelName = (P, str) => text(str, PL+6, P.y+11);
+// A small key at the top right of a chart: [[label, colour], ...].
+function key(P, items){
+  let x=SW-PR-6;
+  [...items].reverse().forEach(([t,c])=>{
+    sctx.font="10px "+css("--font-mono"); const w=sctx.measureText(t).width;
+    text(t, x, P.y+11, "right"); x-=w+4;
+    if (c){ sctx.fillStyle=c; sctx.fillRect(x-12, P.y+6, 12, 3); x-=12; }
+    x-=12;
+  });
+}
+function lohi(vals){ let lo=Infinity, hi=-Infinity; vals.forEach(v=>{ if(v!=null){ lo=Math.min(lo,v); hi=Math.max(hi,v); } }); return [lo,hi]; }
+const DRAW = {
+  lat(sel, P){
+    // Lateral g about zero -- the smoothed trace the detector reads -- against the
+    // bar it held this lap to. A corner is a stretch beyond the dashed line on one side.
+    let gmax=sel.thr*1.5; for (const v of sel.lat) if (Math.abs(v)>gmax) gmax=Math.abs(v);
+    const mid=(P.t+P.b)/2, gy = g => mid - g/gmax*((P.b-P.t)/2);
+    sctx.strokeStyle=css("--line"); sctx.beginPath(); sctx.moveTo(PL,gy(0)); sctx.lineTo(SW-PR,gy(0)); sctx.stroke();
+    sctx.setLineDash([4,3]); sctx.strokeStyle=css("--muted");
+    [sel.thr,-sel.thr].forEach(g=>{ sctx.beginPath(); sctx.moveTo(PL,gy(g)); sctx.lineTo(SW-PR,gy(g)); sctx.stroke(); });
+    sctx.setLineDash([]);
+    plot(sel, sel.lat, gy);
+    sel.corners.forEach(c=>{ sctx.fillStyle=c.turn?css("--ink"):css("--set2"); sctx.fillRect(sx(c.entry), P.y+P.h-5, Math.max(2,sx(c.exit)-sx(c.entry)), 3); });
+    panelName(P, "lateral g"); axis("+"+sel.thr.toFixed(2), gy(sel.thr)+3); axis("−"+sel.thr.toFixed(2), gy(-sel.thr)+3);
+    key(P, [["corner bar", null], ["this lap's corners", css("--ink")]]);
+  },
+  speed(sel, P){
+    const [lo,hi]=lohi(sel.v), vy = v => P.b - (v-lo)/((hi-lo)||1)*(P.b-P.t);
+    plot(sel, sel.v, vy);
+    sctx.strokeStyle=css("--brake"); sctx.lineWidth=2;
+    sel.corners.forEach(c=>{ if(c.brake==null) return; const x=sx(c.brake); sctx.beginPath(); sctx.moveTo(x,P.y+P.h-9); sctx.lineTo(x,P.y+P.h-1); sctx.stroke(); });
+    panelName(P, "speed, km/h"); axis(hi, vy(hi)+7); axis(lo, vy(lo));
+    key(P, [["brake point", css("--brake")]]);
+  },
+  rpm(sel, P){
+    panelName(P, "revs and gear");
+    const [lo,hi]=lohi(sel.rpm);
+    if (!isFinite(lo)){ text("no revs recorded", PL+6, (P.t+P.b)/2+3); return; }
+    // Gear as alternating bands with the number along the foot, rather than a second
+    // scale on the same chart.
+    let start=0;
+    for (let i=1;i<=sel.g.length;i++){
+      if (i<sel.g.length && sel.g[i]===sel.g[start]) continue;
+      const g=sel.g[start], x0=sx(sel.p[start]), x1=sx(sel.p[Math.min(i,sel.p.length-1)]);
+      if (g>0){
+        sctx.globalAlpha = g%2 ? .03 : .09; sctx.fillStyle=css("--ink"); sctx.fillRect(x0, P.t, Math.max(1,x1-x0), P.b-P.t); sctx.globalAlpha=1;
+        if (x1-x0>12) text(String(g), (x0+x1)/2, P.b-2, "center");
+      }
+      start=i;
+    }
+    const top = GEARING && GEARING.ceiling_rpm ? Math.max(hi, GEARING.ceiling_rpm) : hi;
+    const ry = v => P.b - 10 - (v-lo)/((top-lo)||1)*(P.b-10-P.t);
+    if (GEARING && GEARING.ceiling_rpm){
+      sctx.setLineDash([4,3]); sctx.strokeStyle=css("--muted"); sctx.lineWidth=1;
+      sctx.beginPath(); sctx.moveTo(PL,ry(GEARING.ceiling_rpm)); sctx.lineTo(SW-PR,ry(GEARING.ceiling_rpm)); sctx.stroke(); sctx.setLineDash([]);
+    }
+    sel.limiter.forEach(r=>{ sctx.fillStyle=css("--set2"); sctx.fillRect(sx(r.from), P.t-3, Math.max(2,sx(r.to)-sx(r.from)), 3); });
+    plot(sel, sel.rpm, ry);
+    sel.shifts.forEach(s=>{
+      const x=sx(s.pos), y=ry(s.rpm_before==null?lo:s.rpm_before);
+      sctx.beginPath(); sctx.arc(x,y,2.5,0,7); sctx.fillStyle = s.to>s.from ? css("--ink") : css("--surface"); sctx.fill();
+      sctx.strokeStyle=css("--ink"); sctx.lineWidth=1; sctx.stroke();
+    });
+    axis(top, ry(top)+7); axis(lo, ry(lo));
+    key(P, [["upshift", null], ["held at ceiling", css("--set2")]]);
+  },
+  bal(sel, P){
+    // Front minus rear slip, only while cornering, one bar per point: up and red is
+    // the front sliding more, down and blue the rear.
+    const mid=(P.t+P.b)/2, by = v => mid - Math.max(-1,Math.min(1,v/BAL_S))*((P.b-P.t)/2), y0=by(0);
+    for (let i=0;i<sel.p.length;i++){
+      if (!cornering(sel,i)) continue;
+      const x=sx(sel.p[i]), x2 = i+1<sel.p.length ? sx(sel.p[i+1]) : x+1, y1=by(sel.bal[i]);
+      sctx.fillStyle=balColor(sel.bal[i]); sctx.fillRect(x, Math.min(y0,y1), Math.max(1,x2-x), Math.max(1,Math.abs(y1-y0)));
+    }
+    sctx.strokeStyle=css("--line"); sctx.lineWidth=1; sctx.beginPath(); sctx.moveTo(PL,y0); sctx.lineTo(SW-PR,y0); sctx.stroke();
+    panelName(P, "balance, front − rear slip, while cornering");
+    axis("+"+BAL_S.toFixed(2), by(BAL_S)+7); axis("−"+BAL_S.toFixed(2), by(-BAL_S));
+    key(P, [["front sliding more", css("--under")], ["rear sliding more", css("--over")]]);
+  },
+  tyref(sel, P){ pair(sel, P, "cfl", "cfr", "front tyres, core °C", ["left","right"], 0); },
+  tyrer(sel, P){ pair(sel, P, "crl", "crr", "rear tyres, core °C", ["left","right"], 0); },
+  surf(sel, P){
+    // This lap's roughness per stretch as bars, the session's median as a line over them.
+    panelName(P, "surface, mm RMS of suspension movement");
+    const vals=[...sel.surf, ...SURF.rms_mm].filter(v=>v!=null);
+    if (!vals.length){ text("no suspension or ride height recorded", PL+6, (P.t+P.b)/2+3); return; }
+    const hi=Math.max(...vals), y=v=>P.b-v/(hi||1)*(P.b-P.t), n=SURF.slices;
+    sctx.globalAlpha=.45; sctx.fillStyle=css("--muted");
+    sel.surf.forEach((v,i)=>{ if(v==null) return; const x0=sx(i/n), x1=sx((i+1)/n); sctx.fillRect(x0, y(v), Math.max(1,x1-x0-0.5), P.b-y(v)); });
+    sctx.globalAlpha=1; sctx.strokeStyle=css("--bump1"); sctx.lineWidth=1.5; sctx.beginPath(); let on=false;
+    SURF.rms_mm.forEach((v,i)=>{ if(v==null){ on=false; return; } const X=sx((i+0.5)/n), Y=y(v); on?sctx.lineTo(X,Y):sctx.moveTo(X,Y); on=true; });
+    sctx.stroke();
+    axis(hi.toFixed(1), y(hi)+7); axis("0", P.b);
+    key(P, [["this lap", css("--muted")], ["session median", css("--bump1")]]);
+  },
+  ride(sel, P){ pair(sel, P, "rf", "rr", "ride height, mm", ["front","rear"], 0); },
+  elev(sel, P){
+    panelName(P, "elevation, m");
+    const [lo,hi]=lohi(sel.y);
+    if (!isFinite(lo)){ text("no height recorded", PL+6, (P.t+P.b)/2+3); return; }
+    const y=v=>P.b-(v-lo)/((hi-lo)||1)*(P.b-P.t);
+    plot(sel, sel.y, y);
+    axis("+"+(hi-lo).toFixed(0), y(hi)+7); axis("0", y(lo));
+  },
+};
+// Two lines to a chart, in the same two colours everywhere -- left and right, or
+// front and rear -- because four lines in one chart cannot be told apart.
+function pair(sel, P, a, b, name, labels, digits){
+  panelName(P, name);
+  let [lo,hi]=lohi([...sel[a], ...sel[b]]);
+  if (!isFinite(lo)){ text("none recorded", PL+6, (P.t+P.b)/2+3); return; }
+  const top=hi, bot=lo; const pad=Math.max(0.5,(hi-lo)*0.1); lo-=pad; hi+=pad;
+  const ty = v => P.b - (v-lo)/(hi-lo)*(P.b-P.t);
+  plot(sel, sel[a], ty, css("--set1")); plot(sel, sel[b], ty, css("--set2"));
+  axis(top.toFixed(digits), ty(top)+4); axis(bot.toFixed(digits), ty(bot)+2);
+  key(P, [[labels[0], css("--set1")], [labels[1], css("--set2")]]);
+}
+function drawStrip(){
+  sctx.clearRect(0,0,SW,SH);
+  const sel=byId.get(state.sel), R=panelRects();
+  if (!sel || !SW || !R.length) return;
+  const top=R[0].y, bottom=R[R.length-1].y+R[R.length-1].h;
+  const shade=(a,b,col,alpha,minW)=>{ if(a==null||b==null) return; sctx.globalAlpha=alpha; sctx.fillStyle=col; R.forEach(P=>sctx.fillRect(sx(a),P.y,Math.max(minW||1,sx(b)-sx(a)),P.h)); sctx.globalAlpha=1; };
+  // Turn spans behind every chart; road only one lap cornered on in orange; this
+  // lap's time off track and its lockups.
+  TURNS.forEach(t=>shade(t.entry_pos,t.exit_pos,css("--ink"),.06));
+  ONE_LAP.forEach(u=>shade(u.entry_pos,u.exit_pos,css("--set2"),.18));
+  if (state.marks.has("off")) sel.off.forEach(r=>shade(r.from, r.to, css("--muted"), .35, 3));
+  if (state.marks.has("lockups")) sel.lockups.forEach(r=>shade(r.from, r.to, css("--brake"), .5, 2));
+  // Turn names above the charts. Turns close together would print over each other,
+  // so a name that would touch the last one drops to a second line.
+  sctx.fillStyle=css("--muted"); sctx.textAlign="center"; sctx.font="600 10px "+css("--font-display");
+  const lastX=[-Infinity,-Infinity];
+  TURNS.forEach(t=>{
+    const x=sx(t.apex_pos), w=sctx.measureText(t.turn).width+4;
+    const row = x-lastX[0] >= w ? 0 : x-lastX[1] >= w ? 1 : -1;
+    if (row<0) return;
+    sctx.fillText(t.turn, x, row ? top-14 : top-5);
+    lastX[row]=x;
+  });
+  sctx.textAlign="start";
+  if (state.marks.has("notes")) DATA.notes.filter(nt=>nt.lap_id===sel.id).forEach(nt=>{
+    const x=sx(nt.pos); sctx.fillStyle=css("--ink"); sctx.beginPath(); sctx.moveTo(x-4,top-2); sctx.lineTo(x+4,top-2); sctx.lineTo(x,top+4); sctx.fill();
+  });
+  sctx.strokeStyle=css("--line"); sctx.lineWidth=1; R.forEach(P=>sctx.strokeRect(PL+.5,P.y+.5,SW-PL-PR-1,P.h-1));
+  R.forEach(P=>DRAW[P.key](sel, P));
+  [0,.25,.5,.75,1].forEach(p=>text(p.toFixed(2), sx(p), SH-5, "center"));
+  if (hov && hov.l===sel){
+    const x=sx(sel.p[hov.i]); sctx.strokeStyle=css("--ink"); sctx.lineWidth=1;
+    sctx.beginPath(); sctx.moveTo(x,top); sctx.lineTo(x,bottom); sctx.stroke();
+  }
+}
+function placeTip(el, mx, my, w, h){
+  el.style.display="block";
+  const tw=el.offsetWidth, th=el.offsetHeight;
+  el.style.left=Math.min(mx+14, w-tw-4)+"px";
+  el.style.top=(my-th-10>=4 ? my-th-10 : Math.min(my+14, h-th-4))+"px";
+}
+
+const pct = v => v==null ? "-" : Math.round(v*100)+"%";
+const tyreLine = (l,i,pre,d) => ["fl","fr","rl","rr"].map(w=>w.toUpperCase()+" "+(l[pre+w][i]==null?"-":l[pre+w][i].toFixed(d))).join(" · ");
+cv.addEventListener("mousemove", e=>{
+  const r=cv.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+  let bestD=144, found=null;
+  const pool = (state.mode==="lap"||state.mode==="setup") ? laps.filter(l=>state.show.has(l.id)) : state.mode==="surface" ? [ref] : laps.filter(l=>l.id===state.sel);
+  pool.forEach(l=>{ for(let i=0;i<l.x.length;i++){ const dx=px(l.x[i])-mx, dy=py(l.z[i])-my, d=dx*dx+dy*dy; if(d<bestD){bestD=d;found={l,i};} } });
+  hov=found; draw();
+  if(!found){ tip.style.display="none"; return; }
+  const l=found.l, i=found.i;
+  if (state.mode==="surface"){
+    const v=SURF.rms_mm[si(l.p[i])], t=turnAt(l.p[i]);
+    tip.innerHTML="<b>"+(v==null?"-":v.toFixed(2))+" mm</b> RMS<br>pos "+l.p[i].toFixed(3)+(t?" · "+t:"")+"<br>median of "+SURF.laps+" laps";
+  } else {
+    tip.innerHTML="<b>Lap "+l.n+"</b> · "+(l.usable?fmt(l.ms):esc(flagOf(l)))+"<br>"+esc(setupLabel(l.setup))+
+      "<br>pos "+l.p[i].toFixed(3)+" · <b>"+(l.v[i]==null?"-":l.v[i])+"</b> km/h · gear "+(l.g[i]||"N")+(l.rpm[i]==null?"":" · "+l.rpm[i]+" rpm")+
+      "<br>throttle "+pct(l.t[i])+" · brake "+pct(l.b[i])+
+      (state.mode==="balance" ? "<br>balance "+(cornering(l,i)?signed(l.bal[i],2):"not cornering") : "");
+  }
+  placeTip(tip, mx, my, W, H);
+});
+cv.addEventListener("mouseleave", ()=>{hov=null;tip.style.display="none";draw();});
+sv.addEventListener("mousemove", e=>{
+  const sel=byId.get(state.sel), r=sv.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+  const p=(mx-PL)/(SW-PL-PR);
+  if (!sel || p<0 || p>1){ hov=null; stip.style.display="none"; draw(); return; }
+  const i=at(sel,p); hov={l:sel,i}; draw();
+  const q=sel.p[i], c=sel.corners.find(c=>q>=c.entry && q<=c.exit), on=k=>state.panels.has(k), num=(v,d)=>v==null?"-":v.toFixed(d);
+  const rows=["<b>Lap "+sel.n+"</b> · pos "+q.toFixed(3)];
+  if (on("lat")) rows.push("lat <b>"+sel.lat[i].toFixed(2)+"</b> g, bar ±"+sel.thr.toFixed(2));
+  if (on("speed")) rows.push("<b>"+(sel.v[i]==null?"-":sel.v[i])+"</b> km/h");
+  if (on("rpm")) rows.push("gear <b>"+(sel.g[i]||"N")+"</b> · "+(sel.rpm[i]==null?"-":sel.rpm[i])+" rpm");
+  if (on("bal")) rows.push("balance "+(cornering(sel,i) ? "<b>"+signed(sel.bal[i],2)+"</b>" : "not cornering"));
+  if (on("tyref") || on("tyrer")) rows.push("°C "+tyreLine(sel,i,"c",0), "psi "+tyreLine(sel,i,"p",1));
+  if (on("surf")) rows.push("surface "+num(sel.surf[si(q)],2)+" mm, session "+num(SURF.rms_mm[si(q)],2));
+  if (on("ride")) rows.push("ride front "+num(sel.rf[i],1)+" · rear "+num(sel.rr[i],1)+" mm · rake "+(sel.rf[i]==null||sel.rr[i]==null?"-":signed(sel.rr[i]-sel.rf[i],1)));
+  if (on("elev")) { const lo=Math.min(...sel.y.filter(v=>v!=null)); rows.push("elevation +"+num(sel.y[i]==null?null:sel.y[i]-lo,1)+" m"); }
+  rows.push(c ? "corner: "+(c.turn||"no turn matched")+" · peak "+c.peak_g+" g · min "+c.min_kmh+" km/h" : "not in a corner");
+  stip.innerHTML=rows.join("<br>");
+  placeTip(stip, mx, my, SW, SH);
+});
+sv.addEventListener("mouseleave", ()=>{hov=null;stip.style.display="none";draw();});
+
+const rows=document.getElementById("rows");
+const deltaText = l => (best && l.usable) ? (l.id===best.id?"best":((l.ms>=best.ms?"+":"")+((l.ms-best.ms)/1000).toFixed(3))) : "";
+// How this lap's corners line up with the turn map: turns it matched, and corners
+// no turn claims. A lap that disagrees with its neighbours here is the one to open.
+function turnsText(l){
+  const matched=l.corners.filter(c=>c.turn).length, extra=l.corners.length-matched;
+  if (!TURNS.length) return l.corners.length+" found";
+  return matched+"/"+TURNS.length+(extra?" +"+extra:"");
+}
+function gearsText(l){
+  const up=upshifts(l).map(s=>s.rpm_before).filter(v=>v!=null);
+  return up.length ? median(up)+(l.limiter.length?" ("+l.limiter.length+")":"") : "-";
+}
+function surfText(l){ const m=median(l.surf.filter(v=>v!=null)); return m==null ? "-" : m.toFixed(2)+" mm"; }
+const COL4 = { corners:["Turns", turnsText], balance:["Balance", l=>signed(l.bal_med,2)], gears:["Upshift (ceiling)", gearsText], surface:["Surface", surfText] };
+laps.forEach(l=>{
+  const tr=document.createElement("tr"); tr.dataset.id=l.id;
+  if (!l.usable) tr.title=l.why;
+  tr.innerHTML="<td><input type=\"checkbox\" "+(state.show.has(l.id)?"checked":"")+" aria-label=\"show lap "+l.n+"\"></td>"+
+    "<td><span class=\"sw\"></span>"+l.n+"</td><td>"+(l.usable?fmt(l.ms):"<span class=\"flag\">"+flagOf(l)+"</span>")+"</td><td class=\"d\"></td>"+
+    "<td class=\"setup\" title=\""+esc(setupLabel(l.setup))+"\">"+esc(l.setup||"-")+"</td>"+
+    "<td class=\"flag\">"+[l.wide?"wide":"", l.outlier?"outlier":""].filter(Boolean).join(" ")+"</td>";
+  tr.querySelector("input").addEventListener("change", ev=>{ ev.target.checked?state.show.add(l.id):state.show.delete(l.id); tr.classList.toggle("hidden",!ev.target.checked); draw(); });
+  // Focusable and operable from the keyboard: clicking a row was the only way to
+  // select a lap, which left every chart here out of reach without a mouse.
+  tr.tabIndex=0;
+  const select = ()=>{ state.sel=l.id; refreshRows(); legend(); draw(); };
+  tr.addEventListener("click", ev=>{ if(ev.target.tagName==="INPUT") return; select(); });
+  tr.addEventListener("keydown", ev=>{
+    if (ev.target.tagName==="INPUT" || (ev.key!=="Enter" && ev.key!==" ")) return;
+    ev.preventDefault(); select();
+  });
+  tr.classList.toggle("hidden",!state.show.has(l.id));
+  rows.appendChild(tr);
+});
+function refreshRows(){
+  const col = COL4[state.mode] || ["Δ best", deltaText];
+  document.getElementById("col4").textContent = col[0];
+  rows.querySelectorAll("tr").forEach(tr=>{
+    const l=byId.get(Number(tr.dataset.id)); tr.setAttribute("aria-selected", l.id===state.sel);
+    tr.querySelector(".d").textContent = col[1](l);
+    tr.querySelector(".sw").style.background = state.mode==="lap" ? lapColor(l) : state.mode==="setup" ? setupColor(l.setup) : (l.id===state.sel?css("--ink"):css("--coast"));
+  });
+}
+// The per-gear figures, from every lap that counted.
+function gearTable(){
+  if (!GEARING) return "<span>no gearchanges recorded</span>";
+  const up = GEARING.up.map(u=>"<tr><td>"+u.from+"→"+u.to+"</td><td>"+u.rpm_med+"</td><td>"+u.rpm_lo+"–"+u.rpm_hi+"</td><td>"+u.n+"</td></tr>").join("");
+  const down = GEARING.down.map(d=>"<tr><td>"+d.from+"→"+d.to+"</td><td>"+d.rpm_med+"</td><td>max "+d.rpm_max+"</td><td>"+d.n+"</td></tr>").join("");
+  return "<table class=\"mini\"><tr><th>up</th><th>rpm before</th><th>10–90%</th><th>n</th></tr>"+up+
+    "<tr><th>down</th><th>rpm after</th><th></th><th>n</th></tr>"+down+"</table>";
+}
+function legend(){
+  const g=document.getElementById("legend"), sel=byId.get(state.sel);
+  if(state.mode==="lap") g.innerHTML="<span><i style=\"background:"+css("--best")+"\"></i>fastest lap that counted</span><span>lap order <span class=\"bar\" style=\"background:linear-gradient(90deg,"+css("--ramp0")+","+css("--ramp1")+")\"></span>early → late</span><span>thin = ran wide</span>";
+  else if(state.mode==="setup"){
+    const count = s => laps.filter(l=>l.setup===s).length;
+    const blank = laps.filter(l=>!l.setup).length;
+    g.innerHTML = setups.slice(0,SLOTS).map(s=>"<span><i style=\"background:"+setupColor(s)+"\"></i><span class=\"name\">"+esc(setupLabel(s))+"</span> ("+count(s)+")</span>").join("")+
+      (blank?"<span><i style=\"background:"+css("--set-other")+"\"></i>no setup recorded ("+blank+")</span>":"")+
+      (setups.length>SLOTS?"<span><i style=\"background:"+css("--set-other")+"\"></i>"+(setups.length-SLOTS)+" more setup"+(setups.length-SLOTS>1?"s":"")+", named in the table</span>":"");
+  }
+  else if(state.mode==="speed") g.innerHTML="<span>≤"+vmin+" km/h <span class=\"bar\" style=\"background:linear-gradient(90deg,"+css("--spd0")+","+css("--spd1")+")\"></span> "+vmax+" km/h</span>";
+  else if(state.mode==="corners"){
+    const d=DATA.detection;
+    g.innerHTML="<span><i class=\"band\" style=\"background:"+css("--set1")+"\"></i>numbered turn</span>"+
+      "<span><i class=\"band\" style=\"background:"+css("--set2")+"\"></i>cornered on one lap only</span>"+
+      "<span><i style=\"background:"+css("--ink")+"\"></i>this lap's corners</span>"+
+      "<span><i style=\"background:"+css("--set2")+"\"></i>? no turn matched</span>"+
+      (d ? "<span>bar <b>"+d.threshold_g+" g</b> from a "+d.lat_g_reference+" g cornering load"+(d.laps_in_reference?" over "+d.laps_in_reference+" laps":"")+"</span>"+(d.caution?"<span>"+esc(d.caution)+"</span>":"")
+         : "<span>"+esc(DATA.turns_note || "each lap held to its own cornering load")+"</span>");
+  }
+  else if(state.mode==="balance"){
+    g.innerHTML="<span><i style=\"background:"+css("--over")+"\"></i>rear sliding more</span>"+
+      "<span class=\"bar\" style=\"background:linear-gradient(90deg,"+css("--over")+","+css("--coast")+","+css("--under")+")\"></span>"+
+      "<span><i style=\"background:"+css("--under")+"\"></i>front sliding more</span>"+
+      "<span>front slip − rear slip, ±"+BAL_S.toFixed(2)+" full colour; only while cornering</span>"+
+      "<span>this lap's median while cornering <b>"+signed(sel&&sel.bal_med,2)+"</b>. Zero is equal slip, not necessarily neutral for this car -- compare laps and corners with each other</span>";
+  }
+  else if(state.mode==="gears"){
+    g.innerHTML="<span>gear 1 <span class=\"bar\" style=\"background:linear-gradient(90deg,"+css("--ramp0")+","+css("--ramp1")+")\"></span> "+GMAX+"</span>"+
+      "<span><i class=\"dot\" style=\"background:"+css("--ink")+"\"></i>upshift</span><span><i class=\"dot\" style=\"background:"+css("--surface")+"\"></i>downshift</span>"+
+      "<span><i class=\"band\" style=\"background:"+css("--set2")+"\"></i>held at the rev ceiling</span>"+
+      (GEARING && GEARING.ceiling_rpm ? "<span>ceiling <b>"+GEARING.ceiling_rpm+" rpm</b>: the highest revs this car showed at full throttle. No redline is recorded, so this is not necessarily its limiter</span>" : "")+
+      gearTable()+
+      "<span>revs are the samples either side of each change, 40 ms apart -- a few hundred rpm of play at the top of a gear</span>";
+  }
+  else if(state.mode==="surface"){
+    const src = SURF.sources.map(s=>SRC_NAME[s]||s).join("; ");
+    g.innerHTML="<span>"+SURF_LO.toFixed(1)+" mm <span class=\"bar\" style=\"background:linear-gradient(90deg,"+css("--bump0")+","+css("--bump1")+")\"></span> "+SURF_HI.toFixed(1)+" mm</span>"+
+      "<span>how much the suspension moved once its slow movement is taken out, per ~10 m, median of "+SURF.laps+" laps that counted. From "+esc(src)+"</span>"+
+      "<span>roughest: "+ROUGHEST.map(r=>"<b>"+r.v.toFixed(1)+"</b> at "+r.pos.toFixed(3)+(turnAt(r.pos)?" ("+turnAt(r.pos)+")":"")).join(", ")+"</span>"+
+      "<span>a kerb struck once is pooled away; a kerb taken every lap is not, and reads like a bump</span>";
+  }
+  else g.innerHTML="<span><i style=\"background:"+css("--brake")+"\"></i>brake</span><span><i style=\"background:"+css("--throttle")+"\"></i>throttle</span><span><i style=\"background:"+css("--coast")+"\"></i>coast</span>";
+}
+const panelBox=document.getElementById("panels");
+PANELS.forEach(p=>{
+  const lab=document.createElement("label");
+  lab.innerHTML="<input type=\"checkbox\" data-panel=\""+p.key+"\""+(state.panels.has(p.key)?" checked":"")+"> "+p.label;
+  lab.querySelector("input").addEventListener("change", ev=>{ ev.target.checked?state.panels.add(p.key):state.panels.delete(p.key); layoutStrip(); fit(); });
+  panelBox.appendChild(lab);
+});
+function showPanel(k){
+  if (state.panels.has(k)) return;
+  state.panels.add(k); panelBox.querySelector("[data-panel=\""+k+"\"]").checked=true; layoutStrip();
+}
+const markBox=document.getElementById("marks");
+MARKS.forEach(m=>{
+  const lab=document.createElement("label");
+  lab.innerHTML="<input type=\"checkbox\""+(state.marks.has(m.key)?" checked":"")+"> "+m.label;
+  lab.querySelector("input").addEventListener("change", ev=>{ ev.target.checked?state.marks.add(m.key):state.marks.delete(m.key); draw(); });
+  markBox.appendChild(lab);
+});
+// What the marks cannot show, said once rather than left for someone to wonder.
+document.getElementById("marknote").textContent = [
+  "Off track is "+"the track-limits rule: every counted wheel out, long enough to count.",
+  "Lockups are front slip over "+DATA.lockup_slip+" under hard, straight braking -- a threshold never checked against a lockup felt in the car.",
+  DATA.notes.length ? "" : "No complaint presses on these laps.",
+  DATA.orphan_notes ? DATA.orphan_notes+" press"+(DATA.orphan_notes>1?"es were":" was")+" recorded with no session running and can't be placed." : "",
+].filter(Boolean).join(" ");
+const turnsBox=document.getElementById("turns");
+turnsBox.checked=state.turns;
+if (!TURNS.length){ turnsBox.disabled=true; turnsBox.parentElement.title=DATA.turns_note||""; }
+turnsBox.addEventListener("change", ()=>{ state.turns=turnsBox.checked; draw(); });
+document.getElementById("hint").textContent += " " + (TURNS.length
+  ? "Turn numbers are this session's, from the corners the car drove -- not the circuit's own numbering. Red ticks are where each turn is braked for."
+  : (DATA.turns_note||""));
+// A view that is read against a chart brings that chart with it.
+const PANEL_FOR = { corners:"lat", balance:"bal", gears:"rpm", surface:"surf" };
+document.querySelectorAll(".modes button").forEach(b=>b.addEventListener("click",()=>{
+  state.mode=b.dataset.mode; document.querySelectorAll(".modes button").forEach(x=>x.setAttribute("aria-pressed",x===b));
+  if (PANEL_FOR[state.mode]) showPanel(PANEL_FOR[state.mode]);
+  legend(); refreshRows(); fit();
+}));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change",()=>{legend();refreshRows();draw();});
+new MutationObserver(()=>{legend();refreshRows();draw();}).observe(document.documentElement,{attributes:true,attributeFilter:["data-theme"]});
+addEventListener("resize",fit); layoutStrip(); legend(); refreshRows(); fit();
+</script>
+</html>

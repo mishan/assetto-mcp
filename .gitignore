@@ -13,6 +13,11 @@ ranges/
 # of the Claude Desktop config.
 diagnose-report.txt
 
+# A data directory kept beside the code (ASSETTO_MCP_DATA pointed here).
+# The lap database is the driver's own driving, other drivers' names
+# included, and nearly a gigabyte; ranges inside it are licensed car data.
+/assetto-mcp-data/
+
 # Session reports written for the driver to read. Generated from the
 # database, so they are output rather than source -- and they date badly,
 # since the analysis that produced them keeps changing underneath.
@@ -22,8 +27,6 @@ exports/
 # definitions and tobi/ac-tracer are other people's code -- useful to read
 # here, not ours to redistribute.
 .lua-sdk/
-ac-tracer/
-tobi-ac-tracer-csp-lua.md
 
 # Vendored CSP references, cloned by hand for API research. Not ours to ship.
 /acc-lua-sdk/

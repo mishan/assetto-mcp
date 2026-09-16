@@ -22,7 +22,8 @@ try:  # mcp SDK 2.x
 except ImportError:  # mcp SDK 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import analysis, config, db, retention, setups, suspension
+from . import analysis, config, db, line_map, retention, setups, suspension
+from . import turns
 from .collector import Collector
 
 AC_DOCS_DIR = Path(os.environ.get(
@@ -112,63 +113,17 @@ def _active_session(explicit: int | None = None) -> int | None:
     return _bridge.active_session_id()
 
 
-# How many laps a session's turn numbering is built from. Every one costs a
-# full sample load, so this is a budget as much as a sample size: eight is
-# well clear of the two laps analysis.corner_map wants before it will number
-# a corner, and it bounds what the first lap_summary call on a race pays.
-CORNER_MAP_LAPS = 8
-
-# How many laps to read per query while looking for those eight. Usability
-# is decided in Python (db.lap_usability), so the search pages rather than
-# filtering in SQL -- a second copy of that rule in a WHERE clause is one
-# that drifts. One page covers any ordinary session.
-CORNER_MAP_PAGE = 32
+# The numbering itself lives in turns.py, so a script can draw the same
+# turn numbers without starting a server. These are its budget, named here
+# too for anything that reads them off the server.
+CORNER_MAP_LAPS = turns.CORNER_MAP_LAPS
+CORNER_MAP_PAGE = turns.CORNER_MAP_PAGE
 
 # Keyed by session, and holding the exact lap ids the numbering was built
 # from beside it. Not by session id alone: a session gains laps while it is
 # being driven, and a cached numbering that outlived its own basis would
 # keep answering about a circuit the newer laps had already contradicted.
 _corner_maps: dict[int, tuple[tuple[int, ...], dict]] = {}
-
-
-def _corner_map_from(lap_ids: list[int]) -> dict:
-    """Turn numbers for a set of laps, plus the bar they were found against.
-
-    The lateral-g reference comes back with the map because the two cannot
-    be separated: corners found against one bar cannot be numbered by a map
-    built against another, so whatever labels these laps also has to say
-    which threshold produced them.
-    """
-    sets, used = [], []
-    for lap_id in lap_ids:
-        samples = db.get_samples(_conn, lap_id)
-        if samples:
-            sets.append(samples)
-            used.append(lap_id)
-    detail = analysis.lat_g_reference_detail(sets)
-    out = analysis.corner_map(
-        [analysis.detect_corners(s, detail["reference"]) for s in sets])
-    out["reference"] = detail
-    out["basis_lap_ids"] = used
-    return out
-
-
-def _newest_usable_lap_ids(session_id: int, want: int) -> list[int]:
-    """The newest `want` usable laps of a session, reading no more than needed.
-
-    This runs on every lap_summary call, cached or not, because the lap ids
-    are the cache key. Reading the whole session to keep eight made a long
-    race pay for every lap in it each time a single lap was summarised.
-    """
-    ids, offset = [], 0
-    while len(ids) < want:
-        page = db.list_laps(_conn, session_id, limit=CORNER_MAP_PAGE,
-                            offset=offset)
-        ids += [l["id"] for l in page if db.lap_usability(l)[0]]
-        if len(page) < CORNER_MAP_PAGE:
-            break
-        offset += len(page)
-    return ids[:want]
 
 
 def _session_corner_map(session_id: int, lap_id: int | None = None) -> dict:
@@ -186,19 +141,12 @@ def _session_corner_map(session_id: int, lap_id: int | None = None) -> dict:
     carrying these labels says which laps produced them, so a disagreement
     is visible rather than silent.
     """
-    ids = _newest_usable_lap_ids(session_id, CORNER_MAP_LAPS)
-    if not ids and lap_id is not None:
-        # Every lap of the session is an out-lap, an in-lap or a lap that
-        # ended in the barrier. The requested lap is then all the evidence
-        # there is, and numbering from it alone beats answering with no
-        # numbers -- as long as the payload says how thin that basis is,
-        # which basis_lap_ids does.
-        ids = [lap_id]
+    ids = turns.basis_lap_ids(_conn, session_id, lap_id)
     key = tuple(ids)
     cached = _corner_maps.get(session_id)
     if cached and cached[0] == key:
         return cached[1]
-    cmap = _corner_map_from(ids)
+    cmap = turns.corner_map_from(_conn, ids)
     _corner_maps[session_id] = (key, cmap)
     return cmap
 
@@ -1255,6 +1203,53 @@ def driving_line(lap_id: int, compare_lap_id: int | None = None,
         other_samples = db.get_samples(_conn, compare_lap_id)
     return _j(analysis.driving_line(
         lap, db.get_samples(_conn, lap_id), points, other, other_samples))
+
+
+@mcp.tool()
+def export_line_map(session_id: int | None = None,
+                    lap_ids: list[int] | None = None) -> str:
+    """Draw laps as a driving-line map the driver can open in a browser.
+
+    driving_line answers in numbers; this answers with a picture. Every lap
+    of the session -- or only the laps named -- is drawn where the car
+    actually went, in one HTML file: the fastest lap that counted picked
+    out, laps coloured by lap order or by setup so an A/B split shows at a
+    glance, and any one lap coloured by speed or by what the pedals were
+    doing. Turn numbers and brake points are the session's own, the same
+    T1, T2 lap_summary uses.
+
+    Written to the exports folder in the data directory, and the path comes
+    back: hand it to the driver. The file opens from disk and fetches
+    nothing. Exporting the same session again replaces it.
+
+    lap_ids may span sessions on the same car and layout; turn numbers are
+    then left off, because each session numbers its own. Laps with no
+    position data are listed under `skipped` rather than drawn."""
+    sid = None
+    if not lap_ids:
+        sid = _active_session(session_id)
+        if sid is None:
+            return _j({"error": "no active session; pass session_id or "
+                                "lap_ids"})
+    try:
+        data = line_map.build(_conn, sid, lap_ids)
+    except ValueError as e:
+        return _j({"error": str(e)})
+    path = line_map.write(
+        data, DATA_DIR / "exports" / line_map.default_name(data))
+    out = {
+        "path": str(path),
+        "url": path.resolve().as_uri(),
+        "session_ids": data["session_ids"],
+        "laps_drawn": len(data["laps"]),
+        "best_lap_id": data["best"],
+        "turns_drawn": len(data["turns"]),
+    }
+    if data["skipped"]:
+        out["skipped"] = data["skipped"]
+    if data["turns_note"]:
+        out["turns_note"] = data["turns_note"]
+    return _j(out)
 
 
 @mcp.tool()

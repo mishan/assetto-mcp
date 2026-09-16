@@ -5,7 +5,7 @@ already produced. Each entry says what is wrong, where it bit, and where the
 code lives, so a future session can act without re-deriving any of it.
 
 Written after the Sebring / NSX GT3 session, and kept current since. Test
-suite stands at 483 passing with the Lua tooling installed,
+suite stands at 513 passing with the Lua tooling installed,
 schema at v13.
 
 ---
@@ -418,6 +418,57 @@ Damage rising would disambiguate them when damage is on.
 **Corner detection is better, not fixed.** One-sided corners fell from 7 of
 17 to 3 of 18 after the shared lateral-g reference (schema-independent, in
 `analysis.lat_g_reference`). Not zero.
+
+**Long corners were numbered several times over.** Largely fixed. The line
+map's Corners view made this visible. At Sebring (session 34), Sunset Bend
+is a single corner on every lap, yet the map numbered it four times: T19–T22,
+with apexes at 0.922–0.933, spans overlapping across 0.878–0.958, seen on 2,
+4, 2 and 2 of 8 laps.
+
+There were two causes, both in `_corner_clusters`:
+
+- **Grouping by apex distance.** On a long corner the slowest point wanders
+  by more than `CORNER_TOLERANCE` from lap to lap, and where lateral g sags
+  under the bar mid-corner the detector reports two pieces on that lap.
+  Each fragment cleared `CORNER_MAP_MIN_LAPS_SEEN = 2` and got a number.
+- **Chaining across a change of direction.** At Interlagos the Senna S's
+  left and right have apexes within tolerance of each other, so they were
+  chained into one group and split at the widest gap rather than where the
+  direction changes. That came out as two turns on the left-hander (seen on
+  2 and 6 laps).
+
+Now groups are also joined when their corners share road
+(`CORNER_SPAN_OVERLAP`) on at least two laps on each side
+(`CORNER_SPAN_SUPPORT`). A group most laps drove as one corner becomes one
+turn, and laps the detector split keep their slowest piece. Proximity only
+chains corners that turn the same way. The support rule exists because of
+Kyalami (session 37), where one lap's early entry was enough to pull in a
+kink three other laps had found.
+
+Turn counts before and after, from each session's newest eight usable laps:
+
+| Session | Before | After | What changed |
+|---|---|---|---|
+| 34 Sebring | 22 | 18 | Sunset Bend is one turn (8/8); T6/T7 merged (8/8) |
+| 41 Interlagos | 17 | 15 | Senna is a clean left and right (8/8 each); T13/T14 merged |
+| 26 Suzuka | 25 | 19 | chicane is two turns (8/8 each); spin fragments near Degner gone |
+| 37 Kyalami | 22 | 19 | kink at 0.405 keeps its own number (3/8); T10–T13 became two turns |
+| 39 Kyalami | 21 | 18 | 0.493–0.514 became one turn (8/8) |
+| 19 Mugello | 15 | 15 | T3 now 8/8 |
+
+`compare_runs` uses the same grouping, so it gets the fix too.
+
+**Still open:**
+
+- A few pairs still look like one corner split in two, but neither rule
+  joined them: Suzuka 0.534/0.541 (4 and 6 laps) and 0.570/0.593 (4 and
+  6), Interlagos 0.587/0.605 (2 and 4), Kyalami (39) 0.575/0.608 (5 and 3).
+  Check their spans and turn directions in the Corners view before loosening
+  either rule.
+- The second piece of a split corner still labels as a corner with no turn
+  number: `label_corners` pairs one corner per turn. It shows as `?` in the
+  Corners view and as `+n` in the Turns column. Labelling it "part of T18"
+  would need a second, span-based pass.
 
 **`_migrate` v1 unguarded ALTER** — fixed. All six ALTER sites now go through
 `_add_column`, which no-ops on a missing table. Listed only so nobody

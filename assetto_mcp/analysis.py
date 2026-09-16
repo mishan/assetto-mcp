@@ -125,6 +125,18 @@ def _sane_slip(*values: float) -> float | None:
     return mean(values)
 
 
+def sample_slip_balance(s: dict) -> float | None:
+    """Front slip minus rear slip at one sample; None where either axle glitched.
+
+    The corner metric's quantity and sign -- positive is the front sliding
+    more -- read at a single point instead of averaged round an apex, so a
+    whole lap can be coloured by it.
+    """
+    f = _sane_slip(s.get("slip_fl"), s.get("slip_fr"))
+    r = _sane_slip(s.get("slip_rl"), s.get("slip_rr"))
+    return None if f is None or r is None else f - r
+
+
 def _median_filter(values: list[float], window: int = 11) -> list[float]:
     """Centerd running median; window forced odd.
 
@@ -303,6 +315,33 @@ def lat_g_reference(
     return lat_g_reference_detail(sample_sets)["reference"]
 
 
+def corner_threshold(peak_g: float) -> float:
+    """The lateral g a region has to hold to be a corner, given a cornering load.
+
+    One place for the rule, because two things state it: detect_corners
+    applies it and corner_detection_note reports it, and a note that drifted
+    from the detector would describe a bar nothing was held to.
+    """
+    return max(peak_g * CORNER_LAT_G_FRACTION, CORNER_MIN_LAT_G)
+
+
+def corner_trace(samples: list[dict],
+                 reference_peak_g: float | None = None) -> dict:
+    """The lateral-g trace corner detection reads, and the bar it is held to.
+
+    For anything that has to show the reasoning rather than the result. A
+    turn split in two, or a kink that was never numbered, is explained by
+    this trace against this bar -- the same smoothed trace detect_corners
+    thresholds, not the raw channel, which would show corners crossing a
+    line the detector never saw them cross.
+    """
+    lat, dropped = _lat_g_trace(samples)
+    own = _lat_g_peak(lat)
+    bar = own if reference_peak_g is None else reference_peak_g
+    return {"lat": lat, "threshold_g": corner_threshold(bar),
+            "own_peak_g": own, "dropped": dropped}
+
+
 def corner_detection_note(reference: float | None, laps: int,
                           own_peak: float | None = None,
                           spread_g: float | None = None,
@@ -341,8 +380,7 @@ def corner_detection_note(reference: float | None, laps: int,
                   f"{shared_basis or 'the laps being compared'}") if shared
                  else "this lap's own cornering load",
         "lat_g_reference": round(bar, 3),
-        "threshold_g": round(max(bar * CORNER_LAT_G_FRACTION,
-                                 CORNER_MIN_LAT_G), 3),
+        "threshold_g": round(corner_threshold(bar), 3),
     }
     if not shared:
         return out
@@ -435,7 +473,7 @@ def detect_corners(samples: list[dict],
     # from the rest without anything saying so, which is the whole failure
     # this parameter exists to end.
     peak = own_peak if reference_peak_g is None else reference_peak_g
-    thresh = max(peak * CORNER_LAT_G_FRACTION, CORNER_MIN_LAT_G)
+    thresh = corner_threshold(peak)
 
     # A region is contiguous samples above the threshold turning the SAME
     # way. The sign test is what separates an esse into two corners rather
@@ -506,6 +544,20 @@ def detect_corners(samples: list[dict],
 # the same figure deliberately: "T7" and the corner comparison at that apex
 # have to be the same piece of road by construction, not by coincidence.
 CORNER_TOLERANCE = 0.01
+
+# How much road two laps' corners have to share to be the same corner: half
+# the shorter of the two, turning the same way. Apex distance alone cannot
+# hold a long corner together -- its slowest point wanders by more than
+# CORNER_TOLERANCE from lap to lap -- and it was numbering Sunset Bend four
+# times. Half, not any overlap: an esse's two halves touch across laps, and
+# touching is not being the same corner.
+CORNER_SPAN_OVERLAP = 0.5
+
+# How many corners on each side have to share road before two groups are
+# joined. One is not enough: at Kyalami one lap's corner began early enough
+# to swallow the kink before it, and that single lap was pulling a kink
+# three other laps had found into the next turn.
+CORNER_SPAN_SUPPORT = 2
 
 # How many laps have to have cornered on a piece of road before it is given
 # a turn number. Repeatability, not a majority: an event invents a corner on
@@ -2432,6 +2484,26 @@ def _corner_clusters(laps: list[dict], tolerance: float) -> list[list[tuple]]:
     the same lap at its widest internal gap. A car passes an apex once a
     lap, so a duplicate is proof two corners were pooled -- which caps every
     cluster at one observation per lap and keeps df honest by construction.
+
+    Proximity alone split long corners. On a long constant-radius corner
+    the slowest point wanders by more than `tolerance` between laps, and
+    wherever the lateral g sags under the bar mid-corner the detector
+    reports two pieces on that lap. Sunset Bend at Sebring came back as four
+    turns seen on 2, 4, 2 and 2 laps of 8, and Interlagos, Suzuka and
+    Kyalami did the same. So two groups are joined when their corners
+    cover the same road, turning the same way (CORNER_SPAN_OVERLAP), on
+    enough laps on both sides (CORNER_SPAN_SUPPORT).
+    A joined group with duplicates is then read by what most laps did: if
+    most drove it as one corner, it is one, and a lap the detector split
+    keeps its slowest piece, where its apex really was. If most drove it as
+    two, the widest-gap split below separates them as before -- which is
+    what keeps a pair one lap ran together as two corners.
+
+    Proximity only chains corners turning the same way. An esse's two
+    halves can have apexes closer than `tolerance` -- Senna at Interlagos
+    does, on every lap -- and chained together they were split wherever the
+    widest gap happened to fall, which is not where the direction changes.
+    Corners with no recorded direction chain with anything, as before.
     """
     obs = []
     for i, lap in enumerate(laps):
@@ -2441,16 +2513,81 @@ def _corner_clusters(laps: list[dict], tolerance: float) -> list[list[tuple]]:
                 obs.append((float(pos), i, c))
     obs.sort(key=lambda o: o[0])
 
-    groups, cur = [], []
-    for o in obs:
-        if cur and o[0] - cur[-1][0] > tolerance:
-            groups.append(cur)
-            cur = []
-        cur.append(o)
-    if cur:
-        groups.append(cur)
+    parent = list(range(len(obs)))
 
-    out, queue = [], groups
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    # Chain each corner to the nearest earlier one it could be, within
+    # tolerance -- the same chaining as before, skipping over corners that
+    # turn the other way.
+    for i in range(1, len(obs)):
+        j = i - 1
+        while j >= 0 and obs[i][0] - obs[j][0] <= tolerance:
+            if _same_way(obs[i][2], obs[j][2]):
+                parent[find(i)] = find(j)
+                break
+            j -= 1
+
+    # Then join whole groups that share road, counting the LAPS on each side
+    # that do. Laps, not corners: a lap that split one corner into two has
+    # two corners in the group, and counting corners let that one lap meet a
+    # rule written as "two laps on each side" by itself -- which is how a
+    # one-lap artefact could pull a real turn into its neighbour. The count
+    # is per side because a split piece seen on two laps is still two
+    # pieces, however many whole laps it sits inside.
+    #
+    # Support is counted against the groups proximity left, and is not
+    # recounted as those groups merge. Three pieces supported by one lap
+    # each against the other two therefore stay three turns, even though
+    # any two of them merged would clear the bar against the third. That is
+    # the safe direction to be wrong in -- a turn split in two is visible
+    # on the map and in the payload, where two turns silently welded into
+    # one are not -- but it is a limit, not an accident.
+    # Each corner's stretch and direction once, not once per pair: this loop
+    # is quadratic in observations, and re-reading four dict keys through
+    # four isinstance checks inside it was most of what it cost.
+    roads = [_road(o[2]) for o in obs]
+
+    bridges: dict[tuple, tuple[set, set]] = {}
+    for i, a in enumerate(obs):
+        if roads[i] is None:
+            continue
+        for j in range(i + 1, len(obs)):
+            b = obs[j]
+            if a[1] == b[1] or not _same_road(roads[i], roads[j]):
+                continue
+            ga, gb = find(i), find(j)
+            if ga == gb:
+                continue
+            key, (x, y) = (((ga, gb), (a[1], b[1])) if ga < gb
+                           else ((gb, ga), (b[1], a[1])))
+            sides = bridges.setdefault(key, (set(), set()))
+            sides[0].add(x)
+            sides[1].add(y)
+    for (ga, gb), (xs, ys) in bridges.items():
+        if len(xs) >= CORNER_SPAN_SUPPORT and len(ys) >= CORNER_SPAN_SUPPORT:
+            ra, rb = find(ga), find(gb)
+            if ra != rb:
+                parent[rb] = ra
+
+    comps: dict[int, list] = {}
+    for i, o in enumerate(obs):
+        comps.setdefault(find(i), []).append(o)
+
+    out, queue = [], []
+    for g in comps.values():
+        per_lap: dict[int, list] = {}
+        for o in g:
+            per_lap.setdefault(o[1], []).append(o)
+        counts = sorted(len(v) for v in per_lap.values())
+        if counts[-1] > 1 and counts[(len(counts) - 1) // 2] == 1:
+            g = [min(v, key=_apex_piece) for v in per_lap.values()]
+        queue.append(sorted(g, key=lambda o: o[0]))
+
     while queue:
         g = queue.pop()
         seen = [o[1] for o in g]
@@ -2460,6 +2597,56 @@ def _corner_clusters(laps: list[dict], tolerance: float) -> list[list[tuple]]:
         _, k = max((g[i + 1][0] - g[i][0], i) for i in range(len(g) - 1))
         queue += [g[:k + 1], g[k + 1:]]
     return sorted(out, key=lambda g: g[0][0])
+
+
+def _span(c: dict) -> tuple[float, float] | None:
+    e, x = c.get("entry_pos"), c.get("exit_pos")
+    if isinstance(e, (int, float)) and isinstance(x, (int, float)) and x > e:
+        return float(e), float(x)
+    return None
+
+
+def _road(c: dict) -> tuple[tuple[float, float], object] | None:
+    """A corner's stretch and the way it turns, or None if it has no span.
+
+    A corner known only by its apex can still be grouped by proximity, but
+    nothing here can say what road it covered, so it never bridges.
+    """
+    s = _span(c)
+    return None if s is None else (s, c.get("turn_sign"))
+
+
+def _same_road(ra, rb) -> bool:
+    """Whether two _road() values cover the same stretch, turning the same way.
+
+    Takes the pair already read rather than the corners, because the caller
+    compares every observation with every other and would otherwise read
+    each corner's span once per comparison instead of once.
+    """
+    if ra is None or rb is None or ra[1] != rb[1]:
+        return False
+    sa, sb = ra[0], rb[0]
+    shared = min(sa[1], sb[1]) - max(sa[0], sb[0])
+    return shared >= CORNER_SPAN_OVERLAP * min(sa[1] - sa[0], sb[1] - sb[0])
+
+
+def _same_way(a: dict, b: dict) -> bool:
+    """Whether two corners could turn the same way; unknown matches anything."""
+    sa, sb = a.get("turn_sign"), b.get("turn_sign")
+    return sa is None or sb is None or sa == sb
+
+
+def _apex_piece(o: tuple) -> tuple:
+    """Sort key for the piece of a split corner that holds its apex.
+
+    The slowest piece, since the apex is the slowest point; the longest
+    where speed was not recorded.
+    """
+    c = o[2]
+    speed = c.get("min_speed_kmh")
+    span = _span(c)
+    return (speed if isinstance(speed, (int, float)) else math.inf,
+            -(span[1] - span[0]) if span else 0.0)
 
 
 def _compare_corners(baseline, candidate, tolerance):

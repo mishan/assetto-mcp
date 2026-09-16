@@ -662,10 +662,13 @@ local function sampleRivals()
   -- Lap times belong to a session; a new one starts every car from nothing.
   -- Anything still queued belongs to the session it was sampled in, and
   -- posting it now would file those samples, and those names and lap
-  -- counts, against this one.
+  -- counts, against this one. The counters go with them: they are what the
+  -- status line reports, and carrying the last session's totals into this
+  -- one makes a fresh session look like it already lost samples.
   if status.sessionId ~= rivalSession then
     rivalBuffer, rivalMeta = {}, {}
     rivalClock, rivalTimes, rivalSession = {}, {}, status.sessionId
+    rivalSent, rivalDropped = 0, 0
   end
   for i = 0, n - 1 do
     if i ~= 0 then
@@ -733,6 +736,15 @@ local function postRivals()
   rivalBusy = true
   local batch = rivalBuffer
   local meta = rivalMeta
+  -- The session these were sampled in, sent so the server can tell that it
+  -- is still the one recording. Clearing the queue above is not enough on
+  -- its own: this app learns of a session change a poll late, and an HTTP
+  -- round trip lands after that again, so a batch can be in the air -- or
+  -- still queued, in a session the sampler is skipping for having one car
+  -- in it -- while the server moves on. Filed against whatever is
+  -- recording when it arrives, it would put one session's opponents, names
+  -- and lap counts in another.
+  local sampledIn = rivalSession
   rivalBuffer = {}
   rivalMeta = {}
   -- Fold each car's metadata onto its first sample in this batch, so the
@@ -749,7 +761,7 @@ local function postRivals()
     end
   end
   web.post(BASE .. '/rivals', { ['Content-Type'] = 'application/json' },
-    JSON.stringify{ cars = batch },
+    JSON.stringify{ cars = batch, session_id = sampledIn },
     function(err, response)
       rivalBusy = false
       if err or not response then

@@ -85,9 +85,6 @@ RIVAL_GRID = 500
 RIVAL_FILL_STEPS = 2
 RIVAL_LAPS_EACH = 3
 RIVAL_MAX_CARS = 8
-# The app clamps speed at 1000 km/h. A sample at the clamp is a car being
-# teleported to the pits or the grid, not a car being driven.
-RIVAL_TELEPORT_KMH = 999
 
 TYRES = ("fl", "fr", "rl", "rr")
 
@@ -369,8 +366,11 @@ def rival_lap(samples: list[dict], track_length_m: float | None,
     speed integrated over the track length. Older laps also have no world
     position, so only newer ones can be drawn as a line.
     """
+    # The same clamp the coverage rule discounts, so a lap that got here is
+    # well covered by the samples that are left rather than by ones this
+    # then throws away.
     samples = [s for s in samples
-               if (s.get("speed_kmh") or 0) < RIVAL_TELEPORT_KMH]
+               if (s.get("speed_kmh") or 0) < db.RIVAL_TELEPORT_KMH]
     if not samples:
         # Every sample was at the clamp: a lap of being moved about rather
         # than driven. There is nothing to resample, and integrating it

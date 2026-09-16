@@ -11,6 +11,8 @@ import json
 import math
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -536,6 +538,80 @@ def _rival_session(conn, rows, name="Ben B"):
 def test_integrated_time_is_distance_over_speed():
     tm = line_map.integrate_time([108.0] * 1000, 3000.0)   # 30 m/s
     assert abs(tm[-1] - 99900) <= 1, tm[-1]     # 999 steps of 3 m
+
+
+def _js_function(name: str) -> str:
+    """One function's source, lifted out of the page by matching its braces.
+
+    Crude on purpose: a brace inside a string literal would break it, and
+    that is the right failure -- this exists to notice when the page's copy
+    of an algorithm moves, and a silent partial match would defeat it.
+    """
+    src = line_map.TEMPLATE.read_text(encoding="utf-8")
+    start = src.index(f"function {name}(")
+    i, depth = src.index("{", start), 0
+    while True:
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start:i + 1]
+        i += 1
+
+
+def test_the_pages_integrate_matches_the_one_that_fills_its_other_side():
+    """The gap trace subtracts a JS estimate from a Python one.
+
+    When an opponent's lap has no clock, gapTrace() compares `mine`, which
+    the page integrates in JavaScript, against `theirs`, which
+    integrate_time() produced here. Its comment -- "both laps are timed the
+    same way so a method's bias falls out" -- is only true while the two
+    implementations agree, and nothing but this test says they do. A tuning
+    change to either one would tilt every gap on the page rather than fail
+    anything.
+    """
+    # The same convention as the Lua app's optional interpreter: absent on
+    # the gaming PC, where skipping is right, and a failure in CI, where a
+    # skip would be a green build over an untested page. GitHub's ubuntu and
+    # windows runners both ship node.
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import lua_harness
+    node = shutil.which("node") or shutil.which("nodejs")
+    if node is None:
+        if lua_harness.strict():
+            raise RuntimeError(
+                "node is not installed, so the page's integrate() would go "
+                f"unchecked against integrate_time(). {lua_harness.STRICT_ENV} "
+                "is set, which means this is CI, where that skip is a "
+                "failure.")
+        lua_harness.skip("node is not installed")
+        return
+
+    track = 3000.0
+    # Varying speed, a stop (under the 1 m/s floor both sides apply), and
+    # gaps of one and two steps -- everything the loop branches on.
+    speeds = [None if i in (7, 20, 21) else
+              0.5 if 30 <= i < 34 else
+              60.0 + 90.0 * math.sin(i / 7.0) ** 2
+              for i in range(60)]
+    script = (f"const TRACK_M={track}, RG={len(speeds)};\n"
+              + _js_function("integrate")
+              + f"\nconsole.log(JSON.stringify(integrate({json.dumps(speeds)})));")
+    run = subprocess.run([node, "-e", script], capture_output=True,
+                         text=True, timeout=60)
+    assert run.returncode == 0, run.stderr
+    js = json.loads(run.stdout)
+    py = line_map.integrate_time(speeds, track)
+
+    assert len(js) == len(py) == len(speeds), (len(js), len(py))
+    # integrate_time rounds each step to whole ms and the page does not, so
+    # they may differ by the rounding and by nothing else.
+    worst = max(abs(a - b) for a, b in zip(js, py))
+    assert worst <= 1, f"the page and integrate_time disagree by {worst} ms"
+    assert py[-1] > 1000, py[-1]
+    print(f"  the page's integrate() tracks integrate_time() to {worst:.3f} ms "
+          f"over {py[-1]} ms of lap")
 
 
 def test_an_empty_step_is_road_still_covered():

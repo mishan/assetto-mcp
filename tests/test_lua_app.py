@@ -104,6 +104,33 @@ def test_a_new_session_does_not_inherit_the_last_ones_queue():
     print("  the first session's queued sample was dropped, not refiled")
 
 
+def test_a_batch_carries_the_session_it_was_sampled_in():
+    """Dropping the queue on a session change is not enough by itself.
+
+    The app learns of a change a poll late, and a single-car session returns
+    from sampleRivals before the guard that drops the queue ever runs. The
+    stamp is then the only thing telling the server these samples are not
+    the session it is recording.
+    """
+    rec = lua_harness.Recorder()
+    rec.sim_fields = {"raceSessionType": 1, "carsCount": 2}
+    lua, api, rec = lua_harness.load(rec)
+    api.setRunning(True)
+    api.setSession(1)
+    rec.cars[1] = {"lapCount": 3, "splinePosition": 0.2, "timestamp": 0.0}
+    api.sampleRivals()
+
+    api.setSession(2)
+    rec.sim_fields["carsCount"] = 1
+    api.sampleRivals()
+    api.postRivals()
+
+    batch = _rival_batches(rec)[-1]
+    assert [c["lap_count"] for c in batch["cars"]] == [3], batch
+    assert batch["session_id"] == 1, batch
+    print("  queued under session 1, posted during 2, stamped 1")
+
+
 def test_a_lap_counter_that_moves_without_a_crossing_times_nothing():
     """A pit exit or a teleport advances the counter without a lap."""
     rec = lua_harness.Recorder()

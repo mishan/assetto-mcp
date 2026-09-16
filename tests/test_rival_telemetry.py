@@ -369,5 +369,68 @@ def test_metadata_on_the_first_sample_is_not_erased_by_later_ones():
         conn.close()
 
 
+def test_a_batch_from_a_session_that_has_ended_is_refused_not_refiled():
+    """The app's view of which session is recording lags the server's.
+
+    It learns of a change a poll late, and the HTTP round trip lands after
+    that again, so a batch sampled in session 1 can arrive once session 2 has
+    started. Filed against whatever is recording when it lands, one session's
+    opponents, names and lap counts end up in another.
+    """
+    with temp_db() as path:
+        db.connect(path).close()
+        b = Bridge(path, _recording(2), port=0)
+        b.start()
+        try:
+            cars = _lap_trace()[:3]
+            code, body = _post(b.port, "/rivals",
+                               {"cars": cars, "session_id": 1})
+            assert code == 200, code
+            assert body["ok"] is False, body
+            assert body["reason"] == "session changed", body
+            conn = db.connect(path)
+            try:
+                assert db.get_rival_lap_samples(conn, 2, 1, 3) == []
+            finally:
+                conn.close()
+
+            # Stamped with the session that is actually recording, it stores.
+            code, body = _post(b.port, "/rivals",
+                               {"cars": cars, "session_id": 2})
+            assert code == 200 and body["stored"] == 3, body
+
+            # An older app sends no stamp at all, which is not a mismatch.
+            code, body = _post(b.port, "/rivals", {"cars": _lap_trace()[3:6]})
+            assert code == 200 and body["stored"] == 3, body
+        finally:
+            b.stop()
+
+
+def test_a_lap_of_teleports_is_not_a_lap_we_saw():
+    """Samples at the speed clamp are not evidence the lap was driven.
+
+    Counting them let a lap that was almost entirely a car being moved about
+    meet the coverage rule, and then be drawn from the few real samples left.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        conn = db.connect(Path(d) / "t.db")
+        sid = make_session(conn)
+        clamp = db.RIVAL_TELEPORT_KMH + 0.9
+        real = [{"car_index": 1, "lap_count": 7, "spline": i / 200,
+                 "speed_kmh": 180.0} for i in range(0, 200, 20)]
+        ported = [{"car_index": 1, "lap_count": 7, "spline": i / 200,
+                   "speed_kmh": clamp} for i in range(1, 200, 2)]
+        db.store_rival_batch(conn, sid, [], real + ported)
+
+        # Ten real samples is under RIVAL_LAP_MIN_SAMPLES, however many
+        # teleports share the lap with them.
+        assert db.well_covered_rival_laps(conn, sid, 1) == []
+        (lap,) = db.rival_lap_counts(conn, sid, 1)
+        assert lap["n"] == len(real), lap
+        print(f"  {len(ported)} teleports discounted, {lap['n']} real "
+              f"samples left: not well covered")
+        conn.close()
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

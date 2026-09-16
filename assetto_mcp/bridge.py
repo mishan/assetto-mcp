@@ -505,6 +505,17 @@ class Bridge:
                     if sid is None:
                         return self._send(200, {"ok": False,
                                                 "reason": "not recording"})
+                    # Which session the app believed it was sampling. Its
+                    # view lags ours by a poll and by the round trip this
+                    # request is making, so a batch can arrive after the
+                    # session it belongs to has ended -- and filing it here
+                    # would put one session's opponents, names and lap
+                    # counts in another. Absent from an older app, which is
+                    # read as "no claim" rather than as a mismatch.
+                    claimed = _opt_int(body.get("session_id"), 1, 2**31 - 1)
+                    if claimed is not None and claimed != sid:
+                        return self._send(200, {"ok": False,
+                                                "reason": "session changed"})
                     raw_cars = body.get("cars")
                     if not isinstance(raw_cars, list):
                         return self._send(400, {"error": "'cars' must be a "

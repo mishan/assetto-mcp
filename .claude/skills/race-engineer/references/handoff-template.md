@@ -25,7 +25,7 @@ One row per file written or on-wheel change, with the measured verdict or
 ## What the week established
 
 Bullets. Each one a fact with its number and the laps it came from. Circuit
-facts (which side is loaded, fuel per lap, brake points in metres before
+facts (which side is loaded, fuel per lap, brake points in meters before
 turn-in on the best lap), car facts (wear onset, balance rules), driver
 facts (the spin shape, what they corrected).
 
@@ -50,4 +50,4 @@ should not rediscover.
 ```
 
 Keep it under two screens. Fractions only in tables that cross-reference
-tool output; everything else in metres and corner names.
+tool output; everything else in meters and corner names.

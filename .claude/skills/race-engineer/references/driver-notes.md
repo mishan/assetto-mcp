@@ -11,7 +11,7 @@ they win. The car throughout is the Honda NSX GT3 Evo
   practice and qualifying before. Practice starts happen before qualifying
   and read as contacts at the grid.
 - Reads you between laps. Wants the answer first and places on the track
-  in metres and corner names, never spline fractions.
+  in meters and corner names, never spline fractions.
 - Makes on-wheel changes (brake bias, TC, ABS) mid-session and tells you;
   tag them with a setup-name suffix.
 - Prefers about a lap of fuel margin. Trusts the in-game estimator.

@@ -43,7 +43,7 @@ session. The `tyre_compound` reads garbage when the car is not live.
 
 **`list_sessions()`** -- id, car, track, lap count, best time. `track_length_m`
 is on the session row in the database (`sessions.track_length_m`), which is
-what turns a position into metres; the tool reply may not carry it, and a
+what turns a position into meters; the tool reply may not carry it, and a
 read-only SQL query does.
 
 **`list_laps(session_id, limit)`** -- most recent first, with ids for the lap
@@ -67,7 +67,7 @@ have seen the setup screen. Reports several candidates when files are
 identical, and the car's setup legality. Pass `session_id` explicitly.
 
 **`set_session_setup(setup_name, session_id)`** -- forward only. Laps from
-now carry the name; nothing already stored changes, including unlabelled
+now carry the name; nothing already stored changes, including unlabeled
 laps. Call it when the driver says they loaded something, after every pit
 stop that changed anything, on every new session id, and for on-wheel
 changes with a suffix (`claude_v15 bias58`).
@@ -108,7 +108,7 @@ not a tool.
 - `suspension` headlines when the app captured them; `suspension_report`
   for the rest.
 
-Convert every `pos` to metres before speaking: `pos × track_length_m`.
+Convert every `pos` to meters before speaking: `pos × track_length_m`.
 
 **`track_corners(session_id)`** -- where each T-number is: start, apex, end,
 brake point, sign, and how many laps cornered there. Built per session
@@ -116,7 +116,7 @@ from the laps driven, so the numbering is the session's, not the circuit's:
 a flat kink is not numbered, and 3A is numbered straight through. The
 numbering is also not the same in `compare_laps` (built from those two laps
 only) or `compare_runs` (built from the laps compared). Quote the label
-with the tool that produced it, and prefer metres and the driver's own
+with the tool that produced it, and prefer meters and the driver's own
 name for a corner when the labels disagree.
 
 **`driving_line(lap_id, compare_lap_id, points)`** -- where the car was
@@ -126,7 +126,7 @@ were at each point: the answer to "was that a wider line".
 
 **`export_line_map(session_id, lap_ids)`** -- one HTML file in the data
 directory's `exports/` folder with every lap drawn, best lap picked out,
-colouring by setup or speed or pedals, tyre and rev charts, opponents'
+coloring by setup or speed or pedals, tyre and rev charts, opponents'
 brake points. `lap_ids` is a JSON list, or null for the whole session.
 Hand the path to the driver. `scripts/driving_line_map.py` does the same
 from a shell.
@@ -283,8 +283,10 @@ no opponents, no suspension, no setup-screen values, no messages.
 - `scripts/driving_line_map.py` -- the line map from a shell.
 - `scripts/say.py "text"` -- reads a sentence aloud over the game audio
   with the Windows voices (`--list` shows them, `--voice Zira`,
-  `--rate 1`). Returns at once; `--wait` blocks until it has played. For
-  live mode only, and only for what the driver acts on this lap.
+  `--rate 1`). Always pass `--wait`: without it the call returns while the
+  sentence is still playing and the next one talks over it. For live mode
+  only, and only for what the driver acts on this lap. Runs on Windows and
+  under WSL; anywhere else it prints the sentence instead.
 - `scripts/relabel_laps.py` -- the only way to overwrite a setup label.
 - The running server can predate the repository's code: a field this
   file describes (`contacts_inferred`, say) may be missing from a tool's
@@ -300,5 +302,5 @@ no opponents, no suspension, no setup-screen values, no messages.
   `heading`, `damage`); `laps` has the verdicts and `completed_at`;
   `rival_samples` has opponents (`spline`, not `norm_pos`); `sessions` has
   `track_length_m`. Reach for it when a tool does not answer the question:
-  brake points in metres with entry speed, shift rpm by gear, time spent
+  brake points in meters with entry speed, shift rpm by gear, time spent
   in 6th, per-zone slip ratios.

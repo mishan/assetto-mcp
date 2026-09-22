@@ -168,8 +168,9 @@ The in-game app (right edge of the screen → apps sidebar) gives you:
   rather than repeating whatever the server claims.
 - **Messages back from the assistant** — *"claude_v2 saved — pit and load it."*
 - **Or spoken.** `python scripts/say.py "Box this lap"` reads a sentence
-  aloud over the game audio with the voices Windows already has, for the
-  calls that can't wait for you to look at a screen. Nothing to install.
+  aloud over the game audio with the voices Windows already has (from Windows or WSL), for
+  the calls that can't wait for you to look at a screen. Nothing to
+  install.
 
 ---
 

@@ -4,12 +4,12 @@ What the fields mean once they are on the screen, and the rules that have
 held across the sessions so far. Where a rule is specific to this driver's
 car it says so; the rest is general.
 
-## Positions into metres
+## Positions into meters
 
-`pos × track_length_m` is metres past the start line. Metres before
+`pos × track_length_m` is meters past the start line. Meters before
 turn-in is `(entry_pos − pos) × track_length_m`. One thousandth of position
 is 4.2 m at Interlagos, 4.5 m at Kyalami, 5.4 m at Watkins Glen. Quote
-brake points as metres before turn-in so they line up with the 50 m and
+brake points as meters before turn-in so they line up with the 50 m and
 100 m boards, and name the corner the way the driver does.
 
 ## Balance: slip and steering lock
@@ -69,7 +69,7 @@ speed, raised entry yaw, and tightened the lap-time spread from 0.76 s to
 input inside the corner becomes dangerous.
 
 Braking distance is measured from the first brake sample over 0.3 to the
-last, in metres, with the entry speed beside it. The field does not brake
+last, in meters, with the entry speed beside it. The field does not brake
 later than this driver; when they lose ground in a pack it is the rear
 stepping out on the brakes, not the marker.
 
@@ -90,7 +90,8 @@ and say which side and which axle. What has held:
   stint in every stint measured (Kyalami twice, Interlagos twice), the
   loaded rear first, with no temperature rise to warn of it. Fronts stay
   flat. Budget for it in a race longer than 12 laps. `stint_wear` shows it
-  as `rate_rising` on the rear.
+  in `trend` for the rear corners: `late_per_lap` well above `early_per_lap`,
+  and a positive `change`.
 - Cold tyres explain the first flying lap and nothing after it.
 
 ## Fuel

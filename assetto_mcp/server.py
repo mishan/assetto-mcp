@@ -126,6 +126,27 @@ CORNER_MAP_PAGE = turns.CORNER_MAP_PAGE
 _corner_maps: dict[int, tuple[tuple[int, ...], dict]] = {}
 
 
+def _contacts_inferred(lap: dict, samples: list[dict],
+                       names: dict[int, str] | None = None
+                       ) -> list[dict] | None:
+    """Impacts on the lap, placed against whoever was alongside.
+
+    The opponent rows are fetched for the lap's own wall-clock span plus
+    the matching window either side, so a hit on the first tick of the lap
+    can still be placed against a row stored just before it. `names` is the
+    session's rival_names, for a caller reading many laps of one session.
+    """
+    clock = analysis._ego_clock(lap)
+    if clock is None or not samples:
+        return analysis.infer_contacts(lap, samples)
+    t0 = clock(samples[0]["t_ms"]) - analysis.CONTACT_WINDOW_S
+    t1 = clock(samples[-1]["t_ms"]) + analysis.CONTACT_WINDOW_S
+    rivals = db.rival_samples_between(_conn, lap["session_id"], t0, t1)
+    if names is None:
+        names = db.rival_names(_conn, lap["session_id"])
+    return analysis.infer_contacts(lap, samples, rivals, names)
+
+
 def _session_corner_map(session_id: int, lap_id: int | None = None) -> dict:
     """This session's turn numbering, from its most recent usable laps.
 
@@ -960,6 +981,23 @@ def lap_summary(lap_id: int) -> str:
     contact AND when the server had damage off -- both read zero -- so a
     null is not evidence of a clean lap.
 
+    `contacts_inferred` does not need the damage model. Every acceleration
+    spike over 3 g -- more than this car's tyres can produce -- is listed
+    with where it was, how hard, what the driver's feet were doing, and the
+    nearest opponent at that instant from the rival telemetry. Verdict
+    "contact" means a car was within 10 m; "wall" means nobody was and the
+    car lost 15 km/h or more in the instant of the spike (a barrier, or a
+    car the feed never carried -- sand and braking lose speed over seconds
+    and do not count); "snap" means nobody was, the speed stayed and the
+    car was rotating faster than 90 deg/s, a spin or a slide caught, the g
+    being the rotation itself;
+    "kerb" means nobody was and the car carried on, and lists only where
+    and how hard; "no_opponent_data" means there was nothing to place it
+    against, and `if_alone` gives the wall / snap / kerb reading it would
+    have had with nobody near. An empty list is a lap with no spike at
+    all; null is a lap with no acceleration channels.
+    Read this before calling a spin a driving error.
+
     Includes a few suspension headlines when the in-game app captured them;
     call suspension_report for the full damper histograms and ride height."""
     lap = db.get_lap(_conn, lap_id)
@@ -973,12 +1011,16 @@ def lap_summary(lap_id: int) -> str:
     # `corner_detection` in the payload names the basis either way.
     cmap = _session_corner_map(lap["session_id"], lap_id)
     ref = cmap["reference"]
+    samples = db.get_samples(_conn, lap_id)
     out = analysis.lap_summary(
-        lap, db.get_samples(_conn, lap_id),
+        lap, samples,
         ref["reference"], reference_laps=ref["laps"],
         reference_spread_g=ref["spread_g"], turns=cmap["turns"],
         reference_basis="this session's laps, the ones its turn numbers "
                         "were built from")
+    if "error" not in out:
+        out["contacts_inferred"] = analysis.compact_contacts(
+            _contacts_inferred(lap, samples))
 
     # A pointer, not a replacement: lap_summary has a ~1KB budget and the
     # full suspension report is an order of magnitude bigger.
@@ -1644,6 +1686,13 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
     `clean_laps_only=True` excludes them, which is worth doing when the
     question is specifically about a clean lap time.
 
+    **Laps with a contact are included too**, and listed in `contacts`:
+    any lap on which an acceleration spike over 3 g happened with an
+    opponent within 10 m. A lap that was hit is still a lap, but a change
+    "measured" on it is measuring the hit, so read a result that rests on
+    one as such. The detection is the same as lap_summary's
+    `contacts_inferred` and does not need the damage model.
+
     `include_invalid` is the old name for the same switch with the sense
     reversed, kept so existing callers keep working. It is honoured rather
     than ignored -- `include_invalid=false` used to mean these laps were
@@ -1751,6 +1800,7 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
     # this into "within noise, change -1620ms" and never said why.
     dropped = []
     ran_wide = []
+    contacts = []
 
     def usable(lap, side):
         ok, why = db.lap_usability(lap)
@@ -1770,6 +1820,23 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
             "max_tyres_out": lap.get("max_tyres_out"),
             "excursions": lap.get("excursions"),
             "off_track_ms": lap.get("off_track_ms"),
+        })
+
+    names_by_session: dict[int, dict[int, str]] = {}
+
+    def note_contacts(lap, samples, side):
+        sid = lap["session_id"]
+        if sid not in names_by_session:
+            names_by_session[sid] = db.rival_names(_conn, sid)
+        hits = [c for c in _contacts_inferred(lap, samples,
+                                              names_by_session[sid]) or []
+                if c["verdict"] == "contact"]
+        if not hits:
+            return
+        contacts.append({
+            "lap_id": lap["id"], "side": side,
+            "lap_number": lap.get("lap_number"),
+            "contacts": hits,
         })
 
     def loaded(laps, side):
@@ -1799,6 +1866,7 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
             # lap with no samples in both lists, so `ran_wide_note` said it
             # had been "counted anyway" about a lap that was excluded.
             note_wide(lap, side)
+            note_contacts(lap, samples, side)
             out.append((lap, samples))
         return out
 
@@ -1877,6 +1945,13 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
     out["car"] = base_laps[0].get("car")
     if dropped:
         out["excluded_laps"] = dropped
+    if contacts:
+        out["contacts"] = contacts
+        out["contacts_note"] = (
+            f"{len(contacts)} of the laps compared carried an impact with an "
+            "opponent within 10 m, inferred from acceleration and opponent "
+            "positions. They are counted; a difference that rests on them "
+            "may be the hit rather than the change.")
     if ran_wide:
         out["ran_wide"] = ran_wide
         out["ran_wide_note"] = (

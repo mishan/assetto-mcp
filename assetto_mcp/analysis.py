@@ -964,6 +964,280 @@ def _contacts(samples: list[dict]) -> list[dict] | None:
     return out
 
 
+# --- contacts without the damage counter ----------------------------------
+#
+# With the server's damage model off the counter reads zero all lap and
+# _contacts above has nothing to say, which on race night is the wrong
+# moment to have nothing to say: "was that a hit or was that me" is the
+# first question after every spin. What is left is the physics. This car
+# peaks at about 2.8 g on its tyres, so a sample past 3 g is an impact, a
+# kerb launch or the floor -- and which of those it was is decided by who
+# was alongside at the same wall-clock instant.
+CONTACT_G = 3.0
+# Further than a car length, on purpose. Opponents are network-interpolated
+# and their stored position lags the ego car's by a tenth or two, which at
+# 60 m/s is 6 to 12 m. Three hits confirmed from the driver's seat -- a 6.8 g
+# hit at Interlagos with the throttle at 97%, a 3.1 g touch under braking
+# there, and a stop against a car at the Glen -- all placed the other car
+# at 6.4 to 7.9 m. Within 10 m, then, is touching.
+CONTACT_NEAR_M = 10.0
+# How far either side of the spike to look for an opponent row. Opponents
+# arrive at 10 Hz in batches, so this is a few of their samples.
+CONTACT_WINDOW_S = 0.6
+# What separates a wall from a kerb when nobody was near: a kerb launches
+# the car and it carries on, a wall (or a car the feed never saw) takes the
+# speed out of it in the same instant as the spike. Measured across the
+# spike samples only -- from the sample before the first to the sample
+# after the last, a few hundredths of a second -- because sand, grass and
+# hard braking all lose speed too, at one to two g over seconds: a
+# half-second window read a full-ABS stop and a spin on the grass as walls.
+# Seven kerb strikes at Interlagos and the Glen lost 0 to 9 km/h across
+# the spike; the stop against the barrier at the Glen lost 73.
+WALL_SPEED_LOSS_KMH = 15.0
+# A car going round reads as g on its own: at 25 m/s and 190 deg/s its
+# own frame sees 8 g with nothing touched. Rotation at the hardest tick
+# faster than this, with nobody near, is the car snapping -- a spin, or a
+# slide caught. A full spin at the Glen read 116 deg/s here, a caught
+# snap off a kerb 96; clean cornering is under 45.
+SNAP_YAW_DEG_S = 90.0
+
+
+def _ego_clock(lap: dict):
+    """Wall clock of a sample's t_ms, or None when the lap cannot be placed.
+
+    Ego samples carry a lap-relative t_ms; opponent rows carry the wall
+    clock they were stored at. The lap's completed_at is the only bridge
+    between the two: the last sample of the lap was taken at (about) the
+    moment the lap completed, so t_ms maps back from there.
+    """
+    done, length = lap.get("completed_at"), lap.get("lap_time_ms")
+    if (not isinstance(done, (int, float))
+            or not isinstance(length, (int, float))):
+        return None
+    return lambda t_ms: done - (length - t_ms) / 1000.0
+
+
+def _rival_clock(rivals: list[dict]) -> list[tuple]:
+    """Opponent rows as (wall_clock, car_index, x, z, speed), in time order.
+
+    Every row of one posted batch is stored with the same created_at, the
+    moment the batch arrived, so on its own created_at is up to a batch
+    late for the older rows in it. The rows also carry the sim clock they
+    were sampled at, and within a batch that clock is exact: the newest
+    row of the batch is the one taken at (about) created_at, and the rest
+    were taken that many milliseconds earlier.
+    """
+    by_batch: dict[float, list[dict]] = {}
+    for r in rivals:
+        by_batch.setdefault(r["created_at"], []).append(r)
+    out = []
+    for created, rows in by_batch.items():
+        clocks = [r["t_ms"] for r in rows
+                  if isinstance(r.get("t_ms"), (int, float))]
+        newest = max(clocks) if clocks else None
+        for r in rows:
+            if r.get("pos_x") is None or r.get("pos_z") is None:
+                continue
+            t = created
+            if newest is not None and isinstance(r.get("t_ms"), (int, float)):
+                t = created - (newest - r["t_ms"]) / 1000.0
+            out.append((t, r["car_index"], r["pos_x"], r["pos_z"],
+                        r.get("speed_kmh")))
+    out.sort()
+    return out
+
+
+def _ego_position_at(samples: list[dict], clock, t: float):
+    """The ego car's (x, z) at wall clock t, interpolated between samples."""
+    lo, hi = 0, len(samples) - 1
+    if t <= clock(samples[lo]["t_ms"]):
+        s = samples[lo]
+        return s["pos_x"], s["pos_z"]
+    if t >= clock(samples[hi]["t_ms"]):
+        s = samples[hi]
+        return s["pos_x"], s["pos_z"]
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if clock(samples[mid]["t_ms"]) <= t:
+            lo = mid
+        else:
+            hi = mid
+    a, b = samples[lo], samples[hi]
+    ta, tb = clock(a["t_ms"]), clock(b["t_ms"])
+    f = 0.0 if tb <= ta else (t - ta) / (tb - ta)
+    return (a["pos_x"] + f * (b["pos_x"] - a["pos_x"]),
+            a["pos_z"] + f * (b["pos_z"] - a["pos_z"]))
+
+
+def infer_contacts(lap: dict, samples: list[dict],
+                   rivals: list[dict] | None = None,
+                   names: dict[int, str] | None = None) -> list[dict] | None:
+    """Impacts on the lap, from acceleration spikes and who was alongside.
+
+    One entry per impact: where, how hard, what the driver's feet were
+    doing, the speed it cost, the nearest opponent at that instant and a
+    verdict -- "contact" when a car was within CONTACT_NEAR_M; "wall" when
+    none was and the car lost WALL_SPEED_LOSS_KMH or more across the spike
+    itself (a barrier, or a car the opponent feed never carried); "snap"
+    when none was, the speed stayed, and the car rotated faster than
+    SNAP_YAW_DEG_S -- a spin or a slide caught, the g being the rotation;
+    "kerb" when none was and the car carried on straight (a kerb, the
+    floor, a launch);
+    "no_opponent_data" when there is nothing to place it against: no
+    opponent rows in the window, or no positions on either side. Those
+    entries carry `if_alone`, the wall / snap / kerb verdict the spike
+    would get with nobody near -- a barrier still reads as one in a
+    practice session with nobody else on track, it just cannot rule out a
+    car. The opponent search spans the whole impact, from the first spike
+    of it to the last, so a car hit late in a spin is still found. An empty
+    list is a lap with no spike at all. None is a lap that cannot be read
+    this way -- no acceleration channels, or no completed_at to put it on
+    the wall clock.
+
+    `rivals` is every opponent row stored during the lap (see
+    db.rival_samples_between); pass None when opponent telemetry was never
+    running and every spike comes back "no_opponent_data". Distances are
+    measured with both cars at the same instant -- a car following on the
+    same line passes through the ego car's position a moment later, and
+    matching positions without matching clocks read every close follower
+    as a hit.
+
+    The raw acceleration channels are used, not the sanitised ones: the
+    sanity ceiling that keeps a spike out of peak_lat_g is exactly what
+    would hide the hit here.
+    """
+    if not samples or not any(isinstance(s.get("acc_lat"), (int, float))
+                              or isinstance(s.get("acc_lon"), (int, float))
+                              for s in samples):
+        return None
+    clock = _ego_clock(lap)
+    if clock is None:
+        return None
+
+    # Combined, so a hit that lands at an angle -- 2.5 g each way -- is
+    # not missed for being under 3 g on both axes; the axis named is the
+    # larger of the two.
+    def g(s):
+        lat, lon = s.get("acc_lat"), s.get("acc_lon")
+        lat = (abs(lat) if isinstance(lat, (int, float))
+               and math.isfinite(lat) else 0.0)
+        lon = (abs(lon) if isinstance(lon, (int, float))
+               and math.isfinite(lon) else 0.0)
+        return math.hypot(lat, lon), ("lat" if lat >= lon else "lon")
+
+    # Spikes closer together than CONTACT_GAP_MS are one impact: a car
+    # bouncing off another, or along a wall, spikes on several ticks.
+    groups: list[list[dict]] = []
+    for s in samples:
+        peak, _ = g(s)
+        if peak < CONTACT_G:
+            continue
+        if groups and s["t_ms"] - groups[-1][-1]["t_ms"] <= CONTACT_GAP_MS:
+            groups[-1].append(s)
+        else:
+            groups.append([s])
+    if not groups:
+        return []
+
+    placed = [s for s in samples
+              if s.get("pos_x") is not None and s.get("pos_z") is not None]
+    index = {id(s): i for i, s in enumerate(samples)}
+    timeline = _rival_clock(rivals or [])
+    names = names or {}
+    out = []
+    for grp in groups:
+        first = grp[0]
+        peak_s = max(grp, key=lambda s: g(s)[0])
+        peak, axis = g(peak_s)
+        gas, brake = first.get("gas") or 0.0, first.get("brake") or 0.0
+        if gas > 0.1 and brake > 0.1:
+            feet = "both"
+        elif brake > 0.1:
+            feet = "brake"
+        elif gas > 0.1:
+            feet = "throttle"
+        else:
+            feet = "coasting"
+        # The sample either side of the hardest tick, not of the group: a
+        # spin keeps the car over 3 g for as long as it is going round, so
+        # the group spans the whole spin and the speed it bled off on the
+        # grass read as a wall.
+        before = samples[max(0, index[id(peak_s)] - 1)]
+        after = samples[min(len(samples) - 1, index[id(peak_s)] + 1)]
+        lost = max(0.0, (before.get("speed_kmh") or 0.0)
+                   - (after.get("speed_kmh") or 0.0))
+        yaw = None
+        h0, h1 = before.get("heading"), after.get("heading")
+        dt = (after["t_ms"] - before["t_ms"]) / 1000.0
+        if (isinstance(h0, (int, float)) and isinstance(h1, (int, float))
+                and dt > 0):
+            turned = (h1 - h0 + math.pi) % (2 * math.pi) - math.pi
+            yaw = abs(math.degrees(turned)) / dt
+        entry = {
+            "pos": round(first.get("norm_pos") or 0.0, 4),
+            "t_ms": first["t_ms"],
+            "peak_g": round(peak, 1),
+            "axis": axis,
+            "speed_kmh": round(first.get("speed_kmh") or 0.0),
+            "speed_lost_kmh": round(lost),
+            "yaw_rate_deg_s": round(yaw) if yaw is not None else None,
+            "gas": round(gas, 2),
+            "brake": round(brake, 2),
+            "input": feet,
+            "nearest": None,
+        }
+        if lost >= WALL_SPEED_LOSS_KMH:
+            alone = "wall"
+        elif yaw is not None and yaw >= SNAP_YAW_DEG_S:
+            alone = "snap"
+        else:
+            alone = "kerb"
+        # Across the whole group, not around its first tick: a spin can
+        # stay over 3 g for seconds, and the car it ends against is met at
+        # the end of it.
+        t0 = clock(first["t_ms"]) - CONTACT_WINDOW_S
+        t1 = clock(grp[-1]["t_ms"]) + CONTACT_WINDOW_S
+        nearest = None
+        if placed:
+            for t, car, x, z, speed in timeline:
+                if t < t0:
+                    continue
+                if t > t1:
+                    break
+                ex, ez = _ego_position_at(placed, clock, t)
+                d = math.hypot(x - ex, z - ez)
+                if nearest is None or d < nearest[0]:
+                    nearest = (d, car, speed)
+        if nearest is None:
+            entry["verdict"] = "no_opponent_data"
+            entry["if_alone"] = alone
+        else:
+            d, car, speed = nearest
+            entry["nearest"] = {
+                "car_index": car,
+                "driver_name": names.get(car) or None,
+                "distance_m": round(d, 1),
+                "speed_kmh": round(speed) if speed is not None else None,
+            }
+            entry["verdict"] = "contact" if d <= CONTACT_NEAR_M else alone
+        out.append(entry)
+    return out
+
+
+# The fields a kerb strike keeps in lap_summary. A lap can strike ten
+# kerbs past 3 g, and ten full entries are three times lap_summary's
+# budget; where and how hard is all a kerb needs.
+_KERB_FIELDS = ("pos", "t_ms", "peak_g", "verdict")
+
+
+def compact_contacts(entries: list[dict] | None) -> list[dict] | None:
+    """infer_contacts' list with each kerb strike cut to where and how hard."""
+    if entries is None:
+        return None
+    return [{k: e[k] for k in _KERB_FIELDS} if e["verdict"] == "kerb" else e
+            for e in entries]
+
+
 def lap_summary(lap: dict, samples: list[dict],
                 reference_peak_g: float | None = None,
                 reference_laps: int = 0,

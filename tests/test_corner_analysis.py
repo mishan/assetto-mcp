@@ -253,5 +253,199 @@ def test_no_damage_and_no_damage_column_are_different_answers():
     assert analysis._contacts([{"t_ms": 0, "norm_pos": 0.0}]) is None
 
 
+# --- contacts inferred without the damage counter ---------------------------
+#
+# The ego car drives along +x at 50 m/s, one sample every 40 ms, and the lap
+# completes at wall clock 1000.0 after 4000 ms -- so the sample at t_ms 2000
+# was taken at 998.0 with the car at x=100.
+
+def _driving(spikes=None, acc=True, heading=0.0):
+    out = []
+    for i in range(100):
+        s = {"t_ms": i * 40, "norm_pos": i / 100, "speed_kmh": 180.0,
+             "gas": 1.0, "brake": 0.0, "heading": heading,
+             "pos_x": i * 0.04 * 50, "pos_z": 0.0}
+        if acc:
+            s["acc_lat"], s["acc_lon"] = 0.0, 0.0
+        for k, v in (spikes or {}).get(i, {}).items():
+            s[k] = v
+        out.append(s)
+    return out
+
+
+_LAP = {"completed_at": 1000.0, "lap_time_ms": 4000}
+
+
+def _rival(car, created_at, x, t_ms=None, speed=170.0):
+    return {"car_index": car, "created_at": created_at, "t_ms": t_ms,
+            "pos_x": x, "pos_z": 0.0, "speed_kmh": speed}
+
+
+def test_a_spike_with_a_car_alongside_is_a_contact():
+    """5 g with a car 2 m away at the same instant, on the throttle."""
+    out = analysis.infer_contacts(
+        _LAP, _driving({50: {"acc_lat": 5.0}, 51: {"acc_lon": -4.0}}),
+        [_rival(7, 998.0, 102.0)], {7: "Lily"})
+    assert len(out) == 1, out
+    c = out[0]
+    assert c["verdict"] == "contact" and c["peak_g"] == 5.0, c
+    assert c["axis"] == "lat" and c["input"] == "throttle", c
+    assert c["nearest"] == {"car_index": 7, "driver_name": "Lily",
+                            "distance_m": 2.0, "speed_kmh": 170}, c
+    assert c["pos"] == 0.5 and c["t_ms"] == 2000, c
+    print(f"  {c}")
+
+
+def test_a_spike_with_nobody_near_is_a_kerb_when_the_car_carries_on():
+    out = analysis.infer_contacts(
+        _LAP, _driving({50: {"acc_lon": -3.5}}), [_rival(7, 998.0, 160.0)])
+    assert out[0]["verdict"] == "kerb", out
+    assert out[0]["speed_lost_kmh"] == 0, out
+    assert out[0]["nearest"]["distance_m"] == 60.0, out
+    assert out[0]["nearest"]["driver_name"] is None, out
+
+
+def test_a_spike_with_nobody_near_is_a_wall_when_the_speed_goes_at_once():
+    """A 12 g stop from 180 to 40 km/h in the instant of the spike, with
+    the nearest car 60 m away: a barrier."""
+    spikes = {50: {"acc_lon": -12.0, "speed_kmh": 60.0}}
+    for i in range(51, 62):
+        spikes[i] = {"speed_kmh": 40.0}
+    out = analysis.infer_contacts(
+        _LAP, _driving(spikes), [_rival(7, 998.0, 160.0)])
+    assert out[0]["verdict"] == "wall", out
+    assert out[0]["speed_lost_kmh"] == 140, out
+
+
+def test_speed_lost_slowly_after_a_spike_is_sand_not_a_wall():
+    """A 4 g kerb launch into the gravel: 1.5 g of deceleration for the
+    next second takes 50 km/h off, but not in the instant of the spike."""
+    spikes = {50: {"acc_lat": 4.0}}
+    for i in range(51, 76):
+        spikes[i] = {"speed_kmh": 180.0 - 2.0 * (i - 50)}
+    out = analysis.infer_contacts(
+        _LAP, _driving(spikes), [_rival(7, 998.0, 160.0)])
+    assert out[0]["verdict"] == "kerb", out
+    assert out[0]["speed_lost_kmh"] == 2, out
+
+
+def test_a_fast_rotation_with_nobody_near_is_a_snap():
+    """Over 3 g for six ticks with the heading turning 150 deg/s and the
+    speed still there: the g is the car going round, not something hit.
+    The hardest tick is the second one, so the measurement is taken
+    around it rather than across the whole group."""
+    spikes = {i: {"heading": 0.105 * (i - 49),
+                  "acc_lat": 6.0 if i == 51 else 3.5}
+              for i in range(50, 56)}
+    out = analysis.infer_contacts(
+        _LAP, _driving(spikes), [_rival(7, 998.0, 160.0)])
+    assert len(out) == 1 and out[0]["verdict"] == "snap", out
+    assert out[0]["yaw_rate_deg_s"] == 150, out
+    assert out[0]["peak_g"] == 6.0 and out[0]["speed_lost_kmh"] == 0, out
+    # The same rotation with a car alongside is still a contact.
+    out = analysis.infer_contacts(
+        _LAP, _driving(spikes), [_rival(7, 998.0, 103.0)])
+    assert out[0]["verdict"] == "contact", out
+
+
+def test_a_close_follower_is_measured_at_the_same_instant():
+    """A car 15 m behind on the same line reaches the ego car's position
+    0.3 s later. Matched by clock it is 15 m away throughout; matched by
+    position alone it would read as a hit."""
+    behind = [_rival(8, t, (t - 998.0) * 50 + 85.0)
+              for t in (997.6, 997.8, 998.0, 998.2, 998.4)]
+    out = analysis.infer_contacts(
+        _LAP, _driving({50: {"acc_lat": 4.0}}), behind)
+    assert out[0]["verdict"] == "kerb", out
+    assert out[0]["nearest"]["distance_m"] == 15.0, out
+
+
+def test_rows_of_one_batch_are_placed_by_their_own_clock():
+    """Two rows stored together at 998.4: the newer one was taken then, the
+    older one 400 ms earlier, when the ego car was 20 m further back."""
+    batch = [_rival(9, 998.4, 150.0, t_ms=500400),
+             _rival(9, 998.4, 101.0, t_ms=500000)]
+    out = analysis.infer_contacts(
+        _LAP, _driving({50: {"acc_lat": 4.0}}), batch)
+    assert out[0]["verdict"] == "contact", out
+    assert out[0]["nearest"]["distance_m"] == 1.0, out
+
+
+def test_spikes_on_consecutive_ticks_are_one_impact():
+    out = analysis.infer_contacts(
+        _LAP, _driving({50: {"acc_lat": 3.2}, 52: {"acc_lat": 6.1},
+                        53: {"acc_lon": -3.0}, 90: {"acc_lon": -8.0}}))
+    assert [c["peak_g"] for c in out] == [6.1, 8.0], out
+    assert [c["verdict"] for c in out] == ["no_opponent_data"] * 2, out
+    assert [c["speed_lost_kmh"] for c in out] == [0, 0], out
+
+
+def test_a_car_met_at_the_end_of_a_spin_is_found():
+    """Over 3 g from tick 50 to 70, the hardest at 50, and a car 2 m away
+    only at the end of it -- 0.8 s after the first spike, outside a window
+    measured from the first tick alone."""
+    spikes = {i: {"acc_lat": 6.0 if i == 50 else 3.5} for i in range(50, 71)}
+    out = analysis.infer_contacts(
+        _LAP, _driving(spikes), [_rival(7, 998.8, 142.0)])
+    assert len(out) == 1 and out[0]["verdict"] == "contact", out
+    assert out[0]["nearest"]["distance_m"] == 2.0, out
+
+
+def test_a_spike_at_an_angle_counts_on_both_axes_together():
+    """2.5 g each way is 3.5 g, under the line on either axis alone."""
+    out = analysis.infer_contacts(
+        _LAP, _driving({50: {"acc_lat": 2.5, "acc_lon": -2.4}}))
+    assert len(out) == 1 and out[0]["peak_g"] == 3.5, out
+    assert out[0]["axis"] == "lat", out
+
+
+def test_with_no_opponent_data_the_physics_still_reads():
+    spikes = {50: {"acc_lon": -12.0, "speed_kmh": 60.0}}
+    for i in range(51, 62):
+        spikes[i] = {"speed_kmh": 40.0}
+    out = analysis.infer_contacts(_LAP, _driving(spikes))
+    assert out[0]["verdict"] == "no_opponent_data", out
+    assert out[0]["if_alone"] == "wall", out
+    out = analysis.infer_contacts(_LAP, _driving({50: {"acc_lat": 4.0}}))
+    assert out[0]["if_alone"] == "kerb", out
+    # Placed against someone, the verdict is the reading and no if_alone.
+    out = analysis.infer_contacts(
+        _LAP, _driving({50: {"acc_lat": 4.0}}), [_rival(7, 998.0, 160.0)])
+    assert "if_alone" not in out[0], out
+
+
+def test_lap_summary_keeps_only_where_and_how_hard_for_a_kerb():
+    out = analysis.compact_contacts(analysis.infer_contacts(
+        _LAP, _driving({30: {"acc_lat": 4.0}, 60: {"acc_lat": 5.0}}),
+        [_rival(7, 997.2, 60.0), _rival(7, 998.4, 300.0)]))
+    assert out[0]["verdict"] == "contact" and "nearest" in out[0], out
+    assert out[1] == {"pos": 0.6, "t_ms": 2400, "peak_g": 5.0,
+                      "verdict": "kerb"}, out
+    assert analysis.compact_contacts(None) is None
+
+
+def test_no_spike_no_channel_and_no_clock_are_different_answers():
+    assert analysis.infer_contacts(_LAP, _driving()) == []
+    assert analysis.infer_contacts(_LAP, _driving(acc=False)) is None
+    assert analysis.infer_contacts(
+        {"lap_time_ms": 4000}, _driving({50: {"acc_lat": 5.0}})) is None
+
+
+def test_the_feet_are_read_from_the_first_spike_sample():
+    out = analysis.infer_contacts(
+        _LAP, _driving({50: {"acc_lon": -4.0, "gas": 0.0, "brake": 0.8},
+                        90: {"acc_lat": 4.0, "gas": 0.0, "brake": 0.0}}))
+    assert [c["input"] for c in out] == ["brake", "coasting"], out
+    assert out[0]["brake"] == 0.8 and out[0]["gas"] == 0.0, out
+
+
+def test_a_glitch_past_the_sanity_ceiling_still_counts_here():
+    """peak_lat_g drops a 10 g sample as a glitch; a hit reads the same and
+    is the whole point of this detector."""
+    out = analysis.infer_contacts(
+        _LAP, _driving({50: {"acc_lon": -106.7}}), [_rival(7, 998.0, 107.0)])
+    assert out[0]["verdict"] == "contact" and out[0]["peak_g"] == 106.7, out
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

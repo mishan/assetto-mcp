@@ -292,6 +292,28 @@ averaging it away.
   contact. Null both when there was no contact and when the server had damage
   off, because both read zero all lap — so a null is not evidence of a clean
   lap. A repair in the pits lowers damage and is not counted.
+- **`contacts_inferred`** — the same question answered without the damage
+  model. Any acceleration sample over 3 g (this car's tyres stop at about
+  2.8) is an impact, a kerb launch or the floor; which one is decided by the
+  nearest opponent at that instant, from the rival telemetry. The ego
+  sample's wall clock is `completed_at − (lap_time_ms − t_ms)/1000`; rival
+  rows carry the clock they arrived at, corrected within a batch by their
+  own sim clock, and the distance is measured with both cars at the same
+  instant so a close follower does not read as a hit. The threshold is 10 m,
+  not a car length, because opponent positions lag: confirmed hits placed
+  the other car at 6 to 8 m. With nobody near, the speed lost across the
+  hardest sample itself tells a `wall` (15 km/h or more gone in the
+  instant) from everything that loses speed over seconds — sand, grass,
+  braking — and a rotation over 90 deg/s with the speed still there is a
+  `snap`, a spin or a slide caught, whose g is the rotation itself. The
+  rest is `kerb`. Verdicts are `contact`, `wall`, `snap`, `kerb` and
+  `no_opponent_data`, which carries `if_alone`, the wall / snap / kerb
+  reading with nobody near. The g is lateral and longitudinal combined, and
+  the opponent search spans the whole impact, first spike to last, since a
+  spin can stay over 3 g for seconds. `lap_summary` cuts kerb entries to
+  position and g to stay inside its budget; `compare_runs`
+  lists laps with a contact in `contacts` the way it lists laps that ran
+  wide.
 - **`accel_samples_dropped`** — the same idea for the acceleration channels.
   AC sometimes emits a 10 g spike from a reset or a kerb strike, and one of
   those used to inflate `peak_lat_g` for the lap *and* the noise estimate for

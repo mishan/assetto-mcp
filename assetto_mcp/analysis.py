@@ -1084,7 +1084,12 @@ def infer_contacts(lap: dict, samples: list[dict],
     "kerb" when none was and the car carried on straight (a kerb, the
     floor, a launch);
     "no_opponent_data" when there is nothing to place it against: no
-    opponent rows in the window, or no positions on either side. An empty
+    opponent rows in the window, or no positions on either side. Those
+    entries carry `if_alone`, the wall / snap / kerb verdict the spike
+    would get with nobody near -- a barrier still reads as one in a
+    practice session with nobody else on track, it just cannot rule out a
+    car. The opponent search spans the whole impact, from the first spike
+    of it to the last, so a car hit late in a spin is still found. An empty
     list is a lap with no spike at all. None is a lap that cannot be read
     this way -- no acceleration channels, or no completed_at to put it on
     the wall clock.
@@ -1109,13 +1114,16 @@ def infer_contacts(lap: dict, samples: list[dict],
     if clock is None:
         return None
 
+    # Combined, so a hit that lands at an angle -- 2.5 g each way -- is
+    # not missed for being under 3 g on both axes; the axis named is the
+    # larger of the two.
     def g(s):
         lat, lon = s.get("acc_lat"), s.get("acc_lon")
         lat = (abs(lat) if isinstance(lat, (int, float))
                and math.isfinite(lat) else 0.0)
         lon = (abs(lon) if isinstance(lon, (int, float))
                and math.isfinite(lon) else 0.0)
-        return (lat, "lat") if lat >= lon else (lon, "lon")
+        return math.hypot(lat, lon), ("lat" if lat >= lon else "lon")
 
     # Spikes closer together than CONTACT_GAP_MS are one impact: a car
     # bouncing off another, or along a wall, spikes on several ticks.
@@ -1178,13 +1186,23 @@ def infer_contacts(lap: dict, samples: list[dict],
             "input": feet,
             "nearest": None,
         }
-        t0 = clock(first["t_ms"])
+        if lost >= WALL_SPEED_LOSS_KMH:
+            alone = "wall"
+        elif yaw is not None and yaw >= SNAP_YAW_DEG_S:
+            alone = "snap"
+        else:
+            alone = "kerb"
+        # Across the whole group, not around its first tick: a spin can
+        # stay over 3 g for seconds, and the car it ends against is met at
+        # the end of it.
+        t0 = clock(first["t_ms"]) - CONTACT_WINDOW_S
+        t1 = clock(grp[-1]["t_ms"]) + CONTACT_WINDOW_S
         nearest = None
         if placed:
             for t, car, x, z, speed in timeline:
-                if t < t0 - CONTACT_WINDOW_S:
+                if t < t0:
                     continue
-                if t > t0 + CONTACT_WINDOW_S:
+                if t > t1:
                     break
                 ex, ez = _ego_position_at(placed, clock, t)
                 d = math.hypot(x - ex, z - ez)
@@ -1192,6 +1210,7 @@ def infer_contacts(lap: dict, samples: list[dict],
                     nearest = (d, car, speed)
         if nearest is None:
             entry["verdict"] = "no_opponent_data"
+            entry["if_alone"] = alone
         else:
             d, car, speed = nearest
             entry["nearest"] = {
@@ -1200,16 +1219,23 @@ def infer_contacts(lap: dict, samples: list[dict],
                 "distance_m": round(d, 1),
                 "speed_kmh": round(speed) if speed is not None else None,
             }
-            if d <= CONTACT_NEAR_M:
-                entry["verdict"] = "contact"
-            elif lost >= WALL_SPEED_LOSS_KMH:
-                entry["verdict"] = "wall"
-            elif yaw is not None and yaw >= SNAP_YAW_DEG_S:
-                entry["verdict"] = "snap"
-            else:
-                entry["verdict"] = "kerb"
+            entry["verdict"] = "contact" if d <= CONTACT_NEAR_M else alone
         out.append(entry)
     return out
+
+
+# The fields a kerb strike keeps in lap_summary. A lap can strike ten
+# kerbs past 3 g, and ten full entries are three times lap_summary's
+# budget; where and how hard is all a kerb needs.
+_KERB_FIELDS = ("pos", "t_ms", "peak_g", "verdict")
+
+
+def compact_contacts(entries: list[dict] | None) -> list[dict] | None:
+    """infer_contacts' list with each kerb strike cut to where and how hard."""
+    if entries is None:
+        return None
+    return [{k: e[k] for k in _KERB_FIELDS} if e["verdict"] == "kerb" else e
+            for e in entries]
 
 
 def lap_summary(lap: dict, samples: list[dict],

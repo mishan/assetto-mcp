@@ -126,13 +126,15 @@ CORNER_MAP_PAGE = turns.CORNER_MAP_PAGE
 _corner_maps: dict[int, tuple[tuple[int, ...], dict]] = {}
 
 
-def _contacts_inferred(lap: dict,
-                       samples: list[dict]) -> list[dict] | None:
+def _contacts_inferred(lap: dict, samples: list[dict],
+                       names: dict[int, str] | None = None
+                       ) -> list[dict] | None:
     """Impacts on the lap, placed against whoever was alongside.
 
     The opponent rows are fetched for the lap's own wall-clock span plus
     the matching window either side, so a hit on the first tick of the lap
-    can still be placed against a row stored just before it.
+    can still be placed against a row stored just before it. `names` is the
+    session's rival_names, for a caller reading many laps of one session.
     """
     clock = analysis._ego_clock(lap)
     if clock is None or not samples:
@@ -140,8 +142,9 @@ def _contacts_inferred(lap: dict,
     t0 = clock(samples[0]["t_ms"]) - analysis.CONTACT_WINDOW_S
     t1 = clock(samples[-1]["t_ms"]) + analysis.CONTACT_WINDOW_S
     rivals = db.rival_samples_between(_conn, lap["session_id"], t0, t1)
-    return analysis.infer_contacts(
-        lap, samples, rivals, db.rival_names(_conn, lap["session_id"]))
+    if names is None:
+        names = db.rival_names(_conn, lap["session_id"])
+    return analysis.infer_contacts(lap, samples, rivals, names)
 
 
 def _session_corner_map(session_id: int, lap_id: int | None = None) -> dict:
@@ -988,9 +991,11 @@ def lap_summary(lap_id: int) -> str:
     and do not count); "snap" means nobody was, the speed stayed and the
     car was rotating faster than 90 deg/s, a spin or a slide caught, the g
     being the rotation itself;
-    "kerb" means nobody was and the car carried on; "no_opponent_data"
-    means there was nothing to place it against. An empty list is a lap
-    with no spike at all; null is a lap with no acceleration channels.
+    "kerb" means nobody was and the car carried on, and lists only where
+    and how hard; "no_opponent_data" means there was nothing to place it
+    against, and `if_alone` gives the wall / snap / kerb reading it would
+    have had with nobody near. An empty list is a lap with no spike at
+    all; null is a lap with no acceleration channels.
     Read this before calling a spin a driving error.
 
     Includes a few suspension headlines when the in-game app captured them;
@@ -1014,7 +1019,8 @@ def lap_summary(lap_id: int) -> str:
         reference_basis="this session's laps, the ones its turn numbers "
                         "were built from")
     if "error" not in out:
-        out["contacts_inferred"] = _contacts_inferred(lap, samples)
+        out["contacts_inferred"] = analysis.compact_contacts(
+            _contacts_inferred(lap, samples))
 
     # A pointer, not a replacement: lap_summary has a ~1KB budget and the
     # full suspension report is an order of magnitude bigger.
@@ -1816,8 +1822,14 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
             "off_track_ms": lap.get("off_track_ms"),
         })
 
+    names_by_session: dict[int, dict[int, str]] = {}
+
     def note_contacts(lap, samples, side):
-        hits = [c for c in _contacts_inferred(lap, samples) or []
+        sid = lap["session_id"]
+        if sid not in names_by_session:
+            names_by_session[sid] = db.rival_names(_conn, sid)
+        hits = [c for c in _contacts_inferred(lap, samples,
+                                              names_by_session[sid]) or []
                 if c["verdict"] == "contact"]
         if not hits:
             return

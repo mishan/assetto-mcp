@@ -307,7 +307,11 @@ averaging it away.
   braking — and a rotation over 90 deg/s with the speed still there is a
   `snap`, a spin or a slide caught, whose g is the rotation itself. The
   rest is `kerb`. Verdicts are `contact`, `wall`, `snap`, `kerb` and
-  `no_opponent_data`; `compare_runs`
+  `no_opponent_data`, which carries `if_alone`, the wall / snap / kerb
+  reading with nobody near. The g is lateral and longitudinal combined, and
+  the opponent search spans the whole impact, first spike to last, since a
+  spin can stay over 3 g for seconds. `lap_summary` cuts kerb entries to
+  position and g to stay inside its budget; `compare_runs`
   lists laps with a contact in `contacts` the way it lists laps that ran
   wide.
 - **`accel_samples_dropped`** — the same idea for the acceleration channels.

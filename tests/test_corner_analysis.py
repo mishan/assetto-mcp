@@ -380,6 +380,50 @@ def test_spikes_on_consecutive_ticks_are_one_impact():
     assert [c["speed_lost_kmh"] for c in out] == [0, 0], out
 
 
+def test_a_car_met_at_the_end_of_a_spin_is_found():
+    """Over 3 g from tick 50 to 70, the hardest at 50, and a car 2 m away
+    only at the end of it -- 0.8 s after the first spike, outside a window
+    measured from the first tick alone."""
+    spikes = {i: {"acc_lat": 6.0 if i == 50 else 3.5} for i in range(50, 71)}
+    out = analysis.infer_contacts(
+        _LAP, _driving(spikes), [_rival(7, 998.8, 142.0)])
+    assert len(out) == 1 and out[0]["verdict"] == "contact", out
+    assert out[0]["nearest"]["distance_m"] == 2.0, out
+
+
+def test_a_spike_at_an_angle_counts_on_both_axes_together():
+    """2.5 g each way is 3.5 g, under the line on either axis alone."""
+    out = analysis.infer_contacts(
+        _LAP, _driving({50: {"acc_lat": 2.5, "acc_lon": -2.4}}))
+    assert len(out) == 1 and out[0]["peak_g"] == 3.5, out
+    assert out[0]["axis"] == "lat", out
+
+
+def test_with_no_opponent_data_the_physics_still_reads():
+    spikes = {50: {"acc_lon": -12.0, "speed_kmh": 60.0}}
+    for i in range(51, 62):
+        spikes[i] = {"speed_kmh": 40.0}
+    out = analysis.infer_contacts(_LAP, _driving(spikes))
+    assert out[0]["verdict"] == "no_opponent_data", out
+    assert out[0]["if_alone"] == "wall", out
+    out = analysis.infer_contacts(_LAP, _driving({50: {"acc_lat": 4.0}}))
+    assert out[0]["if_alone"] == "kerb", out
+    # Placed against someone, the verdict is the reading and no if_alone.
+    out = analysis.infer_contacts(
+        _LAP, _driving({50: {"acc_lat": 4.0}}), [_rival(7, 998.0, 160.0)])
+    assert "if_alone" not in out[0], out
+
+
+def test_lap_summary_keeps_only_where_and_how_hard_for_a_kerb():
+    out = analysis.compact_contacts(analysis.infer_contacts(
+        _LAP, _driving({30: {"acc_lat": 4.0}, 60: {"acc_lat": 5.0}}),
+        [_rival(7, 997.2, 60.0), _rival(7, 998.4, 300.0)]))
+    assert out[0]["verdict"] == "contact" and "nearest" in out[0], out
+    assert out[1] == {"pos": 0.6, "t_ms": 2400, "peak_g": 5.0,
+                      "verdict": "kerb"}, out
+    assert analysis.compact_contacts(None) is None
+
+
 def test_no_spike_no_channel_and_no_clock_are_different_answers():
     assert analysis.infer_contacts(_LAP, _driving()) == []
     assert analysis.infer_contacts(_LAP, _driving(acc=False)) is None

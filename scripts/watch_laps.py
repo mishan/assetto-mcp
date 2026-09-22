@@ -38,10 +38,8 @@ from assetto_mcp import config  # noqa: E402
 # data dir and a pre-rename one.
 DB_PATH = config.data_dir() / "telemetry.db"
 
-QUERY = (
-    "select id, session_id, lap_number, lap_time_ms, invalid, out_lap, pitted "
-    "from laps where session_id >= ? order by id"
-)
+QUERY = ("select id, session_id, lap_number, lap_time_ms, invalid, out_lap,"
+         " pitted from laps where session_id >= ? order by id")
 
 
 def fmt(ms):
@@ -52,15 +50,14 @@ def fmt(ms):
 
 def line(row):
     lap_id, session_id, n, ms, invalid, out_lap, pitted = row
-    return (
-        f"LAP id={lap_id} session={session_id} n={n} time={fmt(ms)} "
-        f"wide={int(bool(invalid))} out={int(bool(out_lap))} pit={int(bool(pitted))}"
-    )
+    return (f"LAP id={lap_id} session={session_id} n={n} time={fmt(ms)} "
+            f"wide={int(bool(invalid))} out={int(bool(out_lap))} "
+            f"pit={int(bool(pitted))}")
 
 
 def open_db(path):
-    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
-    return conn
+    return sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True,
+                           timeout=5)
 
 
 def active_session(conn):
@@ -69,12 +66,15 @@ def active_session(conn):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-    p.add_argument("--session", type=int, help="watch this session and any later one (default: the newest)")
-    p.add_argument("--replay", action="store_true", help="print laps already stored before waiting for new ones")
-    p.add_argument("--interval", type=float, default=3.0, help="seconds between polls (default 3)")
+    p = argparse.ArgumentParser(description=__doc__,
+                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--session", type=int,
+                   help="watch this session and any later one "
+                        "(default: the newest)")
+    p.add_argument("--replay", action="store_true",
+                   help="print laps already stored before waiting for new ones")
+    p.add_argument("--interval", type=float, default=3.0,
+                   help="seconds between polls (default 3)")
     p.add_argument("--db", default=str(DB_PATH))
     args = p.parse_args(argv)
 
@@ -83,23 +83,27 @@ def main(argv=None):
         print(f"no database at {db_path}", file=sys.stderr)
         return 1
 
-    conn = open_db(db_path)
-    since = args.session if args.session is not None else active_session(conn)
-    seen = set()
-    if not args.replay:
-        seen = {r[0] for r in conn.execute(QUERY, (since,))}
-    conn.close()
-
+    # The first read goes through the same retry as every later one: a
+    # database locked by a write at the moment this starts is no reason to
+    # give up on it.
+    since = args.session
+    seen = None
     try:
         while True:
             try:
                 conn = open_db(db_path)
-                rows = conn.execute(QUERY, (since,)).fetchall()
-                conn.close()
+                try:
+                    if since is None:
+                        since = active_session(conn)
+                    rows = conn.execute(QUERY, (since,)).fetchall()
+                finally:
+                    conn.close()
             except sqlite3.Error as e:
                 print(f"ERR {e}", flush=True)
                 time.sleep(max(args.interval, 5.0))
                 continue
+            if seen is None:
+                seen = set() if args.replay else {r[0] for r in rows}
             for row in rows:
                 if row[0] not in seen:
                     seen.add(row[0])

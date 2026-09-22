@@ -245,6 +245,10 @@ CREATE TABLE IF NOT EXISTS rival_samples (
 -- every sample and skews the spline-bucket means it feeds.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rival_samples
     ON rival_samples(session_id, car_index, lap_count, spline);
+-- Contact inference asks for every opponent row stored during one
+-- lap, by wall clock; without this that is a scan of the session.
+CREATE INDEX IF NOT EXISTS idx_rival_samples_time
+    ON rival_samples(session_id, created_at);
 
 -- Rival lap times, recorded when a car's completed-lap count advances.
 -- rival_drivers.last_lap_ms is overwritten every batch, so without this
@@ -1976,6 +1980,31 @@ def list_rivals(conn, session_id: int, limit: int = 30) -> list[dict]:
         " ORDER BY CASE WHEN best_lap_ms IS NULL THEN 1 ELSE 0 END,"
         " best_lap_ms ASC LIMIT ?", (session_id, limit))
     return [dict(r) for r in rows]
+
+
+def rival_samples_between(conn, session_id: int, t0: float,
+                          t1: float) -> list[dict]:
+    """Every opponent row stored between two wall-clock instants.
+
+    What contact inference reads: not one rival's lap but everyone who was
+    on track while one of ours was being driven. Rows without a position
+    are left out -- there is nothing to measure a distance to.
+    """
+    rows = conn.execute(
+        "SELECT car_index, created_at, t_ms, pos_x, pos_z, speed_kmh"
+        " FROM rival_samples WHERE session_id = ?"
+        " AND created_at BETWEEN ? AND ? AND pos_x IS NOT NULL"
+        " ORDER BY created_at", (session_id, t0, t1))
+    return [dict(r) for r in rows]
+
+
+def rival_names(conn, session_id: int) -> dict[int, str]:
+    """car_index -> driver name, for everyone seen in the session."""
+    rows = conn.execute(
+        "SELECT car_index, driver_name FROM rival_drivers"
+        " WHERE session_id = ?", (session_id,))
+    return {r["car_index"]: r["driver_name"] for r in rows
+            if r["driver_name"]}
 
 
 def get_rival_lap_samples(conn, session_id: int, car_index: int,

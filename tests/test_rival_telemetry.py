@@ -432,5 +432,34 @@ def test_a_lap_of_teleports_is_not_a_lap_we_saw():
         conn.close()
 
 
+def test_rows_stored_during_a_lap_come_back_with_names():
+    """Contact inference asks for everyone on track during one of our laps,
+    by wall clock, and wants their names. Rows with no position are of no
+    use to it and are left out."""
+    with temp_db() as path:
+        conn = db.connect(path)
+        sid = make_session(conn)
+        drivers = [{"car_index": 3, "driver_name": "Lily", "car_model": "x",
+                    "lap_count": 1},
+                   {"car_index": 4, "driver_name": "", "car_model": "x",
+                    "lap_count": 1}]
+        placed = {"car_index": 3, "lap_count": 1, "spline": 0.5,
+                  "speed_kmh": 100.0, "t_ms": 1000,
+                  "pos_x": 1.0, "pos_y": 0.0, "pos_z": 2.0}
+        unplaced = {"car_index": 4, "lap_count": 1, "spline": 0.5,
+                    "speed_kmh": 100.0}
+        db.store_rival_batch(conn, sid, drivers, [placed, unplaced])
+        stored = conn.execute("SELECT created_at FROM rival_samples"
+                              " LIMIT 1").fetchone()["created_at"]
+        rows = db.rival_samples_between(conn, sid, stored - 1, stored + 1)
+        assert [r["car_index"] for r in rows] == [3], rows
+        assert rows[0]["pos_x"] == 1.0 and rows[0]["pos_z"] == 2.0, rows
+        assert rows[0]["t_ms"] == 1000, rows
+        assert db.rival_samples_between(conn, sid, stored + 5,
+                                        stored + 6) == []
+        assert db.rival_names(conn, sid) == {3: "Lily"}
+        conn.close()
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

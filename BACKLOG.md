@@ -575,6 +575,74 @@ estimate.
 
 ---
 
+## 11. Contacts read null when the server has damage off
+
+**Status:** done. `contacts_inferred` on lap_summary and `contacts` on
+compare_runs, from acceleration spikes placed against opponent positions
+at the same wall clock (analysis.infer_contacts). Calibrated on the laps
+below: confirmed hits read 6 to 8 m because opponent positions lag, so
+the radius is 10 m; the four Interlagos spins and the Glen ones sort
+the same way by hand and by tool. With nobody near, speed lost at the
+hardest tick tells a wall from a kerb (sand and braking lose speed over
+seconds, not in the instant), and rotation over 90 deg/s is a snap.
+
+`lap_summary.contacts` comes from the game's damage counter, and the race
+server on 2026-09-16 ran with damage off, so every lap read null -- which
+the field's own docstring says is not evidence of a clean lap. That is
+true, and it is also useless on race night, when "was that a hit or was
+that me" is the first question after every spin.
+
+**Where it bit:** Interlagos race 1, lap 5 (lap id 295). The lap read as a
+brake input after turn-in at T1 and was reported to the driver as a
+driving error. It was a 6.8 g hit with the throttle at 97% and three cars
+within 2 m; the brake came after the impact. The driver asked whether
+collisions could be detected at all, and the answer was yes, from data
+already stored.
+
+**What detects it without the damage counter:**
+
+- `samples.acc_lat` / `acc_lon` over 3 g. This car peaks at about 2.8 g on
+  its tyres; anything over 3 is an impact, a kerb launch or bottoming.
+- `rival_samples` position within a car length or two at the same wall
+  clock. Ego epoch is `laps.completed_at - (lap_time_ms - t_ms)/1000`;
+  rival rows carry `created_at`. A >3 g sample with a rival within ~4 m is
+  a contact; with nobody near it is a kerb or the floor.
+
+Checked against the week's four spins: two had no spike and no rival
+(driver), one was the 6.8 g hit above, one had a 3.1 g touch under
+braking at T4 with two cars alongside and then a clean spin 20 s later.
+
+**What to build:** `contacts_inferred` beside `contacts`: where, peak g,
+nearest car index and driver name, distance, and whether the ego car was
+on throttle or brake. Name contact laps in `compare_runs` the way ran-wide
+laps are named. Code lives in `assetto_mcp/analysis.py` (lap summary) and
+the rival readers added for opponents.
+
+---
+
+## 12. Positions are reported as spline fractions
+
+**Status:** open.
+
+Every tool reports where something happened as a fraction of the lap --
+`0.065`, `0.282` -- because that is what the game stores. The driver does
+not know where 0.282 is, and said so. She knows the corner names and the
+braking boards.
+
+**Where it bit:** the contact report above. "6.8 g at 0.065" meant nothing
+until it was restated as "275 m past the start line, inside T1, 70 m after
+turn-in".
+
+**What to report instead**, everywhere a position appears: the turn label
+the session already numbers (T1, T4), metres from the start/finish line
+(`norm_pos * sessions.track_length_m`), and for anything in a braking zone
+the metres before that turn's turn-in, which is what the trackside boards
+show. Keep the fraction in the payload for machines; lead with the metres
+for people. `track_length_m` is already on the session row, so this is
+formatting, not new data.
+
+---
+
 ## Measured baselines — NSX GT3 Evo on `claude_sebring_v9`
 
 Taken on Sebring. Most are properties of the car and the setup rather than

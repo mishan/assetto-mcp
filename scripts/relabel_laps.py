@@ -10,7 +10,7 @@ first place. set_session_setup used to backfill every unlabelled lap in the
 session as well as applying forward, so calling it *after* loading a new
 setup stamped the new name onto the baseline. That is how laps 87-90 came
 to be labelled claude_toe_v1 while running claude_press_v1. The tools no
-longer do that -- see BACKLOG item 2 -- but the laps it already mislabelled
+longer do that -- see "Addressed" in BACKLOG -- but the laps it already mislabelled
 still need this.
 
 This is the escape hatch, kept out of the MCP surface on purpose: it is

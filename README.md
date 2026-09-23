@@ -134,6 +134,11 @@ official one: a kink taken flat carries too little load to be detected and
 isn't in it, and a circuit that calls a corner 3A is numbered straight
 through.
 
+Places come back the way you'd say them too: *"T4 braking zone, 90 m before
+turn-in"*, *"T1, 70 m after turn-in"*, with meters from the start/finish
+line beside each one and each turn's braking point given as meters before
+turn-in, to line up with the boards.
+
 **4. Talk it through, and have it write a setup.**
 
 > *"It pushes on entry at the second-to-last corner. Try something and save it

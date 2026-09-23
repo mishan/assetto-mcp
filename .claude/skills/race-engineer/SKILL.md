@@ -71,8 +71,8 @@ picking a side. Twice the data was read as "bumpy kerbs" when the driver said
 Say the answer first, in one sentence, then the evidence. A driver between
 laps reads the first line and maybe a table. Positions are turn labels and
 meters past the start line or before turn-in, never spline fractions: the
-driver navigates by the 50 m and 100 m braking boards, not by 0.282. Multiply
-`pos` by the session's `track_length_m` before you write anything down.
+driver navigates by the 50 m and 100 m braking boards, not by 0.282. Every
+position in a tool reply comes with its meters and a `where`; quote those.
 
 Do not call a spin a driving error until you have checked for a contact.
 Damage is usually off on race servers, so `contacts` is null on every lap;

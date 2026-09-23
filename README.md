@@ -255,7 +255,7 @@ before sharing it.
 | [docs/SETUP-RANGES.md](docs/SETUP-RANGES.md) | How setup values are clamped, why AC's spinner isn't a grid |
 | [docs/INTERNALS.md](docs/INTERNALS.md) | Corner detection, data-quality flags, driving line, suspension capture tiers |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Running the tests, CI, schema changes |
-| [BACKLOG.md](BACKLOG.md) | What's known to be broken, worst first, with where it bit |
+| [BACKLOG.md](BACKLOG.md) | Open work, in the order worth doing, with where it bit |
 
 ---
 

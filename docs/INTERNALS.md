@@ -101,7 +101,7 @@ anything.
 lap validity in shared memory. CSP does — `ac.onLapCompleted` hands a
 physics worker the game's own `valid` and `cuts` — and that's reachable from
 the worker this project already runs, but it isn't wired up yet and it would
-be single-player only. See [BACKLOG.md](../BACKLOG.md) item 1.
+be single-player only. See [BACKLOG.md](../BACKLOG.md) item 4.
 
 ---
 
@@ -558,7 +558,7 @@ tests/               behavior-named test modules + shared harness
 scripts/
   relabel_laps.py    fix laps stamped with the wrong setup name
   driving_line_map.py  write a session's line map without a server
-BACKLOG.md           what is known to be broken, worst-first
+BACKLOG.md           open work first, what was addressed last
 ```
 
 ### Setup attribution, in three pieces

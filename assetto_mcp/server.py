@@ -23,7 +23,7 @@ except ImportError:  # mcp SDK 1.x
     from mcp.server.fastmcp import FastMCP
 
 from . import analysis, config, db, line_map, retention, setups, suspension
-from . import turns
+from . import places, turns
 from .collector import Collector
 
 AC_DOCS_DIR = Path(os.environ.get(
@@ -170,6 +170,45 @@ def _session_corner_map(session_id: int, lap_id: int | None = None) -> dict:
     cmap = turns.corner_map_from(_conn, ids)
     _corner_maps[session_id] = (key, cmap)
     return cmap
+
+
+# Keyed by session. A length is a property of the circuit and does not
+# change under a session; an estimated one is recomputed only if it could
+# not be estimated at all the first time.
+_track_lengths: dict[int, tuple[float, str]] = {}
+
+
+def _track_length(session_id: int) -> tuple[float | None, str | None]:
+    cached = _track_lengths.get(session_id)
+    if cached:
+        return cached
+    length, source = places.session_length(_conn, session_id)
+    if length:
+        _track_lengths[session_id] = (length, source)
+    return length, source
+
+
+def _placed(payload: dict, session_id: int | None,
+            turns: list[dict] | None = None) -> dict:
+    """The payload with meters and a `where` beside every lap position.
+
+    `turns` is whatever numbering the payload's own labels came from --
+    a comparison numbers its corners across the laps it compares, and a
+    `where` naming the session's T5 beside a corner the comparison calls
+    T4 would contradict the payload it sits in. Without one, the session's
+    numbering is used, the same one lap_summary labels corners with.
+    """
+    if (not isinstance(payload, dict) or "error" in payload
+            or session_id is None):
+        return payload
+    length, source = _track_length(session_id)
+    if not length:
+        return payload
+    if turns is None:
+        turns = _session_corner_map(session_id)["turns"]
+    out = places.place(payload, length, turns)
+    out["track_length"] = {"m": round(length), "source": source}
+    return out
 
 
 def _collector_state() -> tuple[str, str]:
@@ -421,7 +460,7 @@ def compare_to_rival(car_index: int, lap_id: int,
             "No lap time recorded for this rival lap, so its pace is "
             "unknown -- it could be an in-lap. Treat speed deltas as "
             "indicative only.")
-    return _j(result)
+    return _j(_placed(result, sid))
 
 
 @mcp.tool()
@@ -969,6 +1008,14 @@ def lap_summary(lap_id: int) -> str:
     the detector never sees is not numbered, and a circuit that calls one of
     its corners 3A is numbered straight through.
 
+    Every position also comes in meters past the start/finish line --
+    `apex_m` beside `apex_pos`, `brake_point_m`, `at_m` beside a contact's
+    `pos` -- and anything not already labelled with a turn carries `where`:
+    "T1, 70 m after turn-in", "T4 braking zone, 90 m before turn-in".
+    `brake_before_turn_in_m` on a corner is the board to brake at.
+    `track_length` says whether the length is the game's or estimated.
+    Quote these to a driver, not the fractions.
+
     `entry_phase` on each corner is the part before the apex: from the
     brake point (or from turn-in on a corner taken without braking) to the
     apex, with slip balance, mean steering, peak yaw rate and total
@@ -1031,7 +1078,7 @@ def lap_summary(lap_id: int) -> str:
         compact = suspension.compact(suspension.summarise(susp_samples))
         if compact:
             out["suspension"] = compact
-    return _j(out)
+    return _j(_placed(out, lap["session_id"], cmap["turns"]))
 
 
 @mcp.tool()
@@ -1055,6 +1102,11 @@ def track_corners(session_id: int | None = None) -> str:
     is built per session so that one car's cornering load sets the bar, so
     another session at the same circuit can number differently.
     `built_from_laps` says which laps produced it.
+
+    Positions come in meters past the start/finish line as well
+    (`apex_m`, `entry_m`, `exit_m`, `brake_point_m`), and each turn carries
+    `brake_before_turn_in_m` -- negative where the braking starts after
+    turn-in.
 
     `unnumbered` holds pieces of road only one lap cornered on. They are
     left out of the numbering on purpose: a spin the detector carves out as
@@ -1098,7 +1150,7 @@ def track_corners(session_id: int | None = None) -> str:
             if not cmap["basis_lap_ids"] else
             f"none of the {len(cmap['basis_lap_ids'])} lap(s) read carried "
             f"enough cornering load to detect a corner on")
-    return _j(out)
+    return _j(_placed(out, sid, cmap["turns"]))
 
 
 @mcp.tool()
@@ -1232,8 +1284,9 @@ def driving_line(lap_id: int, compare_lap_id: int | None = None,
                                 "layout, so their coordinates do not share "
                                 "an origin and cannot be subtracted"})
         other_samples = db.get_samples(_conn, compare_lap_id)
-    return _j(analysis.driving_line(
-        lap, db.get_samples(_conn, lap_id), points, other, other_samples))
+    return _j(_placed(analysis.driving_line(
+        lap, db.get_samples(_conn, lap_id), points, other, other_samples),
+        lap["session_id"]))
 
 
 @mcp.tool()
@@ -1418,8 +1471,8 @@ def braking_report(lap_id: int, points: int = 20) -> str:
     lap = db.get_lap(_conn, lap_id)
     if not lap:
         return _j({"error": f"no lap with id {lap_id}"})
-    return _j(analysis.braking_report(
-        lap, db.get_samples(_conn, lap_id), points))
+    return _j(_placed(analysis.braking_report(
+        lap, db.get_samples(_conn, lap_id), points), lap["session_id"]))
 
 
 @mcp.tool()
@@ -1463,7 +1516,9 @@ def attitude_report(lap_id: int) -> str:
     lap = db.get_lap(_conn, lap_id)
     if not lap:
         return _j({"error": f"no lap with id {lap_id}"})
-    return _j(analysis.attitude_report(lap, db.get_samples(_conn, lap_id)))
+    return _j(_placed(
+        analysis.attitude_report(lap, db.get_samples(_conn, lap_id)),
+        lap["session_id"]))
 
 
 @mcp.tool()
@@ -1490,7 +1545,7 @@ def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
     warning = _lap_time_warning({"A": a, "B": b})
     if warning:
         out["lap_time_warning"] = warning
-    return _j(out)
+    return _j(_placed(out, a["session_id"], out.get("turns")))
 
 
 def _lap_time_warning(laps: dict) -> str | None:
@@ -1963,7 +2018,7 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
     out["candidate_setups"] = sorted({s.get("setup") or "" for s in cand})
     if deprecated_note:
         out["deprecated"] = deprecated_note
-    return _j(out)
+    return _j(_placed(out, base_laps[0]["session_id"], out.get("turns")))
 
 
 @mcp.tool()
@@ -2002,7 +2057,7 @@ def delta_by_position(lap_id_a: int, lap_id_b: int,
     warning = _lap_time_warning({"A": a, "B": b})
     if warning:
         out["lap_time_warning"] = warning
-    return _j(out)
+    return _j(_placed(out, a["session_id"]))
 
 
 # --- in-game app bridge ------------------------------------------------
@@ -2030,7 +2085,7 @@ def get_driver_notes(session_id: int | None = None, limit: int = 50,
             f"{orphans} note(s) were pressed while no session was "
             f"recording and are not attached to one. Call with "
             f"all_sessions=True to see them.")
-    return _j(out)
+    return _j(_placed(out, sid))
 
 
 @mcp.tool()

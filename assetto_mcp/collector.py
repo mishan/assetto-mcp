@@ -558,6 +558,13 @@ class Collector:
                     tyre_compound=g.tyreCompound,
                     air_temp=p.airTemp, road_temp=p.roadTemp,
                 )
+                # The game's own length, so every position can be given in
+                # meters. Only the in-game app used to send it, and half the
+                # sessions recorded without the app have none.
+                length = getattr(s, "trackSPlineLength", 0) or 0
+                if length >= analysis.MIN_TRACK_LENGTH_M:
+                    db.set_fuel_basis(self._conn, self.session_id,
+                                      track_length_m=length)
                 session_started = True
                 # A retention pass can outlast the claim, and the answer has
                 # to be acted on: carrying on here means two collectors

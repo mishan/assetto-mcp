@@ -41,10 +41,10 @@ and best lap. Poll it at each lap boundary for fuel, and whenever you want
 the tyre state between laps. `status: "off"` means the game is not in a
 session. The `tyre_compound` reads garbage when the car is not live.
 
-**`list_sessions()`** -- id, car, track, lap count, best time. `track_length_m`
-is on the session row in the database (`sessions.track_length_m`), which is
-what turns a position into meters; the tool reply may not carry it, and a
-read-only SQL query does.
+**`list_sessions()`** -- id, car, track, lap count, best time. Every tool
+that reports a position adds meters and a `where` beside it, and says
+where the track length came from in `track_length`; see "Positions into
+meters" in `analysis.md`.
 
 **`list_laps(session_id, limit)`** -- most recent first, with ids for the lap
 tools.
@@ -108,7 +108,7 @@ not a tool.
 - `suspension` headlines when the app captured them; `suspension_report`
   for the rest.
 
-Convert every `pos` to meters before speaking: `pos × track_length_m`.
+Quote `where` and the `_m` fields, never the fraction beside them.
 
 **`track_corners(session_id)`** -- where each T-number is: start, apex, end,
 brake point, sign, and how many laps cornered there. Built per session
@@ -264,7 +264,8 @@ is percent front.
 
 **`get_driver_notes(session_id, limit, all_sessions)`** -- complaint tags
 pressed on the wheel (understeer, oversteer, braking, traction, note) with
-a spline position comparable to `apex_pos` and the lap they were pressed
+a spline position comparable to `apex_pos` (with `at_m` and `where`
+beside it) and the lap they were pressed
 on (current lap = `lap_count` + 1). Correlate with the corner's slip
 balance and steer.
 

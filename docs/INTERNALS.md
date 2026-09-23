@@ -101,7 +101,7 @@ anything.
 lap validity in shared memory. CSP does — `ac.onLapCompleted` hands a
 physics worker the game's own `valid` and `cuts` — and that's reachable from
 the worker this project already runs, but it isn't wired up yet and it would
-be single-player only. See [BACKLOG.md](../BACKLOG.md) item 4.
+be single-player only. See [BACKLOG.md](../BACKLOG.md) item 3.
 
 ---
 

@@ -6,11 +6,22 @@ car it says so; the rest is general.
 
 ## Positions into meters
 
-`pos × track_length_m` is meters past the start line. Meters before
-turn-in is `(entry_pos − pos) × track_length_m`. One thousandth of position
-is 4.2 m at Interlagos, 4.5 m at Kyalami, 5.4 m at Watkins Glen. Quote
-brake points as meters before turn-in so they line up with the 50 m and
-100 m boards, and name the corner the way the driver does.
+The tools do this now. Beside every lap fraction a payload carries the
+same place in meters past the start line (`at_m` for `pos`, `apex_m` for
+`apex_pos`, `brake_point_m`, `from_m`/`to_m` and so on), and a `where`
+that says it the way a driver would: "T1, 70 m after turn-in", "T4
+braking zone, 90 m before turn-in", "210 m after T6 exit". Each turn
+carries `brake_before_turn_in_m` -- negative when the braking starts
+after turn-in -- and a brake-point difference between laps comes with
+`brake_point_delta_m`. Quote those; they line up with the 50 m and 100 m
+boards. Name the corner the way the driver does when you know it.
+
+`track_length` on the payload says where the length came from: `game` is
+AC's own figure, `estimated` is integrated from the speed of recent clean
+laps and has been within 0.4% of the game's on every session checked.
+With neither there are no meters at all, and `pos × track_length_m` from
+a figure you trust is the fallback. One thousandth of position is 4.2 m
+at Interlagos, 4.5 m at Kyalami, 5.4 m at Watkins Glen.
 
 ## Balance: slip and steering lock
 

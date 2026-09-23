@@ -7,40 +7,12 @@ where it bit, and where the code lives, so a future session can act without
 re-deriving any of it. What has been addressed is summarized at the bottom.
 
 Written after the Sebring / NSX GT3 session, and kept current since. Test
-suite stands at 533 passing with the Lua tooling installed,
+suite stands at 571 passing with the Lua tooling installed,
 schema at v14.
 
 ---
 
-## 1. Positions are reported as spline fractions
-
-**Status:** open. Formatting, not new data.
-
-Every tool reports where something happened as a fraction of the lap --
-`0.065`, `0.282` -- because that is what the game stores. The driver does
-not know where 0.282 is, and said so. She knows the corner names and the
-braking boards.
-
-**Where it bit:** the Interlagos contact report (lap 295). "6.8 g at 0.065"
-meant nothing until it was restated as "275 m past the start line, inside
-T1, 70 m after turn-in".
-
-**What to report instead**, everywhere a position appears: the turn label
-the session already numbers (T1, T4), metres from the start/finish line
-(`norm_pos * sessions.track_length_m`), and for anything in a braking zone
-the metres before that turn's turn-in, which is what the trackside boards
-show. Keep the fraction in the payload for machines; lead with the metres
-for people. `track_length_m` is already on the session row.
-
-This overlaps with item 8's third point: `braking_report`'s lockup runs and
-hardest braking slices, `driving_line`'s slices and `attitude_report` carry
-bare positions with no turn label at all. Attributing a braking-zone
-position to the turn it is braking *for* uses the corner map's
-`brake_point_pos`.
-
----
-
-## 2. Check entry-phase corner metrics against a real lap
+## 1. Check entry-phase corner metrics against a real lap
 
 **Status:** built, never seen working on real data. A look, not a build.
 
@@ -52,7 +24,7 @@ from it.
 
 ---
 
-## 3. Stamp laps with the setup the car is actually running
+## 2. Stamp laps with the setup the car is actually running
 
 **Status:** open.
 
@@ -64,7 +36,7 @@ late call has produced.
 
 ---
 
-## 4. A physics worker for what only physics can see
+## 3. A physics worker for what only physics can see
 
 **Status:** open. Single-player only; inference stays the fallback.
 
@@ -100,7 +72,7 @@ than inferring it from slip.
 
 ---
 
-## 5. Scrappy laps pass as representative
+## 4. Scrappy laps pass as representative
 
 **Status:** open.
 
@@ -112,7 +84,7 @@ from validity.
 
 ---
 
-## 6. Brake-point detection is unstable between laps
+## 5. Brake-point detection is unstable between laps
 
 **Status:** open, never chased.
 
@@ -122,7 +94,7 @@ certainly two different braking events being matched.
 
 ---
 
-## 7. Corner detection leftovers
+## 6. Corner detection leftovers
 
 **Status:** open. Much better than it was; not zero.
 
@@ -143,7 +115,7 @@ certainly two different braking events being matched.
 
 ---
 
-## 8. Turn numbers are the run's, not the circuit's
+## 7. Turn numbers are the run's, not the circuit's
 
 **Status:** open. Session-local numbering is built (`analysis.corner_map`,
 `label_corners`, `track_corners`); everything that would make the numbers
@@ -156,7 +128,6 @@ agree with the circuit's own is not.
 - **Not shared between sessions.** The bar is per session because it is per
   car; two sessions at one circuit can number differently, and only the
   `built_from_laps` in each payload makes that visible.
-- **Not on every payload** — see item 1.
 
 **Sources, surveyed 2026-09-09.** None covers Assetto Corsa's mod long tail:
 
@@ -189,7 +160,7 @@ for ordering and not for a 50 m tolerance.
 
 ---
 
-## 9. Compare incident rates, not just spread
+## 8. Compare incident rates, not just spread
 
 **Status:** open.
 
@@ -202,7 +173,7 @@ likely by chance — and should say so.
 
 ---
 
-## 10. Body slip angle
+## 9. Body slip angle
 
 **Status:** open.
 
@@ -214,7 +185,7 @@ unverified, and could be pinned in the same look.
 
 ---
 
-## 11. Parked: fill the display-mapping registry automatically
+## 10. Parked: fill the display-mapping registry automatically
 
 **Status:** waiting on CSP.
 
@@ -314,22 +285,22 @@ history has the detail.
   migration used it to restore laps like Sebring 129 that had been wrongly
   marked invalid. `compare_runs` no longer drops laps silently: ran-wide
   laps are compared and named, and only laps whose time is not a lap time
-  are excluded, with a reason. Open remainder: item 4.
+  are excluded, with a reason. Open remainder: item 3.
 - **`set_session_setup` no longer relabels the baseline.** It is
   forward-only; backfilling moved to `label_laps`, which only fills blanks
   on named lap ids. Covered by
   `test_naming_a_new_setup_does_not_relabel_the_baseline`. Open remainder:
-  item 3.
+  item 2.
 - **Consistency is tested**, as `lap_time_consistency`: a permutation test
   on the variance ratio, because a variance-ratio F test called identical
   spin-prone runs different 47% of the time. It joins the Holm family only
   when the lap counts can clear its threshold, and otherwise says how many
   laps it would take. The Sebring v9 case that motivated it comes out at
-  p = 0.41 — six laps cannot tell a fix from luck. Open remainder: item 9.
+  p = 0.41 — six laps cannot tell a fix from luck. Open remainder: item 8.
 - **Entry-phase corner metrics**, as `entry_phase` on every corner: slip
   balance, mean steering, peak yaw rate and rotation from brake point (or
   turn-in) to apex, and corner channels in `compare_runs`. Unverified on
-  real laps: item 2.
+  real laps: item 1.
 - **Every stored channel has a reader.** `stint_wear` (per stint, counting
   up, out-laps in totals but not rates), `braking_report` (straight-line
   slip per axle and lockup runs — not ABS activity, since `abs_active` and
@@ -341,13 +312,13 @@ history has the detail.
   `display_notes`, fitted by `setups.fit_display`, with
   `record_display_value`, `record_display_range` and
   `forget_display_value`. Every reported value carries a `source`, and
-  `unknown` states no value. Open remainder: item 11.
+  `unknown` states no value. Open remainder: item 10.
 - **Long corners numbered once.** `_corner_clusters` joins groups whose
   corners share road on enough laps, and only chains same-direction
   corners by proximity. Sebring's Sunset Bend went from four turns to one;
-  `compare_runs` uses the same grouping. Open remainder: item 7.
+  `compare_runs` uses the same grouping. Open remainder: item 6.
 - **Session-local turn numbers** (`analysis.corner_map`, `label_corners`,
-  `track_corners`). Open remainder: item 8.
+  `track_corners`). Open remainder: item 7.
 - **Opponents recorded properly** (schema v14). The app read three fields
   CSP does not have; it now takes the car from `ac.getCarID(i)`, times
   opponent laps itself from `lapCount` and `timestamp`, and stores each
@@ -363,5 +334,15 @@ history has the detail.
   detection, which the damage counter cannot when the server has damage
   off. It exists because Interlagos race 1, lap 295 was a 6.8 g hit that
   had been reported to the driver as a braking error.
+- **Positions in meters and turns.** Every tool that reports a lap
+  fraction now puts the same place beside it in meters past the
+  start/finish line (`at_m`, `apex_m`, `brake_point_m`, ...) and, where it
+  is not already a labelled turn, a `where` a driver can use: "T1, 70 m
+  after turn-in", "T4 braking zone, 90 m before turn-in". Turns carry
+  `brake_before_turn_in_m`, and brake-point differences come in meters
+  too (`assetto_mcp/places.py`, applied in `server._placed`). The collector
+  now stores AC's own track length for every session; sessions without one
+  have it estimated from clean laps' speed, within 0.4% of the game's
+  figure where both exist, and the payload says which.
 - **`_migrate` v1 unguarded ALTER.** All six ALTER sites go through
   `_add_column`, which no-ops on a missing table.

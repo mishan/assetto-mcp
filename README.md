@@ -20,12 +20,12 @@ whether you just had a good lap.
 
 - **Assetto Corsa** on Windows, with [Custom Shaders Patch][csp] (you already
   have it if you use Content Manager with CSP enabled)
-- **An MCP client** — ideally [Claude Code][cc], which also picks up the
-  race-engineer skill that ships in this repo (see
-  [Starting a session](#starting-a-session)). Anything else that can launch a
-  local stdio MCP server gets every tool: Claude Desktop, ChatGPT Desktop,
-  Cursor, Windsurf, VS Code with Copilot, or [LM Studio][lms] if you'd rather
-  run the model locally too.
+- **An MCP client** — anything that can launch a local stdio MCP server:
+  Claude Desktop, Claude Code, ChatGPT Desktop, Cursor, Windsurf, VS Code with
+  Copilot, or [LM Studio][lms] if you'd rather run the model locally too. This
+  is a standard MCP server and doesn't care which one you use. The repo also
+  ships a race-engineer skill, which clients that read skill folders pick up
+  (see [Starting a session](#starting-a-session)).
 - **Python 3.10 or newer** from [python.org][py] — on the installer's first
   screen, tick **"Add python.exe to PATH"**. Don't use the Microsoft Store
   build; its sandboxing breaks shared-memory access.
@@ -33,7 +33,6 @@ whether you just had a good lap.
 [csp]: https://acstuff.ru/patch/
 [py]: https://www.python.org/downloads/
 [lms]: https://lmstudio.ai/docs/app/mcp
-[cc]: https://code.claude.com/docs
 
 ## Install
 
@@ -49,7 +48,7 @@ Then **fully quit your client and reopen it.** For Claude Desktop, closing the
 window isn't enough — right-click the tray icon (bottom right, possibly hidden
 under the `^` arrow) and choose Quit.
 
-**Using Claude Code, or another client?** Add `-SkipClientConfig`. Everything else installs
+**Using a different client?** Add `-SkipClientConfig`. Everything else installs
 the same way, and the installer prints the two lines you need to paste into
 your client's config:
 
@@ -70,20 +69,15 @@ Something went wrong? Run `diagnose.bat`, then see
 
 ## Starting a session
 
-Open Claude Code in this folder. Register the server the first time:
-
-```
-cd assetto-mcp
-claude mcp add assetto-mcp -- python -m assetto_mcp.server
-claude
-```
-
-The **race-engineer skill** in `.claude/skills/race-engineer/` loads by
-itself. It is the session routine an engineer would otherwise have to be
+The repo ships a **race-engineer skill** in `.claude/skills/race-engineer/`.
+It is the session routine an engineer would otherwise have to be
 told every time: what to check before the first flying lap, which tool
 answers which question, how to read the numbers, how to run an A/B, and the
-handoff document at the end. It is used whenever you talk about laps, a
-setup, tyres or fuel, so you never have to name it:
+handoff document at the end. It is plain Markdown: a client that reads
+skill folders, such as Claude Code opened in this folder, loads it by
+itself; any client that can take instructions from a file can be pointed at
+`.claude/skills/race-engineer/SKILL.md`. Once loaded, it is used whenever
+you talk about laps, a setup, tyres or fuel, so you never have to name it:
 
 > *"I'm at Sebring in the NSX. Start a session."*
 
@@ -100,23 +94,21 @@ It asks which you want, and assumes debrief if you don't say.
 - **Live — on the radio.** A short read in the chat after every lap, and
   anything you have to act on this lap or next — box, fuel is at two laps,
   a car close behind, a change confirmed — **spoken aloud** over the game
-  audio. Live needs Claude Code running on the PC that runs Assetto Corsa:
-  it wakes on each lap with `scripts/watch_laps.py` and speaks through
-  `scripts/say.py` and the voices Windows already has.
+  audio. Live needs a client that can run shell commands in the background
+  on the PC that runs Assetto Corsa: it wakes on each lap with
+  `scripts/watch_laps.py` and speaks through `scripts/say.py` and the voices
+  Windows already has.
 
 Recording is the same in both modes, so you can switch at any point, and a
 question asked in the middle of a debrief gets a live answer.
 
-**In other clients** you get every tool but not the skill, and no lap
-watcher or voice, so it's debrief only and you ask for each step yourself.
-The steps below are what to ask for. The skill is plain Markdown, so if your
-client can take instructions from a file, point it at
-`.claude/skills/race-engineer/SKILL.md`.
+**Without the skill** you still get every tool; you ask for each step
+yourself, and the steps below are what to ask for. Without background shell
+commands there is no lap watcher or voice, so it's debrief only.
 
 ## Step by step
 
-This is what the skill does for you in Claude Code, and what to ask for in
-any other client. Recording starts by itself and waits for the game, so
+This is what the skill does for you, and what to ask for without it. Recording starts by itself and waits for the game, so
 there is nothing to remember to switch on.
 
 **1. Get on track and check the assistant can see you.**

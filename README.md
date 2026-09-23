@@ -23,7 +23,9 @@ whether you just had a good lap.
 - **An MCP client** — anything that can launch a local stdio MCP server:
   Claude Desktop, Claude Code, ChatGPT Desktop, Cursor, Windsurf, VS Code with
   Copilot, or [LM Studio][lms] if you'd rather run the model locally too. This
-  is a standard MCP server and doesn't care which one you use.
+  is a standard MCP server and doesn't care which one you use. The repo also
+  ships a race-engineer skill, which clients that read skill folders pick up
+  (see [Starting a session](#starting-a-session)).
 - **Python 3.10 or newer** from [python.org][py] — on the installer's first
   screen, tick **"Add python.exe to PATH"**. Don't use the Microsoft Store
   build; its sandboxing breaks shared-memory access.
@@ -65,10 +67,49 @@ Something went wrong? Run `diagnose.bat`, then see
 
 ---
 
-## Using it
+## Starting a session
 
-Recording starts by itself and waits for the game, so there is nothing to
-remember to switch on.
+The repo ships a **race-engineer skill** in `.claude/skills/race-engineer/`.
+It is the session routine an engineer would otherwise have to be
+told every time: what to check before the first flying lap, which tool
+answers which question, how to read the numbers, how to run an A/B, and the
+handoff document at the end. It is plain Markdown: a client that reads
+skill folders, such as Claude Code opened in this folder, loads it by
+itself; any client that can take instructions from a file can be pointed at
+`.claude/skills/race-engineer/SKILL.md`. Once loaded, it is used whenever
+you talk about laps, a setup, tyres or fuel, so you never have to name it:
+
+> *"I'm at Sebring in the NSX. Start a session."*
+
+### Live or debrief
+
+It asks which you want, and assumes debrief if you don't say.
+
+- **Debrief — feedback after the session.** It records and reads every lap
+  and says nothing until you come in or ask. Then you get one report: the
+  session lap by lap, the incidents and what caused them, what each setup
+  change did, recommendations with the test that would settle each, fuel and
+  tyre numbers, and the line map. It is written to `exports/`, so you can
+  read it whenever you like. Pick this if you just want to drive.
+- **Live — on the radio.** A short read in the chat after every lap, and
+  anything you have to act on this lap or next — box, fuel is at two laps,
+  a car close behind, a change confirmed — **spoken aloud** over the game
+  audio. Live needs a client that can run shell commands in the background
+  on the PC that runs Assetto Corsa: it wakes on each lap with
+  `scripts/watch_laps.py` and speaks through `scripts/say.py` and the voices
+  Windows already has.
+
+Recording is the same in both modes, so you can switch at any point, and a
+question asked in the middle of a debrief gets a live answer.
+
+**Without the skill** you still get every tool; you ask for each step
+yourself, and the steps below are what to ask for. Without background shell
+commands there is no lap watcher or voice, so it's debrief only.
+
+## Step by step
+
+This is what the skill does for you, and what to ask for without it. Recording starts by itself and waits for the game, so
+there is nothing to remember to switch on.
 
 **1. Get on track and check the assistant can see you.**
 
@@ -167,10 +208,10 @@ The in-game app (right edge of the screen → apps sidebar) gives you:
   to check. If laps are finishing and none are landing, it says so plainly
   rather than repeating whatever the server claims.
 - **Messages back from the assistant** — *"claude_v2 saved — pit and load it."*
-- **Or spoken.** `python scripts/say.py "Box this lap"` reads a sentence
-  aloud over the game audio with the voices Windows already has (from Windows or WSL), for
-  the calls that can't wait for you to look at a screen. Nothing to
-  install.
+- **Or spoken, in live mode.** `python scripts/say.py "Box this lap"` reads
+  a sentence aloud over the game audio with the voices Windows already has
+  (from Windows or WSL), for the calls that can't wait for you to look at a
+  screen. Nothing to install.
 
 ---
 
@@ -250,6 +291,7 @@ before sharing it.
 
 | | |
 |---|---|
+| [.claude/skills/race-engineer/](.claude/skills/race-engineer/SKILL.md) | The race-engineer skill: session routine, tool reference, how to read the numbers |
 | [docs/INSTALL.md](docs/INSTALL.md) | Manual install, config file locations, environment variables, upgrading from `ac-race-engineer` |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | When your client shows no tools, when laps stop landing, and the rest |
 | [docs/SETUP-RANGES.md](docs/SETUP-RANGES.md) | How setup values are clamped, why AC's spinner isn't a grid |

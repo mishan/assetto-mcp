@@ -40,23 +40,15 @@ position to the turn it is braking *for* uses the corner map's
 
 ---
 
-## 2. Check at the next session
+## 2. Check entry-phase corner metrics against a real lap
 
-**Status:** built, never seen working on real data. Each is a look, not a
-build.
+**Status:** built, never seen working on real data. A look, not a build.
 
-- **Opponent names, cars and lap times.** Re-run `install-windows.bat`
-  first so the new app is copied into Assetto Corsa. Then: `list_rivals`
-  shows names and car models; opponent best laps agree with the game's
-  timing screen to within about a tenth; the line map's Rival view draws
-  their line dashed. Not known: whether `timestamp` and `position` are live
-  for remote cars online. The blank driver names before this were probably
-  an app from before `1eed491` on the gaming PC — unconfirmed.
-- **Entry-phase corner metrics.** Every figure in `entry_phase` is tested on
-  synthetic laps only. Whether a real entry snap is visible in 25 Hz
-  heading, and what yaw rate a normal entry at Sunset Bend runs at, are
-  unmeasured. The 2°/s floor on the yaw channel is a guess. Look at a real
-  v6-style run before trusting a lead from it.
+Every figure in `entry_phase` is tested on synthetic laps only. Whether a
+real entry snap is visible in 25 Hz heading, and what yaw rate a normal
+entry at Sunset Bend runs at, are unmeasured. The 2°/s floor on the yaw
+channel is a guess. Look at a real v6-style run before trusting a lead
+from it.
 
 ---
 
@@ -362,7 +354,7 @@ history has the detail.
   sample's clock and world position. The test harness's fake car now
   carries only real CSP fields. Opponent laps recorded before this have no
   clock, and the line map times them by integrating speed, flagged as an
-  estimate. Unverified in a real session: item 2.
+  estimate. Confirmed working in a real session.
 - **Contacts inferred when damage is off**, as `contacts_inferred` on
   `lap_summary` and `contacts` on `compare_runs` (`analysis.infer_contacts`).
   Acceleration over 3 g placed against opponent positions at the same wall

@@ -73,6 +73,15 @@ BRAKE_ON = 0.2
 # application, not two. Wide enough to bridge modulation, far short of the
 # coast between one corner's exit and the next one's braking.
 BRAKE_ZONE_GAP_SAMPLES = 5
+# A braking run before the apex counts as this corner's braking zone when it
+# took at least this share of the speed the heaviest run did. The brake
+# point is the start of the earliest such run -- so a dab in the middle of a
+# corner is not one, and a zone split by a lift still starts where it began.
+# Measured on every real session with three or more laps: taking the last
+# run put 206 brake points in 1410 more than 0.005 of a lap (about 30 m)
+# from their corner's median, and this puts 77 in 1428. A half instead of a
+# quarter gives the same answer to within six laps.
+BRAKE_ZONE_MIN_SHARE = 0.25
 
 
 def outlier_reference(lap_times_ms) -> int | None:
@@ -407,6 +416,47 @@ def corner_detection_note(reference: float | None, laps: int,
     return out
 
 
+# Two same-direction stretches over the bar are one corner when the load
+# between them never fell below this share of the bar: the car never
+# straightened. Through the long left after Suzuka's hairpin lateral g runs
+# 0.54 to 1.2 against a 0.75 bar, flat out and accelerating, and the bar
+# alone cut it into two, three or four corners depending on the lap.
+#
+# The load in a gap between two real corners is a continuum, not two
+# groups, so no share is clean. Measured over every recorded session: at
+# 0.7, turns found on fewer than three laps in four fell from 50 to 24,
+# and two turns that were found on nearly every lap now are on one to three
+# fewer, where the gap sits near the line and is joined on some laps only.
+# At 0.5 the joins reach real gaps -- Interlagos 0.81 went from nine laps
+# of nine to five -- and at 0.9 they miss half of Suzuka's.
+CORNER_RELEASE_SHARE = 0.7
+
+
+def _join_unbroken(runs: list[list[int]], lat: list[float],
+                   thresh: float) -> list[list[int]]:
+    """Join neighboring runs over the bar that turn the same way, when the
+    lateral load between them stayed above CORNER_RELEASE_SHARE of it.
+
+    The runs keep their own ends -- turn-in is still where the load first
+    crossed the bar and the exit where it last did -- so this changes how
+    many corners there are and nothing about where one starts.
+    """
+    release = CORNER_RELEASE_SHARE * thresh
+    out: list[list[int]] = []
+    for r in runs:
+        if out:
+            prev = out[-1]
+            gap = range(prev[-1] + 1, r[0])
+            same_way = (lat[prev[0]] > 0) == (lat[r[0]] > 0)
+            if same_way and all(
+                    abs(lat[j]) >= release
+                    and (lat[j] > 0) == (lat[r[0]] > 0) for j in gap):
+                out[-1] = prev + list(gap) + r
+                continue
+        out.append(list(r))
+    return out
+
+
 def detect_corners(samples: list[dict],
                    reference_peak_g: float | None = None) -> list[dict]:
     """Find corners as sustained regions of lateral acceleration.
@@ -478,7 +528,7 @@ def detect_corners(samples: list[dict],
     # A region is contiguous samples above the threshold turning the SAME
     # way. The sign test is what separates an esse into two corners rather
     # than reporting one long one straddling the direction change.
-    regions: list[list[int]] = []
+    runs: list[list[int]] = []
     cur: list[int] = []
     cur_sign = 0
     for i, v in enumerate(lat):
@@ -488,14 +538,16 @@ def detect_corners(samples: list[dict],
                 cur_sign = sign
             cur.append(i)
         else:
-            if len(cur) >= CORNER_MIN_SAMPLES:
-                regions.append(cur)
+            if cur:
+                runs.append(cur)
             cur = []
             cur_sign = 0
             if abs(v) >= thresh:      # direction flipped: start the next one
                 cur, cur_sign = [i], sign
-    if len(cur) >= CORNER_MIN_SAMPLES:
-        regions.append(cur)
+    if cur:
+        runs.append(cur)
+    regions = [r for r in _join_unbroken(runs, lat, thresh)
+               if len(r) >= CORNER_MIN_SAMPLES]
 
     corners = []
     # Where the search for a braking zone may not go back past: the previous
@@ -712,29 +764,60 @@ def _brake_zone_start(samples, apex_idx: int, floor_idx: int) -> int | None:
     compare_laps differences these positions between laps, the "brake point
     delta" it produced was a turn-in delta.
 
-    So work backwards from the apex instead: find the last sample on the
-    brakes (skipping the coast between brake release and the apex), then walk
-    back through that braking run to its first sample, tolerating
-    BRAKE_ZONE_GAP_SAMPLES of modulation. `floor_idx` bounds the walk so it
-    cannot reach the previous corner's braking.
-    """
-    end = None
-    for j in range(apex_idx, floor_idx - 1, -1):
-        if samples[j]["brake"] > BRAKE_ON:
-            end = j
-            break
-    if end is None:
-        return None
+    So work backwards from the apex. The first version then took the *last*
+    braking run before the apex, and that was unstable in its own way: any
+    touch of the pedal between the real braking zone and the apex became the
+    brake point. A 0.39 brush before Spoon's second apex at Suzuka put it
+    0.036 of a lap (about 210 m) after the 1.0 stop before turn-in, on 16 of
+    18 laps, and a hairpin whose trail-off sat just under BRAKE_ON for eight
+    samples split into two zones on half the laps. Lap-to-lap brake point
+    deltas were comparing different braking events.
 
-    start, gap = end, 0
-    for j in range(end - 1, floor_idx - 1, -1):
+    So every braking run between `floor_idx` (the previous corner's exit)
+    and the apex is collected, each weighed by the speed it took off -- not
+    by pedal travel, which a car held on the brakes on the grid has plenty
+    of. The brake point is the start of the earliest run that took at least
+    BRAKE_ZONE_MIN_SHARE of what the heaviest one did.
+    """
+    runs = _brake_runs(samples, apex_idx, floor_idx)
+    if not runs:
+        return None
+    heaviest = max(drop for _, drop in runs)
+    if heaviest <= 0:
+        # Nothing slowed the car: a brake held at a standstill, or a speed
+        # channel that never moved. The pedal nearest the apex is the least
+        # wrong answer, and what the first version would have said.
+        return runs[0][0]
+    return min(start for start, drop in runs
+               if drop >= BRAKE_ZONE_MIN_SHARE * heaviest)
+
+
+def _brake_runs(samples, apex_idx: int, floor_idx: int) -> list[tuple]:
+    """(start index, km/h taken off) for each braking run, nearest the apex
+    first. A run tolerates BRAKE_ZONE_GAP_SAMPLES of modulation.
+
+    Never walks back across the start/finish line: the first lap of a
+    session begins on the grid behind it, where norm_pos is still ~0.99, and
+    braking there is not braking for the first corner.
+    """
+    apex_pos = samples[apex_idx]["norm_pos"]
+    runs, start, end, gap = [], None, None, 0
+    for j in range(apex_idx, floor_idx - 1, -1):
+        if samples[j]["norm_pos"] > apex_pos:
+            break
         if samples[j]["brake"] > BRAKE_ON:
+            if end is None:
+                end = j
             start, gap = j, 0
-        else:
+        elif end is not None:
             gap += 1
             if gap > BRAKE_ZONE_GAP_SAMPLES:
-                break
-    return start
+                runs.append((start, end))
+                start, end, gap = None, None, 0
+    if end is not None:
+        runs.append((start, end))
+    return [(a, max(0.0, samples[a]["speed_kmh"] - samples[b]["speed_kmh"]))
+            for a, b in runs]
 
 
 # Fewest samples an entry phase needs before its figures mean anything.

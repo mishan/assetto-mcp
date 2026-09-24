@@ -7,7 +7,7 @@ where it bit, and where the code lives, so a future session can act without
 re-deriving any of it. What has been addressed is summarized at the bottom.
 
 Written after the Sebring / NSX GT3 session, and kept current since. Test
-suite stands at 586 passing with the Lua tooling installed,
+suite stands at 588 passing with the Lua tooling installed,
 schema at v15.
 
 ---
@@ -209,7 +209,7 @@ anti-roll bar on its minimum stop and the rear only one step up. The
 > roll stands. Re-run, they are car-and-track numbers rather than
 > properties of the car: Sebring's banking that rises with cornering load
 > stays in the slope even under the new fit, and so does road grade that
-> varies with where she brakes. The *conclusion* — a stiff car, springs
+> varies with where the car brakes. The *conclusion* — a stiff car, springs
 > dominating the bars — rests on the setup sheet as much as on the
 > gradient, so it is the part least likely to move. That is an argument,
 > not a measurement.
@@ -226,13 +226,11 @@ every lap examined, with `FRONT_BIAS` at 60. Consistent, and the lever if
 that ever needs changing.
 
 **The `abs` field is not constant across sessions** — 0.09 in practice and
-qualifying, 0.06 in the race, same setup file, and the driver felt ABS
-was less aggressive in the race. Worth asking whether the rotary was
-touched or the server changed it.
+qualifying, 0.06 in the race, same setup file. Worth asking whether the
+rotary was touched or the server changed it.
 
 **Wear at racing pace: about 0.05%/lap front, 0.024%/lap rear**, rising to
-~0.055% rear late in a stint when the driver started carrying more speed
-through slow corners. Total over a 13-lap race: 0.7% front, 0.44% rear.
+~0.055% rear late in a stint. Total over a 13-lap race: 0.7% front, 0.44% rear.
 Tyre life is a non-issue for this car over a sprint distance; do not spend
 setup effort on it.
 
@@ -241,23 +239,6 @@ setup effort on it.
 > wrong.** Re-run per stint. The *conclusion* — 0.7% over a race distance
 > is nothing — survives an order of magnitude of error in either
 > direction, which is why it is still here.
-
----
-
-## Driver context worth keeping
-
-Preferences that have proven stable across two cars and three circuits, and
-that should bias setup work:
-
-- **Predictability over peak grip.** A tenth of ultimate pace is worth
-  nothing if it cannot be leaned on. Zero toe suited her on both cars.
-- Fast in cars that reward carrying speed and precision. Dislikes heavy,
-  powerful, aero-dependent cars and turbos — the common thread is
-  **linearity**: a constant relationship between input and response.
-- Reports feel accurately and catches over-claims. When she says a change
-  did nothing, believe it before believing a p-value.
-- Diagnoses she found herself that the tooling missed: the wider line at
-  Sunset Bend, the TC direction, the toe mapping, the AC spring-rate ladder.
 
 ---
 

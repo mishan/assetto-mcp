@@ -18,6 +18,11 @@ diagnose-report.txt
 # included, and nearly a gigabyte; ranges inside it are licensed car data.
 /assetto-mcp-data/
 
+# Notes about a driver and their cars. They belong in the data directory
+# (<data_dir>/notes/); these catch a copy made inside the checkout.
+notes/
+*.local.md
+
 # Session reports written for the driver to read. Generated from the
 # database, so they are output rather than source -- and they date badly,
 # since the analysis that produced them keeps changing underneath.

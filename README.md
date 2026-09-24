@@ -200,6 +200,11 @@ wheel. Pick an opponent to see where they braked and got back on the throttle
 compared with you. Turns are numbered the same way the assistant numbers them. The file
 lives in `exports/` in the data folder and loads nothing from the internet.
 
+The race engineer skill keeps notes about you and your cars — setup
+history, what worked, fuel rates, how you like to be told things — in
+`notes/` in the same data folder. They're yours: nothing writes them into
+the repository.
+
 ### While you're driving
 
 The in-game app (right edge of the screen → apps sidebar) gives you:

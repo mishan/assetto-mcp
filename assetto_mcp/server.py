@@ -992,8 +992,17 @@ def storage_report() -> str:
     many have been through that; `sample_stride` on a lap says by how much.
 
     The budget is ASSETTO_MCP_MAX_DB_BYTES, default 2 GB. Set it to 0 to
-    keep every sample forever."""
-    return _j(retention.storage_report(_conn, DB_PATH))
+    keep every sample forever.
+
+    `data_dir` is the folder all of this lives in, and `notes_dir` is where
+    notes about the driver and their cars go: the driver's own files, never
+    the repository."""
+    out = retention.storage_report(_conn, DB_PATH)
+    # Where the driver's own files live: the notes the race-engineer skill
+    # keeps, and exports. Neither belongs in the repository.
+    out["data_dir"] = str(DATA_DIR)
+    out["notes_dir"] = str(DATA_DIR / "notes")
+    return _j(out)
 
 
 @mcp.tool()

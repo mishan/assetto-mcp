@@ -29,7 +29,8 @@ the recorder this one stands by and says so. Call it first every session.
 **`recording_status()`** -- read `state`, not `running`: "never_started" and
 "stopped_by_request" look identical otherwise. "standby" is healthy.
 `session_id` is the id to tag and to watch. `setup_name` shows the current
-tag. "waiting for AC to go live" means the car is in the pits, the menu, or
+tag; `measured_setup` is the fingerprint of the values the in-game app reads
+off the setup menu right now, and it changes when the setup does. "waiting for AC to go live" means the car is in the pits, the menu, or
 between sessions.
 
 **`stop_recording()`** -- durable and shared across instances. Do not call it
@@ -72,9 +73,21 @@ laps. Call it when the driver says they loaded something, after every pit
 stop that changed anything, on every new session id, and for on-wheel
 changes with a suffix (`claude_v15 bias58`).
 
+Every lap also carries `setup_fp`, the setup it was measured on, and the
+name only follows laps on the values it was bound to: the first lap after
+the call binds it. A setup changed later without a call leaves the laps on
+it blank rather than wrongly named, and a return to named values takes that
+name back. `unlabelled_laps_on_the_setup_measured_now` in the reply lists
+earlier laps already on the car's current values -- the laps to offer to
+`label_laps` when the call came late. `measured_setup_now: null` means the
+app is not reporting, and the name is unchecked.
+
 **`label_laps(lap_ids, setup_name, session_id)`** -- fills only laps with no
-setup recorded, only the ids named. Ask the driver which laps; the boundary
-is a garage stop and nothing in the telemetry marks it. `lap_ids` is a
+setup recorded, only the ids named. Ask the driver which laps. Where the
+setup was measured, ids spanning two measured setups are refused whole
+(`laps_by_measured_setup` shows the split -- that is where the garage stop
+was), and laps measured on other values than the laps already carrying the
+name are left alone (`measured_on_a_different_setup`). `lap_ids` is a
 string: "87,88,89,90" or "87-90".
 
 Genuinely wrong labels are fixed with `scripts/relabel_laps.py`, on purpose
@@ -175,6 +188,13 @@ include_invalid)`** -- the A/B judge. Two comma-separated id lists. Read:
   the hit.
 - `baseline_setups` and `candidate_setups`: check the tags are what you
   think they are before reading anything else.
+- `measured_setup_warning` (`same_measured_setup: true`): both sides were
+  driven on identical values. The change never reached the car; nothing
+  below is its effect. Say so before any metric.
+- `setup_changes`: the entries that actually differ between the two
+  measured setups, fuel aside. Check it matches the change you meant.
+  `measured_setup_note` says when a side spans two setups or has laps
+  nothing measured.
 
 Pass `clean_laps_only=false` and `include_invalid=null` explicitly. Both
 sides must be the same car on the same layout.

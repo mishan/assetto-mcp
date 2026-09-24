@@ -7,8 +7,8 @@ where it bit, and where the code lives, so a future session can act without
 re-deriving any of it. What has been addressed is summarized at the bottom.
 
 Written after the Sebring / NSX GT3 session, and kept current since. Test
-suite stands at 571 passing with the Lua tooling installed,
-schema at v14.
+suite stands at 586 passing with the Lua tooling installed,
+schema at v15.
 
 ---
 
@@ -24,19 +24,7 @@ from it.
 
 ---
 
-## 2. Stamp laps with the setup the car is actually running
-
-**Status:** open.
-
-Setup attribution is still a claim someone types (`set_session_setup`,
-`label_laps`), not a measurement. The collector could stamp laps from the
-live setup fingerprint — `setup_values` already holds one per session — and
-remove the question entirely, along with every mislabel a mistyped or
-late call has produced.
-
----
-
-## 3. A physics worker for what only physics can see
+## 2. A physics worker for what only physics can see
 
 **Status:** open. Single-player only; inference stays the fallback.
 
@@ -72,7 +60,7 @@ than inferring it from slip.
 
 ---
 
-## 4. Scrappy laps pass as representative
+## 3. Scrappy laps pass as representative
 
 **Status:** open.
 
@@ -84,7 +72,7 @@ from validity.
 
 ---
 
-## 5. Brake-point detection is unstable between laps
+## 4. Brake-point detection is unstable between laps
 
 **Status:** open, never chased.
 
@@ -94,7 +82,7 @@ certainly two different braking events being matched.
 
 ---
 
-## 6. Corner detection leftovers
+## 5. Corner detection leftovers
 
 **Status:** open. Much better than it was; not zero.
 
@@ -115,7 +103,7 @@ certainly two different braking events being matched.
 
 ---
 
-## 7. Turn numbers are the run's, not the circuit's
+## 6. Turn numbers are the run's, not the circuit's
 
 **Status:** open. Session-local numbering is built (`analysis.corner_map`,
 `label_corners`, `track_corners`); everything that would make the numbers
@@ -160,7 +148,7 @@ for ordering and not for a 50 m tolerance.
 
 ---
 
-## 8. Compare incident rates, not just spread
+## 7. Compare incident rates, not just spread
 
 **Status:** open.
 
@@ -173,7 +161,7 @@ likely by chance — and should say so.
 
 ---
 
-## 9. Body slip angle
+## 8. Body slip angle
 
 **Status:** open.
 
@@ -185,7 +173,7 @@ unverified, and could be pinned in the same look.
 
 ---
 
-## 10. Parked: fill the display-mapping registry automatically
+## 9. Parked: fill the display-mapping registry automatically
 
 **Status:** waiting on CSP.
 
@@ -285,18 +273,29 @@ history has the detail.
   migration used it to restore laps like Sebring 129 that had been wrongly
   marked invalid. `compare_runs` no longer drops laps silently: ran-wide
   laps are compared and named, and only laps whose time is not a lap time
-  are excluded, with a reason. Open remainder: item 3.
+  are excluded, with a reason. Open remainder: item 2.
 - **`set_session_setup` no longer relabels the baseline.** It is
   forward-only; backfilling moved to `label_laps`, which only fills blanks
   on named lap ids. Covered by
-  `test_naming_a_new_setup_does_not_relabel_the_baseline`. Open remainder:
-  item 2.
+  `test_naming_a_new_setup_does_not_relabel_the_baseline`.
+- **Laps carry the setup they were measured on** (schema v15). The app's
+  setup posts go into `setup_history` under a fingerprint of the values,
+  fuel excluded, and each lap is stamped with the one on the car
+  (`laps.setup_fp`, `setup_changed` for a lap through a garage stop). A
+  stated name binds to the first lap after the call rather than to the
+  moment of it, so "I'm loading v2" said early does not name the baseline;
+  a setup changed without a call leaves laps blank instead of wrongly
+  named. `label_laps` refuses ids spanning two measured setups, and
+  `compare_runs` reports `setup_changes` and warns when both sides were on
+  identical values. Names are still typed: the fingerprint says *whether*
+  two laps shared a setup, not what the file was called. Laps before v15,
+  or without the app, are unmeasured.
 - **Consistency is tested**, as `lap_time_consistency`: a permutation test
   on the variance ratio, because a variance-ratio F test called identical
   spin-prone runs different 47% of the time. It joins the Holm family only
   when the lap counts can clear its threshold, and otherwise says how many
   laps it would take. The Sebring v9 case that motivated it comes out at
-  p = 0.41 — six laps cannot tell a fix from luck. Open remainder: item 8.
+  p = 0.41 — six laps cannot tell a fix from luck. Open remainder: item 7.
 - **Entry-phase corner metrics**, as `entry_phase` on every corner: slip
   balance, mean steering, peak yaw rate and rotation from brake point (or
   turn-in) to apex, and corner channels in `compare_runs`. Unverified on
@@ -312,13 +311,13 @@ history has the detail.
   `display_notes`, fitted by `setups.fit_display`, with
   `record_display_value`, `record_display_range` and
   `forget_display_value`. Every reported value carries a `source`, and
-  `unknown` states no value. Open remainder: item 10.
+  `unknown` states no value. Open remainder: item 9.
 - **Long corners numbered once.** `_corner_clusters` joins groups whose
   corners share road on enough laps, and only chains same-direction
   corners by proximity. Sebring's Sunset Bend went from four turns to one;
-  `compare_runs` uses the same grouping. Open remainder: item 6.
+  `compare_runs` uses the same grouping. Open remainder: item 5.
 - **Session-local turn numbers** (`analysis.corner_map`, `label_corners`,
-  `track_corners`). Open remainder: item 7.
+  `track_corners`). Open remainder: item 6.
 - **Opponents recorded properly** (schema v14). The app read three fields
   CSP does not have; it now takes the car from `ac.getCarID(i)`, times
   opponent laps itself from `lapCount` and `timestamp`, and stores each

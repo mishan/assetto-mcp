@@ -91,7 +91,9 @@ go in one round of calls.
 3. `identify_setup` with the session id. If the driver has told you what they
    loaded, `set_session_setup` with that name now; it applies forward only,
    and every lap before it stays unlabeled. If laps were already driven on
-   it, `label_laps` with the ids the driver names, never inferred.
+   it, `label_laps` with the ids the driver names, never inferred -- the
+   reply's `unlabelled_laps_on_the_setup_measured_now` is the list to
+   confirm with them.
 4. If the setup is new to you, `read_setup` and `setup_ranges`, and note
    every display entry whose `source` is "unknown" -- you will want the
    driver to read those off the screen at some quiet moment.

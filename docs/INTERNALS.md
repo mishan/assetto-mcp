@@ -158,6 +158,20 @@ barely dents the speed trace but pulls as hard as anything on the lap, and a
 speed-minimum detector excludes it by construction. Each corner reports entry,
 apex, exit, peak lateral g and a turn sign.
 
+A corner is a stretch over the bar turning one way. Two such stretches
+turning the same way are one corner when the load between them never fell
+below 70% of the bar — the car never straightened — which is what keeps a
+long flat-out curve from being cut in pieces wherever its load wavers. Turn-in
+and exit are still where the load first and last crossed the bar.
+
+The **brake point** is where braking for the corner began, found by walking
+back from the apex to the previous corner's exit. Every braking run on that
+stretch is weighed by the speed it took off, and the brake point is the start
+of the earliest one that took at least a quarter of what the heaviest did.
+Taking the last run instead made any touch of the pedal before the apex the
+brake point — at Suzuka's Spoon, 210 m after the real one on 16 laps of 18.
+The walk never crosses the start/finish line.
+
 The sign says which corners turn the same way — it is deliberately *not*
 labelled left or right, because AC does not document which sign is which, and a
 consistent sign is more useful than a label that is right half the time.
@@ -189,8 +203,9 @@ close and they turn the same way, or when they cover the same stretch of
 track — at least half the shorter corner's length — on at least two laps
 on each side. The second rule matters for long corners. On a long corner the
 slowest point wanders from lap to lap, and where lateral g dips under the
-threshold mid-corner the detector reports two pieces. Sebring's Sunset Bend
-used to be numbered four times because of this. If most laps drove a piece
+threshold mid-corner the detector can still report two pieces — the joining
+above only covers a dip that stays over 70% of the bar. Sebring's Sunset
+Bend used to be numbered four times because of this. If most laps drove a piece
 of road as one corner, it gets one number, and a lap that was split keeps
 its slowest piece. The other piece still appears on that lap with
 `turn: null`. If most laps drove it as two corners, it stays two.

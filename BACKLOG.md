@@ -7,7 +7,7 @@ where it bit, and where the code lives, so a future session can act without
 re-deriving any of it. What has been addressed is summarized at the bottom.
 
 Written after the Sebring / NSX GT3 session, and kept current since. Test
-suite stands at 588 passing with the Lua tooling installed,
+suite stands at 595 passing with the Lua tooling installed,
 schema at v15.
 
 ---
@@ -72,30 +72,22 @@ from validity.
 
 ---
 
-## 4. Brake-point detection is unstable between laps
-
-**Status:** open, never chased.
-
-`_brake_zone_start` reported a 0.036-of-a-lap difference at Suzuka's Spoon —
-about 210 m — for two laps whose apex speeds differed by 1.2 km/h. Almost
-certainly two different braking events being matched.
-
----
-
-## 5. Corner detection leftovers
+## 4. Corner detection leftovers
 
 **Status:** open. Much better than it was; not zero.
 
 - **One-sided corners.** Fell from 7 of 17 to 3 of 18 after the shared
   lateral-g reference (`analysis.lat_g_reference`).
-- **Pairs that still look like one corner split in two**, which neither the
-  span rule nor proximity joined: Suzuka 0.534/0.541 (4 and 6 laps) and
-  0.570/0.593 (4 and 6), Interlagos 0.587/0.605 (2 and 4), Kyalami (39)
-  0.575/0.608 (5 and 3). Check their spans and turn directions in the line
-  map's Corners view before loosening `CORNER_SPAN_OVERLAP` or
-  `CORNER_SPAN_SUPPORT`. The support rule exists because of Kyalami
-  (session 37), where one lap's early entry pulled in a kink three other
-  laps had found.
+- **Joins that happen on some laps only.** Same-direction stretches are
+  joined when the load between them stays over `CORNER_RELEASE_SHARE` (0.7)
+  of the bar, and where a gap sits near that line it is joined on some laps
+  and not others. Two turns lost laps to this when it went in: Kyalami (39)
+  0.797, 12 laps of 12 to 9, and Interlagos 0.530, 9 of 9 to 8. Deciding a
+  join once per session, from how most laps drove the gap, would settle it.
+- **A kink near the bar.** Interlagos 0.587/0.605 is one curve and is now
+  one turn, but found on 5 laps of 9: on the rest its load never reached
+  the bar. Kyalami (39) 0.575/0.608 is not a split at all — a left then a
+  right, each under the bar on some laps.
 - **The second piece of a split corner has no turn number.**
   `label_corners` pairs one corner per turn, so it shows as `?` in the
   Corners view and `+n` in the Turns column. Labelling it "part of T18"
@@ -103,7 +95,7 @@ certainly two different braking events being matched.
 
 ---
 
-## 6. Turn numbers are the run's, not the circuit's
+## 5. Turn numbers are the run's, not the circuit's
 
 **Status:** open. Session-local numbering is built (`analysis.corner_map`,
 `label_corners`, `track_corners`); everything that would make the numbers
@@ -148,7 +140,7 @@ for ordering and not for a 50 m tolerance.
 
 ---
 
-## 7. Compare incident rates, not just spread
+## 6. Compare incident rates, not just spread
 
 **Status:** open.
 
@@ -161,7 +153,7 @@ likely by chance — and should say so.
 
 ---
 
-## 8. Body slip angle
+## 7. Body slip angle
 
 **Status:** open.
 
@@ -173,7 +165,7 @@ unverified, and could be pinned in the same look.
 
 ---
 
-## 9. Parked: fill the display-mapping registry automatically
+## 8. Parked: fill the display-mapping registry automatically
 
 **Status:** waiting on CSP.
 
@@ -276,7 +268,7 @@ history has the detail.
   spin-prone runs different 47% of the time. It joins the Holm family only
   when the lap counts can clear its threshold, and otherwise says how many
   laps it would take. The Sebring v9 case that motivated it comes out at
-  p = 0.41 — six laps cannot tell a fix from luck. Open remainder: item 7.
+  p = 0.41 — six laps cannot tell a fix from luck. Open remainder: item 6.
 - **Entry-phase corner metrics**, as `entry_phase` on every corner: slip
   balance, mean steering, peak yaw rate and rotation from brake point (or
   turn-in) to apex, and corner channels in `compare_runs`. Unverified on
@@ -292,13 +284,13 @@ history has the detail.
   `display_notes`, fitted by `setups.fit_display`, with
   `record_display_value`, `record_display_range` and
   `forget_display_value`. Every reported value carries a `source`, and
-  `unknown` states no value. Open remainder: item 9.
+  `unknown` states no value. Open remainder: item 8.
 - **Long corners numbered once.** `_corner_clusters` joins groups whose
   corners share road on enough laps, and only chains same-direction
   corners by proximity. Sebring's Sunset Bend went from four turns to one;
-  `compare_runs` uses the same grouping. Open remainder: item 5.
+  `compare_runs` uses the same grouping. Open remainder: item 4.
 - **Session-local turn numbers** (`analysis.corner_map`, `label_corners`,
-  `track_corners`). Open remainder: item 6.
+  `track_corners`). Open remainder: item 5.
 - **Opponents recorded properly** (schema v14). The app read three fields
   CSP does not have; it now takes the car from `ac.getCarID(i)`, times
   opponent laps itself from `lapCount` and `timestamp`, and stores each
@@ -324,5 +316,20 @@ history has the detail.
   now stores AC's own track length for every session; sessions without one
   have it estimated from clean laps' speed, within 0.4% of the game's
   figure where both exist, and the payload says which.
+- **Brake points are the braking that slowed the car.** `_brake_zone_start`
+  took the last braking run before the apex, so a touch of the pedal
+  mid-corner became the brake point: Suzuka's Spoon reported one 0.036 of a
+  lap late on 16 laps of 18, and a hairpin whose trail-off sat under
+  `BRAKE_ON` split in two on half its laps. Runs are now weighed by the
+  speed they took off (a brake held on the grid took none), the earliest
+  run with a quarter of the heaviest one's drop is the brake point, and the
+  walk stops at the start/finish line. Brake points more than 0.005 of a
+  lap from their corner's median, over every recorded session: 206 of 1410
+  before, 77 of 1428 after.
+- **A long curve is one corner** (`CORNER_RELEASE_SHARE`). Same-direction
+  stretches over the bar join when the load between them stays over 70% of
+  it. Suzuka's long left after the hairpin was two to four corners a lap
+  and is one on every lap; turns found on fewer than three laps in four,
+  over every session, went from 50 to 24. Open remainder: item 4.
 - **`_migrate` v1 unguarded ALTER.** All six ALTER sites go through
   `_add_column`, which no-ops on a missing table.

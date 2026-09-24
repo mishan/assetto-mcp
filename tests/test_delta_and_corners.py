@@ -126,6 +126,59 @@ def test_a_twitch_is_not_a_corner():
     assert analysis.detect_corners(twitchy) == []
 
 
+def _load_profile(gap_g, n=1500):
+    """A 2.0 g corner, then a curve with two 1.4 g peaks and a stretch of
+    road between them -- about 1.5 s at this rate -- held at `gap_g`."""
+    lap = _braking_lap(corners=((0.20, 0.03, 2.0),), brakes=(), n=n)
+    for s in lap:
+        p = s["norm_pos"]
+        if not 0.50 <= p < 0.62:
+            continue
+        hump = max(math.cos((p - c) / 0.02 * math.pi / 2)
+                   if abs(p - c) < 0.02 else 0.0 for c in (0.52, 0.60))
+        g = 1.4 * hump
+        if 0.52 <= p <= 0.60:
+            g = max(g, gap_g)
+        s["acc_lat"] = g
+        s["steer"] = 0.3
+    return lap
+
+
+def test_a_long_curve_that_never_straightens_is_one_corner():
+    """Suzuka after the hairpin: flat out, load between 0.54 and 1.2 g
+    against a 0.75 g bar, cut into two to four corners depending on the
+    lap. The car never straightened, so it is one."""
+    bar = analysis.corner_threshold(2.0)
+    lap = _load_profile(gap_g=0.8 * bar)
+    corners = [c for c in analysis.detect_corners(lap)
+               if c["apex_pos"] > 0.4]
+    assert len(corners) == 1, [(c["entry_pos"], c["exit_pos"])
+                               for c in corners]
+    print(f"  one corner {corners[0]['entry_pos']}-{corners[0]['exit_pos']}")
+
+
+def test_two_corners_with_the_car_straight_between_stay_two():
+    bar = analysis.corner_threshold(2.0)
+    lap = _load_profile(gap_g=0.3 * bar)
+    corners = [c for c in analysis.detect_corners(lap)
+               if c["apex_pos"] > 0.4]
+    assert len(corners) == 2, [(c["entry_pos"], c["exit_pos"])
+                               for c in corners]
+
+
+def test_corners_turning_opposite_ways_are_never_joined():
+    """Kyalami 0.575/0.608 looked like one corner split in two. It is a
+    left and a right, each under the bar on some laps."""
+    lap = _load_profile(gap_g=0.0)
+    for s in lap:
+        if 0.56 <= s["norm_pos"] < 0.62:
+            s["acc_lat"] = -abs(s["acc_lat"])
+    corners = [c for c in analysis.detect_corners(lap)
+               if c["apex_pos"] > 0.4]
+    assert len(corners) == 2, corners
+    assert corners[0]["turn_sign"] != corners[1]["turn_sign"]
+
+
 # --- brake points -------------------------------------------------------
 
 
@@ -227,6 +280,75 @@ def test_two_corners_do_not_steal_each_others_brake_zone():
     print(f"  brake points {first['brake_point_pos']} and "
           f"{second['brake_point_pos']}, exits {first['exit_pos']} and "
           f"{second['exit_pos']}")
+
+
+def _slowed(lap, zones):
+    """Set speed from braking zones: each (start, end, km/h taken off) runs
+    the car down linearly across the zone, and it holds speed otherwise.
+    The pedal says a driver pressed; this says the car slowed, which is
+    what tells the braking zone from a touch of the pedal."""
+    speed = 240.0
+    for i, s in enumerate(lap):
+        for lo, hi, drop in zones:
+            if lo <= s["norm_pos"] < hi:
+                speed -= drop / max(1, sum(
+                    1 for x in lap if lo <= x["norm_pos"] < hi))
+        s["speed_kmh"] = speed
+    return lap
+
+
+def test_a_dab_before_the_apex_is_not_the_brake_point():
+    """Suzuka's Spoon, as it was driven.
+
+    A full stop before turn-in, off the pedal, then a brush of it before the
+    second apex. The walk back from the apex took the last braking it found,
+    so the brush was the brake point on 16 laps of 18 -- 0.036 of a lap,
+    about 210 m, after the braking that actually slowed the car.
+    """
+    lap = _braking_lap(corners=((0.52, 0.05, 2.2),),
+                       brakes=((0.440, 0.470), (0.505, 0.508)))
+    _slowed(lap, ((0.440, 0.470, 90.0), (0.505, 0.508, 4.0)))
+    c = analysis.detect_corners(lap)[0]
+    assert c["entry_pos"] < 0.505 < c["apex_pos"], c
+    assert abs(c["brake_point_pos"] - 0.440) < 0.005, c
+    print(f"  brake point {c['brake_point_pos']}, not the dab at 0.505")
+
+
+def test_a_trail_off_below_the_threshold_does_not_move_the_brake_point():
+    """The hairpin: the pedal sat just under BRAKE_ON for longer than the
+    modulation allowance, then came back on. Half the laps reported the
+    second application as the brake point."""
+    lap = _braking_lap(brakes=((0.400, 0.470), (0.4775, 0.485)))
+    gap = [s for s in lap if 0.470 <= s["norm_pos"] < 0.4775]
+    assert len(gap) > analysis.BRAKE_ZONE_GAP_SAMPLES, len(gap)
+    _slowed(lap, ((0.400, 0.470, 110.0), (0.4775, 0.485, 15.0)))
+    c = analysis.detect_corners(lap)[0]
+    assert abs(c["brake_point_pos"] - 0.400) < 0.005, c
+
+
+def test_braking_that_did_real_work_still_counts_when_it_came_first():
+    """Two genuine applications: the earlier one is where braking began,
+    even when the later one took off more speed."""
+    lap = _braking_lap(brakes=((0.400, 0.420), (0.450, 0.485)))
+    _slowed(lap, ((0.400, 0.420, 40.0), (0.450, 0.485, 80.0)))
+    c = analysis.detect_corners(lap)[0]
+    assert abs(c["brake_point_pos"] - 0.400) < 0.005, c
+
+
+def test_a_brake_held_on_the_grid_is_not_braking_for_turn_one():
+    """The first lap of a race starts behind the line, stationary, on the
+    brake. Weighed by pedal travel that was the biggest braking zone of the
+    lap; it took no speed off, and it is not even on this lap."""
+    lap = _braking_lap(corners=((0.10, 0.03, 2.2),), brakes=((0.050, 0.080),))
+    grid = [{**lap[0], "norm_pos": 0.99 + k * 1e-4, "brake": 1.0,
+             "speed_kmh": 0.0, "acc_lat": 0.0, "t_ms": -4000.0 + k * 40}
+            for k in range(60)]
+    lap = grid + lap
+    _slowed(lap, ((0.050, 0.080, 90.0),))
+    for s in lap[:60]:
+        s["speed_kmh"] = 0.0
+    c = analysis.detect_corners(lap)[0]
+    assert abs(c["brake_point_pos"] - 0.050) < 0.005, c
 
 
 # --- delta by position --------------------------------------------------

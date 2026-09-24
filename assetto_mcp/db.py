@@ -9,6 +9,8 @@ nothing on a database that already exists, so every column added after the
 first release needs an explicit ALTER here.
 """
 
+import hashlib
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -16,7 +18,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 # How many wheels have to be off the valid surface before a lap counts as
 # having exceeded track limits.
@@ -89,7 +91,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- recording. Every other instance shares this file and nothing else.
     -- NULL means a session written before v10, where the only evidence
     -- available is the last stored lap.
-    last_seen_at REAL
+    last_seen_at REAL,
+    -- The measured setup setup_name was stated for. Empty until the first
+    -- lap stored after set_session_setup, which binds it: the name is then
+    -- stamped only on laps driven on those values, so a setup changed in
+    -- the pits without anyone saying so stops inheriting the old name.
+    setup_fp TEXT NOT NULL DEFAULT ''
 );
 
 -- setup_name is per-lap, not per-session: the tuning loop changes setup in
@@ -124,6 +131,15 @@ CREATE TABLE IF NOT EXISTS laps (
     -- -- the one that ended in the barrier -- was the only one guaranteed
     -- not to be recorded.
     complete INTEGER NOT NULL DEFAULT 1,
+    -- The setup the car was measured on when the lap ended: a fingerprint
+    -- of the values the in-game app read off the setup menu, so two laps
+    -- with the same one were driven on the same setup whatever anyone
+    -- called it. Empty means nothing was measured (no app, or a lap stored
+    -- before the first report), not that the setup was blank.
+    setup_fp TEXT NOT NULL DEFAULT '',
+    -- A different setup was measured when the lap started. Only a lap
+    -- through the pits can do that, and its telemetry is two setups.
+    setup_changed INTEGER NOT NULL DEFAULT 0,
 
     -- Left the pits and crossed the line without a flying start, so
     -- lap_time_ms is not a lap time. Stored rather than dropped: the
@@ -354,6 +370,27 @@ CREATE TABLE IF NOT EXISTS setup_values (
     updated_at REAL NOT NULL,
     PRIMARY KEY (session_id, name)
 );
+
+-- Every setup the car has been measured on, by fingerprint, with the
+-- values behind it -- so two runs can say what actually differed between
+-- them rather than what their names suggest.
+CREATE TABLE IF NOT EXISTS setup_fingerprints (
+    fp TEXT PRIMARY KEY,
+    car TEXT NOT NULL,
+    values_json TEXT NOT NULL,
+    first_seen_at REAL NOT NULL
+);
+
+-- When each session's measured setup changed. One row per change, not per
+-- report, so the setup on the car at any moment is the latest row before
+-- it -- which is what stamps a lap, and what says a lap spanned two.
+CREATE TABLE IF NOT EXISTS setup_history (
+    session_id INTEGER NOT NULL,
+    seen_at REAL NOT NULL,
+    fp TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_setup_history_session
+    ON setup_history (session_id, seen_at);
 
 CREATE TABLE IF NOT EXISTS setup_state (
     session_id INTEGER PRIMARY KEY,
@@ -663,6 +700,20 @@ def _migrate(conn) -> list[str]:
         if added:
             log.append(f"rival_samples.{', '.join(added)} added; opponent "
                        "laps recorded before this have no clock or position")
+
+    if version < 15:
+        # v15: the measured setup on each lap, and the one a stated name is
+        # bound to. Nothing to backfill: setup_values holds only the latest
+        # values per session, not which laps they were on, so old laps stay
+        # unmeasured rather than being given the session's last setup.
+        added = [f"{t}.{c}" for t, c, d in (
+            ("laps", "setup_fp", "TEXT NOT NULL DEFAULT ''"),
+            ("laps", "setup_changed", "INTEGER NOT NULL DEFAULT 0"),
+            ("sessions", "setup_fp", "TEXT NOT NULL DEFAULT ''"))
+            if _add_column(conn, t, c, d)]
+        if added:
+            log.append(f"{', '.join(added)} added; laps recorded before "
+                       "this have no measured setup")
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
@@ -1227,6 +1278,9 @@ def store_setup_snapshot(conn, session_id: int, car: str,
                 " value=excluded.value, updated_at=excluded.updated_at",
                 (session_id, name, float(s["value"]), now))
             values += 1
+    record_measured_setup(conn, session_id, car, {
+        s["name"]: float(s["value"]) for s in spinners
+        if s.get("name") and s.get("value") is not None}, now)
     if state:
         conn.execute(
             "INSERT INTO setup_state (session_id, state, reason, updated_at)"
@@ -1236,6 +1290,73 @@ def store_setup_snapshot(conn, session_id: int, car: str,
             (session_id, state, reason or "", now))
     conn.commit()
     return {"ranges": ranges, "values": values}
+
+
+# Entries that are not part of what a setup *is*. Fuel is the load for the
+# run, not a setting: a driver who adds ten liters for a long run is on the
+# same setup, and calling it a different one would split every A/B with a
+# refuel in it. The value is still stored; it just does not decide identity.
+NOT_SETUP_IDENTITY = frozenset({"FUEL"})
+
+
+def setup_fingerprint(car: str, values: dict) -> str:
+    """A short, stable id for a set of setup values on one car.
+
+    Rounded before hashing so a float that went through JSON and back
+    is still the same setup. '' for no values, which is "not measured".
+    """
+    parts = sorted(f"{k}={round(float(v), 6)!r}" for k, v in values.items()
+                   if k not in NOT_SETUP_IDENTITY)
+    if not parts:
+        return ""
+    raw = (car.strip().lower() + "|" + ";".join(parts)).encode()
+    return hashlib.sha1(raw).hexdigest()[:12]
+
+
+def record_measured_setup(conn, session_id: int, car: str, values: dict,
+                          now: float | None = None) -> str:
+    """Note the setup now on the car. Returns its fingerprint.
+
+    A row goes into setup_history only when the fingerprint differs from
+    the session's latest, so a re-post of an unchanged setup -- the app does
+    that at every session change -- does not look like a garage stop.
+    Does not commit; the caller's snapshot is one write.
+    """
+    fp = setup_fingerprint(car, values)
+    if not fp:
+        return ""
+    now = time.time() if now is None else now
+    conn.execute(
+        "INSERT OR IGNORE INTO setup_fingerprints (fp, car, values_json,"
+        " first_seen_at) VALUES (?,?,?,?)",
+        (fp, car, json.dumps(values, sort_keys=True), now))
+    if measured_setup_at(conn, session_id) != fp:
+        conn.execute("INSERT INTO setup_history (session_id, seen_at, fp)"
+                     " VALUES (?,?,?)", (session_id, now, fp))
+    return fp
+
+
+def measured_setup_at(conn, session_id: int, when: float | None = None) -> str:
+    """The fingerprint on the car at `when` (default: now), or ''."""
+    q = "SELECT fp FROM setup_history WHERE session_id = ?"
+    args: list = [session_id]
+    if when is not None:
+        q += " AND seen_at <= ?"
+        args.append(when)
+    r = conn.execute(q + " ORDER BY seen_at DESC, rowid DESC LIMIT 1",
+                     args).fetchone()
+    return r["fp"] if r else ""
+
+
+def setup_fingerprint_values(conn, fps) -> dict:
+    """{fp: {name: value}} for the fingerprints given, skipping unknowns."""
+    out = {}
+    for fp in {f for f in fps if f}:
+        r = conn.execute("SELECT values_json FROM setup_fingerprints"
+                         " WHERE fp = ?", (fp,)).fetchone()
+        if r:
+            out[fp] = json.loads(r["values_json"])
+    return out
 
 
 def _fuel_number(name: str, value, low: float, high: float,
@@ -1536,9 +1657,14 @@ def set_session_setup(conn, session_id: int, setup_name: str) -> bool:
     the tuning loop changes setup in the pits and keeps driving within one
     session, so rewriting history here would relabel the baseline laps as
     the new setup and destroy the very comparison this exists to enable.
+
+    Nor does it bind the name to the setup measured right now: a driver
+    says "I've loaded v2" as often before loading it as after, and binding
+    early would give the baseline's values the new name. The first lap
+    stored afterwards binds it -- see _stamp_setup.
     """
     cur = conn.execute(
-        "UPDATE sessions SET setup_name = ? WHERE id = ?",
+        "UPDATE sessions SET setup_name = ?, setup_fp = '' WHERE id = ?",
         (setup_name, session_id))
     conn.commit()
     return cur.rowcount > 0
@@ -1638,14 +1764,17 @@ def store_lap(conn, session_id: int, lap_number: int, lap_time_ms: int,
     setup_name defaults to whatever set_session_setup last recorded for this
     session -- a snapshot taken at store time, not a live join. That is the
     whole point: the setup is copied onto the lap as it lands, so changing
-    setup later tags only subsequent laps and leaves these alone.
+    setup later tags only subsequent laps and leaves these alone. When the
+    in-game app is measuring the setup, the name is only copied onto laps
+    driven on the values it was stated for; see _stamp_setup.
     """
-    if setup_name is None:
-        setup_name = session_setup(conn, session_id)
     try:
+        fp, changed, stamped = _stamp_setup(conn, session_id, lap_time_ms)
+        if setup_name is None:
+            setup_name = stamped
         return _store_lap(conn, session_id, lap_number, lap_time_ms,
                           samples, setup_name, complete,
-                          out_lap, pitted, outlier)
+                          out_lap, pitted, outlier, fp, changed)
     except Exception:
         # A lap and its samples are one write. Without this, anything that
         # raises between the two -- a malformed tuple, a disk error -- left
@@ -1659,18 +1788,64 @@ def store_lap(conn, session_id: int, lap_number: int, lap_time_ms: int,
         raise
 
 
+def _stamp_setup(conn, session_id, lap_time_ms) -> tuple[str, bool, str]:
+    """(measured fingerprint, changed during the lap, name to stamp).
+
+    The stated name is a claim and the fingerprint is a measurement, so the
+    name is stamped only where the two agree. set_session_setup leaves the
+    name unbound; the first measured lap after it binds the name to that
+    lap's setup. From then on a lap on different values -- a setup changed
+    in the pits with nobody saying so -- does not inherit it, and takes the
+    name of an earlier lap in this session measured on the same values, if
+    there is one, or none. With nothing measured the name is stamped as it
+    always was, because there is nothing to check it against.
+    """
+    now = time.time()
+    fp = measured_setup_at(conn, session_id)
+    start = measured_setup_at(conn, session_id,
+                              now - max(0, lap_time_ms or 0) / 1000.0)
+    changed = bool(fp and start and start != fp)
+    row = conn.execute("SELECT setup_name, setup_fp FROM sessions"
+                       " WHERE id = ?", (session_id,)).fetchone()
+    stated = (row["setup_name"] or "") if row else ""
+    bound = (row["setup_fp"] or "") if row else ""
+    if not fp:
+        return "", False, stated
+    if stated and not bound:
+        conn.execute("UPDATE sessions SET setup_fp = ? WHERE id = ?",
+                     (fp, session_id))
+        return fp, changed, stated
+    if stated and bound == fp:
+        return fp, changed, stated
+    return fp, changed, name_for_measured_setup(conn, session_id, fp)
+
+
+def name_for_measured_setup(conn, session_id: int, fp: str) -> str:
+    """The name the latest lap in this session on these values carries."""
+    if not fp:
+        return ""
+    r = conn.execute(
+        "SELECT setup_name FROM laps WHERE session_id = ? AND setup_fp = ?"
+        " AND setup_name != '' ORDER BY id DESC LIMIT 1",
+        (session_id, fp)).fetchone()
+    return r["setup_name"] if r else ""
+
+
 def _store_lap(conn, session_id, lap_number, lap_time_ms, samples,
-               setup_name, complete, out_lap, pitted, outlier):
+               setup_name, complete, out_lap, pitted, outlier,
+               setup_fp="", setup_changed=False):
     ex = score_excursions(excursion_pairs(samples))
     cur = conn.execute(
         "INSERT INTO laps (session_id, lap_number, lap_time_ms, valid,"
         " completed_at, setup_name, complete, out_lap, pitted, outlier,"
-        " invalid, invalid_source, max_tyres_out, excursions, off_track_ms)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " invalid, invalid_source, max_tyres_out, excursions, off_track_ms,"
+        " setup_fp, setup_changed)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (session_id, lap_number, lap_time_ms, int(not ex["invalid"]),
          time.time(), setup_name or "", int(complete), int(out_lap),
          int(pitted), int(outlier), int(ex["invalid"]), "inferred",
-         ex["max_tyres_out"], ex["excursions"], ex["off_track_ms"]),
+         ex["max_tyres_out"], ex["excursions"], ex["off_track_ms"],
+         setup_fp or "", int(bool(setup_changed))),
     )
     lap_id = cur.lastrowid
     placeholders = ",".join("?" * len(SAMPLE_COLUMNS))
@@ -1796,6 +1971,36 @@ def unlabelled_lap_ids(conn, session_id: int) -> list[int]:
         "SELECT id FROM laps WHERE session_id = ?"
         " AND (setup_name IS NULL OR setup_name = '') ORDER BY id",
         (session_id,))]
+
+
+def lap_setup_fps(conn, session_id: int, lap_ids: list[int]) -> dict:
+    """{lap_id: measured setup fingerprint} for these laps in this session."""
+    out: dict = {}
+    for chunk in _id_chunks(list(lap_ids)):
+        rows = conn.execute(
+            "SELECT id, setup_fp FROM laps WHERE session_id = ?"
+            " AND id IN (%s)" % ",".join("?" * len(chunk)),
+            [session_id, *chunk])
+        out.update({r["id"]: (r["setup_fp"] or "") for r in rows})
+    return out
+
+
+def measured_setups_named(conn, session_id: int, setup_name: str) -> set:
+    """Fingerprints of the laps in this session already carrying a name."""
+    return {r["setup_fp"] for r in conn.execute(
+        "SELECT DISTINCT setup_fp FROM laps WHERE session_id = ?"
+        " AND setup_name = ? AND setup_fp != ''", (session_id, setup_name))}
+
+
+def lap_ids_on_measured_setup(conn, session_id: int, fp: str,
+                              unlabelled_only: bool = True) -> list[int]:
+    if not fp:
+        return []
+    q = "SELECT id FROM laps WHERE session_id = ? AND setup_fp = ?"
+    if unlabelled_only:
+        q += " AND (setup_name IS NULL OR setup_name = '')"
+    return [r["id"] for r in conn.execute(q + " ORDER BY id",
+                                          (session_id, fp))]
 
 
 def lap_setup_names(conn, session_id: int, lap_ids: list[int]) -> dict:

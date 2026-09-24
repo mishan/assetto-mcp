@@ -277,6 +277,8 @@ def recording_status() -> str:
         "error": _collector.last_error,
         "setup_name": (db.session_setup(_conn, snap["session_id"]) or None
                        if snap["session_id"] else None),
+        "measured_setup": (db.measured_setup_at(_conn, snap["session_id"])
+                           or None if snap["session_id"] else None),
     }
     if why:
         out["state_note"] = why
@@ -792,7 +794,15 @@ def set_session_setup(setup_name: str, session_id: int | None = None) -> str:
 
     If laps really were driven on this setup before you were told, use
     label_laps with their ids -- naming them is the point, because only the
-    driver knows where the garage stop was."""
+    driver knows where the garage stop was.
+
+    When the in-game app is running, each lap also carries `setup_fp`: the
+    setup it was measured on, read off the setup menu. The name is bound to
+    the setup the first lap after this call is measured on, and later laps
+    on different values -- a setup changed with nobody saying so -- do not
+    get it. `unlabelled_laps_on_the_setup_measured_now` lists earlier laps
+    already measured on what the car has now; if this setup is loaded
+    already, those are the laps to label."""
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
@@ -806,6 +816,24 @@ def set_session_setup(setup_name: str, session_id: int | None = None) -> str:
     out = {"ok": True, "session_id": sid, "setup_name": setup_name,
            "applies_to": "laps completed from now on",
            "laps_already_stored": db.count_laps(_conn, sid)}
+    live = db.measured_setup_at(_conn, sid)
+    if live:
+        out["measured_setup_now"] = live
+        out["applies_to"] = (
+            "laps completed from now on, while the car stays on the setup "
+            "the first of them is measured on. A setup changed later "
+            "without saying so does not inherit this name.")
+        same = db.lap_ids_on_measured_setup(_conn, sid, live)
+        if same:
+            # Offered, not applied: whether the car has this setup yet is
+            # exactly what nobody can tell from here.
+            out["unlabelled_laps_on_the_setup_measured_now"] = same
+    else:
+        out["measured_setup_now"] = None
+        out["measured_setup_note"] = (
+            "the in-game app is not reporting the setup, so this name will "
+            "be stamped on every lap from now on unchecked. Say so again "
+            "after every garage stop.")
     if blank:
         out["unlabelled_laps"] = blank
         out["note"] = (
@@ -867,14 +895,19 @@ def label_laps(lap_ids: str, setup_name: str,
 
     For the normal case of realising after a run that the laps were on a
     setup nobody had recorded. Ask the driver which laps, rather than
-    inferring it -- the boundary is a garage stop, which nothing in the
-    telemetry marks.
+    inferring it -- the boundary is a garage stop, which the telemetry
+    marks only when the setup values changed and the app was running.
 
     Only laps with *no* setup recorded are changed. A lap already carrying a
     different name is reported back untouched, because a late correction
     applied to the wrong half of an A/B destroys the comparison it was meant
     to complete. Genuinely mislabelled laps are fixed with
-    scripts/relabel_laps.py, which is deliberately not a tool."""
+    scripts/relabel_laps.py, which is deliberately not a tool.
+
+    Where the in-game app measured the setup, it is checked too: ids that
+    span more than one measured setup are refused as a whole, and a lap
+    measured on different values from the laps already carrying this name
+    is left alone and reported."""
     ids, err = _parse_lap_ids(lap_ids)
     if err:
         return _j({"error": err})
@@ -894,9 +927,38 @@ def label_laps(lap_ids: str, setup_name: str,
     already = [i for i in ids if names.get(i) == setup_name]
     fillable = [i for i in ids if i in names and not names[i]]
 
+    # The measured setup overrules the claim. A name already on laps in this
+    # session measured on other values, or a list of ids that were not all
+    # driven on one setup, is a mislabel about to happen -- the boundary
+    # the driver remembered is not where the garage stop was.
+    fps = db.lap_setup_fps(_conn, sid, fillable)
+    known = db.measured_setups_named(_conn, sid, setup_name)
+    measured = {fps[i] for i in fillable if fps.get(i)}
+    if not known and len(measured) > 1:
+        groups: dict = {}
+        for i in fillable:
+            groups.setdefault(fps.get(i) or "not measured", []).append(i)
+        return _j({
+            "ok": False, "session_id": sid, "setup_name": setup_name,
+            "error": "these laps were driven on more than one setup, as "
+                     "measured by the in-game app, so they cannot all be "
+                     f"'{setup_name}'. Nothing was labelled. Ask the driver "
+                     "which group was on it.",
+            "laps_by_measured_setup": groups})
+    wrong = [i for i in fillable
+             if known and fps.get(i) and fps[i] not in known]
+    fillable = [i for i in fillable if i not in wrong]
+
     labelled = db.label_unattributed_laps(_conn, sid, setup_name, fillable)
     out = {"ok": True, "session_id": sid, "setup_name": setup_name,
            "laps_labelled": labelled, "lap_ids_labelled": fillable}
+    if wrong:
+        out["measured_on_a_different_setup"] = wrong
+        out["measured_note"] = (
+            f"{len(wrong)} lap(s) were measured on different values from "
+            f"the laps already labelled '{setup_name}' and were not "
+            f"labelled. Either the setup was changed, or these laps are "
+            f"another setup -- ask rather than forcing the name.")
     if missing:
         out["not_in_this_session"] = missing
     if already:
@@ -2016,9 +2078,58 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
             f"the question was specifically about a clean lap time.")
     out["baseline_setups"] = sorted({s.get("setup") or "" for s in base})
     out["candidate_setups"] = sorted({s.get("setup") or "" for s in cand})
+    out.update(_measured_setups([l for l, _ in base_loaded],
+                                [l for l, _ in cand_loaded]))
     if deprecated_note:
         out["deprecated"] = deprecated_note
     return _j(_placed(out, base_laps[0]["session_id"], out.get("turns")))
+
+
+def _measured_setups(base_laps: list[dict], cand_laps: list[dict]) -> dict:
+    """What the in-game app measured each side of a comparison on.
+
+    The names say what someone meant to load; this says what the car had.
+    Two runs on one measured setup compared as an A/B is the change that
+    never reached the car -- a load that failed, or values AC ignored -- and
+    the lap times alone cannot show it.
+    """
+    def fps(laps):
+        return {l.get("setup_fp") or "" for l in laps}
+
+    a, b = fps(base_laps), fps(cand_laps)
+    out = {"baseline_measured_setups": sorted(f for f in a if f),
+           "candidate_measured_setups": sorted(f for f in b if f)}
+    notes = []
+    if "" in a or "" in b:
+        notes.append("some laps have no measured setup (the in-game app was "
+                     "not reporting it), so this check covers only the rest")
+    a, b = a - {""}, b - {""}
+    if not a or not b:
+        return out if not notes else {**out, "measured_setup_note":
+                                      "; ".join(notes)}
+    if a == b and len(a) == 1:
+        out["same_measured_setup"] = True
+        out["measured_setup_warning"] = (
+            "both sides were driven on the SAME measured setup: whatever was "
+            "changed between them did not reach the car. Do not read any "
+            "difference below as the effect of a setup change -- ask whether "
+            "the new setup was loaded, and check identify_setup.")
+    elif len(a) == 1 and len(b) == 1:
+        values = db.setup_fingerprint_values(_conn, a | b)
+        va, vb = values.get(next(iter(a))), values.get(next(iter(b)))
+        if va is not None and vb is not None:
+            out["setup_changes"] = [
+                {"entry": k, "baseline": va.get(k), "candidate": vb.get(k)}
+                for k in sorted(set(va) | set(vb))
+                if k not in db.NOT_SETUP_IDENTITY and va.get(k) != vb.get(k)]
+    else:
+        notes.append(
+            "a side spans more than one measured setup, so it is not one "
+            "run on one setup; baseline_measured_setups and "
+            "candidate_measured_setups list them")
+    if notes:
+        out["measured_setup_note"] = "; ".join(notes)
+    return out
 
 
 @mcp.tool()

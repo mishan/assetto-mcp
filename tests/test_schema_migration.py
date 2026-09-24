@@ -433,6 +433,35 @@ def test_v14_gives_old_opponent_samples_no_clock_rather_than_zero():
             conn.close()
 
 
+def test_v15_leaves_old_laps_unmeasured_rather_than_guessing():
+    """v15 adds the measured setup to laps on an existing file.
+
+    Nothing is backfilled. setup_values holds the session's latest values,
+    not which laps were driven on them, so giving old laps that fingerprint
+    would be the same guess the measurement exists to replace.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "v14.db"
+        raw = sqlite3.connect(path)
+        raw.executescript(V0_SCHEMA)
+        raw.execute("INSERT INTO sessions (started_at, car, track)"
+                    " VALUES (?, 'car', 'track')", (time.time(),))
+        raw.execute("INSERT INTO laps (session_id, lap_number, lap_time_ms,"
+                    " completed_at) VALUES (1, 1, 100000, ?)", (time.time(),))
+        raw.commit()
+        raw.close()
+        conn = db.connect(path)
+        try:
+            lap = db.list_laps(conn, 1)[0]
+            assert (lap["setup_fp"], lap["setup_changed"]) == ("", 0), lap
+            assert db.get_session(conn, 1)["setup_fp"] == ""
+            assert any("setup_fp" in line for line in
+                       db.MIGRATION_LOG.get(str(path), [])), db.MIGRATION_LOG
+            print("  v14 -> v15: old laps carry no measured setup")
+        finally:
+            conn.close()
+
+
 def test_display_readings_survive_a_retention_pass():
     # They are keyed on the car, not the session, so pruning a session's
     # samples must not take a car's hard-won screen readings with it.

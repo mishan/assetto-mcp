@@ -563,9 +563,17 @@ BACKLOG.md           open work first, what was addressed last
 
 ### Setup attribution, in three pieces
 
-Nothing in shared memory says which setup is on the car, so attribution is
-always a claim rather than a measurement. The three ways to make it are
-separated by how much damage a wrong one does:
+Nothing in shared memory says which setup is on the car. The in-game app
+does: it reads every value off the setup menu and posts them whenever they
+change. Each change goes into `setup_history` under a fingerprint of the
+values (fuel excluded -- a refuel is the same setup), and `setup_fingerprints`
+keeps the values behind each one. Every lap is stamped with the fingerprint
+on the car when it ended (`laps.setup_fp`), and `setup_changed` marks a lap
+that started on another one, which only a lap through the pits can.
+
+That measures *whether* two laps were on the same setup. What to call it is
+still a claim, and the three ways to make one are separated by how much
+damage a wrong one does:
 
 - **`set_session_setup`** is forward-only. It records what's on the car now,
   and laps completed from here carry it. It touches nothing already stored.
@@ -574,12 +582,24 @@ separated by how much damage a wrong one does:
 - **`scripts/relabel_laps.py`** overwrites an existing name, and is
   deliberately not a tool.
 
+The measurement polices the claims. A stated name is bound to the setup the
+first lap after `set_session_setup` is measured on (`sessions.setup_fp`) --
+not the one on the car at the moment of the call, since "I've loaded v2"
+is said as often before loading as after. Laps on other values do not
+inherit it, and take the name of an earlier lap on the same values if there
+is one. `label_laps` refuses ids that span two measured setups, and laps
+measured on other values than the name's. `compare_runs` reports the
+measured setups on each side, the entries that actually differ, and a
+warning when both sides were on identical values. Laps nothing measured
+fall back to the claim alone.
+
 The middle one used to be part of the first, filling every blank lap in the
 session automatically. That sounds helpful and was the bug: the baseline run is
 normally unlabelled too, so "I've loaded claude_v1" relabelled the baseline as
 claude_v1 and destroyed the comparison. The boundary between two runs is a
-garage stop, and nothing in the telemetry marks one — so the ids have to come
-from the person who was there.
+garage stop, which the telemetry marks only when the values changed and the
+app was running — so the ids still come from the person who was there, and
+the measurement checks them.
 
 ### Why `relabel_laps.py` is not an MCP tool
 

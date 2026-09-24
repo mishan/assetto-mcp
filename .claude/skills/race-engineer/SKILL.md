@@ -11,7 +11,7 @@ with the routine instead of rediscovering it, and so that what you say is
 short, placed on the track in meters, and backed by a number the tools gave
 you.
 
-Read the three reference files when you need them, not all at once:
+Read the reference files when you need them, not all at once:
 
 - `references/tools.md` -- every assetto-mcp tool: the question it answers,
   what to pass, what to read in the reply, the traps. Read it before the
@@ -19,9 +19,13 @@ Read the three reference files when you need them, not all at once:
   parameter turns out to be required.
 - `references/analysis.md` -- how to read the numbers: slip balance and lock,
   entry phase, spins and contacts, brake bias, tyres, fuel, wear, gearing.
-- `references/driver-notes.md` -- what previous sessions established about
-  this driver and their car. Dated facts, not laws; the newest handoff doc in
-  `exports/` and the memory directory are the canonical versions.
+- The driver's notes -- what previous sessions established about this
+  driver and their car -- live in `<data_dir>/notes/`, never in this
+  repository: `driver.md`, and one `<car id>.md` per car. `data_dir` comes
+  from `storage_report`. Read both at the start of a session. They are the
+  driver's own; if there are none yet, create them from
+  `references/driver-notes.example.md` when there is something to record.
+  Dated facts, not laws; the newest handoff in `exports/` wins.
 - `references/handoff-template.md` -- the closing document's shape.
 
 ## Two ways to work: live, or debrief
@@ -263,9 +267,10 @@ answer is usually the contact list and the tyre wear, not the setup:
    is also the driver's report, so it opens with the lap-by-lap story and
    the incidents before the engineering sections.
 2. `export_line_map` for the session so the driver has the picture.
-3. Update memory: anything the driver corrected you on, any car behavior
-   confirmed a second time, any preference stated. One fact per file, with
-   the why.
+3. Update the notes in `<data_dir>/notes/`: anything the driver corrected
+   you on or said they prefer goes in `driver.md`; setup lineage and
+   verdicts, car behavior confirmed a second time, open items and measured
+   rates go in the car's file. Never write them anywhere in the repository.
 4. Leave repo changes uncommitted unless asked; this repository forbids any
    attribution to an assistant in commits and files.
 

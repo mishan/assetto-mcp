@@ -331,5 +331,37 @@ def test_the_documented_ladder_is_the_ladder():
     print(f"  docstring names every {coarsest}{ordinal} sample")
 
 
+
+def test_storage_report_says_where_the_drivers_notes_go():
+    """The race-engineer skill keeps notes about the driver in the data
+    directory, and finds it here. Notes kept in the repository ended up in
+    a public commit."""
+    import ast
+    src = (Path(__file__).resolve().parent.parent
+           / "assetto_mcp" / "server.py").read_text()
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef) and n.name == "storage_report")
+    body = ast.get_source_segment(src, fn)
+    assert 'out["data_dir"] = str(DATA_DIR)' in body, body
+    assert 'out["notes_dir"] = str(DATA_DIR / "notes")' in body, body
+    assert "notes_dir" in ast.get_docstring(fn)
+
+
+def test_no_driver_notes_are_committed():
+    """Only the made-up example ships; the real notes are the driver's."""
+    import subprocess
+    root = Path(__file__).resolve().parent.parent
+    try:
+        files = subprocess.run(["git", "ls-files"], cwd=root, check=True,
+                               capture_output=True, text=True).stdout.split()
+    except (OSError, subprocess.CalledProcessError):
+        return      # not a checkout: nothing committed to check
+    notes = [f for f in files if "driver-notes" in f or "/notes/" in f
+             or f.startswith("notes/")]
+    assert notes == [
+        ".claude/skills/race-engineer/references/driver-notes.example.md"
+    ], notes
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Thirty-eight tools. They fall into eight groups. For each: what to pass,
+Thirty-nine tools. They fall into eight groups. For each: what to pass,
 what to read in the reply, and the trap that has already caught someone.
 Pass every parameter explicitly, including nulls: the schemas this client
 exposes have turned optional parameters into required ones between updates,
@@ -233,12 +233,30 @@ has none.
 
 **`list_rivals(session_id, limit)`** -- car index, driver name, car model,
 best lap, how many of their laps were well covered. Pass a session id.
+Best laps are timed off each car's own trace (`laps_timed_from_trace`);
+`server_best_lap_ms` is the server's claim and is not to be quoted. The
+server's remote-car lap times lag and repeat: at the Glen they ranked the
+driver ahead of two cars that were quicker. Each captured lap carries
+`lap_time_source`, "trace" or "server".
 
 **`compare_to_rival(car_index, lap_id, rival_lap_count, session_id)`** --
 where they carry more speed by track position; their brake and throttle
 points when the server transmits them (`rival_input_fields` says which
 are live). `rival_lap_count` is required by this client: take it from
-`list_rivals`' well-covered laps, quickest first.
+`list_rivals`' well-covered laps, quickest first. `time_by_turn` is the
+part to quote: seconds through each turn and on the road after it, with
+`where_they_gain` and `where_you_gain`. It adds up to the lap difference
+within a few hundredths.
+
+**`field_benchmark(session_id, lap_ids, car_indexes, laps_per_rival)`** --
+the coaching list. Per turn: your median time through it and on the road
+after it, the field's, `available_s` (how much quicker the field is
+there), minimum and exit speeds, and brake point in meters before
+turn-in, for you and the field. `priorities` sorts by time available.
+The field defaults to every rival whose traced best beats yours, each on
+their three quickest laps within 2%. Their brake points read up to about
+7 m early (positions arrive late) and their minimum speeds a little high
+(10 Hz). Run it after practice and qualifying, not only after a race.
 
 **`contacts_inferred`** (on `lap_summary`) and **`contacts`** (on
 `compare_runs`) -- impacts without the damage model. Each entry: `pos`,

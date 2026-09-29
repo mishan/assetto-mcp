@@ -2172,19 +2172,60 @@ def prune_rival_samples(conn, session_id: int, keep_laps: int = 12) -> int:
     return removed
 
 
-def rival_lap_times(conn, session_id: int, car_index: int) -> dict[int, int]:
-    """{lap_count: lap_time_ms} for the laps we have a time for."""
+def recorded_rival_lap_times(conn, session_id: int,
+                             car_index: int) -> dict[int, int]:
+    """{lap_count: lap_time_ms} as the server reported them.
+
+    Often stale: the server's last-lap field for a remote car lags its lap
+    counter, so the time stored here is frequently the previous lap's.
+    rival_lap_times prefers the car's own trace.
+    """
     return {r["lap_count"]: r["lap_time_ms"] for r in conn.execute(
         "SELECT lap_count, lap_time_ms FROM rival_laps"
         " WHERE session_id = ? AND car_index = ?", (session_id, car_index))}
 
 
-def list_rivals(conn, session_id: int, limit: int = 30) -> list[dict]:
+def rival_trace_lap_times(conn, session_id: int,
+                          car_index: int) -> dict[int, int]:
+    """{lap_count: lap_time_ms} from the car's own trace (analysis)."""
     rows = conn.execute(
-        "SELECT * FROM rival_drivers WHERE session_id = ?"
-        " ORDER BY CASE WHEN best_lap_ms IS NULL THEN 1 ELSE 0 END,"
-        " best_lap_ms ASC LIMIT ?", (session_id, limit))
-    return [dict(r) for r in rows]
+        "SELECT lap_count, spline, t_ms FROM rival_samples"
+        " WHERE session_id = ? AND car_index = ? AND speed_kmh < ?",
+        (session_id, car_index, RIVAL_TELEPORT_KMH))
+    return analysis.trace_lap_times([dict(r) for r in rows])
+
+
+def rival_lap_times(conn, session_id: int, car_index: int) -> dict[int, int]:
+    """{lap_count: lap_time_ms}: the trace's time, the server's where not.
+
+    A lap whose crossings were not both seen -- the first lap, a lap the
+    feed dropped out on -- falls back to what the server reported, which
+    is better than nothing and is what every lap had before.
+    """
+    times = recorded_rival_lap_times(conn, session_id, car_index)
+    times.update(rival_trace_lap_times(conn, session_id, car_index))
+    return times
+
+
+def list_rivals(conn, session_id: int, limit: int = 30) -> list[dict]:
+    """Opponents seen in a session, quickest first.
+
+    Ranked by the best lap timed off each car's own trace
+    (rival_trace_lap_times), not by the server's best-lap field, which is
+    kept as `server_best_lap_ms`: it lags and repeats, and at the Glen it
+    put a car a second quicker than the driver behind him.
+    """
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM rival_drivers WHERE session_id = ?", (session_id,))]
+    for r in rows:
+        traced = rival_trace_lap_times(conn, session_id, r["car_index"])
+        r["server_best_lap_ms"] = r["best_lap_ms"]
+        if traced:
+            r["best_lap_ms"] = min(traced.values())
+            r["laps_timed_from_trace"] = len(traced)
+    rows.sort(key=lambda r: (r["best_lap_ms"] is None,
+                             r["best_lap_ms"] or 0))
+    return rows[:limit]
 
 
 def rival_samples_between(conn, session_id: int, t0: float,
@@ -2245,8 +2286,13 @@ def well_covered_rival_laps(conn, session_id: int,
     last: without it there is no way to know whether it was a flyer or an
     in-lap, and comparing against an unknown-pace lap is worse than useless.
     """
-    times = rival_lap_times(conn, session_id, car_index)
-    laps = [dict(l, lap_time_ms=times.get(l["lap_count"]))
+    traced = rival_trace_lap_times(conn, session_id, car_index)
+    times = recorded_rival_lap_times(conn, session_id, car_index)
+    times.update(traced)
+    laps = [dict(l, lap_time_ms=times.get(l["lap_count"]),
+                 lap_time_source=("trace" if l["lap_count"] in traced
+                                  else "server" if l["lap_count"] in times
+                                  else None))
             for l in rival_lap_counts(conn, session_id, car_index)
             if l["n"] >= RIVAL_LAP_MIN_SAMPLES
             and (l["hi"] - l["lo"]) > RIVAL_LAP_MIN_SPAN]

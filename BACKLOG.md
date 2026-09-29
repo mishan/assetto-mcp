@@ -156,6 +156,33 @@ likely by chance — and should say so.
 
 ---
 
+## 6a. Put the rival data to more use
+
+**Status:** open. Built so far: rival lap times timed off each car's own
+trace (`analysis.trace_lap_times`), `time_by_turn` on `compare_to_rival`,
+and `field_benchmark`. What the same data could still answer, in the order
+it would pay:
+
+- **Gaps on track, for the radio.** The time gap to the car ahead and
+  behind at matched track position, lap by lap, and the closing rate: "Pman
+  closing 0.5 s a lap, on you in four". `created_at` is server receive time
+  and too coarse under a few seconds; the cars' own `t_ms` at a shared
+  spline is the clock to use, once each car's clock offset is fixed from a
+  line crossing.
+- **Where to attack and where to defend.** From `field_benchmark` per
+  rival: the driver's strong corners (the Toe at the Glen) are where a
+  pass is set up; a rival's strong exit onto a straight (the Inner Loop) is
+  where the driver is vulnerable.
+- **Rival habits.** Late-stint fade (ProFynes lost 0.9 s a lap late in Glen
+  race 1), lap-time spread, and where each rival goes off -- a risk map for
+  traffic.
+- **Lines.** Rival `pos_x`/`pos_z` are stored; `driving_line` could overlay
+  the quickest rival's line through a corner the benchmark flags.
+- **A pre-race brief** from practice and qualifying: one card per rival,
+  and the quickest rival lap drawn as a ghost in the line map.
+
+---
+
 ## 7. Body slip angle
 
 **Status:** open.

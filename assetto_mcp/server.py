@@ -23,7 +23,7 @@ except ImportError:  # mcp SDK 1.x
     from mcp.server.fastmcp import FastMCP
 
 from . import analysis, config, db, line_map, retention, setups, suspension
-from . import places, turns
+from . import circuit, places, turns
 from .collector import Collector
 
 AC_DOCS_DIR = Path(os.environ.get(
@@ -188,6 +188,20 @@ def _track_length(session_id: int) -> tuple[float | None, str | None]:
     return length, source
 
 
+def _circuit_sections(session_id: int) -> tuple[list[dict], str | None]:
+    """The circuit's named sections for a session's track and layout.
+
+    Read from the track's own sections.ini (circuit.py), which names corners
+    the way the circuit does -- Turn 10A, the Esses -- rather than the way
+    this session's detector happened to number them.
+    """
+    session = db.get_session(_conn, session_id)
+    if not session:
+        return [], None
+    return circuit.sections_for(session.get("track"),
+                                session.get("track_config"))
+
+
 def _placed(payload: dict, session_id: int | None,
             turns: list[dict] | None = None) -> dict:
     """The payload with meters and a `where` beside every lap position.
@@ -206,6 +220,7 @@ def _placed(payload: dict, session_id: int | None,
         return payload
     if turns is None:
         turns = _session_corner_map(session_id)["turns"]
+    turns = circuit.name_turns(turns, _circuit_sections(session_id)[0])
     out = places.place(payload, length, turns)
     out["track_length"] = {"m": round(length), "source": source}
     return out
@@ -1174,6 +1189,11 @@ def track_corners(session_id: int | None = None) -> str:
     another session at the same circuit can number differently.
     `built_from_laps` says which laps produced it.
 
+    Where the track ships a sections.ini, each turn also carries `name` --
+    the circuit's own ("Turn 10A", "The Esses (2nd)") -- and
+    `circuit_names` lists every named section with the turns in it. Quote
+    the name to a driver; the T-number is only this session's.
+
     Positions come in meters past the start/finish line as well
     (`apex_m`, `entry_m`, `exit_m`, `brake_point_m`), and each turn carries
     `brake_before_turn_in_m` -- negative where the braking starts after
@@ -1210,6 +1230,30 @@ def track_corners(session_id: int | None = None) -> str:
         out["corner_detection"] = analysis.corner_detection_note(
             ref["reference"], ref["laps"], spread_g=ref["spread_g"],
             shared_basis="the laps these turn numbers were built from")
+    sections, source = _circuit_sections(sid)
+    if sections:
+        named = circuit.name_turns(cmap["turns"], sections)
+        out["circuit_names"] = {
+            "source": source,
+            "sections": [
+                {**s, "turns": [t["turn"] for t in named
+                                if t.get("name") == s["name"]
+                                or t.get("name", "").startswith(
+                                    s["name"] + " (")]}
+                for s in sections],
+            "note": "names from the track's own sections.ini; each turn "
+                    "carries `name` beside its session number. A section "
+                    "with no turns is one the detector never saw, usually "
+                    "a kink taken flat.",
+        }
+    else:
+        out["circuit_names"] = {
+            "source": None,
+            "note": "no sections.ini for this track and layout, or the "
+                    "Assetto Corsa install was not found "
+                    "(ASSETTO_MCP_AC_ROOT sets it). Turns keep their "
+                    "session numbers.",
+        }
     if not cmap["turns"]:
         # Distinguishing the two reasons matters: one is answered by driving
         # a lap, the other by looking at why the laps that exist were
@@ -1222,6 +1266,51 @@ def track_corners(session_id: int | None = None) -> str:
             f"none of the {len(cmap['basis_lap_ids'])} lap(s) read carried "
             f"enough cornering load to detect a corner on")
     return _j(_placed(out, sid, cmap["turns"]))
+
+
+def _parse_numbers(text: str | None) -> list[float]:
+    if text is None or str(text).strip() == "":
+        return []
+    return [float(x) for x in re.split(r"[,\s]+", str(text).strip()) if x]
+
+
+@mcp.tool()
+def locate(meters: str | None = None, fractions: str | None = None,
+           session_id: int | None = None) -> str:
+    """Say where positions are the way a driver would: from the nearest corner.
+
+    For any position found outside the other tools -- a script over the
+    samples, a line map, a rival trace -- so it can be quoted in the same
+    words the tools use ("Turn 10A braking zone, 60 m before turn-in",
+    "Turn 7, 40 m after the apex") rather than as meters past the
+    start/finish line, which no driver tracks.
+
+    `meters` is a comma-separated list of distances past the start/finish
+    line; `fractions` a comma-separated list of lap fractions (0-1,
+    `norm_pos` / `spline`). Either or both. Corners are called by the
+    circuit's own names where the track ships a sections.ini, otherwise by
+    this session's turn numbers."""
+    sid = _active_session(session_id)
+    if sid is None:
+        return _j({"error": "no active session; pass session_id"})
+    if not db.get_session(_conn, sid):
+        return _j({"error": f"no session with id {sid}"})
+    try:
+        ms, fs = _parse_numbers(meters), _parse_numbers(fractions)
+    except ValueError:
+        return _j({"error": "meters and fractions are comma-separated "
+                            "numbers, e.g. meters=\"3335,3520\""})
+    if not ms and not fs:
+        return _j({"error": "pass meters or fractions"})
+    length, _ = _track_length(sid)
+    if not length:
+        return _j({"error": f"session {sid} has no track length, stored or "
+                            f"estimable, so meters cannot be placed"})
+    if any(not 0.0 <= f <= 1.0 for f in fs):
+        return _j({"error": "fractions are lap fractions between 0 and 1"})
+    positions = ([{"pos": (m % length) / length, "given_m": m} for m in ms]
+                 + [{"pos": f} for f in fs])
+    return _j(_placed({"session_id": sid, "places": positions}, sid))
 
 
 @mcp.tool()

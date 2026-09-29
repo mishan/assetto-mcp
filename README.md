@@ -132,7 +132,10 @@ assistant can name the same one. Ask for `track_corners` to see where each
 turn is. The numbering is what your car actually drove, not the circuit's
 official one: a kink taken flat carries too little load to be detected and
 isn't in it, and a circuit that calls a corner 3A is numbered straight
-through.
+through. Where the track ships a `data/sections.ini` (many do; it is what
+the game's track-description overlay reads), each turn also carries the
+circuit's own name — Turn 10A, the Esses — and positions are said from it:
+"Turn 10A braking zone, 60 m before turn-in".
 
 Places come back the way you'd say them too: *"T4 braking zone, 90 m before
 turn-in"*, *"T1, 70 m after turn-in"*, with meters from the start/finish

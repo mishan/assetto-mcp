@@ -201,6 +201,7 @@ Config**, which always opens the file the running app actually reads.
 | Variable | Default | What it does |
 |---|---|---|
 | `AC_DOCS_DIR` | `~/Documents/Assetto Corsa` | Where AC keeps setups and logs |
+| `ASSETTO_MCP_AC_ROOT` | found from Steam's library list | The Assetto Corsa install folder, for corner names from each track's `sections.ini` |
 | `ASSETTO_MCP_DATA` | `~/.assetto-mcp` | Database, car range files, `exports/` and `notes/` |
 | `ASSETTO_MCP_BRIDGE_PORT` | `9666` | In-game app bridge port |
 | `ASSETTO_MCP_NO_AUTOSTART` | unset | `1` stops *this* instance recording on startup. Rarely wanted: instances already coordinate so only one records. |

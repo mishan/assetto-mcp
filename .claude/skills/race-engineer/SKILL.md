@@ -73,10 +73,14 @@ picking a side. Twice the data was read as "bumpy kerbs" when the driver said
 "slippery kerbs", and the setup change that followed was wrong both times.
 
 Say the answer first, in one sentence, then the evidence. A driver between
-laps reads the first line and maybe a table. Positions are turn labels and
-meters past the start line or before turn-in, never spline fractions: the
-driver navigates by the 50 m and 100 m braking boards, not by 0.282. Every
-position in a tool reply comes with its meters and a `where`; quote those.
+laps reads the first line and maybe a table. Positions are relative to the
+nearest corner, by the circuit's name: "Turn 10A braking zone, 60 m before
+turn-in", "Turn 7, 40 m after the apex". Never meters past the start line
+and never spline fractions: the driver navigates by corners and the 50 m and
+100 m braking boards, and does not know how far into the lap they are.
+Every position in a tool reply comes with a `where`; quote it. A position
+you found yourself, in a script over the samples, goes through `locate`
+before it goes to the driver.
 
 Do not call a spin a driving error until you have checked for a contact.
 Damage is usually off on race servers, so `contacts` is null on every lap;
@@ -284,9 +288,11 @@ answer is usually the contact list and the tyre wear, not the setup:
   of this skill produced 600 to 900 word answers that were right in every
   particular and too long to read between laps.
 - Tables for numbers, prose for reasoning. Never a paragraph of numbers.
-- Turn labels from `track_corners` (T1, T5) plus what the driver calls it
-  when you know it (the 90, the Bus Stop, the long left). Meters past the
-  start line, or meters before turn-in for brake points.
+- Corners by the circuit's `name` (from the track's sections.ini, on every
+  turn in `track_corners` and every labelled corner) or what the driver
+  calls it when you know it (the 90, the Bus Stop, the long left). The
+  session's T-number only when there is no name. Distances from the corner,
+  never from the start line.
 - Two changes at once only when they act on different phases and you can
   say how you will separate them. Otherwise one.
 - When the driver states a preference or corrects a fact, write it down

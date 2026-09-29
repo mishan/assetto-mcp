@@ -97,9 +97,12 @@ from validity.
 
 ## 5. Turn numbers are the run's, not the circuit's
 
-**Status:** open. Session-local numbering is built (`analysis.corner_map`,
-`label_corners`, `track_corners`); everything that would make the numbers
-agree with the circuit's own is not.
+**Status:** partly addressed. Session-local numbering is built
+(`analysis.corner_map`, `label_corners`, `track_corners`). Where the track
+ships `data/sections.ini`, turns now carry the circuit's own `name`
+(`circuit.py`), matched by which section their turn-in-to-exit lies in, and
+`where` and `locate` speak in those names. Still open: tracks with no
+sections.ini, and a hand-written override for them.
 
 - **Not the circuit's numbering.** A kink taken flat is under the
   lateral-g bar, so it is not detected and not numbered, and every corner

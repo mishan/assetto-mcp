@@ -26,6 +26,7 @@ from __future__ import annotations
 import configparser
 import os
 import re
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -41,9 +42,36 @@ NAME_SLACK = 0.006
 ORDINALS = ("1st", "2nd", "3rd", "4th", "5th", "6th")
 
 
+def _registry_steam() -> Path | None:
+    """Where Steam says it is installed, from the Windows registry.
+
+    Steam need not be under Program Files; the registry is the one place
+    that knows for certain. None anywhere but Windows.
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+    except ImportError:
+        return None
+    for hive, key, name in (
+            (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam",
+             "InstallPath")):
+        try:
+            with winreg.OpenKey(hive, key) as k:
+                return Path(winreg.QueryValueEx(k, name)[0].replace("/", "\\"))
+        except OSError:
+            continue
+    return None
+
+
 def _steam_roots() -> list[Path]:
     """Where Steam itself might be installed, most likely first."""
     roots = []
+    registry = _registry_steam()
+    if registry:
+        roots.append(registry)
     for var in ("PROGRAMFILES(X86)", "PROGRAMFILES"):
         base = os.environ.get(var)
         if base:

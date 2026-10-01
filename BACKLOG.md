@@ -235,7 +235,7 @@ exposure to being wrong. Revisit if CSP ever exposes the rendered value.
 
 ---
 
-## 9. Check `restart_server` under Claude Desktop on the gaming PC
+## 9. Check `restart_server` and the updater on the gaming PC
 
 **Status:** built, tested against a fake client only. A look, not a build.
 
@@ -255,6 +255,12 @@ setup can show:
 - That the job object really takes the child down when Claude Desktop is
   quit from the tray, so no orphan is left holding the recorder claim and
   the port.
+
+`apply_update` (`assetto_mcp/update.py`) is tested against a local bare
+repository and a fake compare endpoint. Unseen on Windows: whether git is
+found from Claude Desktop's environment, whether `pip install -e .` with the
+server running fails on a locked file as expected and says so, and whether
+`tasklist` sees `acs.exe` when Content Manager launched it.
 
 ---
 

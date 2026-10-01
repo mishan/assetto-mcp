@@ -44,7 +44,7 @@ except ImportError:  # mcp SDK 1.x
 
 from . import analysis, config, db, line_map, retention  # noqa: E402
 from . import circuit, places, setups, supervisor, suspension  # noqa: E402
-from . import turns  # noqa: E402
+from . import turns, update  # noqa: E402
 from .collector import Collector  # noqa: E402
 
 AC_DOCS_DIR = Path(os.environ.get(
@@ -94,6 +94,23 @@ if config.env("NO_AUTOSTART") != "1":
 
 def _j(obj) -> str:
     return json.dumps(obj, indent=2, default=str)
+
+
+def _hints(**hints) -> dict:
+    """Tool annotations, where this mcp SDK can carry them.
+
+    Clients use them to decide what needs a confirmation. They arrived
+    partway through SDK 1.x, and an install that predates them must still
+    start, so on an older SDK this is nothing at all.
+    """
+    try:
+        import inspect
+        from mcp.types import ToolAnnotations
+        if "annotations" not in inspect.signature(mcp.tool).parameters:
+            return {}
+        return {"annotations": ToolAnnotations(**hints)}
+    except Exception:          # noqa: BLE001 - optional metadata only
+        return {}
 
 
 # --- recording ---------------------------------------------------------
@@ -2740,6 +2757,59 @@ def _shutdown() -> None:
             stop()
         except Exception:      # noqa: BLE001 - on the way out regardless
             pass
+
+
+# The commit this process loaded, read once at startup. The checkout can
+# move underneath a running server -- apply_update, a git pull by hand --
+# and comparing against this is how check_for_updates knows to say that a
+# restart is still owed.
+_RUNNING_COMMIT = update.installed_commit()
+
+
+@mcp.tool(**_hints(readOnlyHint=True, openWorldHint=True))
+def check_for_updates() -> str:
+    """Whether a newer version of this server is on GitHub. Read-only.
+
+    `status` is the install against GitHub's main: "identical" is current,
+    "behind" has an update waiting, and "ahead", "diverged" or an error of
+    "local_commit_not_on_github" mean the checkout has changes of its own,
+    which apply_update will not touch. `commits` is what the update
+    contains, newest first -- show it to the driver as it is.
+    `needs_pip`, `needs_lua_copy` and `installer_changed` say what applying
+    it will involve. `restart_needed` means the code on disk is already
+    newer than what is running, and restart_server would load it.
+
+    Answers come from a cache for up to an hour, to stay inside GitHub's
+    limit of 60 unauthenticated requests an hour; `checked_at` says when.
+    "offline" and "rate_limited" are not faults to fix, and either can
+    carry the last good answer, marked `stale`."""
+    return _j(update.check(data_dir=DATA_DIR,
+                           running_commit=_RUNNING_COMMIT))
+
+
+@mcp.tool(**_hints(readOnlyHint=False, destructiveHint=True,
+                   openWorldHint=True))
+def apply_update(to_commit: str) -> str:
+    """Update this server's code to `to_commit`, the `latest` sha from
+    check_for_updates.
+
+    Never call this without the driver's explicit OK, given after they have
+    seen the commit list from check_for_updates. Never mid-session either:
+    a dependency reinstall can take minutes, and nothing in the update
+    helps a lap being driven.
+
+    It fast-forwards the git checkout to GitHub's main and nothing else.
+    It refuses a checkout with edits, on another branch, ahead of or
+    diverged from main, or a `to_commit` that is no longer main's tip --
+    for the last one, check again and show the driver the new list. It
+    reinstalls the package when pyproject.toml changed, and copies the
+    in-game app into Assetto Corsa when it changed, unless the game is
+    running (`lua.note` says how to finish that later).
+
+    The running server is still the old code afterwards: call
+    restart_server, once the driver agrees, to load it. A `warning` means
+    part of it needs the driver -- pass it on as it is."""
+    return _j(update.apply(to_commit, data_dir=DATA_DIR))
 
 
 def _restart_soon() -> None:

@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Forty tools. They fall into nine groups. For each: what to pass,
+Forty-two tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the trap that has already caught someone.
 Pass every parameter explicitly, including nulls: the schemas this client
 exposes have turned optional parameters into required ones between updates,
@@ -342,6 +342,22 @@ and reopen the client. Afterwards: give it a few seconds, an open session
 continues under a new session id (tag it again), and `bridge_status` may
 show the port retrying for a minute or more on Windows while the in-game
 app waits to reconnect.
+
+**`check_for_updates()`** -- read-only. `status` "behind" means an update
+is waiting; `commits` is what it contains, newest first, and is what you
+show the driver. `needs_pip`, `needs_lua_copy` and `installer_changed` say
+what applying involves. `restart_needed` means the disk is already newer
+than the running server. "ahead", "diverged" and
+`local_commit_not_on_github` are a checkout with its own changes: say so
+and leave it. "offline" and "rate_limited" are not faults; answers are
+cached for an hour and may come back `stale`.
+
+**`apply_update(to_commit)`** -- `to_commit` is `latest` from the check.
+Only after the driver has seen the commit list and said yes, and never
+mid-session. A `commit_mismatch` refusal means main moved: check again and
+ask again. Read `pip` and `lua` in the reply and pass on any `warning` or
+`lua.note` as it is -- the in-game app is not copied while the game runs.
+Then `restart_server`, with the driver's OK, to load the new code.
 
 ## Outside the tools
 

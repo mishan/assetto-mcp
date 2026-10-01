@@ -125,6 +125,39 @@ Not sure where Assetto Corsa is installed? In Steam, right-click Assetto Corsa
 
 ---
 
+## Updating
+
+The server can update its own checkout. `check_for_updates` asks GitHub's API
+how this clone compares with `main` (cached for an hour), and `apply_update`,
+given the commit that check named, does the following:
+
+1. refuses unless the clone is on `main`, has no edited tracked files, and is
+   strictly behind — never ahead, never diverged — and the commit is still
+   `main`'s tip;
+2. `git fetch https://github.com/mishan/assetto-mcp main`, then
+   `git merge --ff-only` to that commit;
+3. `pip install -e .` if `pyproject.toml` changed. On Windows this can fail
+   because the running server holds files open; the code is updated anyway,
+   and the reply says to quit the client and re-run `install-windows.bat`;
+4. copies `lua_app/assetto_mcp/` over `assettocorsa/apps/lua/assetto_mcp/`,
+   file by file where they differ — only if the app is installed there, and
+   not while `acs.exe` is running;
+5. leaves the running server on the old code until `restart_server`.
+
+The same from a terminal:
+
+```powershell
+python -m assetto_mcp.update --check
+python -m assetto_mcp.update --apply      # shows the commits and asks
+python -m assetto_mcp.update --sync-lua   # just the in-game app, game closed
+```
+
+`git` has to be installed — it is found on `PATH` or in Git for Windows'
+usual folders. An install that isn't a `git clone` reports its version as
+unknown; clone the repository and run the installer from there.
+
+---
+
 ## Only run one copy
 
 The server holds two things that can only have one owner: the SQLite database,
@@ -213,6 +246,10 @@ Config**, which always opens the file the running app actually reads.
 | `ASSETTO_MCP_BRIDGE_PORT` | `9666` | In-game app bridge port |
 | `ASSETTO_MCP_NO_AUTOSTART` | unset | `1` stops *this* instance recording on startup. Rarely wanted: instances already coordinate so only one records. |
 | `ASSETTO_MCP_NO_SUPERVISOR` | unset | `1` runs the server directly, without the supervisor in front of it. `restart_server` then refuses, and picking up new code means restarting the client. |
+| `ASSETTO_MCP_AC_ROOT` | found via Steam | Assetto Corsa's folder, for copying the in-game app on update |
+| `ASSETTO_MCP_UPDATE_REPO` | `mishan/assetto-mcp` | The GitHub repository updates come from |
+| `ASSETTO_MCP_UPDATE_API` | `https://api.github.com` | GitHub API base, for the update check |
+| `ASSETTO_MCP_UPDATE_GIT_URL` | `https://github.com/<repo>.git` | Where `apply_update` fetches from |
 | `ASSETTO_MCP_MAX_DB_BYTES` | `2147483648` (2 GB) | Size budget for the telemetry database. Over it, the oldest sessions' traces are thinned; laps are never deleted. `0` keeps every sample forever. |
 
 Set them in the `env` block of your client's server entry, if it has one, or in

@@ -106,6 +106,13 @@ client at the proxy. Nothing changes on this side.
 Fully, not just the window. Claude Desktop in particular keeps running in the
 system tray: right-click the tray icon and choose Quit.
 
+You only need to do this when the client config changes. `python -m
+assetto_mcp.server` starts a small supervisor that runs the real server as a
+child process and keeps the client's connection open across restarts, so after
+a code change the assistant can call `restart_server` instead of you quitting
+the client. Clients that act on `notifications/tools/list_changed` also pick
+up new tools without reconnecting.
+
 ## 3. Copy the in-game app
 
 Copy `lua_app/assetto_mcp/` to `assettocorsa/apps/lua/assetto_mcp/`. It needs
@@ -205,6 +212,7 @@ Config**, which always opens the file the running app actually reads.
 | `ASSETTO_MCP_DATA` | `~/.assetto-mcp` | Database, car range files, `exports/` and `notes/` |
 | `ASSETTO_MCP_BRIDGE_PORT` | `9666` | In-game app bridge port |
 | `ASSETTO_MCP_NO_AUTOSTART` | unset | `1` stops *this* instance recording on startup. Rarely wanted: instances already coordinate so only one records. |
+| `ASSETTO_MCP_NO_SUPERVISOR` | unset | `1` runs the server directly, without the supervisor in front of it. `restart_server` then refuses, and picking up new code means restarting the client. |
 | `ASSETTO_MCP_MAX_DB_BYTES` | `2147483648` (2 GB) | Size budget for the telemetry database. Over it, the oldest sessions' traces are thinned; laps are never deleted. `0` keeps every sample forever. |
 
 Set them in the `env` block of your client's server entry, if it has one, or in

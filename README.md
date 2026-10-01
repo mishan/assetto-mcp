@@ -48,6 +48,11 @@ Then **fully quit your client and reopen it.** For Claude Desktop, closing the
 window isn't enough — right-click the tray icon (bottom right, possibly hidden
 under the `^` arrow) and choose Quit.
 
+That is the last time you should need to. From then on, when the server's code
+changes, the assistant can restart it in place with its `restart_server` tool
+— it asks you first, and won't do it while you're out on a lap. The client's
+connection stays open throughout.
+
 **Using a different client?** Add `-SkipClientConfig`. Everything else installs
 the same way, and the installer prints the two lines you need to paste into
 your client's config:

@@ -235,6 +235,29 @@ exposure to being wrong. Revisit if CSP ever exposes the rendered value.
 
 ---
 
+## 9. Check `restart_server` under Claude Desktop on the gaming PC
+
+**Status:** built, tested against a fake client only. A look, not a build.
+
+`python -m assetto_mcp.server` now starts `assetto_mcp/supervisor.py`,
+which runs the real server as a child and replaces it when
+`restart_server` exits with code 75: in-flight requests are answered with
+an error, the client's `initialize` is replayed to the new child, and
+`notifications/tools/list_changed` is sent. Three things only the real
+setup can show:
+
+- Whether Claude Desktop re-lists tools on `list_changed`. If it does not,
+  a tool added by an update is invisible until the client restarts, though
+  every existing tool keeps working.
+- How long the bridge takes to get port 9666 back after a restart on
+  Windows, with the in-game app polling it. `BIND_RETRY_SECONDS` allows
+  five minutes.
+- That the job object really takes the child down when Claude Desktop is
+  quit from the tray, so no orphan is left holding the recorder claim and
+  the port.
+
+---
+
 ## Measured baselines — NSX GT3 Evo on `claude_sebring_v9`
 
 Taken on Sebring. Most are properties of the car and the setup rather than

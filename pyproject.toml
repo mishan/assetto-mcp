@@ -19,7 +19,7 @@ dependencies = ["mcp>=1.0.0"]
 test = ["pytest>=7", "lupa>=2.0", "luaparser>=3.2"]
 
 [project.scripts]
-assetto-mcp = "assetto_mcp.server:main"
+assetto-mcp = "assetto_mcp.supervisor:main"
 
 [build-system]
 requires = ["setuptools>=68"]

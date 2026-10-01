@@ -157,6 +157,11 @@ class Collector:
         self.samples_taken = 0
         self.current_lap_dirty = False
         self.current_lap_pitted = False
+        # Whether the last tick saw the game in a live session, with the car
+        # out of the menus. Not something status can answer reliably: it is
+        # prose, and it keeps saying "recording (session 7)" through a pause.
+        # restart_server reads this so it never ends a lap being driven.
+        self.live = False
 
     @property
     def running(self) -> bool:
@@ -242,6 +247,7 @@ class Collector:
         self.status = "stopped"
         self.holds_recorder = False
         self.standby_owner = None
+        self.live = False
         # session_id has to be cleared, not just left behind. The bridge
         # asks the collector which session inbound driver data belongs to; a
         # leftover id means notes and rival telemetry keep being filed
@@ -406,6 +412,7 @@ class Collector:
                     self.last_error = str(e)
                     self.status = "error, retrying"
                 finally:
+                    self.live = False
                     try:
                         sim.close()
                     except Exception:      # noqa: BLE001 - teardown only
@@ -503,6 +510,7 @@ class Collector:
                                    else stand_down)
                 self.status = f"standby ({stand_down})"
                 self.holds_recorder = False
+                self.live = False
                 # Clear the session here, not on the way out of _run. The
                 # outer loop's finally does it eventually, but "eventually"
                 # is a window in which holds_recorder is already False and
@@ -519,7 +527,8 @@ class Collector:
             g = sim.graphics
             p = sim.physics
 
-            if g.status != AC_LIVE:
+            self.live = g.status == AC_LIVE
+            if not self.live:
                 # Session ended / paused / menu: drop the partial lap.
                 if g.status == 0:  # AC_OFF -> back to waiting
                     session_started = False

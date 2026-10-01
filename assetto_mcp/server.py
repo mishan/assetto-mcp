@@ -348,11 +348,80 @@ def stop_recording() -> str:
 AC_STATUS = {0: "off", 1: "replay", 2: "live", 3: "pause"}
 
 
+# AC's session types, from the shared-memory documentation.
+AC_SESSION = {0: "practice", 1: "qualifying", 2: "race", 3: "hotlap",
+              4: "time attack", 5: "drift", 6: "drag"}
+
+
+# AC's flag enum; only the checkered flag is read.
+AC_CHECKERED_FLAG = 5
+
+
+def _race_state(g) -> dict:
+    """Where the driver is in the session: type, position, lap N of M.
+
+    A fuel call is only useful against the laps still to run -- "fuel for
+    two laps" read at the start of the last lap told the driver nothing
+    -- and the game knows the race distance (`numberOfLaps`) and the
+    position; neither was read before. `race_laps` is null in a timed
+    session, where the game reports no lap count; `session_time_left_s`
+    is what counts there. `current_lap` is the lap being driven,
+    `laps_remaining` counts it.
+
+    The lap count alone is wrong for a lapped car: once the leader takes
+    the flag everyone else finishes at their next crossing, so a car a lap
+    down on lap 15 of 16 has one lap left, not two. The game shows the
+    checkered flag from that moment, so with the flag out `laps_remaining`
+    is at most the lap being driven.
+
+    Outside live running or pause -- the menu, a replay -- the graphics
+    page still holds the last session's lap and position, so those come
+    back null rather than read as current.
+    """
+    session = AC_SESSION.get(g.session, f"unknown ({g.session})")
+    if g.status not in (2, 3):
+        return {"session_type": session, "position": None,
+                "current_lap": None, "race_laps": None,
+                "laps_remaining": None, "session_time_left_s": None}
+    laps = g.numberOfLaps if g.numberOfLaps and g.numberOfLaps > 0 else None
+    left = g.sessionTimeLeft
+    done = g.completedLaps
+    checkered = g.flag == AC_CHECKERED_FLAG
+    remaining = max(laps - done, 0) if laps is not None else None
+    if checkered and remaining is not None:
+        remaining = min(remaining, 1)
+    out = {
+        "session_type": session,
+        "position": g.position if g.position and g.position > 0 else None,
+        # Past the flag there is no lap being driven; lap 17 of 16 reads
+        # as nonsense, so the count stops at the race distance.
+        "current_lap": min(done + 1, laps) if laps is not None else done + 1,
+        "race_laps": laps,
+        "laps_remaining": remaining,
+        "session_time_left_s": (round(left / 1000.0)
+                                if left and left > 0 else None),
+    }
+    if checkered:
+        out["checkered_flag"] = True
+    if laps is not None and done >= laps:
+        out["finished"] = True
+    return out
+
+
 @mcp.tool()
 def live_snapshot() -> str:
     """Current instantaneous state from shared memory: car, track, session
     status, tyre pressures/temps right now, fuel, last/best lap times.
-    Useful to confirm AC is running and see conditions."""
+    Useful to confirm AC is running and see conditions.
+
+    Also where the driver is in the session: `session_type`, `position`
+    (race order in a race, best-lap ranking in practice and qualifying),
+    `current_lap` of `race_laps`, `laps_remaining` (counting the lap being
+    driven) and, in a timed session, `session_time_left_s`. These are null
+    unless the game is live or paused. Judge fuel against `laps_remaining`,
+    not against the next lap or two. It counts from the race distance
+    until `checkered_flag` is out; a lapped car's last lap only shows then,
+    so a car off the lead lap may have one lap fewer to run than it says."""
     from .sim_info import SimInfo
     sim = SimInfo()
     try:
@@ -374,6 +443,7 @@ def live_snapshot() -> str:
             "last_lap": g.lastTime,
             "best_lap": g.bestTime,
             "completed_laps": g.completedLaps,
+            **_race_state(g),
             "tyre_pressures_psi": {
                 w: round(p.wheelsPressure[i], 1)
                 for i, w in enumerate(("fl", "fr", "rl", "rr"))},

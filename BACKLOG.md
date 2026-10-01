@@ -196,6 +196,13 @@ it would pay:
   the session to time laps: about 150k rows for a 12-lap race with ten
   cars, fine today, slow for a two-hour practice with twenty. Cache per
   (session, car, newest lap_count), or time laps once as they complete.
+- **Race state on the radio.** `live_snapshot` now reports position, lap N
+  of M and laps remaining. Next: fuel laps left against laps remaining,
+  computed in the tool from the session's own burn, so a fuel call says
+  "enough to the flag" or "short by half a lap" rather than a bare count.
+  Unchecked on the gaming PC: that the game shows the checkered flag to a
+  lapped car from the moment the leader finishes, which is what caps
+  `laps_remaining` at one for a car off the lead lap.
 - **Rival data in the handoff.** The race-engineer skill should run
   `field_benchmark` after practice, qualifying and each race and put
   `priorities` in the handoff, and quote only trace-timed rival laps

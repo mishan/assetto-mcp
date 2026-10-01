@@ -130,6 +130,10 @@ references describe is missing, or the code was just updated -- call
 `restart_server` rather than asking the driver to quit and reopen the
 client. Ask the driver first, and never while they are on a lap.
 
+When the driver asks whether there is a new version, `check_for_updates`,
+then show them its commit list. `apply_update` only on their explicit yes,
+and only between sessions; then `restart_server`.
+
 ## The live loop
 
 A lap lands. In one round of calls: `lap_summary` for it, `live_snapshot`

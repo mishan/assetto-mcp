@@ -70,6 +70,23 @@ find the game, `-SkipLuaApp`, `-Uninstall`.
 Something went wrong? Run `diagnose.bat`, then see
 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).*
 
+### Updating
+
+Ask the assistant: *"Is there an update?"* It checks GitHub with
+`check_for_updates`, shows you the list of changes, and applies them only
+once you say yes — then restarts itself with `restart_server`. Applying
+fast-forwards this folder to the latest `main`, reinstalls the package if
+its dependencies changed, and copies the in-game app into Assetto Corsa if
+that changed and the game isn't running.
+
+From a terminal in this folder, the same thing is
+`python -m assetto_mcp.update --check` and `--apply`. Or `git pull` and re-run
+`install-windows.bat`, as before.
+
+It needs the install to be a `git clone`, and leaves it alone if you have
+edited files, switched branches or made commits of your own. A copy
+downloaded as a ZIP can't be updated this way; clone it instead.
+
 ---
 
 ## Starting a session

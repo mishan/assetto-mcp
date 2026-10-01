@@ -348,11 +348,49 @@ def stop_recording() -> str:
 AC_STATUS = {0: "off", 1: "replay", 2: "live", 3: "pause"}
 
 
+# AC's session types, from the shared-memory documentation.
+AC_SESSION = {0: "practice", 1: "qualifying", 2: "race", 3: "hotlap",
+              4: "time attack", 5: "drift", 6: "drag"}
+
+
+def _race_state(g) -> dict:
+    """Where the driver is in the session: type, position, lap N of M.
+
+    A fuel call is only useful against the laps still to run -- "fuel for
+    two laps" read at the start of the last lap told the driver nothing
+    -- and the game knows the race distance (`numberOfLaps`) and the
+    position; neither was read before. `race_laps` is null in a timed
+    session, where the game reports no lap count; `session_time_left_s`
+    is what counts there. `current_lap` is the lap being driven,
+    `laps_remaining` counts it.
+    """
+    laps = g.numberOfLaps if g.numberOfLaps and g.numberOfLaps > 0 else None
+    left = g.sessionTimeLeft
+    out = {
+        "session_type": AC_SESSION.get(g.session, f"unknown ({g.session})"),
+        "position": g.position if g.position and g.position > 0 else None,
+        "current_lap": g.completedLaps + 1,
+        "race_laps": laps,
+        "laps_remaining": (max(laps - g.completedLaps, 0)
+                           if laps is not None else None),
+        "session_time_left_s": (round(left / 1000.0)
+                                if left and left > 0 else None),
+    }
+    if laps is not None and g.completedLaps >= laps:
+        out["finished"] = True
+    return out
+
+
 @mcp.tool()
 def live_snapshot() -> str:
     """Current instantaneous state from shared memory: car, track, session
     status, tyre pressures/temps right now, fuel, last/best lap times.
-    Useful to confirm AC is running and see conditions."""
+    Useful to confirm AC is running and see conditions.
+
+    Also where the driver is in the session: `session_type`, race
+    `position`, `current_lap` of `race_laps`, `laps_remaining` (counting
+    the lap being driven) and, in a timed session, `session_time_left_s`.
+    Judge fuel against `laps_remaining`, not against the next lap or two."""
     from .sim_info import SimInfo
     sim = SimInfo()
     try:
@@ -374,6 +412,7 @@ def live_snapshot() -> str:
             "last_lap": g.lastTime,
             "best_lap": g.bestTime,
             "completed_laps": g.completedLaps,
+            **_race_state(g),
             "tyre_pressures_psi": {
                 w: round(p.wheelsPressure[i], 1)
                 for i, w in enumerate(("fl", "fr", "rl", "rr"))},

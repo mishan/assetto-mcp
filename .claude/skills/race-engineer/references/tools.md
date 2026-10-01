@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Thirty-seven tools. They fall into eight groups. For each: what to pass,
+Thirty-eight tools. They fall into eight groups. For each: what to pass,
 what to read in the reply, and the trap that has already caught someone.
 Pass every parameter explicitly, including nulls: the schemas this client
 exposes have turned optional parameters into required ones between updates,
@@ -129,8 +129,20 @@ from the laps driven, so the numbering is the session's, not the circuit's:
 a flat kink is not numbered, and 3A is numbered straight through. The
 numbering is also not the same in `compare_laps` (built from those two laps
 only) or `compare_runs` (built from the laps compared). Quote the label
-with the tool that produced it, and prefer meters and the driver's own
-name for a corner when the labels disagree.
+with the tool that produced it, and prefer the circuit `name` or the
+driver's own name for a corner when the labels disagree. Each turn carries
+`name` when the track ships a sections.ini, and `circuit_names` lists every
+named section with the session turns inside it; a named section with no
+turns is a kink the detector never saw. The comparisons carry apexes only,
+so they name a corner by the section its apex is in or just beside: a
+corner whose apex sits near a section boundary can come back with no
+`name` there, or a different one from `track_corners`.
+
+**`locate(meters, fractions, session_id)`** -- any position you found
+outside the tools (a script over `samples`, a rival trace) said the way the
+tools say it: "Turn 10A braking zone, 60 m before turn-in". `meters` is
+distance past the start line, comma-separated; `fractions` is `norm_pos`.
+Use it before quoting a position from a script to the driver.
 
 **`driving_line(lap_id, compare_lap_id, points)`** -- where the car was
 across the track, slice by slice, with speed, ride height and a bump map.

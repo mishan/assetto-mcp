@@ -16,6 +16,14 @@ after turn-in -- and a brake-point difference between laps comes with
 `brake_point_delta_m`. Quote those; they line up with the 50 m and 100 m
 boards. Name the corner the way the driver does when you know it.
 
+The `_m` fields are for lining tool outputs up with each other, not for the
+driver: nobody at the wheel knows they are 3,335 m into the lap. Say it
+from the corner. Where the track ships `data/sections.ini` (Road Atlanta
+and the Glen do), turns carry the circuit's `name` and `where` uses it;
+the session's T-numbers can drift from the circuit's (Road Atlanta's
+session T12 was Turn 10A). `locate(meters=..., fractions=...)` turns any
+position from a script into the same wording.
+
 `track_length` on the payload says where the length came from: `game` is
 AC's own figure, `estimated` is integrated from the speed of recent clean
 laps and has been within 0.4% of the game's on every session checked.

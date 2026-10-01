@@ -122,13 +122,25 @@ def _exit(t: dict) -> float:
     return t["exit_pos"] if t.get("exit_pos") is not None else t["apex_pos"]
 
 
+def label(t: dict) -> str:
+    """What to call a turn to a driver: the circuit's name when it has one.
+
+    `name` comes from the track's own sections.ini (circuit.name_turns);
+    the session's T-number is the fallback, because it is built from the
+    laps and can drift from the circuit's numbering.
+    """
+    return t.get("name") or t["turn"]
+
+
 def where(pos: float, length_m: float, turns: list[dict]) -> str:
     """A place on the lap in the words a driver would use.
 
     Inside a turn it is measured from turn-in or the apex; in a braking zone
     it is the distance still to go to turn-in, which is what the boards
     count down; on a straight it is the distance to the next turn or from
-    the last one, whichever is nearer.
+    the last one, whichever is nearer. Never meters past the start/finish
+    line unless there are no turns at all: a driver does not know how far
+    into the lap they are, only how far they are from the next corner.
     """
     def m(frac):
         return round(frac * length_m)
@@ -148,20 +160,20 @@ def where(pos: float, length_m: float, turns: list[dict]) -> str:
         to_go, since = (m(_fwd(pos, ahead["apex_pos"])),
                         m(_fwd(behind["apex_pos"], pos)))
         if min(to_go, since) <= APEX_M:
-            return f"{(ahead if to_go <= since else behind)['turn']} apex"
+            return f"{label(ahead if to_go <= since else behind)} apex"
         if to_go <= since:
-            return f"{to_go} m before the {ahead['turn']} apex"
-        return f"{since} m after the {behind['turn']} apex"
+            return f"{to_go} m before the {label(ahead)} apex"
+        return f"{since} m after the {label(behind)} apex"
 
     for t in usable:
         into = _fwd(_entry(t), pos)
         if into <= _fwd(_entry(t), _exit(t)):
             past_apex = m(into - _fwd(_entry(t), t["apex_pos"]))
             if abs(past_apex) <= APEX_M:
-                return f"{t['turn']} apex"
+                return f"{label(t)} apex"
             if past_apex < 0:
-                return f"{t['turn']}, {m(into)} m after turn-in"
-            return f"{t['turn']}, {past_apex} m after the apex"
+                return f"{label(t)}, {m(into)} m after turn-in"
+            return f"{label(t)}, {past_apex} m after the apex"
 
     # A brake point at or after turn-in -- a corner braked into rather than
     # before -- has no braking zone ahead of it to be in.
@@ -169,7 +181,7 @@ def where(pos: float, length_m: float, turns: list[dict]) -> str:
         brake = t.get("brake_point_pos")
         if (brake is not None and _signed(brake, _entry(t)) > 0
                 and _fwd(brake, pos) < _fwd(brake, _entry(t))):
-            return (f"{t['turn']} braking zone, "
+            return (f"{label(t)} braking zone, "
                     f"{m(_fwd(pos, _entry(t)))} m before turn-in")
 
     # On a straight: the distance to the next turn-in or from the last
@@ -178,8 +190,8 @@ def where(pos: float, length_m: float, turns: list[dict]) -> str:
     behind = min(usable, key=lambda t: _fwd(_exit(t), pos))
     to_go, since = _fwd(pos, _entry(ahead)), _fwd(_exit(behind), pos)
     if to_go <= since:
-        return f"{m(to_go)} m before {ahead['turn']} turn-in"
-    return f"{m(since)} m after {behind['turn']} exit"
+        return f"{m(to_go)} m before {label(ahead)} turn-in"
+    return f"{m(since)} m after {label(behind)} exit"
 
 
 def _is_fraction(v) -> bool:
@@ -187,7 +199,8 @@ def _is_fraction(v) -> bool:
             and -0.1 <= v <= 1.1)
 
 
-def _place_dict(d: dict, length_m: float, turns: list[dict]) -> dict:
+def _place_dict(d: dict, length_m: float, turns: list[dict],
+                names: dict[str, str]) -> dict:
     out = {}
     for key, value in d.items():
         out[key] = value
@@ -208,6 +221,11 @@ def _place_dict(d: dict, length_m: float, turns: list[dict]) -> dict:
     # at. Negative when the braking starts after turn-in, which a short
     # braking zone into a second apex does.
     if d.get("turn"):
+        # The circuit's name beside the session's number, so a corner in any
+        # payload can be quoted the way the driver knows it.
+        name = names.get(d["turn"])
+        if name and "name" not in d:
+            out["name"] = name
         brake, entry = d.get("brake_point_pos"), d.get("entry_pos")
         if _is_fraction(brake) and _is_fraction(entry):
             out["brake_before_turn_in_m"] = round(
@@ -233,14 +251,19 @@ def place(payload, length_m: float | None, turns: list[dict] | None):
     Returns the payload unchanged when there is no track length at all.
     `turns` is the numbering the payload's own labels came from, so a
     `where` never names a turn the rest of the payload calls something else.
+    Turns carrying a circuit `name` (circuit.name_turns) are called by it,
+    and every dict labelled with one of their numbers gets the name beside
+    the number.
     """
     if not length_m:
         return payload
     turns = turns or []
+    names = {t["turn"]: t["name"] for t in turns
+             if t.get("turn") and t.get("name")}
 
     def walk(node):
         if isinstance(node, dict):
-            placed = _place_dict(node, length_m, turns)
+            placed = _place_dict(node, length_m, turns, names)
             return {k: (walk(v) if k not in POSITION_KEYS else v)
                     for k, v in placed.items()}
         if isinstance(node, list):

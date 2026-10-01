@@ -1621,6 +1621,278 @@ def compare_to_rival(my_samples: list[dict], rival_samples: list[dict],
     return result
 
 
+# Two samples either side of the line more than this far apart in time, or in
+# track, cannot pin when the car crossed it. An opponent is sampled at about
+# 10 Hz, so a normal crossing is 100 ms and a few thousandths of a lap.
+LINE_CROSS_MAX_GAP_MS = 1000
+LINE_CROSS_MAX_GAP_POS = 0.02
+
+# The largest stretch of a lap, as a fraction of it, that may go unseen for
+# the lap still to be timed: about 200 m on a 4 km circuit, twenty-odd
+# samples at 10 Hz. A normal lap's biggest hole is a few thousandths.
+TRACE_MAX_HOLE = 0.05
+
+
+def trace_lap_times(rows: list[dict]) -> dict[int, int]:
+    """Opponent lap times from their own trace: {lap_count: ms}.
+
+    What the server reports for a remote car's last lap arrives late, so
+    the time stored when its lap counter ticked over is often the lap
+    before's, repeated -- at the Glen one rival read 1:45.97 on eleven laps
+    running while his trace showed 1:44.5 to 1:45.3. The trace does not
+    have that problem: every sample carries the car's own clock (`t_ms`)
+    and its track position, so the moment it crossed the line is
+    interpolated between the two samples either side of the position
+    wrapping from near 1 to near 0, and a lap's time is the difference
+    between two crossings.
+
+    The crossings come from the position alone, in clock order. The lap
+    counter ticks over within a sample or two of the wrap but not always on
+    the same side of it, and matching crossings to counter changes lost
+    most laps. Each timed lap is filed under the lap_count most of its
+    samples carry.
+
+    `rows` are one car's samples with lap_count, spline and t_ms, in any
+    order. A lap is timed only when both of its crossings were seen
+    closely enough to interpolate and it covers the circuit. A standing
+    start's first lap is timed from the car crossing the line off the grid,
+    so it reads a little quicker than the race clock has it.
+    """
+    pts = []
+    for r in rows:
+        lc, pos, t = r.get("lap_count"), r.get("spline"), r.get("t_ms")
+        if lc is None or pos is None or t is None:
+            continue
+        if not (math.isfinite(pos) and math.isfinite(t)):
+            continue
+        pts.append((float(t), float(pos), int(lc)))
+    pts.sort()
+
+    crossings: list[tuple[float, int]] = []    # (time, index after it)
+    for i in range(1, len(pts)):
+        (t1, p1, _), (t2, p2, _) = pts[i - 1], pts[i]
+        before, after = 1.0 - p1, p2
+        if not (0 <= before <= LINE_CROSS_MAX_GAP_POS
+                and 0 <= after <= LINE_CROSS_MAX_GAP_POS):
+            continue
+        if t2 <= t1 or t2 - t1 > LINE_CROSS_MAX_GAP_MS:
+            continue
+        frac = before / (before + after) if before + after > 0 else 0.0
+        crossings.append((t1 + (t2 - t1) * frac, i))
+
+    out: dict[int, int] = {}
+    for (start, i), (end, j) in zip(crossings, crossings[1:]):
+        lap = pts[i:j]
+        if not lap or not 0 < end - start < 3_600_000:
+            continue
+        # A lap the feed dropped out of, or one a teleport cut short,
+        # does not cover the circuit; its "time" would be a guess.
+        seen = sorted(p for _, p, _ in lap)
+        gaps = [b - a for a, b in zip(seen, seen[1:])]
+        if (seen[0] > TRACE_MAX_HOLE or 1.0 - seen[-1] > TRACE_MAX_HOLE
+                or (gaps and max(gaps) > TRACE_MAX_HOLE)):
+            continue
+        # A crossing the feed dropped out across is not in `crossings`, so
+        # the two either side of it bracket two laps. Every hole check
+        # passes -- each lap covered the circuit -- and the pair would be
+        # filed as one lap of twice the time. The wrap it skipped is still
+        # in the slice as the position jumping back, and the slice carries
+        # three lap counts where one lap carries at most two.
+        if any(p1 - p2 > 0.5 for (_, p1, _), (_, p2, _) in zip(lap, lap[1:])):
+            continue
+        if len({lc for _, _, lc in lap}) > 2:
+            continue
+        counts: dict[int, int] = {}
+        for _, _, lc in lap:
+            counts[lc] = counts.get(lc, 0) + 1
+        lc = max(counts, key=counts.get)
+        out.setdefault(lc, int(round(end - start)))
+    return out
+
+
+# Where a lap's own trace reads as "near the line" when deciding which side
+# of it a stray sample belongs to: a tenth of a lap either way.
+LINE_NEAR = 0.1
+
+
+def _lap_clock(samples: list[dict], pos_key: str) -> list[tuple[float, float]]:
+    """One lap's (position, clock) points, monotonic, reaching 0 and 1.
+
+    An opponent's samples are grouped into laps by their lap counter, and
+    the counter ticks within a sample of the position wrapping but not
+    always on the same side of it. Ticking early puts a sample at 0.999 at
+    the head of the lap; read as it stands, that is the furthest the car
+    got, and the monotonic pass then throws away the whole lap after it.
+    Ticking late leaves a sample at 0.001 on the tail. Both are the car
+    either side of the line, so they are unwrapped -- the head to just
+    below 0, the tail to just above 1 -- which also gives the lap a clock
+    at the line itself. Where the counter ticked exactly at the wrap there
+    is no such sample, and the clock at 0 and 1 is extrapolated from the
+    first or last two, but only across the gap of a normal crossing.
+    """
+    pts = []
+    for s in samples:
+        pos, t = s.get(pos_key), s.get("t_ms")
+        if pos is None or t is None:
+            continue
+        if not (math.isfinite(pos) and math.isfinite(t)):
+            continue
+        pts.append((float(t), float(pos)))
+    pts.sort()
+
+    head = next((k for k, (_, p) in enumerate(pts) if p <= 1 - LINE_NEAR),
+                None)
+    if head and pts[head][1] < LINE_NEAR:
+        pts[:head] = [(t, p - 1.0) for t, p in pts[:head]]
+    tail = next((k for k in range(len(pts) - 1, -1, -1)
+                 if pts[k][1] >= LINE_NEAR), None)
+    if (tail is not None and tail < len(pts) - 1
+            and pts[tail][1] > 1 - LINE_NEAR):
+        pts[tail + 1:] = [(t, p + 1.0) for t, p in pts[tail + 1:]]
+
+    clock = _monotonic_positions(
+        {"norm_pos": p, "t_ms": t} for t, p in pts)
+    if len(clock) < 2:
+        return clock
+    (p0, t0), (p1, t1) = clock[0], clock[1]
+    if 0 < p0 <= LINE_CROSS_MAX_GAP_POS and p1 > p0:
+        clock.insert(0, (0.0, t0 - (t1 - t0) * p0 / (p1 - p0)))
+    (p0, t0), (p1, t1) = clock[-2], clock[-1]
+    if 1 - LINE_CROSS_MAX_GAP_POS <= p1 < 1 and p1 > p0:
+        clock.append((1.0, t1 + (t1 - t0) * (1 - p1) / (p1 - p0)))
+    return clock
+
+
+def _times_at(samples: list[dict], pos_key: str,
+              points: list[float]) -> list[float | None]:
+    """The lap's clock, in seconds, at each position, or None."""
+    grid = sorted(set(points))
+    at = dict(zip(grid, _interpolate_clock(_lap_clock(samples, pos_key),
+                                           grid)))
+    return [None if at[p] is None else at[p] / 1000.0 for p in points]
+
+
+def _value_at(samples: list[dict], pos_key: str, key: str,
+              pos: float) -> float | None:
+    """`key` interpolated at a track position, from the samples either side."""
+    pts = sorted((s[pos_key], s[key]) for s in samples
+                 if s.get(pos_key) is not None and s.get(key) is not None)
+    for (p0, v0), (p1, v1) in zip(pts, pts[1:]):
+        if p0 <= pos <= p1:
+            return v0 if p1 == p0 else v0 + (v1 - v0) * (pos - p0) / (p1 - p0)
+    return None
+
+
+def _between(pos: float, lo: float, hi: float) -> bool:
+    """Whether a position lies from lo to hi, going round past the line."""
+    return lo <= pos <= hi if lo <= hi else (pos >= lo or pos <= hi)
+
+
+def turn_metrics(samples: list[dict], pos_key: str, turns: list[dict],
+                 brake_live: bool = True) -> list[dict]:
+    """What one lap did at each turn, on a shared numbering.
+
+    Per turn: time from turn-in to exit, time on the road after it up to
+    the next turn-in, minimum speed, speed at the exit, and where the
+    braking for it began -- the first brake application after the
+    previous turn's exit, so a lift or a dab two corners back is not
+    counted. Works on our laps (`norm_pos`) and on an opponent's
+    (`spline`) alike, which is what lets a field be compared corner by
+    corner. `brake_live=False` skips the brake point, for a server that
+    does not send remote pedal inputs.
+
+    The stretches run round the lap: the last turn's road runs across the
+    line to the first turn-in, and a turn that spans the line is timed
+    across it. One lap's trace holds both ends of such a stretch -- the
+    run from the stretch's start to the line, and from the line to its end
+    -- so the turns and the road between them add up to the whole lap,
+    which is what lets time_by_turn's rows add up to the lap difference.
+    """
+    usable = [t for t in turns
+              if all(isinstance(t.get(k), (int, float))
+                     for k in ("entry_pos", "exit_pos", "apex_pos"))]
+    usable.sort(key=lambda t: t["entry_pos"])
+    if not usable:
+        return []
+    # turn-in, exit, turn-in, exit ... round the lap. Going round, the
+    # positions fall back once, where the line is. Turns that overlap make
+    # them fall back elsewhere too; the line is the biggest fall, and a
+    # stretch that runs backwards anywhere else is not timed.
+    seq = [p for t in usable for p in (t["entry_pos"], t["exit_pos"])]
+    n = len(seq)
+    falls = [k for k in range(n) if seq[(k + 1) % n] < seq[k]]
+    line = max(falls, key=lambda k: seq[k] - seq[(k + 1) % n], default=None)
+    times = dict(zip(seq + [0.0, 1.0],
+                     _times_at(samples, pos_key, seq + [0.0, 1.0])))
+
+    def stretch(k):
+        a, b = seq[k], seq[(k + 1) % n]
+        ta, tb = times.get(a), times.get(b)
+        if ta is None or tb is None:
+            return None
+        if b >= a:
+            return round(tb - ta, 3) if tb >= ta else None
+        if k != line:
+            return None
+        start, end = times.get(0.0), times.get(1.0)
+        if start is None or end is None or end < ta or tb < start:
+            return None
+        return round((end - ta) + (tb - start), 3)
+
+    out = []
+    for i, t in enumerate(usable):
+        lo, hi = t["entry_pos"], t["exit_pos"]
+        inside = [s["speed_kmh"] for s in samples
+                  if s.get(pos_key) is not None
+                  and _between(s[pos_key], lo, hi)
+                  and s.get("speed_kmh") is not None]
+        rec = {"turn": t.get("turn"),
+               "time_s": stretch(2 * i), "after_s": stretch(2 * i + 1),
+               "min_kmh": round(min(inside), 1) if inside else None,
+               "exit_kmh": _value_at(samples, pos_key, "speed_kmh", hi),
+               "brake_onset_pos": None}
+        if brake_live:
+            # From the previous turn's exit, round past the line where the
+            # braking for the first turn starts before it.
+            floor = seq[2 * i - 1]
+            reach = (t["apex_pos"] - floor) % 1.0
+            braking = sorted(((s[pos_key] - floor) % 1.0, s[pos_key])
+                             for s in samples
+                             if s.get(pos_key) is not None
+                             and (s[pos_key] - floor) % 1.0 <= reach
+                             and (s.get("brake") or 0) > 0.2)
+            rec["brake_onset_pos"] = braking[0][1] if braking else None
+        if rec["exit_kmh"] is not None:
+            rec["exit_kmh"] = round(rec["exit_kmh"], 1)
+        out.append(rec)
+    return out
+
+
+def time_by_turn(mine: list[dict], theirs: list[dict],
+                 labels: dict[str, str]) -> list[dict]:
+    """Two laps' turn_metrics as time differences, turn and straight apart.
+
+    One row per turn and one per stretch of road after it, `delta_s`
+    positive where the other car was quicker. Time rather than speed:
+    "16 km/h faster at the Bus Stop exit" does not say what it was worth,
+    and the straight after a slow exit is where most of it is paid.
+    """
+    rows = []
+    theirs_by = {m["turn"]: m for m in theirs}
+    for m in mine:
+        o = theirs_by.get(m["turn"])
+        if not o:
+            continue
+        name = labels.get(m["turn"], m["turn"])
+        for key, where in (("time_s", name), ("after_s", f"after {name}")):
+            if m[key] is None or o[key] is None:
+                continue
+            rows.append({"turn": m["turn"], "stretch": where,
+                         "my_s": m[key], "their_s": o[key],
+                         "delta_s": round(m[key] - o[key], 3)})
+    return rows
+
+
 def _time_at_positions(samples: list[dict], grid: list[float]):
     """Elapsed lap time at each track position, or None where not covered.
 
@@ -1629,8 +1901,13 @@ def _time_at_positions(samples: list[dict], grid: list[float]):
     a delta trace with time flowing the wrong way -- which reads as a huge
     phantom gain exactly where the driver lost the most.
     """
+    return _interpolate_clock(_monotonic_positions(samples), grid)
+
+
+def _monotonic_positions(samples) -> list[tuple[float, float]]:
+    """(norm_pos, t_ms) in sample order, keeping only forward progress."""
     pts: list[tuple[float, float]] = []
-    high = -1.0
+    high = -math.inf
     for s in samples:
         pos, t = s.get("norm_pos"), s.get("t_ms")
         if pos is None or t is None:
@@ -1641,6 +1918,12 @@ def _time_at_positions(samples: list[dict], grid: list[float]):
             continue
         high = pos
         pts.append((pos, float(t)))
+    return pts
+
+
+def _interpolate_clock(pts: list[tuple[float, float]],
+                       grid: list[float]) -> list[float | None]:
+    """The clock at each grid position, between monotonic (pos, t) points."""
     if len(pts) < 2:
         return [None] * len(grid)
 

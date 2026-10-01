@@ -447,7 +447,8 @@ def rivals(conn, session_id: int, track_length_m: float | None) -> list[dict]:
     out = []
     for d in db.list_rivals(conn, session_id, limit=100):
         car, laps = d["car_index"], []
-        for l in db.well_covered_rival_laps(conn, session_id, car):
+        for l in db.well_covered_rival_laps(
+                conn, session_id, car, traced=d.get("trace_lap_times")):
             g = rival_lap(db.get_rival_lap_samples(
                 conn, session_id, car, l["lap_count"]), track_length_m)
             if l["lap_time_ms"]:

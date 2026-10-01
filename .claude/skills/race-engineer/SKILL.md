@@ -255,6 +255,9 @@ answer is usually the contact list and the tyre wear, not the setup:
   contact and ran-wide lists in view.
 - `stint_wear` for the stint, per corner. Say which tyre went first and on
   which lap.
+- `field_benchmark` for the corners where the quicker cars find their
+  time, with their brake points and exit speeds beside yours; its
+  `priorities` is the list to coach from.
 - `list_rivals` and `compare_to_rival` against the quickest well-covered
   rival lap: where they carry speed, and whether their brake points differ
   from the driver's. The field braking at the same point as the driver is

@@ -156,6 +156,53 @@ likely by chance — and should say so.
 
 ---
 
+## 6a. Put the rival data to more use
+
+**Status:** open. Built so far: rival lap times timed off each car's own
+trace (`analysis.trace_lap_times`), `time_by_turn` on `compare_to_rival`,
+and `field_benchmark`. What the same data could still answer, in the order
+it would pay:
+
+- **Gaps on track, for the radio.** The time gap to the car ahead and
+  behind at matched track position, lap by lap, and the closing rate: "Pman
+  closing 0.5 s a lap, on you in four". `created_at` is server receive time
+  and too coarse under a few seconds; the cars' own `t_ms` at a shared
+  spline is the clock to use, once each car's clock offset is fixed from a
+  line crossing.
+- **Where to attack and where to defend.** From `field_benchmark` per
+  rival: the driver's strong corners (the Toe at the Glen) are where a
+  pass is set up; a rival's strong exit onto a straight (the Inner Loop) is
+  where the driver is vulnerable.
+- **Rival habits.** Late-stint fade (ProFynes lost 0.9 s a lap late in Glen
+  race 1), lap-time spread, and where each rival goes off -- a risk map for
+  traffic.
+- **Lines.** Rival `pos_x`/`pos_z` are stored; `driving_line` could overlay
+  the quickest rival's line through a corner the benchmark flags.
+- **A pre-race brief** from practice and qualifying: one card per rival,
+  and the quickest rival lap drawn as a ghost in the line map.
+- **Car against driver.** Split each rival's gain into straights and
+  corners. At the Glen every rival, postaL included, was 3-7 km/h quicker
+  at the end of the long straights; that is the car or the wing, not the
+  driver, and a coaching list should say which gains are which.
+- **Store the lap time right at the source.** `store_rival_batch` files the
+  server's `last_lap_ms` under a lap the moment the lap counter ticks, and
+  the server has usually not updated it yet, so `rival_laps` holds the
+  lap before's time. Reads now prefer the trace (`rival_trace_lap_times`);
+  the table itself is still wrong and anything reading it directly
+  inherits that. Either file the time on the next batch whose
+  `last_lap_ms` changed, or stop writing the table and time from the trace
+  at write time.
+- **Cost of trace timing.** `list_rivals` now reads every rival sample of
+  the session to time laps: about 150k rows for a 12-lap race with ten
+  cars, fine today, slow for a two-hour practice with twenty. Cache per
+  (session, car, newest lap_count), or time laps once as they complete.
+- **Rival data in the handoff.** The race-engineer skill should run
+  `field_benchmark` after practice, qualifying and each race and put
+  `priorities` in the handoff, and quote only trace-timed rival laps
+  (`lap_time_source` "trace").
+
+---
+
 ## 7. Body slip angle
 
 **Status:** open.

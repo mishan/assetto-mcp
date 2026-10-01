@@ -2172,19 +2172,103 @@ def prune_rival_samples(conn, session_id: int, keep_laps: int = 12) -> int:
     return removed
 
 
-def rival_lap_times(conn, session_id: int, car_index: int) -> dict[int, int]:
-    """{lap_count: lap_time_ms} for the laps we have a time for."""
+def rival_occupant_since(conn, session_id: int,
+                         car_index: int) -> tuple[int, float]:
+    """(first rowid, its wall-clock time) of the car slot's current driver.
+
+    A car index is a slot on the server, and when one driver leaves and
+    another joins the new one inherits it. Nothing stored says which
+    driver a sample came from -- rival_drivers keeps one name per slot,
+    the latest -- so without this the old driver's laps were ranked under
+    the new driver's name. A newcomer's lap counter starts again from
+    zero, and within one session (a restart rolls a fresh one) a car's
+    counter only goes forward, so the slot's last fall in the counter is
+    where the current driver begins. A fall of a single lap to anything
+    but zero is left alone: batches the app sent close together can
+    land a few samples out of order. A driver who reconnects starts over
+    too, and loses their earlier laps; that costs data, where the merge cost
+    a wrong name. Returns (0, 0.0) when the slot has had one driver.
+    """
+    since, stamp, high = 0, 0.0, None
+    for r in conn.execute(
+            "SELECT rowid, lap_count, created_at FROM rival_samples"
+            " WHERE session_id = ? AND car_index = ? ORDER BY rowid",
+            (session_id, car_index)):
+        lc = r["lap_count"]
+        if high is not None and (lc < high - 1 or (lc == 0 < high)):
+            since, stamp, high = r["rowid"], r["created_at"], lc
+        else:
+            high = lc if high is None else max(high, lc)
+    return since, stamp
+
+
+def recorded_rival_lap_times(conn, session_id: int, car_index: int,
+                             since: tuple[int, float] | None = None
+                             ) -> dict[int, int]:
+    """{lap_count: lap_time_ms} as the server reported them.
+
+    Often stale: the server's last-lap field for a remote car lags its lap
+    counter, so the time stored here is frequently the previous lap's.
+    rival_lap_times prefers the car's own trace. Only the slot's current
+    driver's (rival_occupant_since).
+    """
+    _, stamp = since or rival_occupant_since(conn, session_id, car_index)
     return {r["lap_count"]: r["lap_time_ms"] for r in conn.execute(
         "SELECT lap_count, lap_time_ms FROM rival_laps"
-        " WHERE session_id = ? AND car_index = ?", (session_id, car_index))}
+        " WHERE session_id = ? AND car_index = ? AND recorded_at >= ?",
+        (session_id, car_index, stamp))}
+
+
+def rival_trace_lap_times(conn, session_id: int, car_index: int,
+                          since: tuple[int, float] | None = None
+                          ) -> dict[int, int]:
+    """{lap_count: lap_time_ms} from the car's own trace (analysis)."""
+    first, _ = since or rival_occupant_since(conn, session_id, car_index)
+    rows = conn.execute(
+        "SELECT lap_count, spline, t_ms FROM rival_samples"
+        " WHERE session_id = ? AND car_index = ? AND speed_kmh < ?"
+        " AND rowid >= ?",
+        (session_id, car_index, RIVAL_TELEPORT_KMH, first))
+    return analysis.trace_lap_times([dict(r) for r in rows])
+
+
+def rival_lap_times(conn, session_id: int, car_index: int) -> dict[int, int]:
+    """{lap_count: lap_time_ms}: the trace's time, the server's where not.
+
+    A lap whose crossings were not both seen -- the first lap, a lap the
+    feed dropped out on -- falls back to what the server reported, which
+    is better than nothing and is what every lap had before.
+    """
+    since = rival_occupant_since(conn, session_id, car_index)
+    times = recorded_rival_lap_times(conn, session_id, car_index, since)
+    times.update(rival_trace_lap_times(conn, session_id, car_index, since))
+    return times
 
 
 def list_rivals(conn, session_id: int, limit: int = 30) -> list[dict]:
-    rows = conn.execute(
-        "SELECT * FROM rival_drivers WHERE session_id = ?"
-        " ORDER BY CASE WHEN best_lap_ms IS NULL THEN 1 ELSE 0 END,"
-        " best_lap_ms ASC LIMIT ?", (session_id, limit))
-    return [dict(r) for r in rows]
+    """Opponents seen in a session, quickest first.
+
+    Ranked by the best lap timed off each car's own trace
+    (rival_trace_lap_times), not by the server's best-lap field, which is
+    kept as `server_best_lap_ms`: it lags and repeats, and at the Glen it
+    put a car a second quicker than the driver behind him.
+
+    Every car's trace has to be timed before the list can be ordered, so
+    each row carries what that found as `trace_lap_times`, for
+    well_covered_rival_laps to take rather than read the trace again.
+    """
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM rival_drivers WHERE session_id = ?", (session_id,))]
+    for r in rows:
+        traced = rival_trace_lap_times(conn, session_id, r["car_index"])
+        r["trace_lap_times"] = traced
+        r["server_best_lap_ms"] = r["best_lap_ms"]
+        if traced:
+            r["best_lap_ms"] = min(traced.values())
+            r["laps_timed_from_trace"] = len(traced)
+    rows.sort(key=lambda r: (r["best_lap_ms"] is None,
+                             r["best_lap_ms"] or 0))
+    return rows[:limit]
 
 
 def rival_samples_between(conn, session_id: int, t0: float,
@@ -2214,10 +2298,11 @@ def rival_names(conn, session_id: int) -> dict[int, str]:
 
 def get_rival_lap_samples(conn, session_id: int, car_index: int,
                           lap_count: int) -> list[dict]:
+    first, _ = rival_occupant_since(conn, session_id, car_index)
     rows = conn.execute(
         "SELECT * FROM rival_samples WHERE session_id = ? AND car_index = ?"
-        " AND lap_count = ? ORDER BY spline",
-        (session_id, car_index, lap_count))
+        " AND lap_count = ? AND rowid >= ? ORDER BY spline",
+        (session_id, car_index, lap_count, first))
     return [dict(r) for r in rows]
 
 
@@ -2237,17 +2322,29 @@ RIVAL_LAP_MIN_SPAN = 0.8
 RIVAL_TELEPORT_KMH = 999
 
 
-def well_covered_rival_laps(conn, session_id: int,
-                            car_index: int) -> list[dict]:
+def well_covered_rival_laps(conn, session_id: int, car_index: int,
+                            traced: dict[int, int] | None = None
+                            ) -> list[dict]:
     """Rival laps we saw enough of to compare against, quickest first.
 
     Ordered by recorded lap time where we have one. A lap with no time sorts
     last: without it there is no way to know whether it was a flyer or an
     in-lap, and comparing against an unknown-pace lap is worse than useless.
+
+    `traced` is the car's rival_trace_lap_times when the caller already
+    has it (list_rivals' `trace_lap_times`); timing the trace is the costly
+    part, and reading it twice per rival doubled the cost of a listing.
     """
-    times = rival_lap_times(conn, session_id, car_index)
-    laps = [dict(l, lap_time_ms=times.get(l["lap_count"]))
-            for l in rival_lap_counts(conn, session_id, car_index)
+    since = rival_occupant_since(conn, session_id, car_index)
+    if traced is None:
+        traced = rival_trace_lap_times(conn, session_id, car_index, since)
+    times = recorded_rival_lap_times(conn, session_id, car_index, since)
+    times.update(traced)
+    laps = [dict(l, lap_time_ms=times.get(l["lap_count"]),
+                 lap_time_source=("trace" if l["lap_count"] in traced
+                                  else "server" if l["lap_count"] in times
+                                  else None))
+            for l in rival_lap_counts(conn, session_id, car_index, since)
             if l["n"] >= RIVAL_LAP_MIN_SAMPLES
             and (l["hi"] - l["lo"]) > RIVAL_LAP_MIN_SPAN]
     laps.sort(key=lambda l: (l["lap_time_ms"] is None,
@@ -2255,7 +2352,8 @@ def well_covered_rival_laps(conn, session_id: int,
     return laps
 
 
-def rival_lap_counts(conn, session_id: int, car_index: int) -> list[dict]:
+def rival_lap_counts(conn, session_id: int, car_index: int,
+                     since: tuple[int, float] | None = None) -> list[dict]:
     """Which laps we have samples for, and how well covered each one is.
 
     Coverage matters: a lap we only saw half of would produce a comparison
@@ -2264,12 +2362,13 @@ def rival_lap_counts(conn, session_id: int, car_index: int) -> list[dict]:
     reports is coverage of the lap as driven, which is the same set of
     samples anything drawing the lap will have to work from.
     """
+    first, _ = since or rival_occupant_since(conn, session_id, car_index)
     rows = conn.execute(
         "SELECT lap_count, COUNT(*) AS n, MIN(spline) AS lo, MAX(spline) AS hi"
         " FROM rival_samples WHERE session_id = ? AND car_index = ?"
-        " AND speed_kmh < ?"
+        " AND speed_kmh < ? AND rowid >= ?"
         " GROUP BY lap_count ORDER BY lap_count",
-        (session_id, car_index, RIVAL_TELEPORT_KMH))
+        (session_id, car_index, RIVAL_TELEPORT_KMH, first))
     return [dict(r) for r in rows]
 
 

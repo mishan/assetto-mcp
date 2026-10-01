@@ -16,6 +16,7 @@ import json
 import math
 import os
 import re
+import statistics
 from pathlib import Path
 
 try:  # mcp SDK 2.x
@@ -201,6 +202,13 @@ def _circuit_sections(session_id: int) -> tuple[list[dict], str | None]:
         return [], None
     return circuit.sections_for(session.get("track"),
                                 session.get("track_config"))
+
+
+def _named_turns(session_id: int, lap_id: int | None = None) -> list[dict]:
+    """This session's turns, each with the circuit's name where it has one."""
+    return circuit.name_turns(
+        _session_corner_map(session_id, lap_id)["turns"],
+        _circuit_sections(session_id)[0])
 
 
 def _placed(payload: dict, session_id: int | None,
@@ -394,6 +402,10 @@ def list_rivals(session_id: int | None = None, limit: int = 20) -> str:
     """Opponents seen in a session, best-lap order, with how much of their
     telemetry we captured.
 
+    Best laps are timed off each car's own trace (`laps_timed_from_trace`
+    says how many); `server_best_lap_ms` is what the server claimed, which
+    lags and repeats and should not be quoted.
+
     Requires the in-game Lua app: AC's shared memory is ego-only, so
     opponent data can only reach the server via the bridge."""
     sid = _active_session(session_id)
@@ -405,14 +417,15 @@ def list_rivals(session_id: int | None = None, limit: int = 20) -> str:
                    "note": "No opponent data. The in-game app must be "
                            "running and updated to push rival telemetry."})
     for r in rivals:
-        laps = _well_covered_rival_laps(sid, r["car_index"])
+        laps = db.well_covered_rival_laps(
+            _conn, sid, r["car_index"], traced=r.pop("trace_lap_times", None))
         # A full practice session is 25+ laps per car; listing every one for
         # every rival ran to ~55KB of context. The engineer only ever wants
         # the quick ones, so report the count and show the best few.
         r["captured_lap_count"] = len(laps)
         r["best_captured_laps"] = [
             {"lap_count": l["lap_count"], "lap_time_ms": l["lap_time_ms"],
-             "samples": l["n"]}
+             "lap_time_source": l["lap_time_source"], "samples": l["n"]}
             for l in laps[:3]
         ]
     return _j({"session_id": sid, "rivals": rivals})
@@ -433,7 +446,15 @@ def compare_to_rival(car_index: int, lap_id: int,
     pedal inputs -- where they brake and get back on power. Use list_rivals
     to find car_index and which of their laps were captured.
 
-    rival_lap_count defaults to their quickest captured lap."""
+    rival_lap_count defaults to their quickest captured lap. Rival lap
+    times are timed off the car's own trace where both line crossings were
+    seen (`lap_time_source` "trace"); the server's own last-lap field lags
+    and repeats, and is used only where the trace cannot time a lap.
+
+    `time_by_turn` says what each difference was worth: seconds through
+    every turn and on the road after it, circuit names where the track has
+    them, with `where_they_gain` and `where_you_gain` the five biggest of
+    each."""
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
@@ -469,20 +490,276 @@ def compare_to_rival(car_index: int, lap_id: int,
 
     rival_samples = db.get_rival_lap_samples(
         _conn, sid, car_index, rival_lap_count)
-    result = analysis.compare_to_rival(
-        db.get_samples(_conn, lap_id), rival_samples)
+    my_samples = db.get_samples(_conn, lap_id)
+    result = analysis.compare_to_rival(my_samples, rival_samples)
+    named = None
+    if "error" not in result:
+        named = _named_turns(sid, lap_id)
+        rows = analysis.time_by_turn(
+            analysis.turn_metrics(my_samples, "norm_pos", named,
+                                  brake_live=False),
+            analysis.turn_metrics(rival_samples, "spline", named,
+                                  brake_live=False),
+            {t["turn"]: places.label(t) for t in named})
+        if rows:
+            result["time_by_turn"] = rows
+            result["where_they_gain"] = sorted(
+                (r for r in rows if r["delta_s"] > 0),
+                key=lambda r: -r["delta_s"])[:5]
+            result["where_you_gain"] = sorted(
+                (r for r in rows if r["delta_s"] < 0),
+                key=lambda r: r["delta_s"])[:5]
+            result["time_by_turn_note"] = (
+                "seconds through each turn (turn-in to exit) and on the road "
+                "after it to the next turn-in, the last turn's running across "
+                "the line, on this session's turns; delta_s positive where "
+                "the rival was quicker. Their trace is about 10 Hz and "
+                "interpolated, good to a few hundredths per stretch.")
     result["my_lap"] = {"id": lap_id,
                         "time_ms": lap["lap_time_ms"],
                         "setup": lap.get("setup_name") or None}
     result["rival"] = {"car_index": car_index,
                        "lap_count": rival_lap_count,
-                       "lap_time_ms": chosen["lap_time_ms"]}
+                       "lap_time_ms": chosen["lap_time_ms"],
+                       "lap_time_source": chosen.get("lap_time_source")}
     if chosen["lap_time_ms"] is None:
         result["rival"]["caution"] = (
             "No lap time recorded for this rival lap, so its pace is "
             "unknown -- it could be an in-lap. Treat speed deltas as "
             "indicative only.")
-    return _j(_placed(result, sid))
+    # The same numbering time_by_turn was labeled with: the corner map for
+    # this lap, not the session's default one, or a `where` could name a
+    # different turn than the row beside it.
+    return _j(_placed(result, sid, named, named=True))
+
+
+def _median_or_none(vals, digits: int = 3):
+    vals = [v for v in vals if v is not None]
+    return round(statistics.median(vals), digits) if vals else None
+
+
+# How each benchmark metric is rounded: seconds to the millisecond, speeds
+# to a tenth, brake points to the meter.
+_BENCH_DIGITS = {"time_s": 3, "after_s": 3, "min_kmh": 1, "exit_kmh": 1,
+                 "brake_before_turn_in_m": 0}
+
+
+def _per_turn_medians(metric_sets: list[list[dict]], length: float) -> dict:
+    """{turn: medians of each metric} over several laps' turn_metrics."""
+    by_turn: dict[str, list[dict]] = {}
+    for laps in metric_sets:
+        for m in laps:
+            by_turn.setdefault(m["turn"], []).append(m)
+    out = {}
+    for turn, ms in by_turn.items():
+        out[turn] = {k: _median_or_none((m[k] for m in ms),
+                                        _BENCH_DIGITS[k])
+                     for k in ("time_s", "after_s", "min_kmh", "exit_kmh")}
+        onsets = [m["brake_before_turn_in"] for m in ms
+                  if m.get("brake_before_turn_in") is not None]
+        # A corner braked for on fewer than half the laps is one taken
+        # without braking; a lone dab must not become its brake point.
+        out[turn]["brake_before_turn_in_m"] = (
+            round(statistics.median(onsets) * length)
+            if onsets and len(onsets) * 2 > len(ms) else None)
+    return out
+
+
+def _with_brake_distance(metrics: list[dict], turns: list[dict]) -> list[dict]:
+    entry = {t["turn"]: t["entry_pos"] for t in turns}
+    for m in metrics:
+        pos = m.pop("brake_onset_pos", None)
+        if pos is None or m["turn"] not in entry:
+            m["brake_before_turn_in"] = None
+            continue
+        # Braking for a turn just past the line starts before it, at the
+        # far end of the lap's positions; measure it round the line.
+        ahead = entry[m["turn"]] - pos
+        if ahead < -0.5:
+            ahead += 1.0
+        elif ahead > 0.5:
+            ahead -= 1.0
+        m["brake_before_turn_in"] = ahead
+    return metrics
+
+
+@mcp.tool()
+def field_benchmark(session_id: int | None = None,
+                    lap_ids: str | None = None,
+                    car_indexes: str | None = None,
+                    laps_per_rival: int = 3) -> str:
+    """Where the quicker cars find their time, corner by corner, against you.
+
+    For every turn of the session: your median through it and on the road
+    after it, the field's median, and `available_s` -- how much the field
+    is quicker there. Beside the times, the minimum and exit speeds and the
+    brake point in meters before turn-in, so each row says both what a
+    corner is worth and how the field takes it. `priorities` is the same
+    rows sorted by time available, biggest first: the coaching list.
+
+    `lap_ids` (comma-separated) are your laps; default the session's newest
+    clean ones. `car_indexes` (comma-separated) picks the field; default
+    every rival whose best lap, timed off their own trace, beats your best.
+    Each rival contributes their `laps_per_rival` quickest trace-timed laps
+    within 2% of their best, so one flyer does not stand for their pace.
+
+    Two limits of opponent data. Their positions reach us slightly late,
+    about 7 m at racing speed, so their brake points read up to that much
+    earlier than they were. And they are sampled at about 10 Hz, so a
+    minimum speed can read a couple of km/h high on a slow corner."""
+    sid = _active_session(session_id)
+    if sid is None:
+        return _j({"error": "no active session; pass session_id"})
+    if not db.get_session(_conn, sid):
+        return _j({"error": f"no session with id {sid}"})
+    length, _ = _track_length(sid)
+    if not length:
+        return _j({"error": f"session {sid} has no track length"})
+    named = _named_turns(sid)
+    if not named:
+        return _j({"error": f"session {sid} has no numbered turns yet"})
+
+    try:
+        mine_ids = [int(x) for x in _parse_numbers(lap_ids)]
+        wanted = [int(x) for x in _parse_numbers(car_indexes)]
+    except ValueError:
+        return _j({"error": "lap_ids and car_indexes are comma-separated "
+                            "integers"})
+    if not mine_ids:
+        mine_ids = [i for i in turns.newest_usable_lap_ids(
+                        _conn, sid, CORNER_MAP_LAPS)
+                    if not (db.get_lap(_conn, i) or {}).get("invalid")]
+    my_laps = [db.get_lap(_conn, i) for i in mine_ids]
+    my_laps = [l for l in my_laps if l and l["session_id"] == sid]
+    if not my_laps:
+        return _j({"error": f"no usable laps of yours in session {sid}"})
+    timed = [l["lap_time_ms"] for l in my_laps if l.get("lap_time_ms")]
+    if not timed:
+        return _j({"error": f"none of laps {[l['id'] for l in my_laps]} has "
+                            "a lap time to measure the field against; pass "
+                            "lap_ids of completed laps",
+                   "your_laps": [l["id"] for l in my_laps]})
+    my_best = min(timed)
+
+    names = db.rival_names(_conn, sid)
+    rivals = db.list_rivals(_conn, sid, limit=100)
+    if not rivals:
+        return _j({"error": f"no opponent data in session {sid}; the in-game "
+                            "app must be running to push it"})
+    if not wanted and not any(r.get("laps_timed_from_trace") for r in rivals):
+        # A session recorded before opponent samples carried the car's own
+        # clock has nothing to time a lap from. Saying "no rival quicker"
+        # there would claim the driver was the quickest car on track.
+        return _j({"error": "no rival lap in this session could be timed "
+                            "from its trace -- the opponent samples carry "
+                            "no clock (recorded before v14) or none was "
+                            "seen across the line twice; there is nothing "
+                            "to benchmark against",
+                   "your_best_ms": my_best})
+    if wanted:
+        field = [r for r in rivals if r["car_index"] in wanted]
+    else:
+        field = [r for r in rivals
+                 if r.get("laps_timed_from_trace")
+                 and r["best_lap_ms"] < my_best]
+    if not field:
+        return _j({"error": "no rival quicker than your best with trace-timed "
+                            "laps; pass car_indexes to choose the field",
+                   "your_best_ms": my_best})
+
+    rival_sets, used, brake_live = {}, [], True
+    for r in field:
+        laps = [l for l in db.well_covered_rival_laps(
+                    _conn, sid, r["car_index"],
+                    traced=r.get("trace_lap_times"))
+                if l.get("lap_time_source") == "trace"]
+        if not laps:
+            continue
+        best = laps[0]["lap_time_ms"]
+        laps = [l for l in laps if l["lap_time_ms"] <= best * 1.02]
+        laps = laps[:max(1, int(laps_per_rival))]
+        samples = [db.get_rival_lap_samples(_conn, sid, r["car_index"],
+                                            l["lap_count"]) for l in laps]
+        liveness = analysis._field_liveness(
+            [s for lap in samples for s in lap], "brake")
+        brake_live = brake_live and liveness["present"] and liveness["varies"]
+        rival_sets[r["car_index"]] = samples
+        used.append({"car_index": r["car_index"],
+                     "driver_name": names.get(r["car_index"]),
+                     "car_model": r.get("car_model"),
+                     "laps": [l["lap_count"] for l in laps],
+                     "lap_times_ms": [l["lap_time_ms"] for l in laps]})
+    if not rival_sets:
+        return _j({"error": "none of the chosen rivals has a trace-timed lap"})
+
+    mine = _per_turn_medians(
+        [_with_brake_distance(analysis.turn_metrics(
+            db.get_samples(_conn, l["id"]), "norm_pos", named), named)
+         for l in my_laps], length)
+    per_rival = {
+        ci: _per_turn_medians(
+            [_with_brake_distance(analysis.turn_metrics(
+                s, "spline", named, brake_live=brake_live), named)
+             for s in sets], length)
+        for ci, sets in rival_sets.items()}
+
+    rows = []
+    for t in named:
+        you = mine.get(t["turn"])
+        if not you:
+            continue
+        theirs = [p[t["turn"]] for p in per_rival.values()
+                  if t["turn"] in p]
+        field_m = {k: _median_or_none((x[k] for x in theirs), d)
+                   for k, d in _BENCH_DIGITS.items()}
+        if field_m["brake_before_turn_in_m"] is not None:
+            field_m["brake_before_turn_in_m"] = int(
+                field_m["brake_before_turn_in_m"])
+        row = {"turn": t["turn"], "you": you, "field": field_m}
+        # Through the turn and after it, each only where both sides have
+        # it: a stretch one side is missing would count its whole time as
+        # time available.
+        parts = [you[k] - field_m[k] for k in ("time_s", "after_s")
+                 if you[k] is not None and field_m[k] is not None]
+        if parts:
+            row["available_s"] = round(sum(parts), 3)
+        quickest = min(
+            ((ci, p[t["turn"]]["time_s"]) for ci, p in per_rival.items()
+             if t["turn"] in p and p[t["turn"]]["time_s"] is not None),
+            key=lambda x: x[1], default=None)
+        if quickest:
+            row["quickest_through"] = {"driver_name": names.get(quickest[0]),
+                                       "time_s": quickest[1]}
+        rows.append(row)
+
+    ranked = sorted((r for r in rows if r.get("available_s") is not None),
+                    key=lambda r: -r["available_s"])
+    out = {
+        "session_id": sid,
+        "your_laps": [l["id"] for l in my_laps],
+        "your_best_ms": my_best,
+        "field": used,
+        "turns": rows,
+        "priorities": [{"turn": r["turn"], "available_s": r["available_s"]}
+                       for r in ranked[:6] if r["available_s"] > 0],
+        "your_strengths": [{"turn": r["turn"],
+                            "available_s": r["available_s"]}
+                           for r in ranked[::-1][:3]
+                           if r["available_s"] < 0],
+        "total_available_s": round(sum(r["available_s"] for r in ranked), 2),
+        "note": "times are through the turn (turn-in to exit) plus the road "
+                "after it to the next turn-in, the last turn's running "
+                "across the line to the first, medians over laps; "
+                "total_available_s is their sum, the whole lap where every "
+                "stretch was timed on both sides; "
+                "available_s positive where the field is quicker. Brake "
+                "points are meters before turn-in; the field's read up to "
+                "about 7 m early because opponent positions arrive late.",
+    }
+    if not brake_live:
+        out["brake_note"] = ("this server does not send remote pedal inputs, "
+                             "so the field has no brake points")
+    return _j(_placed(out, sid, named, named=True))
 
 
 @mcp.tool()

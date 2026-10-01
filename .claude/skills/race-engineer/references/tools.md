@@ -245,8 +245,10 @@ points when the server transmits them (`rival_input_fields` says which
 are live). `rival_lap_count` is required by this client: take it from
 `list_rivals`' well-covered laps, quickest first. `time_by_turn` is the
 part to quote: seconds through each turn and on the road after it, with
-`where_they_gain` and `where_you_gain`. It adds up to the lap difference
-within a few hundredths.
+`where_they_gain` and `where_you_gain`. The road after the last turn
+runs across the line to the first turn-in, so the rows cover the whole lap
+and add up to the lap difference within a few hundredths; a stretch either
+lap's trace did not cover is left out, and the sum falls short by it.
 
 **`field_benchmark(session_id, lap_ids, car_indexes, laps_per_rival)`** --
 the coaching list. Per turn: your median time through it and on the road

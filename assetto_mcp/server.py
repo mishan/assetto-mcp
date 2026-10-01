@@ -10,23 +10,42 @@ Environment:
 
 The ASSETTO_MCP_* variables were spelled AC_ENGINEER_* before the rename and
 are still read under both names; see config.py.
+
+Run as a script, this hands straight off to supervisor.py, which runs the
+real server as a child process so that restart_server can replace it
+without the client noticing. ASSETTO_MCP_NO_SUPERVISOR=1 skips that and
+runs the server in this process, as it always used to.
 """
 
-import json
-import math
 import os
-import re
-import statistics
-from pathlib import Path
+import sys
+
+# Before anything heavy is imported. The supervisor is the long-lived
+# process and should cost nothing to keep around: importing mcp, opening the
+# database and starting the collector here would do all of that twice, in a
+# process that never uses any of it.
+if (__name__ == "__main__" and not os.environ.get("ASSETTO_MCP_CHILD")
+        and not os.environ.get("ASSETTO_MCP_NO_SUPERVISOR")):
+    from assetto_mcp import supervisor
+    sys.exit(supervisor.run())
+
+import json  # noqa: E402
+import math  # noqa: E402
+import re  # noqa: E402
+import statistics  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 try:  # mcp SDK 2.x
     from mcp.server.mcpserver import MCPServer as FastMCP
 except ImportError:  # mcp SDK 1.x
     from mcp.server.fastmcp import FastMCP
 
-from . import analysis, config, db, line_map, retention, setups, suspension
-from . import circuit, places, turns
-from .collector import Collector
+from . import analysis, config, db, line_map, retention  # noqa: E402
+from . import circuit, places, setups, supervisor, suspension  # noqa: E402
+from . import turns  # noqa: E402
+from .collector import Collector  # noqa: E402
 
 AC_DOCS_DIR = Path(os.environ.get(
     "AC_DOCS_DIR", Path.home() / "Documents" / "Assetto Corsa"))
@@ -2700,6 +2719,101 @@ def bridge_status() -> str:
                "pending_message": _bridge.get_message() if _bridge else None})
 
 
+# --- the server itself -------------------------------------------------
+
+# Long enough for the tool's own reply to be written and flushed to the
+# client before the process goes; the SDK flushes every message, so this
+# is scheduling slack rather than a guess about I/O.
+RESTART_DELAY = 0.5
+
+
+def _shutdown() -> None:
+    """Stop the threads that hold things another process will want.
+
+    The collector hands back the recorder claim as it stops, so the next
+    server -- this one's replacement, or another chat's instance -- takes
+    over at once instead of after the claim goes stale. The bridge closes
+    its listening socket rather than leaving it to the OS.
+    """
+    for stop in (_collector.stop, _bridge.stop, _conn.close):
+        try:
+            stop()
+        except Exception:      # noqa: BLE001 - on the way out regardless
+            pass
+
+
+def _restart_soon() -> None:
+    def go():
+        time.sleep(RESTART_DELAY)
+        _shutdown()
+        try:
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            pass
+        # _exit, not exit: SystemExit from a thread ends only that thread,
+        # and the MCP loop on the main thread would carry on reading stdin.
+        os._exit(supervisor.RESTART_EXIT_CODE)
+    threading.Thread(target=go, daemon=True).start()
+
+
+@mcp.tool()
+def restart_server(force: bool = False) -> str:
+    """Restart this MCP server in place, to pick up new code.
+
+    Use this instead of asking the driver to quit and reopen their client
+    -- after an update, or when a tool is missing a field the code on disk
+    already has. The connection stays open: the process behind it is
+    replaced, the client is told the tool list may have changed, and every
+    tool keeps working. Ask the driver first, and never mid-lap.
+
+    It refuses in two cases. Not supervised: the server was started in a
+    way that cannot be restarted from inside, and the only route is for the
+    driver to fully quit the client and reopen it -- say so. Recording: this
+    instance is recording a live session, and a restart loses the lap in
+    progress. Wait until the driver is in the pits menu or between
+    sessions, or ask them. `force` overrides that, and only the driver
+    saying so is a reason to set it.
+
+    After a restart, an open session continues under a new session id, so
+    tag it again with set_session_setup. The in-game app reconnects on its
+    own, but on Windows the bridge can take a minute or more to get its
+    port back."""
+    if not os.environ.get(supervisor.CHILD_ENV):
+        return _j({
+            "restarting": False, "refused": "not_supervised",
+            "error": "this server was not started under the supervisor "
+                     "(ASSETTO_MCP_NO_SUPERVISOR, or an older client "
+                     "config), so it cannot restart itself",
+            "ask_the_driver": "to fully quit the client and reopen it -- for "
+                              "Claude Desktop, Quit from the tray icon, not "
+                              "just closing the window"})
+    recording = (_collector.holds_recorder
+                 and _collector.session_id is not None and _collector.live)
+    if recording and not force:
+        return _j({
+            "restarting": False, "refused": "recording",
+            "session_id": _collector.session_id,
+            "error": "this instance is recording a live session; a restart "
+                     "now loses the lap in progress and starts a new "
+                     "session id",
+            "do_this": "wait until the car is back in the menus or the "
+                       "session has ended, then call again",
+            "ask_the_driver": "whether to restart anyway, mid-session"})
+    _restart_soon()
+    out = {"restarting": True,
+           "note": "a fresh server process is starting behind this "
+                   "connection; give it a few seconds before the next call. "
+                   "The in-game app reconnects on its own, but on Windows "
+                   "the bridge may take a while to get its port back -- "
+                   "bridge_status says when it has."}
+    if _collector.session_id is not None:
+        out["session_note"] = ("recording resumes under a new session id; "
+                               "tag it with set_session_setup again")
+    if recording:
+        out["forced"] = "the lap in progress is lost"
+    return _j(out)
+
+
 # --- setups ------------------------------------------------------------
 
 
@@ -2806,7 +2920,14 @@ def write_setup(car: str, track: str, name: str, values_json: str,
 
 
 def main():
-    mcp.run()
+    try:
+        mcp.run()
+    finally:
+        # The client closed stdin, or the process is being told to stop.
+        # Either way, give the recorder claim and the bridge port back now,
+        # not when the OS gets round to it: on Windows a socket left to the
+        # OS is what makes the next server's bind wait.
+        _shutdown()
 
 
 if __name__ == "__main__":

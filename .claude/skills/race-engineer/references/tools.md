@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Thirty-nine tools. They fall into eight groups. For each: what to pass,
+Forty tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the trap that has already caught someone.
 Pass every parameter explicitly, including nulls: the schemas this client
 exposes have turned optional parameters into required ones between updates,
@@ -17,6 +17,7 @@ skipping the call.
 6. Opponents and contacts
 7. Setup files and the setup screen
 8. The driver's side: notes, messages, the bridge
+9. The server itself
 
 ---
 
@@ -328,6 +329,20 @@ during a session.
 **`bridge_status()`** -- whether the in-game app is connected. Without it:
 no opponents, no suspension, no setup-screen values, no messages.
 
+## 9. The server itself
+
+**`restart_server(force)`** -- replaces the server process behind the same
+connection, so new code on disk takes effect without the driver quitting
+the client. Use it instead of asking them to restart; ask them first, and
+never mid-lap. Refuses with `refused: "recording"` while this instance is
+recording a live session -- wait for the menus, or ask; `force` is only
+for when the driver has said yes. `refused: "not_supervised"` means the
+server cannot restart itself, and then the driver does have to fully quit
+and reopen the client. Afterwards: give it a few seconds, an open session
+continues under a new session id (tag it again), and `bridge_status` may
+show the port retrying for a minute or more on Windows while the in-game
+app waits to reconnect.
+
 ## Outside the tools
 
 - `scripts/watch_laps.py --session N --interval 3` -- one line per stored
@@ -343,7 +358,8 @@ no opponents, no suspension, no setup-screen values, no messages.
 - `scripts/relabel_laps.py` -- the only way to overwrite a setup label.
 - The running server can predate the repository's code: a field this
   file describes (`contacts_inferred`, say) may be missing from a tool's
-  reply until the server restarts. The analysis lives in
+  reply until the server restarts -- `restart_server`, between sessions
+  and with the driver's say-so, fixes that. The analysis lives in
   `assetto_mcp/analysis.py` and can be called from a script against the
   read-only database (`db.get_lap`, `db.get_samples`,
   `db.rival_samples_between`, `db.rival_names`, `analysis.infer_contacts`).

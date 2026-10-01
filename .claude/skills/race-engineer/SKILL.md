@@ -125,6 +125,11 @@ optional last week can be required this week (`session_id`, `points`,
 null ones, and when a call is refused for a missing parameter, add it rather
 than dropping the call.
 
+When the running server is older than the code on disk -- a field the
+references describe is missing, or the code was just updated -- call
+`restart_server` rather than asking the driver to quit and reopen the
+client. Ask the driver first, and never while they are on a lap.
+
 ## The live loop
 
 A lap lands. In one round of calls: `lap_summary` for it, `live_snapshot`

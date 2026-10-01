@@ -343,6 +343,11 @@ if (-not $cmd) {
         $stderr = [System.IO.Path]::GetTempFileName()
         $prevPort = $env:ASSETTO_MCP_BRIDGE_PORT
         $env:ASSETTO_MCP_BRIDGE_PORT = "$testPort"
+        # The server itself, not the supervisor in front of it: a supervisor
+        # retrying a server that dies on import is "still running after 2s"
+        # too, and would pass a broken install.
+        $prevNoSup = $env:ASSETTO_MCP_NO_SUPERVISOR
+        $env:ASSETTO_MCP_NO_SUPERVISOR = "1"
         try {
             # -ArgumentList rejects an empty array, so only pass it when there is one.
             if ($cargs.Count -gt 0) {
@@ -363,6 +368,7 @@ if (-not $cmd) {
             L "!! could not launch: $($_.Exception.Message)"
         } finally {
             $env:ASSETTO_MCP_BRIDGE_PORT = $prevPort
+            $env:ASSETTO_MCP_NO_SUPERVISOR = $prevNoSup
         }
         Start-Sleep -Milliseconds 300   # let the handles flush before reading
 

@@ -13,6 +13,7 @@ are still read under both names; see config.py.
 """
 
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -203,7 +204,8 @@ def _circuit_sections(session_id: int) -> tuple[list[dict], str | None]:
 
 
 def _placed(payload: dict, session_id: int | None,
-            turns: list[dict] | None = None) -> dict:
+            turns: list[dict] | None = None, *,
+            named: bool = False) -> dict:
     """The payload with meters and a `where` beside every lap position.
 
     `turns` is whatever numbering the payload's own labels came from --
@@ -211,6 +213,8 @@ def _placed(payload: dict, session_id: int | None,
     `where` naming the session's T5 beside a corner the comparison calls
     T4 would contradict the payload it sits in. Without one, the session's
     numbering is used, the same one lap_summary labels corners with.
+    `named` says the turns already carry their circuit names, so they are
+    not matched to the sections a second time.
     """
     if (not isinstance(payload, dict) or "error" in payload
             or session_id is None):
@@ -220,7 +224,8 @@ def _placed(payload: dict, session_id: int | None,
         return payload
     if turns is None:
         turns = _session_corner_map(session_id)["turns"]
-    turns = circuit.name_turns(turns, _circuit_sections(session_id)[0])
+    if not named:
+        turns = circuit.name_turns(turns, _circuit_sections(session_id)[0])
     out = places.place(payload, length, turns)
     out["track_length"] = {"m": round(length), "source": source}
     return out
@@ -1231,16 +1236,14 @@ def track_corners(session_id: int | None = None) -> str:
             ref["reference"], ref["laps"], spread_g=ref["spread_g"],
             shared_basis="the laps these turn numbers were built from")
     sections, source = _circuit_sections(sid)
+    named, owner = circuit.claim(cmap["turns"], sections)
     if sections:
-        named = circuit.name_turns(cmap["turns"], sections)
         out["circuit_names"] = {
             "source": source,
             "sections": [
-                {**s, "turns": [t["turn"] for t in named
-                                if t.get("name") == s["name"]
-                                or t.get("name", "").startswith(
-                                    s["name"] + " (")]}
-                for s in sections],
+                {**s, "turns": [t["turn"] for t, j in zip(named, owner)
+                                if j == k]}
+                for k, s in enumerate(sections)],
             "note": "names from the track's own sections.ini; each turn "
                     "carries `name` beside its session number. A section "
                     "with no turns is one the detector never saw, usually "
@@ -1265,13 +1268,45 @@ def track_corners(session_id: int | None = None) -> str:
             if not cmap["basis_lap_ids"] else
             f"none of the {len(cmap['basis_lap_ids'])} lap(s) read carried "
             f"enough cornering load to detect a corner on")
-    return _j(_placed(out, sid, cmap["turns"]))
+    return _j(_placed(out, sid, named, named=True))
+
+
+# A number written with thousands separators, "3,335": one to three digits,
+# then comma-and-three-digit groups with no space anywhere. Split on the
+# commas it reads as 3 m and 335 m, two confident places neither of which
+# was meant, so it is refused rather than guessed at. "3335, 3520" and
+# "3320,3335" are still lists.
+_THOUSANDS = re.compile(r"(?:^|[\s,])\d{1,3}(?:,\d{3})+(?=$|[\s,])")
 
 
 def _parse_numbers(text: str | None) -> list[float]:
+    """Comma- or space-separated finite numbers.
+
+    The ValueError raised says what is wrong, in words fit to return.
+    """
     if text is None or str(text).strip() == "":
         return []
-    return [float(x) for x in re.split(r"[,\s]+", str(text).strip()) if x]
+    text = str(text).strip()
+    if _THOUSANDS.search(text):
+        raise ValueError(
+            f"{text!r} could be one number with thousands separators or "
+            f"several positions; write numbers without separators (3335, "
+            f"not 3,335) and separate positions with a space or \", \" "
+            f"(\"500, 750\")")
+    out = []
+    for x in re.split(r"[,\s]+", text):
+        if not x:
+            continue
+        try:
+            v = float(x)
+        except ValueError:
+            raise ValueError(
+                "meters and fractions are comma-separated numbers, e.g. "
+                "meters=\"3335,3520\"") from None
+        if not math.isfinite(v):
+            raise ValueError(f"{x!r} is not a position on the lap")
+        out.append(v)
+    return out
 
 
 @mcp.tool()
@@ -1287,7 +1322,9 @@ def locate(meters: str | None = None, fractions: str | None = None,
 
     `meters` is a comma-separated list of distances past the start/finish
     line; `fractions` a comma-separated list of lap fractions (0-1,
-    `norm_pos` / `spline`). Either or both. Corners are called by the
+    `norm_pos` / `spline`). Either or both. Write meters without
+    thousands separators: "3,335" is refused, since the comma would split
+    it into two positions. Corners are called by the
     circuit's own names where the track ships a sections.ini, otherwise by
     this session's turn numbers."""
     sid = _active_session(session_id)
@@ -1297,9 +1334,8 @@ def locate(meters: str | None = None, fractions: str | None = None,
         return _j({"error": f"no session with id {sid}"})
     try:
         ms, fs = _parse_numbers(meters), _parse_numbers(fractions)
-    except ValueError:
-        return _j({"error": "meters and fractions are comma-separated "
-                            "numbers, e.g. meters=\"3335,3520\""})
+    except ValueError as e:
+        return _j({"error": str(e)})
     if not ms and not fs:
         return _j({"error": "pass meters or fractions"})
     length, _ = _track_length(sid)

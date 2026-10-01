@@ -133,7 +133,10 @@ with the tool that produced it, and prefer the circuit `name` or the
 driver's own name for a corner when the labels disagree. Each turn carries
 `name` when the track ships a sections.ini, and `circuit_names` lists every
 named section with the session turns inside it; a named section with no
-turns is a kink the detector never saw.
+turns is a kink the detector never saw. The comparisons carry apexes only,
+so they name a corner by the section its apex is in or just beside: a
+corner whose apex sits near a section boundary can come back with no
+`name` there, or a different one from `track_corners`.
 
 **`locate(meters, fractions, session_id)`** -- any position you found
 outside the tools (a script over `samples`, a rival trace) said the way the

@@ -16,8 +16,9 @@ track-description overlay reads it:
 
 IN and OUT are lap fractions on AC's own spline, the same coordinate as
 `normalizedCarPosition`, so a detected corner is named by which section its
-apex falls in. No alignment, no other sim's spline. Where the file is
-missing the turns keep their session numbers and nothing else changes.
+approach and apex lie in. No alignment, no other sim's spline. Where the
+file is missing the turns keep their session numbers and nothing else
+changes.
 """
 
 from __future__ import annotations
@@ -56,7 +57,11 @@ def _steam_libraries() -> list[Path]:
     """Every Steam library folder, from each Steam install's own list.
 
     libraryfolders.vdf names the libraries on other drives; AC is as likely
-    to be on D: as under Program Files.
+    to be on D: as under Program Files. Current Steam writes each library
+    as a block with a "path" key; an older install's file can still hold
+    the flat form, `"1" "D:\\SteamLibrary"`. The new form's "apps" block
+    also pairs numeric keys with strings (app id to size), so a flat-form
+    value only counts when it looks like a path.
     """
     libs = []
     for root in _steam_roots():
@@ -67,7 +72,10 @@ def _steam_libraries() -> list[Path]:
             text = vdf.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for raw in re.findall(r'"path"\s+"([^"]+)"', text):
+        raws = re.findall(r'"path"\s+"([^"]+)"', text)
+        raws += [v for v in re.findall(r'^\s*"\d+"\s+"([^"]+)"', text, re.M)
+                 if "\\" in v or "/" in v]
+        for raw in raws:
             libs.append(Path(raw.replace("\\\\", "\\")))
     seen, out = set(), []
     for lib in libs:
@@ -78,16 +86,15 @@ def _steam_libraries() -> list[Path]:
     return out
 
 
-def ac_root() -> Path | None:
-    """The Assetto Corsa install folder, or None if it cannot be found.
+@lru_cache(maxsize=1)
+def _steam_ac_root() -> Path | None:
+    """AC's folder in whichever Steam library holds it, searched once.
 
-    ASSETTO_MCP_AC_ROOT wins when set. Otherwise every Steam library is
-    searched for steamapps/common/assettocorsa.
+    Every tool that places a position asks for the track's sections, so the
+    search -- several Steam installs, a vdf each, a stat per library -- would
+    otherwise run on every call. An install moved while the server runs is
+    found again after a restart, or straight away with ASSETTO_MCP_AC_ROOT.
     """
-    explicit = env("AC_ROOT")
-    if explicit:
-        path = Path(explicit)
-        return path if path.is_dir() else None
     for lib in _steam_libraries():
         path = lib / "steamapps" / "common" / "assettocorsa"
         if (path / "content" / "tracks").is_dir():
@@ -95,27 +102,57 @@ def ac_root() -> Path | None:
     return None
 
 
+def ac_root() -> Path | None:
+    """The Assetto Corsa install folder, or None if it cannot be found.
+
+    ASSETTO_MCP_AC_ROOT wins when set, and is read on every call rather
+    than cached, so changing it takes effect at once. Otherwise every Steam
+    library is searched for steamapps/common/assettocorsa, once
+    (`_steam_ac_root.cache_clear()` forgets the answer).
+    """
+    explicit = env("AC_ROOT")
+    if explicit:
+        path = Path(explicit)
+        return path if path.is_dir() else None
+    return _steam_ac_root()
+
+
 def sections_path(track: str | None, layout: str | None) -> Path | None:
-    """The track's sections.ini, for its layout when it has several."""
+    """The track's sections.ini, for its layout when it has several.
+
+    A layout without its own file has no names, even when the track folder
+    holds one: a multi-layout track's root data/ belongs to no layout in
+    particular, and its fractions laid over a different layout's spline
+    would name corners confidently and wrongly. Only a track with no
+    layouts reads its root data/.
+    """
     root = ac_root()
     if root is None or not track:
         return None
     base = root / "content" / "tracks" / track
-    candidates = ([base / layout / "data" / "sections.ini"] if layout
-                  else []) + [base / "data" / "sections.ini"]
-    return next((p for p in candidates if p.is_file()), None)
+    path = (base / layout if layout else base) / "data" / "sections.ini"
+    return path if path.is_file() else None
 
 
 def read_sections(path: Path) -> list[dict]:
     """The named sections of one sections.ini, in lap order.
 
     A section missing IN, OUT or TEXT, or with positions outside the lap,
-    is skipped rather than guessed at.
+    is skipped rather than guessed at. The files are written by hand in
+    Notepad as often as not, so a byte-order mark, an inline "; comment"
+    or one stray line with no "=" is read past rather than costing every
+    other name: configparser keeps the sections it did parse and only
+    raises at the end.
     """
-    parser = configparser.ConfigParser(strict=False, interpolation=None)
+    parser = configparser.ConfigParser(strict=False, interpolation=None,
+                                       inline_comment_prefixes=(";", "#"))
     try:
-        parser.read_string(path.read_text(encoding="utf-8",
+        parser.read_string(path.read_text(encoding="utf-8-sig",
                                           errors="replace"))
+    except configparser.MissingSectionHeaderError:
+        return []
+    except configparser.ParsingError:
+        pass
     except (OSError, configparser.Error):
         return []
     out = []
@@ -171,9 +208,9 @@ def _span(lo: float, hi: float) -> list[tuple[float, float]]:
     return [(lo, hi)] if lo <= hi else [(lo, 1.0), (0.0, hi)]
 
 
-def _overlap(t: dict, section: dict) -> float:
-    """How much of a turn, turn-in to exit, lies inside a section."""
-    a = _span(t["entry_pos"] % 1.0, t["exit_pos"] % 1.0)
+def _overlap(lo: float, hi: float, section: dict) -> float:
+    """How much of the stretch lo to hi lies inside a section."""
+    a = _span(lo % 1.0, hi % 1.0)
     b = _span(section["in_pos"], section["out_pos"])
     return sum(max(0.0, min(h1, h2) - max(l1, l2))
                for l1, h1 in a for l2, h2 in b)
@@ -186,25 +223,79 @@ def _is_num(v) -> bool:
 def _section_for(t: dict, sections: list[dict]) -> int | None:
     """Which section names a turn, or None.
 
-    By overlap of the turn's own stretch of road, turn-in to exit, when the
-    turn has one: the apex alone is the lateral-g peak, which on a corner
-    run wide or taken in two bites can sit in the next section along.
-    Road Atlanta's 10A read as 10B by its median apex, because two laps of
-    the five went straight on there. A turn with no span -- the apex-only
-    lists compare_laps and compare_runs carry -- falls back to the section
-    its apex is in or nearest to, within NAME_SLACK.
+    By overlap of the turn's approach -- turn-in to apex -- when the turn
+    has a turn-in: that is the stretch a driver means by a corner's name.
+    The apex alone is the lateral-g peak, which on a corner run wide or
+    taken in two bites can sit in the next section along: Road Atlanta's
+    10A read as 10B by its median apex, because two laps of the five went
+    straight on there. The exit is left out because it runs on into
+    whatever follows, and counting it named a turn whose apex sat in Turn 3
+    after the Esses that its exit ran into, and named a flat kink "Turn 4"
+    for the few meters its exit shared with Turn 4's entry.
+
+    A section only names a turn whose apex is in it or within NAME_SLACK
+    of it, or that holds at least half the approach, so a section the
+    approach merely clips does not. Among those, the one holding the apex
+    wins, then the one holding the most of the approach. A turn with no
+    approach -- the apex-only lists compare_laps and compare_runs carry --
+    falls back to the section its apex is in or nearest to, within
+    NAME_SLACK.
     """
-    if _is_num(t.get("entry_pos")) and _is_num(t.get("exit_pos")):
-        scores = [_overlap(t, s) for s in sections]
-        best = max(range(len(sections)), key=lambda j: scores[j])
-        if scores[best] > 0:
-            return best
     apex = t.get("apex_pos")
     if not _is_num(apex):
         return None
+    apex %= 1.0
+    entry = t.get("entry_pos")
+    if _is_num(entry):
+        approach = (apex - entry) % 1.0
+        best, best_key = None, None
+        for j, s in enumerate(sections):
+            ov = _overlap(entry, apex, s)
+            if ov <= 0:
+                continue
+            d = _distance(apex, s)
+            if d > NAME_SLACK and ov < approach / 2:
+                continue
+            key = (d == 0.0, ov)
+            if best_key is None or key > best_key:
+                best, best_key = j, key
+        if best is not None:
+            return best
     best = min(range(len(sections)),
-               key=lambda j: _distance(apex % 1.0, sections[j]))
-    return best if _distance(apex % 1.0, sections[best]) <= NAME_SLACK else None
+               key=lambda j: _distance(apex, sections[j]))
+    return best if _distance(apex, sections[best]) <= NAME_SLACK else None
+
+
+def claim(turns: list[dict],
+          sections: list[dict]) -> tuple[list[dict], list[int | None]]:
+    """The turns named (as name_turns), and which section claimed each.
+
+    The index is what track_corners lists a section's turns by. Matching
+    by the name instead goes wrong twice over: two sections can share a
+    name, and a section called "Turn 1" would claim "Turn 1 (La Source)".
+    """
+    out = [dict(t) for t in turns]
+    if not sections:
+        return out, [None] * len(out)
+    owner = [_section_for(t, sections) for t in out]
+    # Sections sharing a name are one name to a driver, so their turns are
+    # numbered together, in lap order: by the section's place in the lap,
+    # then by how far past its IN the apex is, which keeps a section across
+    # the start/finish line in order where the raw position would not.
+    by_name: dict[str, list[int]] = {}
+    for i, j in enumerate(owner):
+        if j is not None:
+            by_name.setdefault(sections[j]["name"], []).append(i)
+    for name, idxs in by_name.items():
+        idxs.sort(key=lambda i: (
+            sections[owner[i]]["in_pos"], owner[i],
+            (out[i]["apex_pos"] - sections[owner[i]]["in_pos"]) % 1.0))
+        for k, i in enumerate(idxs):
+            label = name
+            if len(idxs) > 1:
+                label += f" ({ORDINALS[k] if k < len(ORDINALS) else k + 1})"
+            out[i]["name"] = label
+    return out, owner
 
 
 def name_turns(turns: list[dict], sections: list[dict]) -> list[dict]:
@@ -214,21 +305,8 @@ def name_turns(turns: list[dict], sections: list[dict]) -> list[dict]:
     than one turn inside one named section -- the Esses, a double-apex
     corner -- each gets the name with its order, "Turn 5 (2nd)", because a
     driver has to be able to tell the two apart and "Turn 5" twice would
-    not.
+    not. Two sections with the same name, a circuit with two "Chicane"s,
+    are numbered as one: their turns run "Chicane (1st)" to "Chicane
+    (4th)" in lap order, so no two turns share a name.
     """
-    out = [dict(t) for t in turns]
-    if not sections:
-        return out
-    claimed: dict[int, list[int]] = {}
-    for i, t in enumerate(out):
-        j = _section_for(t, sections)
-        if j is not None:
-            claimed.setdefault(j, []).append(i)
-    for j, idxs in claimed.items():
-        idxs.sort(key=lambda i: out[i]["apex_pos"])
-        for k, i in enumerate(idxs):
-            name = sections[j]["name"]
-            if len(idxs) > 1:
-                name += f" ({ORDINALS[k] if k < len(ORDINALS) else k + 1})"
-            out[i]["name"] = name
-    return out
+    return claim(turns, sections)[0]

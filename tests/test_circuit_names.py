@@ -65,19 +65,20 @@ TURNS = [
 ]
 
 
-def _fake_install(tmp: Path, track="jr_road_atlanta_2022", layout="full"):
+def _fake_install(tmp: Path, track="jr_road_atlanta_2022", layout="full",
+                  ini=SECTIONS_INI):
     data = tmp / "content" / "tracks" / track / layout / "data"
     data.mkdir(parents=True)
-    (data / "sections.ini").write_text(SECTIONS_INI, encoding="utf-8")
+    (data / "sections.ini").write_text(ini, encoding="utf-8")
     return tmp
 
 
 class _AcRoot:
     """Point ASSETTO_MCP_AC_ROOT at a fake install for one test."""
 
-    def __init__(self):
+    def __init__(self, ini=SECTIONS_INI):
         self.dir = Path(tempfile.mkdtemp(prefix="ac-root-"))
-        _fake_install(self.dir)
+        _fake_install(self.dir, ini=ini)
 
     def __enter__(self):
         self.old = os.environ.get("ASSETTO_MCP_AC_ROOT")
@@ -166,6 +167,136 @@ def test_place_puts_the_name_beside_the_session_number():
     assert out["corners"][0]["turn"] == "T12", out
 
 
+def test_a_turn_is_named_where_its_apex_is_not_where_its_exit_runs():
+    """Its exit runs well into the Esses; the corner is still Turn 3."""
+    secs = [{"name": "Turn 3", "in_pos": 0.18, "out_pos": 0.20},
+            {"name": "Esses", "in_pos": 0.20, "out_pos": 0.30}]
+    turns = [{"turn": "T3", "entry_pos": 0.185, "apex_pos": 0.195,
+              "exit_pos": 0.23}]
+    assert circuit.name_turns(turns, secs)[0]["name"] == "Turn 3"
+
+
+def test_a_flat_kink_does_not_take_the_next_corners_name():
+    """Its exit touches Turn 4's IN; that does not make it Turn 4."""
+    secs = [{"name": "Turn 4", "in_pos": 0.30, "out_pos": 0.33}]
+    turns = [{"turn": "T4", "entry_pos": 0.27, "apex_pos": 0.285,
+              "exit_pos": 0.301},
+             {"turn": "T5", "entry_pos": 0.303, "apex_pos": 0.315,
+              "exit_pos": 0.328}]
+    named = {t["turn"]: t.get("name") for t in circuit.name_turns(turns, secs)}
+    assert named == {"T4": None, "T5": "Turn 4"}, named
+
+
+def test_order_in_a_section_across_the_line_runs_from_its_in():
+    secs = [{"name": "Turn 12", "in_pos": 0.97, "out_pos": 0.03}]
+    turns = [{"turn": "T1", "entry_pos": 0.005, "apex_pos": 0.01,
+              "exit_pos": 0.02},
+             {"turn": "T15", "entry_pos": 0.972, "apex_pos": 0.98,
+              "exit_pos": 0.99}]
+    named = {t["turn"]: t["name"] for t in circuit.name_turns(turns, secs)}
+    assert named == {"T15": "Turn 12 (1st)", "T1": "Turn 12 (2nd)"}, named
+
+
+def test_two_sections_with_one_name_number_their_turns_together():
+    secs = [{"name": "Chicane", "in_pos": 0.20, "out_pos": 0.25},
+            {"name": "Turn 5", "in_pos": 0.40, "out_pos": 0.45},
+            {"name": "Chicane", "in_pos": 0.60, "out_pos": 0.65}]
+    turns = [{"turn": "T2", "apex_pos": 0.22},
+             {"turn": "T4", "apex_pos": 0.42},
+             {"turn": "T6", "apex_pos": 0.62}]
+    named, owner = circuit.claim(turns, secs)
+    assert [t["name"] for t in named] == [
+        "Chicane (1st)", "Turn 5", "Chicane (2nd)"], named
+    assert owner == [0, 1, 2], owner
+    assert all("name" not in t for t in turns), "the input is not changed"
+
+
+def test_a_layout_without_its_own_file_does_not_borrow_the_roots():
+    """The root data/ is another layout's spline; its names would be wrong."""
+    with _AcRoot() as root:
+        track = root / "content" / "tracks" / "jr_road_atlanta_2022"
+        (track / "data").mkdir()
+        (track / "data" / "sections.ini").write_text(SECTIONS_INI,
+                                                     encoding="utf-8")
+        (track / "short").mkdir()
+        assert circuit.sections_for("jr_road_atlanta_2022", "short") == \
+            ([], None)
+        secs, source = circuit.sections_for("jr_road_atlanta_2022", "")
+    assert len(secs) == 4 and source, (secs, source)
+
+
+def _write(text: str, encoding="utf-8") -> Path:
+    path = Path(tempfile.mkdtemp(prefix="ac-sections-")) / "sections.ini"
+    path.write_text(text, encoding=encoding)
+    return path
+
+
+def _read(text: str, encoding="utf-8") -> list[str]:
+    return [s["name"] for s in circuit.read_sections(_write(text, encoding))]
+
+
+def test_a_byte_order_mark_does_not_cost_the_names():
+    """Notepad saves "UTF-8" with one, and it sits before the first [."""
+    names = _read(SECTIONS_INI, encoding="utf-8-sig")
+    assert names == ["Turn 1", "The Esses", "Turn 10A", "Turn 10B"], names
+
+
+def test_one_stray_line_does_not_cost_the_other_names():
+    ini = SECTIONS_INI.replace("TEXT=Turn 10A\n", "TEXT=Turn 10A\noops\n")
+    names = _read(ini)
+    assert names == ["Turn 1", "The Esses", "Turn 10A", "Turn 10B"], names
+
+
+def test_an_inline_comment_is_not_part_of_the_name_or_position():
+    ini = SECTIONS_INI.replace("TEXT=Turn 1\n", "TEXT=Turn 1 ; La Source\n")
+    ini = ini.replace("OUT=0.130\n", "OUT=0.130 # checked\n")
+    secs = circuit.read_sections(_write(ini))
+    assert secs[0] == {"name": "Turn 1", "in_pos": 0.075,
+                       "out_pos": 0.130}, secs[0]
+
+
+def test_steam_libraries_are_read_from_either_vdf_form():
+    steam = Path(tempfile.mkdtemp(prefix="steam-"))
+    (steam / "steamapps").mkdir()
+    (steam / "steamapps" / "libraryfolders.vdf").write_text(
+        '"LibraryFolders"\n{\n'
+        '\t"TimeNextStatsReport"\t\t"1600000000"\n'
+        '\t"ContentStatsID"\t\t"-123"\n'
+        '\t"1"\t\t"D:\\\\SteamLibrary"\n'
+        '\t"2"\t\t"/mnt/games/steam"\n'
+        '\t"3"\n\t{\n\t\t"path"\t\t"E:\\\\Games"\n'
+        '\t\t"apps"\n\t\t{\n\t\t\t"244210"\t\t"12345678"\n\t\t}\n\t}\n'
+        '}\n', encoding="utf-8")
+    real = circuit._steam_roots
+    circuit._steam_roots = lambda: [steam]
+    try:
+        libs = [str(p) for p in circuit._steam_libraries()]
+    finally:
+        circuit._steam_roots = real
+    assert libs == [str(steam), str(Path("E:\\Games")),
+                    str(Path("D:\\SteamLibrary")),
+                    str(Path("/mnt/games/steam"))], libs
+
+
+def test_the_steam_search_runs_once_and_the_variable_always_wins():
+    calls = []
+    real = circuit._steam_libraries
+    circuit._steam_libraries = lambda: calls.append(1) or []
+    old = os.environ.pop("ASSETTO_MCP_AC_ROOT", None)
+    circuit._steam_ac_root.cache_clear()
+    try:
+        assert circuit.ac_root() is None
+        assert circuit.ac_root() is None
+        assert len(calls) == 1, calls
+        with _AcRoot() as root:
+            assert circuit.ac_root() == root
+    finally:
+        circuit._steam_libraries = real
+        circuit._steam_ac_root.cache_clear()
+        if old is not None:
+            os.environ["ASSETTO_MCP_AC_ROOT"] = old
+
+
 # --- the tools -------------------------------------------------------------
 
 _SERVER = None
@@ -225,6 +356,30 @@ def test_locate_refuses_what_is_not_a_position():
     assert "error" in json.loads(srv.locate(session_id=sid))
     assert "error" in json.loads(srv.locate(meters="far", session_id=sid))
     assert "error" in json.loads(srv.locate(fractions="1.5", session_id=sid))
+    for bad in ("nan", "inf", "-inf", "3320,nan"):
+        out = json.loads(srv.locate(meters=bad, session_id=sid))
+        assert "not a position" in out.get("error", ""), (bad, out)
+    assert "error" in json.loads(srv.locate(fractions="nan", session_id=sid))
+
+
+def test_locate_refuses_a_number_with_thousands_separators():
+    """"3,335" would otherwise come back as two places, 3 m and 335 m."""
+    try:
+        srv = _server()
+    except ImportError as e:
+        print(f"  skipped: {e}")
+        return
+    sid = _session(srv)
+    srv._corner_maps[sid] = ((), {"turns": TURNS})
+    with _AcRoot():
+        for bad in ("3,335", "3,320, 3520", "1,234,567"):
+            out = json.loads(srv.locate(meters=bad, session_id=sid))
+            assert "thousands" in out.get("error", ""), (bad, out)
+        out = json.loads(srv.locate(meters="3320,3335", session_id=sid))
+        spaced = json.loads(srv.locate(meters="500, 750", session_id=sid))
+    assert [p["at_m"] for p in out["places"]] == [3320, 3335], out
+    # The way out the refusal offers has to work.
+    assert [p["at_m"] for p in spaced["places"]] == [500, 750], spaced
 
 
 def test_track_corners_lists_the_named_sections_and_their_turns():
@@ -250,6 +405,59 @@ def test_track_corners_lists_the_named_sections_and_their_turns():
                        "Turn 10A": ["T12"], "Turn 10B": ["T13"]}, by_name
     assert {t["turn"]: t.get("name") for t in out["turns"]}["T12"] == \
         "Turn 10A", out["turns"]
+
+
+
+def test_track_corners_lists_turns_by_section_not_by_name():
+    """Two sections called "Chicane", and a "Turn 1" beside "Turn 1 (La
+    Source)": matching by the name would put turns under the wrong one."""
+    try:
+        srv = _server()
+    except ImportError as e:
+        print(f"  skipped: {e}")
+        return
+    ini = """\
+[SECTION_0]
+IN=0.075
+OUT=0.130
+TEXT=Turn 1 (La Source)
+
+[SECTION_1]
+IN=0.200
+OUT=0.230
+TEXT=Turn 1
+
+[SECTION_2]
+IN=0.255
+OUT=0.325
+TEXT=Chicane
+
+[SECTION_3]
+IN=0.845
+OUT=0.890
+TEXT=Chicane
+"""
+    sid = _session(srv)
+    cmap = {"turns": TURNS, "unnumbered": [], "note": "",
+            "basis_lap_ids": [], "reference": {"reference": None}}
+    srv._corner_maps[sid] = ((), cmap)
+    real = srv.turns.basis_lap_ids
+    srv.turns.basis_lap_ids = lambda *a, **k: []
+    try:
+        with _AcRoot(ini=ini):
+            out = json.loads(srv.track_corners(session_id=sid))
+    finally:
+        srv.turns.basis_lap_ids = real
+    by_section = [(s["name"], s["turns"])
+                  for s in out["circuit_names"]["sections"]]
+    assert by_section == [("Turn 1 (La Source)", ["T1"]), ("Turn 1", []),
+                          ("Chicane", ["T5", "T6"]),
+                          ("Chicane", ["T12", "T13"])], by_section
+    names = [t.get("name") for t in out["turns"]]
+    assert names == ["Turn 1 (La Source)", "Chicane (1st)", "Chicane (2nd)",
+                     "Chicane (3rd)", "Chicane (4th)"], names
+    assert all(not k.startswith("_") for t in out["turns"] for k in t), \
+        out["turns"]
 
 
 if __name__ == "__main__":

@@ -289,10 +289,12 @@ answer is usually the contact list and the tyre wear, not the setup:
   particular and too long to read between laps.
 - Tables for numbers, prose for reasoning. Never a paragraph of numbers.
 - Corners by the circuit's `name` (from the track's sections.ini, on every
-  turn in `track_corners` and every labelled corner) or what the driver
-  calls it when you know it (the 90, the Bus Stop, the long left). The
-  session's T-number only when there is no name. Distances from the corner,
-  never from the start line.
+  turn in `track_corners` and on corners labelled with its T-numbers) or
+  what the driver calls it when you know it (the 90, the Bus Stop, the long
+  left). `compare_laps` and `compare_runs` name a corner by its apex alone,
+  so there a name can be missing, or differ from `track_corners`, near a
+  section boundary. The session's T-number only when there is no name.
+  Distances from the corner, never from the start line.
 - Two changes at once only when they act on different phases and you can
   say how you will separate them. Otherwise one.
 - When the driver states a preference or corrects a fact, write it down

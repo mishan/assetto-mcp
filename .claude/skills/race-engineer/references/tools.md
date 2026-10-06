@@ -260,6 +260,9 @@ The field defaults to every rival whose traced best beats yours, each on
 their three quickest laps within 2%. Their brake points read up to about
 7 m early (positions arrive late) and their minimum speeds a little high
 (10 Hz). Run it after practice and qualifying, not only after a race.
+`lap_ids` and `car_indexes` take "433, 434", a single number, or a list;
+the client often sends the text as a number or a list, and all three
+work.
 
 **`contacts_inferred`** (on `lap_summary`) and **`contacts`** (on
 `compare_runs`) -- impacts without the damage model. Each entry: `pos`,

@@ -88,8 +88,8 @@ setup recorded, only the ids named. Ask the driver which laps. Where the
 setup was measured, ids spanning two measured setups are refused whole
 (`laps_by_measured_setup` shows the split -- that is where the garage stop
 was), and laps measured on other values than the laps already carrying the
-name are left alone (`measured_on_a_different_setup`). `lap_ids` is a
-string: "87,88,89,90" or "87-90".
+name are left alone (`measured_on_a_different_setup`). `lap_ids` is
+"87,88,89,90", "87-90", a single id, or a list of ids.
 
 Genuinely wrong labels are fixed with `scripts/relabel_laps.py`, on purpose
 not a tool.
@@ -187,7 +187,8 @@ including straights and sweepers no corner detector flagged. Read
 200 segments.
 
 **`compare_runs(baseline_laps, candidate_laps, clean_laps_only,
-include_invalid)`** -- the A/B judge. Two comma-separated id lists. Read:
+include_invalid)`** -- the A/B judge. Two id lists, each "87,88", a
+single id, or a list. Read:
 
 - `metrics[*].verdict`, `p_value_adjusted` against 0.05 (the family is
   corrected together), `change`, `resolution` (smallest change these laps
@@ -260,6 +261,9 @@ The field defaults to every rival whose traced best beats yours, each on
 their three quickest laps within 2%. Their brake points read up to about
 7 m early (positions arrive late) and their minimum speeds a little high
 (10 Hz). Run it after practice and qualifying, not only after a race.
+`lap_ids` and `car_indexes` take "433, 434", a single number, or a list;
+the client often sends the text as a number or a list, and all three
+work.
 
 **`contacts_inferred`** (on `lap_summary`) and **`contacts`** (on
 `compare_runs`) -- impacts without the damage model. Each entry: `pos`,

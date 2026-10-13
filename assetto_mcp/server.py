@@ -691,8 +691,8 @@ def _with_brake_distance(metrics: list[dict], turns: list[dict]) -> list[dict]:
 
 @mcp.tool()
 def field_benchmark(session_id: int | None = None,
-                    lap_ids: str | None = None,
-                    car_indexes: str | None = None,
+                    lap_ids: str | int | list[int] | None = None,
+                    car_indexes: str | int | list[int] | None = None,
                     laps_per_rival: int = 3) -> str:
     """Where the quicker cars find their time, corner by corner, against you.
 
@@ -726,11 +726,11 @@ def field_benchmark(session_id: int | None = None,
         return _j({"error": f"session {sid} has no numbered turns yet"})
 
     try:
-        mine_ids = [int(x) for x in _parse_numbers(lap_ids)]
-        wanted = [int(x) for x in _parse_numbers(car_indexes)]
-    except ValueError:
-        return _j({"error": "lap_ids and car_indexes are comma-separated "
-                            "integers"})
+        mine_ids = _whole_numbers(lap_ids)
+        wanted = _whole_numbers(car_indexes)
+    except ValueError as e:
+        return _j({"error": f"lap_ids and car_indexes are lists of ids, "
+                            f"e.g. \"433, 434\": {e}"})
     if not mine_ids:
         mine_ids = [i for i in turns.newest_usable_lap_ids(
                         _conn, sid, CORNER_MAP_LAPS)
@@ -1260,6 +1260,21 @@ _LAP_ID_TOKEN = re.compile(r"^(\d+)(?:-(\d+))?$")
 MAX_LAP_ID_RANGE = 2000
 
 
+def _as_id_text(value) -> str:
+    """A list of ids as the text the id parsers read.
+
+    The client turns "87" into 87 and "87,88" into [87, 88] before the
+    tool sees them; either is put back into "87,88" form here so one
+    parser handles every shape.
+    """
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(int(v)) if isinstance(v, float) and v.is_integer()
+                        else str(v) for v in value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return "" if value is None else str(value)
+
+
 def _parse_lap_ids(text: str) -> tuple[list[int], str]:
     """Lap ids from "87,88", "87 88", or "87-90". Returns (ids, error)."""
     ids: list[int] = []
@@ -1290,7 +1305,7 @@ def _parse_lap_ids(text: str) -> tuple[list[int], str]:
 
 
 @mcp.tool()
-def label_laps(lap_ids: str, setup_name: str,
+def label_laps(lap_ids: str | int | list[int], setup_name: str,
                session_id: int | None = None) -> str:
     """Record which setup specific already-stored laps were driven on.
 
@@ -1311,7 +1326,7 @@ def label_laps(lap_ids: str, setup_name: str,
     span more than one measured setup are refused as a whole, and a lap
     measured on different values from the laps already carrying this name
     is left alone and reported."""
-    ids, err = _parse_lap_ids(lap_ids)
+    ids, err = _parse_lap_ids(_as_id_text(lap_ids))
     if err:
         return _j({"error": err})
 
@@ -1662,15 +1677,44 @@ def track_corners(session_id: int | None = None) -> str:
 _THOUSANDS = re.compile(r"(?:^|[\s,])\d{1,3}(?:,\d{3})+(?=$|[\s,])")
 
 
-def _parse_numbers(text: str | None) -> list[float]:
-    """Comma- or space-separated finite numbers.
+def _parse_numbers(text, positions: bool = True) -> list[float]:
+    """Comma- or space-separated finite numbers, or numbers already parsed.
+
+    MCP clients do not pass a string argument through as typed: "14"
+    arrives as the integer 14 and "14,5" as the list [14, 5], and a
+    parameter annotated `str` refuses both before this runs. So the tools
+    that take lists of numbers accept a number, a list, or the text, and
+    this reads all three.
+
+    `positions` is for meters and fractions, where "3,335" could be one
+    distance or two and is refused. Ids have no thousands: "433,434" is
+    two laps, and refusing it is what made field_benchmark turn away a
+    plain list of lap ids.
 
     The ValueError raised says what is wrong, in words fit to return.
     """
-    if text is None or str(text).strip() == "":
+    if text is None:
+        return []
+    if isinstance(text, bool):
+        raise ValueError(f"{text!r} is not a number")
+    if isinstance(text, (int, float)):
+        text = [text]
+    if isinstance(text, (list, tuple)):
+        out = []
+        for v in text:
+            if isinstance(v, str):
+                out += _parse_numbers(v, positions)
+                continue
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                raise ValueError(f"{v!r} is not a number")
+            if not math.isfinite(v):
+                raise ValueError(f"{v!r} is not a finite number")
+            out.append(float(v))
+        return out
+    if str(text).strip() == "":
         return []
     text = str(text).strip()
-    if _THOUSANDS.search(text):
+    if positions and _THOUSANDS.search(text):
         raise ValueError(
             f"{text!r} could be one number with thousands separators or "
             f"several positions; write numbers without separators (3335, "
@@ -1684,16 +1728,27 @@ def _parse_numbers(text: str | None) -> list[float]:
             v = float(x)
         except ValueError:
             raise ValueError(
-                "meters and fractions are comma-separated numbers, e.g. "
-                "meters=\"3335,3520\"") from None
+                f"{x!r} is not a number; separate numbers with \", \", "
+                f"e.g. \"3335, 3520\"") from None
         if not math.isfinite(v):
             raise ValueError(f"{x!r} is not a position on the lap")
         out.append(v)
     return out
 
 
+def _whole_numbers(value) -> list[int]:
+    """Ids from text, a number or a list; ValueError on anything fractional."""
+    out = []
+    for v in _parse_numbers(value, positions=False):
+        if v != int(v):
+            raise ValueError(f"{v:g} is not a whole number")
+        out.append(int(v))
+    return out
+
+
 @mcp.tool()
-def locate(meters: str | None = None, fractions: str | None = None,
+def locate(meters: str | float | list[float] | None = None,
+           fractions: str | float | list[float] | None = None,
            session_id: int | None = None) -> str:
     """Say where positions are the way a driver would: from the nearest corner.
 
@@ -2275,7 +2330,8 @@ def fuel_plan(race_laps: int, stops: int = 1,
 
 
 @mcp.tool()
-def compare_runs(baseline_laps: str, candidate_laps: str,
+def compare_runs(baseline_laps: str | int | list[int],
+                 candidate_laps: str | int | list[int],
                  clean_laps_only: bool = False,
                  include_invalid: bool | None = None) -> str:
     """Did a setup change actually do anything, given lap-to-lap noise?
@@ -2385,7 +2441,8 @@ def compare_runs(baseline_laps: str, candidate_laps: str,
         return out
 
     try:
-        a_ids, b_ids = ids(baseline_laps), ids(candidate_laps)
+        a_ids = ids(_as_id_text(baseline_laps))
+        b_ids = ids(_as_id_text(candidate_laps))
     except ValueError as e:
         return _j({"error": str(e)})
     if not a_ids or not b_ids:

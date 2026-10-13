@@ -7,10 +7,10 @@ separator). Only "14, 14" and "433, 434" got through. These pin that a
 number, a list and the text all work, for ids and for positions.
 """
 
-import inspect
+import asyncio
+import json
 import os
 import sys
-import typing
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -66,23 +66,32 @@ def test_id_text_for_the_lap_id_parsers():
     assert s._parse_lap_ids(s._as_id_text([87, 88]))[0] == [87, 88]
 
 
-def test_the_tools_accept_a_number_or_a_list_at_the_schema():
+def _call(name, arguments):
+    """The tool's reply, by way of the SDK's argument validation."""
+    r = asyncio.run(_server().mcp.call_tool(name, arguments))
+    content = getattr(r, "content", r)  # 2.x result, 1.x content list
+    if isinstance(content, tuple):  # 1.x with structured output
+        content = content[0]
+    return content[0].text
+
+
+def test_the_tools_take_a_number_or_a_list_through_mcp():
     """The client's coercion is refused before any parser runs unless the
     parameter's type admits it."""
-    s = _server()
-    checks = {s.field_benchmark: ("lap_ids", "car_indexes"),
-              s.locate: ("meters", "fractions"),
-              s.compare_runs: ("baseline_laps", "candidate_laps"),
-              s.label_laps: ("lap_ids",)}
-    for fn, params in checks.items():
-        fn = getattr(fn, "fn", fn)
-        hints = typing.get_type_hints(fn)
-        for p in params:
-            args = typing.get_args(hints[p])
-            assert int in args or float in args, (fn.__name__, p, hints[p])
-            assert any(typing.get_origin(a) is list for a in args), (
-                fn.__name__, p, hints[p])
-    assert inspect.signature(getattr(s.locate, "fn", s.locate))
+    calls = [("field_benchmark", {"lap_ids": v, "car_indexes": v})
+             for v in (14, [14, 5], "14,5")]
+    calls += [("label_laps", {"lap_ids": v, "setup_name": "a"})
+              for v in (87, [87, 88], "87-90")]
+    calls += [("compare_runs", {"baseline_laps": v, "candidate_laps": v})
+              for v in (87, [87, 88], "87,88")]
+    calls += [("locate", {"meters": v, "fractions": v})
+              for v in (0.25, [0.25, 0.5], "0.25, 0.5")]
+    for name, arguments in calls:
+        try:
+            reply = json.loads(_call(name, arguments))
+        except Exception as e:
+            raise AssertionError(f"{name}({arguments}): {e}") from None
+        assert isinstance(reply, dict), (name, arguments, reply)
 
 
 if __name__ == "__main__":

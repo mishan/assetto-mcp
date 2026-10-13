@@ -88,8 +88,8 @@ setup recorded, only the ids named. Ask the driver which laps. Where the
 setup was measured, ids spanning two measured setups are refused whole
 (`laps_by_measured_setup` shows the split -- that is where the garage stop
 was), and laps measured on other values than the laps already carrying the
-name are left alone (`measured_on_a_different_setup`). `lap_ids` is a
-string: "87,88,89,90" or "87-90".
+name are left alone (`measured_on_a_different_setup`). `lap_ids` is
+"87,88,89,90", "87-90", a single id, or a list of ids.
 
 Genuinely wrong labels are fixed with `scripts/relabel_laps.py`, on purpose
 not a tool.
@@ -187,7 +187,8 @@ including straights and sweepers no corner detector flagged. Read
 200 segments.
 
 **`compare_runs(baseline_laps, candidate_laps, clean_laps_only,
-include_invalid)`** -- the A/B judge. Two comma-separated id lists. Read:
+include_invalid)`** -- the A/B judge. Two id lists, each "87,88", a
+single id, or a list. Read:
 
 - `metrics[*].verdict`, `p_value_adjusted` against 0.05 (the family is
   corrected together), `change`, `resolution` (smallest change these laps

@@ -21,42 +21,32 @@ from . import analysis
 SCHEMA_VERSION = 15
 
 # How many wheels have to be off the valid surface before a lap counts as
-# having exceeded track limits.
-#
-# It was 3 ("> 2"), and that is what stored a clean 2:06.769 at Sebring as
-# invalid: the circuit is ringed with wide flat kerbs and painted apron that
-# put three wheels outside the surface without the game calling a cut. Four
-# is the count AC itself treats as leaving the track.
-#
-# The number matters much less than it used to. The per-lap evidence is
-# stored now, so changing this and calling backfill_excursions() re-scores
-# every lap ever driven -- it is a threshold, not a decision baked into
-# history at record time.
+# having exceeded track limits. Four is the count AC itself treats as
+# leaving the track; three is routine over wide flat kerbs and painted apron
+# that the game does not call a cut. The per-lap evidence is stored, so
+# changing this and calling backfill_excursions() re-scores every lap.
 TRACK_LIMITS_WHEELS = 4
-
-# What the rule used to be: "numberOfTyresOut > 2", i.e. more than this many
-# wheels, with no minimum duration. Kept because the v11 migration has to
-# reason about why a pre-v11 lap was excluded, and the only honest answer is
-# "whatever the rule was at the time".
 
 # Time over the threshold before it counts as an excursion rather than a
 # sample or two of noise. Measured from where the episode starts to where it
 # ends, so at 25Hz (40ms a tick) this is three consecutive off-track samples.
 MIN_EXCURSION_MS = 120
 
+# The pre-v11 rule, "numberOfTyresOut > 2" with no minimum duration. The v11
+# migration needs it to tell why a pre-v11 lap was excluded.
 LEGACY_TRACK_LIMITS_WHEELS = 2
 
 # How long a recorder's claim survives without a heartbeat before another
 # instance may take it. Generously more than HEARTBEAT_SECONDS in
-# collector.py, because the cost of the two errors is not symmetric: taking
-# over too eagerly gives two collectors writing the same laps, while taking
-# over late costs a few seconds of a session nobody was recording anyway.
+# collector.py: taking over too eagerly gives two collectors writing the
+# same laps, while taking over late costs a few seconds of a session nobody
+# was recording anyway.
 RECORDER_STALE_SECONDS = 15.0
 
 # How long a session may go without a heartbeat and still be called live.
-# Same asymmetry, other direction: this decides whether the overlay says
-# "recording" and whether a driver's note has somewhere to go, so it wants
-# slack for a stalled disk or a paused process.
+# This decides whether the overlay says "recording" and whether a driver's
+# note has somewhere to go, so it allows for a stalled disk or a paused
+# process.
 SESSION_STALE_SECONDS = 30.0
 
 SCHEMA = """
@@ -79,18 +69,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     km_per_liter REAL,
     -- Tank capacity and AC's fuel-usage multiplier, both from the static
     -- shared memory page. The multiplier is the one a league changes: at
-    -- 50% or 200% every fuel figure moves by that factor, and nothing read
-    -- it, so a plan for a 200% session was quietly half the fuel needed.
-    -- 1.0 is 100%; 0 is a real setting and not the same as unknown, which
-    -- is why every read of these goes through IS NULL rather than falsy.
+    -- 50% or 200% every fuel figure moves by that factor. 1.0 is 100%; 0
+    -- is a real setting, not unknown, so reads test IS NULL, not falsy.
     max_fuel_liters REAL,
     fuel_rate REAL,
     -- When the collector recording this session last said it was alive.
-    -- started_at never moves, so it cannot answer "is this still going?" --
-    -- and the process that has to answer it is usually not the process
-    -- recording. Every other instance shares this file and nothing else.
-    -- NULL means a session written before v10, where the only evidence
-    -- available is the last stored lap.
+    -- The process asking "is this still going?" is usually not the one
+    -- recording, and this file is all they share. NULL means a session
+    -- written before v10, where the only evidence is the last stored lap.
     last_seen_at REAL,
     -- The measured setup setup_name was stated for. Empty until the first
     -- lap stored after set_session_setup, which binds it: the name is then
@@ -102,34 +88,26 @@ CREATE TABLE IF NOT EXISTS sessions (
 -- setup_name is per-lap, not per-session: the tuning loop changes setup in
 -- the pits and keeps driving, so stamping it on the session would relabel
 -- laps that were driven on the previous setup.
--- One boolean used to decide whether a lap counted, and it was wrong in
--- both directions: a clean 2:06 at Sebring stored invalid because flat
--- kerbs put three wheels over a line the game did not care about, and a
--- scrappy 2:10 stored valid because it was only 7% off the pace. Either way
--- `compare_runs` dropped the lap and said nothing.
 --
--- So a lap now records *facts*, separately, and the verdicts are derived
--- from them and re-derivable. Every one of these except `complete` can be
--- recomputed from the samples, which is what made the migration possible
--- for laps already stored.
+-- A lap records *facts* separately -- track limits, out-lap, pitted,
+-- outlier -- and verdicts are derived from them, because no single flag
+-- can say both "cut the track" and "not representative". Every fact except
+-- `complete` can be recomputed from the samples.
 CREATE TABLE IF NOT EXISTS laps (
     id INTEGER PRIMARY KEY,
     session_id INTEGER NOT NULL REFERENCES sessions(id),
     lap_number INTEGER NOT NULL,
     lap_time_ms INTEGER NOT NULL,
-    -- Legacy. Kept because it is NOT NULL with a default and every stored
-    -- lap has one, but nothing decides anything from it any more: read
-    -- `invalid` for track limits and lap_usability() for whether a lap
-    -- belongs in an analysis. Written as "not invalid" so an old query
-    -- against it still means roughly what it used to.
+    -- Legacy; nothing decides anything from it. Read `invalid` for track
+    -- limits and lap_usability() for whether a lap belongs in an analysis.
+    -- Written as "not invalid" so an old query against it still roughly
+    -- holds.
     valid INTEGER NOT NULL DEFAULT 1,
     completed_at REAL NOT NULL,
     setup_name TEXT NOT NULL DEFAULT '',
     -- 0 for a lap that never reached the finish line: a crash, a reset to
-    -- the pits, or recording stopped mid-lap. Those samples used to be
-    -- discarded, which meant the single most interesting lap of a session
-    -- -- the one that ended in the barrier -- was the only one guaranteed
-    -- not to be recorded.
+    -- the pits, or recording stopped mid-lap. Stored because the lap that
+    -- ended in the barrier is often the one most worth reading.
     complete INTEGER NOT NULL DEFAULT 1,
     -- The setup the car was measured on when the lap ended: a fingerprint
     -- of the values the in-game app read off the setup menu, so two laps
@@ -149,7 +127,7 @@ CREATE TABLE IF NOT EXISTS laps (
     -- Visited the pit lane during the lap. Same reasoning: the time is
     -- wall-clock nonsense, the telemetry is not.
     pitted INTEGER NOT NULL DEFAULT 0,
-    -- Grossly slower than the session's own reference. A judgement about
+    -- Grossly slower than the session's own reference. A judgment about
     -- representativeness, deliberately separate from track limits.
     outlier INTEGER NOT NULL DEFAULT 0,
 
@@ -157,7 +135,7 @@ CREATE TABLE IF NOT EXISTS laps (
     -- so the threshold can change and be re-applied to laps already driven.
     invalid INTEGER NOT NULL DEFAULT 0,
     -- 'inferred' (from tyres_out) or 'game' (the game's own verdict, which
-    -- needs a CSP physics worker -- see BACKLOG item 3). Recorded so a
+    -- needs a CSP physics worker -- see BACKLOG item 2). Recorded so a
     -- reader can tell a measurement from a guess.
     invalid_source TEXT NOT NULL DEFAULT 'inferred',
 
@@ -168,10 +146,9 @@ CREATE TABLE IF NOT EXISTS laps (
     excursions INTEGER,         -- distinct episodes over the threshold
     off_track_ms INTEGER,       -- total time over the threshold
 
-    -- 1 means the samples for this lap have been decimated to reclaim
-    -- space; the trace is coarser than it was recorded. 1 is untouched.
-    -- Kept on the lap so a trace can say how much of itself is missing
-    -- rather than quietly reading as a lap driven at 5Hz.
+    -- Above 1 means this lap's samples were decimated to reclaim space,
+    -- keeping every Nth; 1 is untouched. Kept on the lap so a coarse trace
+    -- says so rather than reading as a lap driven at 5Hz.
     sample_stride INTEGER NOT NULL DEFAULT 1
 );
 
@@ -196,28 +173,25 @@ CREATE TABLE IF NOT EXISTS samples (
     ride_f REAL NOT NULL, ride_r REAL NOT NULL,
     tyres_out INTEGER NOT NULL,
     -- World position. norm_pos says where the car is ALONG the lap; these
-    -- say where it is across it, which is the whole of what a driving line
-    -- is and the one thing every earlier analysis was blind to. Nullable
-    -- on purpose: laps recorded before v8 have no position and never will,
-    -- and 0,0,0 would be a claim that the car was at the track origin.
+    -- say where it is across it, which is what a driving line is. Nullable
+    -- on purpose: laps recorded before v8 have no position, and 0,0,0
+    -- would claim the car was at the track origin.
     pos_x REAL, pos_y REAL, pos_z REAL,
-    -- Body attitude. roll settles the body-control arguments that ride
-    -- height and anti-roll bars have only let us reason about indirectly.
+    -- Body attitude, so body control is measured directly rather than
+    -- inferred from ride height and anti-roll bars.
     heading REAL, pitch REAL, roll REAL,
     -- What the electronics are actually doing, rather than what the setup
     -- screen says they are set to. A TC level means nothing without knowing
     -- whether it ever intervenes.
     tc_active REAL, abs_active REAL,
-    -- Tyre wear, per corner. Separate from carDamage, which is bodywork --
-    -- a distinction worth keeping straight, because wear is the one that
-    -- happens on every lap of every session and underpins any stint or
-    -- strategy question.
+    -- Tyre wear, per corner. Separate from carDamage, which is bodywork;
+    -- wear happens on every lap and underpins any stint or strategy
+    -- question.
     wear_fl REAL, wear_fr REAL, wear_rl REAL, wear_rr REAL,
     -- Bodywork damage, summed across AC's five zones. Zero for the whole
-    -- session when the server has damage disabled, which is the usual case
-    -- here -- so this confirms contact when it is on and says nothing when
-    -- it is off. It is not a substitute for detecting a wall from the speed
-    -- trace, which works either way.
+    -- session when the server has damage disabled, which is usual, so this
+    -- confirms contact when on and says nothing when off. Detecting a wall
+    -- from the speed trace works either way.
     damage REAL
 );
 
@@ -257,8 +231,8 @@ CREATE TABLE IF NOT EXISTS rival_samples (
     t_ms INTEGER, pos_x REAL, pos_y REAL, pos_z REAL
 );
 -- UNIQUE, not just an index: the Lua app posts over HTTP and will resend a
--- batch whose response it never saw. Without this a retry double-counts
--- every sample and skews the spline-bucket means it feeds.
+-- batch whose response it never saw, and a double-counted retry skews the
+-- spline-bucket means it feeds.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_rival_samples
     ON rival_samples(session_id, car_index, lap_count, spline);
 -- Contact inference asks for every opponent row stored during one
@@ -266,18 +240,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_rival_samples
 CREATE INDEX IF NOT EXISTS idx_rival_samples_time
     ON rival_samples(session_id, created_at);
 
--- Rival lap times, recorded when a car's completed-lap count advances.
--- rival_drivers.last_lap_ms is overwritten every batch, so without this
--- there is no way to tell which of a rival's stored laps was their quick
--- one -- and comparing against an unknown-pace lap is worse than useless.
 -- Suspension telemetry, pushed by the in-game Lua app. Stock shared memory
 -- exposes none of this: no suspension travel, no wheel load, no ride height.
 --
--- `source` records which tier produced the row and is not decoration. 'app'
--- is render-rate (60-144Hz), fine for ride height and load transfer but
--- aliased for damper velocity; 'worker' is a CSP physics worker at 333Hz,
--- where damper numbers are real. Mixing them silently would let a histogram
--- built from body motion be presented as damper valving.
+-- `source` records which tier produced the row. 'app' is render-rate
+-- (60-144Hz), fine for ride height and load transfer but aliased for damper
+-- velocity; 'worker' is a CSP physics worker at 333Hz, where damper numbers
+-- are real. Mixing them would present body motion as damper valving.
 CREATE TABLE IF NOT EXISTS suspension_samples (
     session_id INTEGER NOT NULL,
     lap_count INTEGER NOT NULL,     -- completed laps when sampled
@@ -298,11 +267,9 @@ CREATE INDEX IF NOT EXISTS idx_suspension_lap
 -- What the game itself says about the setup menu, pushed by the Lua app
 -- from ac.getSetupSpinners().
 --
--- This replaces unpacking data.acd by hand: the ranges are per car, come
--- from the running game, and arrive for encrypted paid mods too. It also
--- ends the units guesswork -- display_multiplier and show_clicks_mode are
--- the two conventions we previously reverse-engineered by comparing a
--- saved file against what the setup screen displayed.
+-- The ranges are per car, come from the running game, and arrive for
+-- encrypted paid mods too, with no data.acd unpacking. display_multiplier
+-- and show_clicks_mode are the game's own units conventions.
 CREATE TABLE IF NOT EXISTS setup_ranges (
     car TEXT NOT NULL,
     name TEXT NOT NULL,             -- matches the setup INI section name
@@ -323,15 +290,12 @@ CREATE TABLE IF NOT EXISTS setup_ranges (
 --
 -- The game reports display_multiplier and show_clicks_mode above, and they
 -- are not enough. A stored 20 can read as 20 clicks, as 2.0 degrees, or as
--- -2.0 degrees; the NSX stores 10 for 0.00 degrees of toe, so the offset is
--- wrong as well as the scale; the F4 negates the front axle. Five driver
--- corrections in one evening, every one of them the tool stating a display
--- it had inferred and got wrong.
+-- -2.0 degrees; a car can store 10 for 0.00 degrees of toe, so the offset
+-- is wrong as well as the scale; another negates the front axle.
 --
 -- So the mapping is fitted from observations the driver reads off the
 -- screen. Two distinct stored values give slope and offset outright; one
--- gives the offset against the game's own multiplier, which is the NSX case
--- and needs a single number.
+-- gives the offset against the game's own multiplier.
 --
 -- What cannot be fitted at all lives in display_notes below.
 CREATE TABLE IF NOT EXISTS display_observations (
@@ -350,9 +314,8 @@ CREATE TABLE IF NOT EXISTS display_observations (
 
 -- Facts about an entry that are not a number, and so cannot be fitted:
 -- which direction the scale runs, what the units really are. Traction
--- control counts 1 as MOST intervention and 11 as least, which no slope and
--- offset can express and which was re-derived wrongly more than once. One
--- row per entry, replaced wholesale.
+-- control can count 1 as MOST intervention and 11 as least, which no slope
+-- and offset can express. One row per entry, replaced wholesale.
 CREATE TABLE IF NOT EXISTS display_notes (
     car TEXT NOT NULL,
     name TEXT NOT NULL,
@@ -399,6 +362,9 @@ CREATE TABLE IF NOT EXISTS setup_state (
     updated_at REAL NOT NULL
 );
 
+-- Rival lap times, recorded when a car's completed-lap count advances.
+-- rival_drivers.last_lap_ms is overwritten every batch, so this is what
+-- tells which of a rival's stored laps was their quick one.
 CREATE TABLE IF NOT EXISTS rival_laps (
     session_id INTEGER NOT NULL,
     car_index INTEGER NOT NULL,
@@ -412,19 +378,14 @@ CREATE TABLE IF NOT EXISTS rival_laps (
 -- all. One row, forever.
 --
 -- Claude Desktop launches one server per client surface, so several of
--- these processes exist at once and all of them see the same shared memory
--- and the same database file. The bridge port was the only thing they ever
--- contended for; the collector asked for nothing, which was harmless only
--- while a human had to call start_recording to begin. Autostart removed
--- that accident, and two collectors reading one game wrote every lap twice
--- under two session ids -- duplicates that survive into compare_runs as a
--- sample with zero deviation from itself, which is the one input that makes
--- a t-test certain about nothing.
+-- these processes exist at once, all seeing the same shared memory and
+-- database file. Two collectors reading one game would write every lap
+-- twice under two session ids -- duplicates that make compare_runs' t-test
+-- certain about nothing.
 --
 -- `enabled` is separate from the claim and deliberately shared: stopping
 -- recording is an instruction about the car, not about whichever server
--- process happened to receive it, and it used to be undone by the next
--- restart.
+-- process received it, and it survives a restart.
 CREATE TABLE IF NOT EXISTS recorder (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     owner TEXT NOT NULL DEFAULT '',   -- host/pid/token of the holder
@@ -462,15 +423,11 @@ SAMPLE_COLUMNS = [
 
 # Sample tuple widths that have ever been correct, newest first. store_lap
 # pads a short tuple with NULL, which is right for a caller written against
-# an older layout and catastrophic for a tuple that is short because a field
-# was dropped in the MIDDLE -- every column after the gap shifts by one, and
-# the row stores silently. Measured on a tuple missing `steer`: gear 7000,
-# rpm 1, tyres_out 297.63 (a world coordinate), damage NULL, no error.
-#
-# So the padding applies to widths a real layout actually had, and nothing
-# else. 25 is v7 (through tyres_out), 33 adds v8's position/attitude/
-# electronics, 38 adds v9's wear and damage. None of these counts lap_id,
-# which store_lap prepends.
+# an older layout and silently corrupting for a tuple missing a field in the
+# MIDDLE -- every column after the gap shifts by one. So padding applies
+# only to widths a real layout had. 25 is v7 (through tyres_out), 33 adds
+# v8's position/attitude/electronics, 38 adds v9's wear and damage. None of
+# these counts lap_id, which store_lap prepends.
 SAMPLE_WIDTHS = (len(SAMPLE_COLUMNS) - 1, 33, 25)
 
 
@@ -488,13 +445,11 @@ def _add_column(conn, table: str, col: str, decl: str) -> bool:
     """Add a column if the table exists and doesn't already have it.
 
     Guarded on the table existing because ALTER on a missing one raises,
-    and a raise inside _migrate does more damage than losing that step: it
-    aborts every later step too AND leaves user_version un-bumped, so the
-    database is stuck below the current schema permanently rather than
-    just this once. A database can legitimately be missing a table -- one
-    that has only ever held imported rows, or a half-built fixture -- and
-    CREATE TABLE IF NOT EXISTS runs straight after this and creates it
-    complete, so there is nothing to repair.
+    and a raise inside _migrate aborts every later step and leaves
+    user_version un-bumped, stuck below the current schema for good. A
+    database can legitimately lack a table -- one holding only imported
+    rows, or a half-built fixture -- and the CREATE TABLE IF NOT EXISTS
+    that runs straight after creates it complete.
     """
     if not _table_exists(conn, table) or col in _columns(conn, table):
         return False
@@ -506,9 +461,8 @@ def _migrate(conn) -> list[str]:
     """Bring an existing database up to SCHEMA_VERSION. Returns a log.
 
     Runs before the CREATE TABLE IF NOT EXISTS block, because that block
-    cannot add a column to a table that already exists -- the exact way a
-    schema change silently no-ops on a real user's database while passing
-    every test that starts from an empty file.
+    cannot add a column to a table that already exists, which no test that
+    starts from an empty file would notice.
     """
     log: list[str] = []
     fresh = not _table_exists(conn, "sessions")
@@ -527,9 +481,8 @@ def _migrate(conn) -> list[str]:
         if _add_column(conn, "laps", "setup_name",
                        "TEXT NOT NULL DEFAULT ''"):
             # Best available guess for history: whatever the session was
-            # last stamped with. Wrong for sessions where the setup changed
-            # mid-run, but strictly better than empty, and from here on laps
-            # are stamped individually at write time.
+            # last stamped with. Wrong where the setup changed mid-run, but
+            # better than empty.
             n = conn.execute(
                 "UPDATE laps SET setup_name = COALESCE("
                 "  (SELECT setup_name FROM sessions"
@@ -537,22 +490,12 @@ def _migrate(conn) -> list[str]:
             log.append(f"laps.setup_name added; backfilled {n} lap(s) "
                        "from their session")
 
-    # v2 re-ran the outlier rule over laps stored before it existed, writing
-    # `valid = 0`. Deliberately not done here any more: v11 recomputes the
-    # same thing into `laps.outlier`, which is the column anything reads,
-    # and running both meant the v2 pass wrote a bit that the v11 pass then
-    # overwrote -- printing "1 gross outlier marked invalid" in the same
-    # migration log as "laps wrongly marked invalid are now readable as
-    # valid", one of which had to be a lie.
-    #
-    # A database upgrading from v1 therefore skips straight to the v11 pass
-    # below, which is strictly better: it flags outliers *and* keeps them
-    # comparable instead of hiding them.
+    # v2 re-ran the outlier rule into `valid = 0`. Skipped: the v11 pass
+    # below recomputes it into `laps.outlier`, which is what gets read, and
+    # running both would log contradictory results.
 
     # v3 added suspension_samples, a new table only -- CREATE TABLE IF NOT
-    # EXISTS below covers it, so there is no ALTER step here. Recorded so
-    # the next person can see the version was accounted for rather than
-    # skipped.
+    # EXISTS covers it, so there is no ALTER step.
 
     if version < 4:
         # v4: laps.complete, so an abandoned lap can be stored rather than
@@ -562,8 +505,7 @@ def _migrate(conn) -> list[str]:
             log.append("laps.complete added; existing laps marked complete")
 
     if version < 5:
-        # v5: the fuel basis, so liters per lap stops being a hand
-        # calculation that has to be redone for every track.
+        # v5: the fuel basis, so liters per lap can be computed per track.
         for col in ("track_length_m", "km_per_liter"):
             if _add_column(conn, "sessions", col, "REAL"):
                 log.append(f"sessions.{col} added")
@@ -571,21 +513,16 @@ def _migrate(conn) -> list[str]:
     if version < 6:
         # v6: the rest of the fuel basis. Tank capacity so a car whose FUEL
         # entry the game reports as read-only still has a known tank, and
-        # AC's fuel-usage multiplier, which decides whether a stop is needed
-        # and which nothing had ever read.
+        # AC's fuel-usage multiplier, which decides whether a stop is needed.
         for col in ("max_fuel_liters", "fuel_rate"):
             if _add_column(conn, "sessions", col, "REAL"):
                 log.append(f"sessions.{col} added")
 
     if version < 7:
-        # v7: max_fuel_litres -> max_fuel_liters. AC spells it LITER in the
-        # car's own fuel_cons.ini (KM_PER_LITER), so the rest of the project
-        # follows the game rather than the author.
-        #
-        # A rename rather than a fresh column: v6 shipped on a branch that
-        # was already run against a real database, so the data is there
-        # under the old name and dropping it would lose a tank capacity
-        # nobody can re-derive without the game open.
+        # v7: max_fuel_litres -> max_fuel_liters, matching AC's own
+        # KM_PER_LITER. A rename rather than a fresh column, because v6
+        # databases hold tank capacities under the old name that cannot be
+        # re-derived without the game open.
         cols = _columns(conn, "sessions")
         if "max_fuel_litres" in cols and "max_fuel_liters" not in cols:
             conn.execute("ALTER TABLE sessions"
@@ -593,15 +530,10 @@ def _migrate(conn) -> list[str]:
             log.append("sessions.max_fuel_litres renamed to max_fuel_liters")
 
     if version < 8:
-        # v8: position, attitude and electronics activity. All of it was
-        # already being read from shared memory 25 times a second and
-        # discarded -- carCoordinates in particular, which is the only
-        # source of lateral position and therefore of a driving line.
-        #
-        # Nullable, and deliberately not backfilled: there is nothing to
-        # backfill from. Every lap recorded before this migration has no
-        # position and cannot acquire one, so a reader has to be able to
-        # tell "not recorded" from "at the origin".
+        # v8: position, attitude and electronics activity. carCoordinates
+        # is the only source of lateral position, and so of a driving line.
+        # Nullable and not backfilled -- there is nothing to backfill from
+        # -- so a reader can tell "not recorded" from "at the origin".
         for col in ("pos_x", "pos_y", "pos_z",
                     "heading", "pitch", "roll",
                     "tc_active", "abs_active"):
@@ -609,46 +541,31 @@ def _migrate(conn) -> list[str]:
                 log.append(f"samples.{col} added")
 
     if version < 9:
-        # v9: tyre wear and bodywork damage. Both were mapped in the physics
-        # struct from the beginning and never read. Wear is the one that
-        # matters day to day -- it changes every lap whatever the server
-        # settings, and no stint or pit-strategy question can be answered
-        # without it.
+        # v9: tyre wear and bodywork damage.
         for col in ("wear_fl", "wear_fr", "wear_rl", "wear_rr", "damage"):
             if _add_column(conn, "samples", col, "REAL"):
                 log.append(f"samples.{col} added")
 
     if version < 10:
         # v10: sessions.last_seen_at, and the recorder table created by
-        # SCHEMA above. Both exist to answer one question a single process
-        # cannot answer for itself -- is another instance recording right
-        # now -- which the bridge previously guessed at from started_at and
-        # a staleness window, and got wrong in both directions.
+        # SCHEMA above, so a process can tell whether another instance is
+        # recording right now.
         #
-        # Deliberately not backfilled from started_at: a session that ended
-        # last week would then look like one being heartbeated right now.
-        # NULL reads as "no heartbeat was ever recorded for this session",
-        # and latest_session() falls back to the lap evidence for those.
+        # Not backfilled from started_at: a session that ended last week
+        # would then look heartbeated right now. NULL reads as "no heartbeat
+        # was ever recorded", and latest_session() falls back to the lap
+        # evidence for those.
         if _add_column(conn, "sessions", "last_seen_at", "REAL"):
             log.append("sessions.last_seen_at added")
 
     if version < 11:
         # v11: a lap records facts, and the verdicts are derived from them.
-        #
-        # The evidence for track limits was in `samples.tyres_out` all
-        # along -- 25Hz, every lap, since v1 -- and was collapsed into one
-        # boolean at record time and then thrown away. So this migration
-        # can do something migrations usually cannot: recompute the answer
-        # for every lap already stored, rather than defaulting them and
-        # calling the history unknowable.
+        # The track-limits evidence is in `samples.tyres_out` for every lap
+        # since v1, so stored laps are recomputed rather than defaulted.
         added = [c for c in (
-            # `complete` belongs to v4 and is listed again here on purpose.
-            # _add_column no-ops when the column is present, and a database
-            # stamped past v4 without it does exist -- which made three
-            # separate v11 queries raise "no such column: complete", and a
-            # raise inside _migrate leaves user_version un-bumped and the
-            # database stuck below the schema forever. Guaranteeing the
-            # column once beats guarding every query that reads it.
+            # `complete` belongs to v4 and is listed again on purpose: a
+            # database stamped past v4 without it exists, and the v11
+            # queries below read it. _add_column no-ops when present.
             ("complete", "INTEGER NOT NULL DEFAULT 1"),
             ("out_lap", "INTEGER NOT NULL DEFAULT 0"),
             ("pitted", "INTEGER NOT NULL DEFAULT 0"),
@@ -676,11 +593,8 @@ def _migrate(conn) -> list[str]:
                        "(still stored, still comparable)")
 
     if version < 12:
-        # v12: laps.sample_stride, which only means anything once retention
-        # exists -- 1 is a trace at the rate it was recorded, higher is one
-        # that has been decimated to reclaim space. Its own step rather than
-        # part of v11 so that the lap model and the thing that thins it can
-        # be read, and reverted, separately.
+        # v12: laps.sample_stride, for retention -- 1 is a trace at the rate
+        # it was recorded, higher is one decimated to reclaim space.
         if _add_column(conn, "laps", "sample_stride",
                        "INTEGER NOT NULL DEFAULT 1"):
             log.append("laps.sample_stride added; existing traces are at "
@@ -688,8 +602,7 @@ def _migrate(conn) -> list[str]:
 
     # v13 adds display_observations and display_notes, both new tables --
     # CREATE TABLE IF NOT EXISTS in SCHEMA covers them, so there is no ALTER
-    # step. Recorded so the next person can see the version was accounted
-    # for rather than skipped.
+    # step.
 
     if version < 14:
         # v14: an opponent sample's own clock and world position. Nullable,
@@ -732,29 +645,22 @@ def _v11_preserve_old_exclusions(conn) -> list[str]:
 
     Up to v10, `valid = 0` meant "off track OR pitted OR grossly slow", and
     it was the only trace any of those left. v11 recomputes track limits
-    from samples and outliers from lap times -- but a **pit visit** was
-    never stored anywhere else, so a lap excluded only because the driver
-    pitted would come out the far side of this migration looking like a
-    clean flying lap and start polluting every comparison. That is the exact
-    failure this whole schema change exists to stop, so it must not be the
-    thing the change causes.
+    from samples and outliers from lap times, but a **pit visit** was never
+    stored anywhere else, so a lap excluded only for pitting would come out
+    looking like a clean flying lap.
 
-    So: for each old `valid = 0` lap, recompute the two reasons that *are*
-    recoverable. If neither explains the exclusion, the remaining
-    possibility is a pit visit, and `pitted` is set. That is an inference,
-    not a record, and it errs towards keeping a lap out of timing -- which
-    is the safe direction, since the alternative is a wall-clock pit lap
-    silently entering a lap-time comparison.
+    So for each old `valid = 0` lap, the recoverable reasons are checked,
+    and if none explains the exclusion, `pitted` is set. That is an
+    inference, and it errs toward keeping a lap out of timing rather than
+    letting a wall-clock pit lap into a lap-time comparison.
     """
     if not _table_exists(conn, "laps"):
         return []
     lap_cols = set(_columns(conn, "laps"))
     if not {"valid", "lap_time_ms", "session_id"} <= lap_cols:
         return []
-    # `complete` is guaranteed by the v11 column list above, which repeats
-    # v4's addition for exactly this reason. Checked anyway, cheaply,
-    # because everything in this function exists to keep a migration from
-    # raising and leaving the database stuck below the schema.
+    # `complete` is guaranteed by the v11 column list, but checked anyway:
+    # a raise here would leave the database stuck below the schema.
     complete_expr = "complete" if "complete" in lap_cols else "1"
     excluded = conn.execute(
         f"SELECT id, session_id, lap_time_ms, valid, {complete_expr}"
@@ -762,12 +668,10 @@ def _v11_preserve_old_exclusions(conn) -> list[str]:
     if not excluded:
         return []
 
-    # "Explained by the old rule", not "explained by the new one". The old
-    # rule fired at THREE wheels off with no minimum duration, so a lap that
-    # touched a kerb is explained even though the new threshold clears it --
-    # and that is the whole point of the upgrade. Testing against the new
-    # threshold instead marked Sebring 129 as a presumed pit stop and
-    # excluded, for good, the exact lap this change exists to give back.
+    # "Explained by the old rule", not by the new one. The old rule fired
+    # at THREE wheels off with no minimum duration, so a lap that touched a
+    # kerb is explained even though the new threshold clears it; testing the
+    # new threshold would mark such a lap a presumed pit stop for good.
     went_wide = set()
     if _table_exists(conn, "samples") and \
             {"t_ms", "tyres_out"} <= set(_columns(conn, "samples")):
@@ -779,18 +683,11 @@ def _v11_preserve_old_exclusions(conn) -> list[str]:
                 went_wide.add(row["id"])
 
     # Only two things explain an old exclusion in a way that lets the lap
-    # back in, and being a gross outlier is deliberately NOT one of them.
-    #
-    # The reasons were never mutually exclusive. The 10:22 pit-stop lap that
-    # motivated the outlier rule in the first place is both a pit lap and an
-    # outlier, and treating "it was slow" as proof that no pit visit
-    # happened let exactly that lap through: outliers are usable under the
-    # new model, so a wall-clock pit time walked straight into lap-time
-    # comparisons. Which is the failure this whole function exists to stop.
-    #
-    # So a slow lap stays excluded. The cost of being wrong that way is a
-    # genuinely slow clean lap kept out of timing with its telemetry intact;
-    # the cost the other way is a 10:22 "lap time" averaged into a run.
+    # back in, and being a gross outlier is deliberately NOT one of them:
+    # the reasons were never mutually exclusive, a pit lap is usually also
+    # an outlier, and outliers are usable under the new model. Wrongly
+    # excluding a slow clean lap costs far less than averaging a 10-minute
+    # pit "lap time" into a run.
     presumed_pit = []
     for row in excluded:
         if row["id"] in went_wide:
@@ -819,23 +716,20 @@ def score_excursions(pairs: list[tuple]) -> dict:
     Returns max_tyres_out, excursions, off_track_ms and the derived
     `invalid`. An episode has to last MIN_EXCURSION_MS to count, so one
     glitched tick is not an excursion; the duration uses each sample's own
-    t_ms rather than assuming a rate, because a thinned lap is not 25Hz any
-    more and neither is an incomplete one at the moment it was abandoned.
+    t_ms rather than assuming a rate, because neither a thinned lap nor an
+    abandoned one is 25Hz throughout.
 
     Two columns rather than whole sample rows on purpose: this runs over
     every lap in the database during the v11 migration, and selecting the
-    full width both costs far more I/O and fails outright on a database old
-    enough to predate half the columns.
+    full width costs far more I/O and fails on a database old enough to
+    predate half the columns.
 
-    No usable pairs gives all-None rather than all-zero. "Nobody looked" and
-    "looked and saw nothing" are different answers, and only one of them may
-    let a lap be reported as clean -- so a lap whose tyres_out is entirely
-    NULL comes back unknown, not clean.
+    No usable pairs gives all-None rather than all-zero: "nobody looked" is
+    not "looked and saw nothing", and only the latter may report a lap as
+    clean.
     """
-    # Sorted because the duration arithmetic depends on it and _store_lap
-    # passes whatever order the collector assembled. backfill_excursions
-    # sorts in SQL; relying on that would have made this correct in the
-    # migration and quietly wrong on every live lap.
+    # Sorted here because the duration arithmetic depends on it and
+    # _store_lap passes whatever order the collector assembled.
     usable = []
     for t_raw, out_raw in pairs:
         try:
@@ -864,10 +758,8 @@ def score_excursions(pairs: list[tuple]) -> dict:
 
     def close(run_start, end_t):
         """An episode's duration runs to where it *ended*, not to its last
-        off-track sample. Measuring to the last off sample loses one tick
-        per episode -- 40ms at 25Hz, 320ms on a thinned trace -- and made
-        MIN_EXCURSION_MS need four consecutive samples where it reads as
-        three."""
+        off-track sample, so MIN_EXCURSION_MS means three samples at 25Hz,
+        not four."""
         span = end_t - run_start
         return (1, span) if span >= MIN_EXCURSION_MS else (0, 0)
 
@@ -883,14 +775,9 @@ def score_excursions(pairs: list[tuple]) -> dict:
             run_start = None
     if run_start is not None:
         # Still off track when the samples ran out: the lap ended in the
-        # gravel, or the trace does. Measuring to the last sample loses one
-        # interval and made the verdict depend on whether a clean sample
-        # happened to follow -- three off-track samples ending a lap scored
-        # 0 excursions, the identical three followed by one clean sample
-        # scored 1. A lap that ends off track is the likeliest to have run
-        # wide, and it was the one being let off. So the run is extended by
-        # one typical interval, which is the least this episode can have
-        # lasted.
+        # gravel, or the trace does. Extended by one typical interval, the
+        # least this episode can have lasted, so the verdict matches the
+        # same run followed by one clean sample.
         n, span = close(run_start, usable[-1][0] + _typical_interval(usable))
         episodes += n
         total_ms += span
@@ -934,25 +821,20 @@ def backfill_excursions(conn, lap_ids: list[int] | None = None) -> int:
     - A lap whose `invalid_source` is 'game'. That is a measurement; this
       is inference, and inference does not overrule it.
     - A lap whose trace has been **thinned**. Its evidence was computed at
-      full resolution and the samples behind it no longer are, so
-      re-scoring would quietly replace a real measurement with a worse one
-      -- at stride 8 an excursion shorter than about 640ms vanishes
-      entirely and the lap becomes permanently "clean".
+      full resolution and re-scoring would replace it with a worse one: at
+      stride 8 an excursion shorter than about 640ms vanishes and the lap
+      becomes permanently "clean".
     """
-    # A database old enough to be migrating to v11 may predate tyres_out,
-    # or the laps table itself in a half-built file. Refusing to open the
-    # database over either would leave user_version un-bumped and the whole
-    # thing stuck below the current schema forever -- which is the failure
-    # _add_column exists to avoid, so this must not reintroduce it.
+    # A database migrating to v11 may predate tyres_out, or the laps table
+    # itself in a half-built file. Raising over either would leave
+    # user_version un-bumped and the database stuck below the schema.
     if not (_table_exists(conn, "laps") and _table_exists(conn, "samples")):
         return 0
     if not {"t_ms", "tyres_out"} <= set(_columns(conn, "samples")):
         return 0
 
-    # sample_stride arrives in v12, and the v11 step calls this function --
-    # so on an upgrade from v10 it does not exist yet. Its absence is not an
-    # obstacle but an answer: a database that predates retention has nothing
-    # thinned, so every lap is at full resolution and eligible.
+    # sample_stride arrives in v12, after the v11 step that calls this. A
+    # database without it has nothing thinned, so every lap is eligible.
     thinned_guard = (" AND sample_stride = 1"
                      if "sample_stride" in set(_columns(conn, "laps")) else "")
     q = ("SELECT id, invalid, max_tyres_out, excursions, off_track_ms"
@@ -971,8 +853,7 @@ def backfill_excursions(conn, lap_ids: list[int] | None = None) -> int:
             " ORDER BY t_ms", (row["id"],)).fetchall()
         s = score_excursions([(r["t_ms"], r["tyres_out"]) for r in pairs])
         # Compared rather than trusting rowcount: SQLite counts rows
-        # matched, not rows altered, so "8 laps re-scored" was printed on
-        # every run whether or not anything moved.
+        # matched, not rows altered.
         if (row["invalid"] == int(s["invalid"])
                 and row["max_tyres_out"] == s["max_tyres_out"]
                 and row["excursions"] == s["excursions"]
@@ -992,13 +873,11 @@ def backfill_outliers(conn, session_id: int | None = None) -> int:
     """Mark grossly slow laps as outliers, per session. Returns rows changed.
 
     Only sets the flag; nothing is deleted and nothing is excluded from
-    analysis because of it. It used to feed `valid`, which meant a lap 7%
-    off the pace was dropped from comparisons without a word.
+    analysis because of it.
 
     session_id narrows it to one session, which is how the collector
-    re-scores live: the flag is set against the fastest lap seen *so far*,
-    so a slow first lap followed by a quick one was judged against a
-    reference that did not exist yet and never revisited.
+    re-scores live: every lap is re-judged against the fastest lap so far,
+    so a slow first lap is revisited once a quicker one exists.
     """
     from .analysis import lap_is_outlier
     if not (_table_exists(conn, "laps") and _table_exists(conn, "sessions")):
@@ -1032,24 +911,13 @@ def backfill_outliers(conn, session_id: int | None = None) -> int:
     return changed
 
 
-# revalidate_outlier_laps() lived here and flipped `valid` to 0 for gross
-# outliers. Removed with v11 rather than left as dead code: it wrote a
-# column that no longer decides anything, and its docstring promised it
-# would "never resurrect a lap invalidated deliberately" while the v11
-# backfill running in the same migration did exactly that. backfill_outliers
-# replaces it and writes `laps.outlier`, which flags a slow lap instead of
-# hiding it.
-
-
 # How long any connection waits for the write lock before giving up.
 # store_lap can hold it across a few thousand sample inserts while the
 # bridge is also writing rival batches.
 #
-# Named because it is a floor for anything that puts a deadline on work
-# reaching the database: waiting less than this for something that has to
-# connect, migrate or claim is a deadline that can expire while SQLite is
-# still doing exactly what it was told to. collector.START_STATUS_TIMEOUT is
-# derived from it for that reason.
+# A floor for any deadline on work reaching the database: a shorter wait
+# for a connect, migrate or claim can expire while SQLite is still working.
+# collector.START_STATUS_TIMEOUT is derived from it.
 BUSY_TIMEOUT_MS = 10_000
 
 
@@ -1089,13 +957,11 @@ def create_session(conn, *, car, track, track_config, tyre_compound,
 def touch_session(conn, session_id: int) -> None:
     """Say that the collector recording this session is still alive.
 
-    Called on a timer rather than on lap completion, which is the whole
-    point: the first lap a session stores is its first FLYING lap, because
-    the out-lap has no time and is skipped. Judging liveness from stored
-    laps therefore declared a session dead for the length of a garage sit
-    plus an out-lap plus a flying lap -- five minutes at Sebring, longer
-    at Nordschleife -- during which the overlay read "not recording" and
-    every complaint tag the driver pressed was filed against nothing.
+    Called on a timer rather than on lap completion: the first lap a
+    session stores is its first flying lap, so stored laps alone would call
+    a session dead through a garage sit, an out-lap and a flying lap, with
+    the overlay reading "not recording" and the driver's notes filed
+    against nothing.
     """
     conn.execute("UPDATE sessions SET last_seen_at = ? WHERE id = ?",
                  (time.time(), session_id))
@@ -1124,11 +990,10 @@ def recorder_enabled(conn) -> bool:
 def set_recorder_enabled(conn, on: bool) -> None:
     """Turn recording on or off for every instance, durably.
 
-    stop_recording used to stop one process's thread. With several server
-    processes alive and each autostarting a collector, that stopped
-    whichever surface the driver happened to be typing into and left the
-    others recording -- and the next restart undid it regardless. An
-    instruction about the car belongs in the file every instance shares.
+    Several server processes may be alive, each autostarting a collector,
+    and the instruction is about the car rather than whichever process
+    received it, so it lives in the file every instance shares and
+    survives restarts.
     """
     _recorder_row(conn)
     conn.execute("UPDATE recorder SET enabled = ?, changed_at = ?"
@@ -1146,44 +1011,25 @@ def claim_recorder(conn, owner: str,
     looks broken and one that is correctly standing aside.
 
     The claim is taken by a single conditional UPDATE, so two processes
-    racing for a free slot cannot both win: SQLite serialises the writes and
+    racing for a free slot cannot both win: SQLite serializes the writes and
     the loser's WHERE no longer matches.
 
-    `stale_after <= 0` means "take it regardless of who holds it". That is
-    a different question from "is the holder stale", and it needs its own
-    branch: expressed as a cutoff it becomes `heartbeat_at <= now`, which a
-    holder renewing faster than this round trip can always defeat, so an
-    unconditional takeover was refused without ever saying so.
+    `stale_after <= 0` means "take it regardless of who holds it", which
+    needs its own branch: as a cutoff, `heartbeat_at <= now`, a holder
+    renewing faster than this round trip would always defeat it.
+    Otherwise an age of exactly stale_after is taken over.
 
-    Otherwise `<=` on the staleness bound, so an age of exactly stale_after
-    is taken over rather than left for the next poll. In practice these are
-    float timestamps and landing on the boundary has essentially no chance,
-    so this is about the comparison matching the sentence above it rather
-    than about a case anyone will hit.
-
-    The real bound on takeover latency is not here anyway: it is
-    RECORDER_STALE_SECONDS plus however long the standby waits between
-    attempts (Collector.STANDBY_RETRY_SECONDS), because nothing notices a
-    dead holder until someone next asks. That is the number to change if
-    takeover ever needs to be quicker.
+    Takeover latency is RECORDER_STALE_SECONDS plus the standby's retry
+    interval (Collector.STANDBY_RETRY_SECONDS), because nothing notices a
+    dead holder until someone next asks.
     """
     _recorder_row(conn)
-    # Read the clock AFTER the row exists, so the staleness cutoff is not
-    # computed before a SELECT that the holder can beat us to. The window is
-    # still not zero -- SQLite serialises the write, and the holder may
-    # renew inside it -- but every millisecond spent between reading `now`
-    # and taking the lock is a millisecond in which a perfectly live holder
-    # can be judged against a cutoff that has already gone stale.
+    # Read the clock AFTER the row exists: every millisecond between
+    # reading `now` and taking the lock is one in which a live holder can be
+    # judged against a cutoff that has already gone stale.
     now = time.time()
     with conn:
         if stale_after <= 0:
-            # "Take it regardless of who has it." A cutoff cannot express
-            # that: `heartbeat_at <= now` is unsatisfiable against a holder
-            # beating faster than the round trip, so the caller asking for
-            # an unconditional takeover got a silent refusal instead. The
-            # only caller is a test forcing the takeover it wants to
-            # observe, and refusing it made that test time out rather than
-            # fail -- which reads like the collector never noticing.
             conn.execute(
                 "UPDATE recorder SET owner = ?, claimed_at = ?,"
                 " heartbeat_at = ? WHERE id = 1", (owner, now, now))
@@ -1261,10 +1107,9 @@ def store_setup_snapshot(conn, session_id: int, car: str,
                 " units=excluded.units, read_only=excluded.read_only,"
                 " updated_at=excluded.updated_at",
                 (car, name, s.get("label", "") or "", float(lo), float(hi),
-                 # `or 1` would turn a legitimate step of 0 into 1. Zero is
-                 # how a continuous entry reports itself, and rewriting it
-                 # as 1 invents a grid the car does not have -- which then
-                 # snaps every written value onto it.
+                 # Not `or 1`: a step of 0 is how a continuous entry
+                 # reports itself, and 1 would snap every written value
+                 # onto a grid the car does not have.
                  float(1 if s.get("step") is None else s["step"]),
                  s.get("display_multiplier"), s.get("show_clicks_mode"),
                  s.get("units", "") or "", int(bool(s.get("read_only"))),
@@ -1363,16 +1208,11 @@ def _fuel_number(name: str, value, low: float, high: float,
                  zero_is_absent: bool = False) -> float | None:
     """Coerce a fuel-basis value, or say why it is not one. None stays None.
 
-    The range checks used to live only in the bridge, so this function was
-    safe exactly as long as HTTP was the only way in. Called directly with a
-    numeric string -- which is what a config file, a test, or another tool
-    hands you -- it raised `'>' not supported between instances of 'str' and
-    'int'` from a comparison three lines down, naming neither the argument
-    nor the caller's mistake.
+    Accepts numeric strings, as a config file or another tool may supply,
+    and names the argument when a value is out of range or not a number.
 
-    zero_is_absent exempts 0 from the range check for the fields where it has
-    always meant "not supplied" and the caller drops it. Without it, raising
-    the floor off zero would turn that documented no-op into a refusal.
+    zero_is_absent exempts 0 from the range check for the fields where it
+    means "not supplied" and the caller drops it.
     """
     if value is None:
         return None
@@ -1405,16 +1245,12 @@ def set_fuel_basis(conn, session_id: int, track_length_m=None,
     truth, and a 0 is stored.
 
     The floors come from analysis, which is where fuel_plan checks the same
-    three. A lower bound of 0 let through a track half a meter long, a car
-    doing half a meter to the liter and a tank of a thousandth of a liter:
-    all stored happily, all refused by fuel_plan later, so a session could
-    carry a basis that was guaranteed to fail whenever anyone used it. The
-    refusal belongs at the write, where the caller who supplied the number is
-    still on the stack.
+    three. Refusing at the write keeps a session from carrying a basis
+    fuel_plan is certain to reject, and fails while the caller who supplied
+    the number is still on the stack.
     """
-    # Zero is exempt from the floor and dropped below: it has always meant
-    # "not supplied" for these three, and turning that into a refusal would
-    # reject callers this is not aimed at.
+    # Zero is exempt from the floor and dropped below: it means "not
+    # supplied" for these three.
     track_length_m = _fuel_number("track_length_m", track_length_m,
                                   analysis.MIN_TRACK_LENGTH_M, 1_000_000,
                                   zero_is_absent=True)
@@ -1452,12 +1288,8 @@ def tank_liters(conn, car: str) -> tuple[float | None, str]:
     """Tank capacity for a car, and where it was read from.
 
     Deliberately not setup_ranges(), which excludes read_only entries
-    because writing one is silently ignored. That is right for writing a
-    setup and wrong for asking how big the tank is: a car whose fuel load
-    the game will not let you change still has a tank, and filtering it out
-    took tank_liters, stop_required_for_fuel and the note out of the fuel
-    plan altogether -- while leaving a two-stint plan behind, which reads as
-    a stop that was reasoned about.
+    because writing one is silently ignored. A car whose fuel load the game
+    will not let you change still has a tank, and the fuel plan needs it.
     """
     row = conn.execute(
         "SELECT max_value, read_only FROM setup_ranges"
@@ -1474,15 +1306,14 @@ def setup_ranges(conn, car: str) -> dict:
     """{SECTION: (min, max, step)} as the game reports it, or {} if unknown.
 
     Read-only entries are excluded: AC reports them so the setup screen can
-    grey them out, and writing one is silently ignored. Offering them as
+    gray them out, and writing one is silently ignored. Offering them as
     writable would produce a clamped, snapped, confidently-reported value
     that the car never sees.
     """
     rows = conn.execute(
         "SELECT name, min_value, max_value, step FROM setup_ranges"
         " WHERE car = ? AND read_only = 0", (car,))
-    # `step or 1` would turn a legitimate 0 -- a continuous entry -- into a
-    # grid of 1 and snap every value onto it.
+    # Not `step or 1`: 0 is a continuous entry, not a grid of 1.
     return {r["name"]: (r["min_value"], r["max_value"],
                         1.0 if r["step"] is None else r["step"])
             for r in rows}
@@ -1562,14 +1393,12 @@ def setup_display(conn, car: str) -> dict:
 
     Kept separate from setup_ranges because these do not clamp anything --
     they say how a stored number appears on the setup screen. A value stored
-    as 20 can read as 20 clicks or -2.0 degrees, and a report that says
-    "wrote 20" without saying which is how a setup that looks fine and isn't
-    gets written.
+    as 20 can read as 20 clicks or -2.0 degrees, and a report of "wrote 20"
+    has to say which.
 
     `mapping` is the stored -> displayed line fitted from readings off the
-    actual screen, and it takes precedence over the game's own multiplier.
-    That multiplier has been wrong about a negated axis, a non-zero zero and
-    a scale; a reading is a measurement.
+    actual screen, and it takes precedence over the game's own multiplier,
+    which can be wrong about a negated axis, a non-zero zero or a scale.
     """
     from .setups import fit_display
     rows = conn.execute(
@@ -1583,11 +1412,9 @@ def setup_display(conn, car: str) -> dict:
     # was running when the spinner data would have arrived.
     out = {name: {"units": "", "display_multiplier": None,
                   "show_clicks_mode": None,
-                  # Whether the game ever described this entry. Without it a
-                  # NULL multiplier is ambiguous -- "no conversion" from the
-                  # game, or "nobody said" for an entry that exists only
-                  # because someone left a note on it -- and the second was
-                  # being reported as the first.
+                  # Whether the game ever described this entry, so a NULL
+                  # multiplier can mean "no conversion" from the game, as
+                  # distinct from "nobody said" for a note-only entry.
                   "from_game": False}
            for name in set(list(observed) + list(notes)
                            + [r["name"] for r in rows])}
@@ -1633,8 +1460,8 @@ def latest_session(conn) -> dict | None:
 
     `last_seen_at` is the collector's heartbeat and is the only field here
     that answers "is it still going". `lap_count` and `last_lap_at` describe
-    what the session has produced, which is a different question and a bad
-    proxy for the first one -- see touch_session.
+    what the session has produced, a poor proxy for that -- see
+    touch_session.
     """
     r = conn.execute(
         "SELECT sessions.*,"
@@ -1655,8 +1482,7 @@ def set_session_setup(conn, session_id: int, setup_name: str) -> bool:
     This stamps the *session's current* setup, which laps completed from now
     on are tagged with. It deliberately does not touch laps already stored:
     the tuning loop changes setup in the pits and keeps driving within one
-    session, so rewriting history here would relabel the baseline laps as
-    the new setup and destroy the very comparison this exists to enable.
+    session, so rewriting them would relabel the baseline as the new setup.
 
     Nor does it bind the name to the setup measured right now: a driver
     says "I've loaded v2" as often before loading it as after, and binding
@@ -1687,19 +1513,15 @@ def label_unattributed_laps(conn, session_id: int, setup_name: str,
     """Fill in the setup for laps that have none. Returns how many.
 
     The no-rewriting rule above is about not overwriting a *known* setup
-    with a different one. A lap labelled '' is not a competing claim, it is
-    a gap -- the usual cause being that the driver told us which setup they
-    were on after the run rather than before. Filling a blank completes a
-    comparison; overwriting a name would destroy one, and this still
-    refuses to do that.
+    with a different one. A lap labeled '' is not a competing claim, it is
+    a gap -- usually because the driver named the setup after the run
+    rather than before. Filling a blank completes a comparison; a name
+    already there is never overwritten.
 
-    lap_ids narrows it to specific laps. That argument exists because
-    filling *every* blank in the session was the wrong default at the tool
-    layer: the driver's baseline is usually unlabelled too, so "I've loaded
-    claude_v1" relabelled the baseline as claude_v1 and destroyed the
-    comparison it was setting up. Which blanks to fill is a claim about what
-    happened in the garage, so it is made by whoever was there -- see
-    label_laps in server.py.
+    lap_ids narrows it to specific laps. Filling *every* blank is the wrong
+    default at the tool layer, because the driver's baseline is usually
+    unlabeled too. Which blanks to fill is a claim about what happened in
+    the garage, made by whoever was there -- see label_laps in server.py.
     """
     base = ("UPDATE laps SET setup_name = ?"
             " WHERE session_id = ? AND (setup_name IS NULL OR setup_name = '')")
@@ -1711,7 +1533,7 @@ def label_unattributed_laps(conn, session_id: int, setup_name: str,
         chunks = _id_chunks(lap_ids)
     # One transaction across the chunks: the caller is making a single claim
     # about the garage, so a failure part way through should not leave half
-    # the laps labelled.
+    # the laps labeled.
     filled = 0
     with conn:
         for chunk in chunks:
@@ -1739,34 +1561,25 @@ def store_lap(conn, session_id: int, lap_number: int, lap_time_ms: int,
     """Store a lap and its samples, whether or not it reached the line.
 
     Nothing is refused. `valid` is accepted for compatibility and ignored --
-    track limits are scored from the samples by score_excursions(), because
-    a verdict computed at record time cannot be revisited and this one was
-    wrong in both directions. Pass the *facts* instead: out_lap, pitted,
+    track limits are scored from the samples by score_excursions(), so the
+    verdict can be revisited. Pass the *facts* instead: out_lap, pitted,
     outlier, complete.
 
     complete=False is for a lap abandoned mid-way -- a crash, a reset to the
-    pits, recording stopped. Those used to be discarded, which made the one
-    lap a driver most wants to look at the only one guaranteed not to be
-    recorded.
-
-    out_lap=True is for a lap out of the pits, where lap_time_ms is not a
-    lap time. Those used to be discarded too. The driving is still real, so
-    it is stored and flagged rather than thrown away.
+    pits, recording stopped. out_lap=True is for a lap out of the pits. The
+    driving in both is real, so they are stored and flagged.
 
     lap_time_ms does not mean the same thing for those. A complete lap
     carries the game's official time; an incomplete one carries wall-clock
-    milliseconds since the lap started, which is not a lap time and is not
-    comparable to one. Anything ranking or averaging times has to exclude
-    incomplete laps by name: a lap abandoned before the line turned a run
-    comparison into "within noise, change +17630ms" purely by being read as
-    though it were a lap.
+    milliseconds since the lap started, which is not comparable to a lap
+    time. Anything ranking or averaging times has to exclude incomplete
+    laps by name.
 
     setup_name defaults to whatever set_session_setup last recorded for this
-    session -- a snapshot taken at store time, not a live join. That is the
-    whole point: the setup is copied onto the lap as it lands, so changing
-    setup later tags only subsequent laps and leaves these alone. When the
-    in-game app is measuring the setup, the name is only copied onto laps
-    driven on the values it was stated for; see _stamp_setup.
+    session -- a snapshot taken at store time, not a live join, so changing
+    setup later tags only subsequent laps. When the in-game app is
+    measuring the setup, the name is only copied onto laps driven on the
+    values it was stated for; see _stamp_setup.
     """
     try:
         fp, changed, stamped = _stamp_setup(conn, session_id, lap_time_ms)
@@ -1776,14 +1589,10 @@ def store_lap(conn, session_id: int, lap_number: int, lap_time_ms: int,
                           samples, setup_name, complete,
                           out_lap, pitted, outlier, fp, changed)
     except Exception:
-        # A lap and its samples are one write. Without this, anything that
-        # raises between the two -- a malformed tuple, a disk error -- left
-        # the lap row inserted and uncommitted, and the caller decides what
-        # happens next: a later commit adopts a lap with no telemetry, and
-        # until then the open transaction holds a write lock that every
-        # other connection waits on. The collector catches exceptions from
-        # this and keeps going, which is exactly the caller that would do
-        # it.
+        # A lap and its samples are one write. The collector catches this
+        # and keeps going, so an uncommitted lap row left behind would be
+        # adopted, without telemetry, by its next commit -- and hold the
+        # write lock every other connection waits on until then.
         conn.rollback()
         raise
 
@@ -1797,8 +1606,8 @@ def _stamp_setup(conn, session_id, lap_time_ms) -> tuple[str, bool, str]:
     lap's setup. From then on a lap on different values -- a setup changed
     in the pits with nobody saying so -- does not inherit it, and takes the
     name of an earlier lap in this session measured on the same values, if
-    there is one, or none. With nothing measured the name is stamped as it
-    always was, because there is nothing to check it against.
+    there is one, or none. With nothing measured the stated name is
+    stamped, because there is nothing to check it against.
     """
     now = time.time()
     fp = measured_setup_at(conn, session_id)
@@ -1853,15 +1662,8 @@ def _store_lap(conn, session_id, lap_number, lap_time_ms, samples,
     # refused: the trailing columns are the nullable ones added by later
     # migrations, so a caller written against v7 or v8 -- a test fixture, a
     # replay of stored rows -- still writes valid samples, and the fields it
-    # never knew about read as "not recorded" rather than as zeroes.
-    #
-    # Only for widths a real layout actually had, though. Padding anything
-    # shorter turned a field dropped in the MIDDLE into a silent write with
-    # every column after the gap shifted by one: a tuple missing `steer`
-    # stored gear 7000, rpm 1 and a world coordinate in tyres_out, and
-    # raised nothing. That is a worse outcome than the tolerance was ever
-    # worth, and the tolerance costs nothing to keep for the three widths
-    # that are real.
+    # never knew about read as "not recorded" rather than as zeroes. Only
+    # for the widths in SAMPLE_WIDTHS, though.
     width = len(SAMPLE_COLUMNS) - 1          # minus lap_id, prepended below
     rows = []
     for s in samples:
@@ -1891,9 +1693,7 @@ def list_laps(conn, session_id: int | None = None, limit: int | None = 50,
     """Laps, newest first. limit=None means every one of them.
 
     The explicit None matters for callers that report on what they did *not*
-    touch: a lap outside a window would otherwise be described as not
-    existing, which is a false claim about the driver's own data rather than
-    a missing convenience.
+    touch, which must not describe a lap outside a window as not existing.
 
     `offset` skips that many of the newest laps, for a caller paging back
     until it has found enough of something. It only applies with a limit;
@@ -1936,10 +1736,8 @@ def lap_endpoints(conn, lap_id: int,
                   columns=WEAR_COLUMNS) -> tuple[dict | None, dict | None]:
     """The first and last stored sample of a lap, for named columns only.
 
-    A stint report needs two rows per lap, not three thousand. Differencing
-    endpoints by reading whole traces turned a thirteen-lap session into
-    forty thousand dicts to obtain eight numbers, on the machine that is
-    also running the game.
+    A stint report needs two rows per lap, not three thousand, on the
+    machine that is also running the game.
 
     Column names are interpolated, so they must come from code rather than
     from a caller -- everything that reaches here passes a module constant.
@@ -1959,13 +1757,11 @@ def count_laps(conn, session_id: int) -> int:
                         (session_id,)).fetchone()["c"]
 
 
-def unlabelled_lap_ids(conn, session_id: int) -> list[int]:
+def unlabeled_lap_ids(conn, session_id: int) -> list[int]:
     """Ids of laps in this session with no setup recorded, oldest first.
 
-    Two columns instead of whole lap rows because the callers only ever
-    wanted ids and a count. Fetching every row of a long session through
-    the sessions JOIN to compute `len()` is a lot of work and a lot of JSON
-    for two numbers.
+    Ids only, because the callers want ids and a count, not every row of a
+    long session through the sessions JOIN.
     """
     return [r["id"] for r in conn.execute(
         "SELECT id FROM laps WHERE session_id = ?"
@@ -1993,11 +1789,11 @@ def measured_setups_named(conn, session_id: int, setup_name: str) -> set:
 
 
 def lap_ids_on_measured_setup(conn, session_id: int, fp: str,
-                              unlabelled_only: bool = True) -> list[int]:
+                              unlabeled_only: bool = True) -> list[int]:
     if not fp:
         return []
     q = "SELECT id FROM laps WHERE session_id = ? AND setup_fp = ?"
-    if unlabelled_only:
+    if unlabeled_only:
         q += " AND (setup_name IS NULL OR setup_name = '')"
     return [r["id"] for r in conn.execute(q + " ORDER BY id",
                                           (session_id, fp))]
@@ -2007,7 +1803,7 @@ def lap_setup_names(conn, session_id: int, lap_ids: list[int]) -> dict:
     """{lap_id: setup_name} for the given laps that are in this session.
 
     Ids absent from the result are not in this session -- which the caller
-    has to be able to say, because labelling nothing while reporting
+    has to be able to say, because labeling nothing while reporting
     success is indistinguishable from having worked.
     """
     if not lap_ids:
@@ -2023,11 +1819,9 @@ def lap_setup_names(conn, session_id: int, lap_ids: list[int]) -> dict:
 
 
 # The SQL form of lap_usability(): laps whose stored time really is a lap
-# time. This used to read `WHEN laps.valid`, which was correct while `valid`
-# meant "counts for everything" and became silently wrong the moment it
-# narrowed to track limits -- out-laps are stored with lap_time_ms = 0 and
-# are not invalid, so MIN() returned 0 and every session reported a best lap
-# of 0:00.000. Any new query that ranks or averages lap times belongs here.
+# time. Not `laps.valid`, which is only track limits: out-laps are stored
+# with lap_time_ms = 0 and are not invalid. Any new query that ranks or
+# averages lap times belongs here.
 _TIMED_LAP_SQL = ("laps.complete AND NOT laps.out_lap AND NOT laps.pitted"
                   " AND laps.lap_time_ms > 0")
 
@@ -2062,19 +1856,12 @@ def store_rival_batch(conn, session_id, drivers: list[dict],
     """
     now = time.time()
 
-    # Merge per field rather than letting the last entry win outright.
-    #
-    # Last-write-wins was correct for lap_count, which rides on every
-    # sample, and wrong for everything else. The Lua app stamps the driver
-    # name, car model and lap times onto the *first* sample of each car per
-    # batch -- carrying them on all ten samples a second doubled the JSON it
-    # serialises on the render thread -- so every later entry holds blanks.
-    # Taking the last one therefore overwrote every real value with an empty
-    # string or a null, which is why a whole race produced rival rows with
-    # no names and no lap times.
-    #
-    # Merging keeps "freshest wins" where a field actually repeats, without
-    # letting an absent field erase a present one.
+    # Merge per field rather than letting the last entry win outright. The
+    # Lua app stamps the driver name, car model and lap times onto only the
+    # *first* sample of each car per batch, to keep the JSON it serializes
+    # on the render thread small, so later entries hold blanks. Merging
+    # keeps "freshest wins" where a field repeats, without letting an
+    # absent field erase a present one.
     by_car: dict[int, dict] = {}
     for d in drivers:
         merged = by_car.setdefault(d["car_index"], {})
@@ -2179,15 +1966,15 @@ def rival_occupant_since(conn, session_id: int,
     A car index is a slot on the server, and when one driver leaves and
     another joins the new one inherits it. Nothing stored says which
     driver a sample came from -- rival_drivers keeps one name per slot,
-    the latest -- so without this the old driver's laps were ranked under
-    the new driver's name. A newcomer's lap counter starts again from
+    the latest -- so without this the old driver's laps would be ranked
+    under the new driver's name. A newcomer's lap counter starts again from
     zero, and within one session (a restart rolls a fresh one) a car's
     counter only goes forward, so the slot's last fall in the counter is
     where the current driver begins. A fall of a single lap to anything
     but zero is left alone: batches the app sent close together can
     land a few samples out of order. A driver who reconnects starts over
-    too, and loses their earlier laps; that costs data, where the merge cost
-    a wrong name. Returns (0, 0.0) when the slot has had one driver.
+    too, and loses their earlier laps; that costs data rather than putting
+    a wrong name on it. Returns (0, 0.0) when the slot has had one driver.
     """
     since, stamp, high = 0, 0.0, None
     for r in conn.execute(
@@ -2237,7 +2024,7 @@ def rival_lap_times(conn, session_id: int, car_index: int) -> dict[int, int]:
 
     A lap whose crossings were not both seen -- the first lap, a lap the
     feed dropped out on -- falls back to what the server reported, which
-    is better than nothing and is what every lap had before.
+    is better than nothing.
     """
     since = rival_occupant_since(conn, session_id, car_index)
     times = recorded_rival_lap_times(conn, session_id, car_index, since)
@@ -2250,8 +2037,8 @@ def list_rivals(conn, session_id: int, limit: int = 30) -> list[dict]:
 
     Ranked by the best lap timed off each car's own trace
     (rival_trace_lap_times), not by the server's best-lap field, which is
-    kept as `server_best_lap_ms`: it lags and repeats, and at the Glen it
-    put a car a second quicker than the driver behind him.
+    kept as `server_best_lap_ms`: it lags and repeats, enough to misorder
+    cars a second apart.
 
     Every car's trace has to be timed before the list can be ordered, so
     each row carries what that found as `trace_lap_times`, for
@@ -2315,10 +2102,9 @@ RIVAL_LAP_MIN_SPAN = 0.8
 
 # The app clamps an opponent's speed before it posts (bridge.MAX_SPEED_KMH).
 # A sample at the clamp is a car being teleported to the pits or the grid,
-# not a car being driven, so it is not evidence that the lap was seen. The
-# coverage rule above discounts them for that reason: counting them let a
-# lap of nothing but teleports meet it and then be drawn from the handful of
-# real samples left.
+# not a car being driven, so it is not evidence that the lap was seen, and
+# the coverage rule above discounts them: a lap of mostly teleports must not
+# pass it.
 RIVAL_TELEPORT_KMH = 999
 
 
@@ -2333,7 +2119,7 @@ def well_covered_rival_laps(conn, session_id: int, car_index: int,
 
     `traced` is the car's rival_trace_lap_times when the caller already
     has it (list_rivals' `trace_lap_times`); timing the trace is the costly
-    part, and reading it twice per rival doubled the cost of a listing.
+    part.
     """
     since = rival_occupant_since(conn, session_id, car_index)
     if traced is None:
@@ -2358,7 +2144,7 @@ def rival_lap_counts(conn, session_id: int, car_index: int,
 
     Coverage matters: a lap we only saw half of would produce a comparison
     that silently omits the corners we missed. Samples at the speed clamp do
-    not count towards it -- see RIVAL_TELEPORT_KMH -- so the coverage this
+    not count toward it -- see RIVAL_TELEPORT_KMH -- so the coverage this
     reports is coverage of the lap as driven, which is the same set of
     samples anything drawing the lap will have to work from.
     """

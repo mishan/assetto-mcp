@@ -25,8 +25,7 @@ def newest_usable_lap_ids(conn, session_id: int, want: int) -> list[int]:
     """The newest `want` usable laps of a session, reading no more than needed.
 
     This runs on every lap_summary call, cached or not, because the lap ids
-    are the cache key. Reading the whole session to keep eight made a long
-    race pay for every lap in it each time a single lap was summarised.
+    are the cache key, so it must not cost a long race every lap in it.
     """
     ids, offset = [], 0
     while len(ids) < want:
@@ -43,12 +42,9 @@ def basis_lap_ids(conn, session_id: int,
                   lap_id: int | None = None) -> list[int]:
     """Which laps a session's numbering should be built from.
 
-    The newest usable ones. When there are none -- every lap of the session
-    is an out-lap, an in-lap or a lap that ended in the barrier -- the
-    requested lap is all the evidence there is, and numbering from it alone
-    beats answering with no numbers, as long as the payload says how thin
-    that basis is, which the basis_lap_ids field corner_map_from returns
-    does.
+    The newest usable ones. When there are none -- every lap is an out-lap,
+    an in-lap or ended in the barrier -- the requested lap alone is used;
+    the basis_lap_ids field corner_map_from returns shows how thin that is.
     """
     ids = newest_usable_lap_ids(conn, session_id, CORNER_MAP_LAPS)
     if not ids and lap_id is not None:

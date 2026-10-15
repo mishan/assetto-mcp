@@ -1,10 +1,8 @@
 """Fuel per lap, derived from the game rather than looked up.
 
-Both inputs previously had to be found by hand: KM_PER_LITER by decrypting
-data.acd, track length from memory. That worked once, for one car, at one
-circuit, and produced numbers nobody could check. The in-game app now reads
-both -- ac.INIConfig.carData() gets at fuel_cons.ini even inside an
-encrypted archive, and trackLengthM comes from the AI spline.
+The in-game app reads both inputs: ac.INIConfig.carData() gets at
+fuel_cons.ini even inside an encrypted data.acd, and trackLengthM comes from
+the AI spline.
 """
 
 import json
@@ -26,7 +24,7 @@ KM_PER_L = 2.18
 TANK = 48.0
 
 
-def test_it_reproduces_the_mugello_numbers_worked_out_by_hand():
+def test_it_matches_the_mugello_numbers_worked_out_by_hand():
     out = analysis.fuel_plan(22, KM_PER_L, MUGELLO_M, tank_liters=TANK)
     assert abs(out["liters_per_lap"] - 2.406) < 0.01, out["liters_per_lap"]
     # The hand figure is the distance alone; total_liters is what goes in
@@ -40,11 +38,7 @@ def test_it_reproduces_the_mugello_numbers_worked_out_by_hand():
 
 
 def test_the_totals_say_whether_the_margin_is_in_them():
-    """Two numbers a lap apart cannot share one unqualified name.
-
-    total_liters carried the margin in the stints and not in the total, and
-    the payload said which for neither.
-    """
+    """Two numbers a lap apart cannot share one unqualified name."""
     out = analysis.fuel_plan(22, KM_PER_L, MUGELLO_M, tank_liters=TANK)
     per_lap = out["liters_per_lap"]
     assert out["margin_laps"] == 0.6
@@ -97,7 +91,7 @@ def test_two_stops_give_three_stints():
 
 
 def test_suzuka_needs_no_new_numbers():
-    """The whole point: a different circuit, nothing looked up."""
+    """A different circuit needs only its length, nothing looked up."""
     suzuka_m = 5807.0
     out = analysis.fuel_plan(18, KM_PER_L, suzuka_m, tank_liters=TANK)
     assert abs(out["liters_per_lap"] - 2.664) < 0.01, out["liters_per_lap"]
@@ -106,13 +100,9 @@ def test_suzuka_needs_no_new_numbers():
 
 
 def test_a_distance_needing_three_stops_is_not_planned_with_one():
-    """The plan that cannot be driven, offered as a plan.
+    """60 laps at Mugello is three stops, whatever was asked for.
 
-    60 laps at Mugello is three stops. Asked for one, this returned two
-    stints of 30, a note calling "the stop" mandatory in the singular, and
-    a spare of -24.2 L at the end of both -- the deficit hidden by a clamp
-    to the tank, and the second stint costed as though the first had
-    finished normally.
+    Two stints of 30 cannot be driven: each would end 24 L short.
     """
     out = analysis.fuel_plan(60, KM_PER_L, MUGELLO_M, tank_liters=TANK,
                              stops=1)
@@ -131,11 +121,11 @@ def test_a_distance_needing_three_stops_is_not_planned_with_one():
 
 
 def test_a_deficit_is_never_hidden_by_a_clamp():
-    """40 laps was the subtle version: -0.1 L, in a field called spare.
+    """Nothing may clamp a stint's fuel to the tank.
 
-    Nothing in this function may clamp a stint's fuel to the tank. The
-    check is on the arithmetic rather than on the verdict: every stint must
-    carry what it burns, and what it carries must fit.
+    The check is on the arithmetic rather than on the verdict: every stint
+    must carry what it burns, and what it carries must fit. At 40 laps a
+    clamp would hide a deficit of 0.1 L.
     """
     per_lap = (MUGELLO_M / 1000.0) / KM_PER_L
     for laps in range(2, 80):
@@ -154,10 +144,10 @@ def test_a_deficit_is_never_hidden_by_a_clamp():
 
 
 def test_the_no_stop_verdict_carries_the_same_margin_as_the_stints():
-    """It flipped at exactly total == tank, and the stints ask for more.
+    """The verdict must not flip at total == tank; the stints ask for more.
 
-    19 laps has a lap in hand and is a no-stopper. 20 laps arrives dry, and
-    used to be a no-stopper too until the last 0.1 L of it.
+    19 laps has a lap in hand and is a no-stopper. 20 laps arrives dry, so
+    it needs a stop.
     """
     for laps, forced in ((18, False), (19, False), (20, True)):
         out = analysis.fuel_plan(laps, KM_PER_L, MUGELLO_M, tank_liters=TANK)
@@ -170,11 +160,9 @@ def test_the_no_stop_verdict_carries_the_same_margin_as_the_stints():
             # The verdict and the stint arithmetic have to agree: a no-stop
             # race must reach the flag with the margin still in it.
             assert spare >= 0.6 * out["liters_per_lap"] - 1e-6, laps
-    # A tank where the two rules disagree by a whole lap. 20 laps fits
-    # 49.1 L to the last drop and does not fit it with two thirds of a lap
-    # in hand, so this is the case that separates "reaches the flag" from
-    # "reaches the flag dry" -- and at Mugello's 48 L no integer lap count
-    # falls in that gap, which is why the old rule looked right there.
+    # A tank that separates "reaches the flag" from "reaches the flag dry":
+    # 20 laps fits 49.1 L to the last drop but not with the margin in hand.
+    # At Mugello's 48 L no integer lap count falls in that gap.
     edge = analysis.fuel_plan(20, KM_PER_L, MUGELLO_M, tank_liters=49.1)
     assert edge["distance_liters"] <= 49.1, edge["distance_liters"]
     assert edge["stop_required_for_fuel"] is True, edge["note"]
@@ -219,11 +207,11 @@ def test_a_zero_percent_session_burns_nothing_and_says_so():
 
 
 def test_an_unknown_tank_says_so_rather_than_dropping_the_verdict():
-    """Three keys vanishing left a two-stint plan implying a stop.
+    """Without a tank size the verdict is unknown, and says so.
 
-    A read-only or missing FUEL range is enough to do it, and the payload
-    that came back was indistinguishable from one where stopping had been
-    thought about and found unnecessary.
+    A read-only or missing FUEL range is enough to lose it. Dropping the
+    keys would leave a two-stint plan indistinguishable from one where
+    stopping had been checked and found unnecessary.
     """
     out = analysis.fuel_plan(22, KM_PER_L, MUGELLO_M, stops=1)
     assert "tank_liters" in out and out["tank_liters"] is None, out
@@ -236,9 +224,9 @@ def test_an_unknown_tank_says_so_rather_than_dropping_the_verdict():
 def test_the_inputs_are_checked_rather_than_coerced():
     """None of this is reachable through the app; all of it is by a caller.
 
-    km_per_liter=-2.18 came back as liters_per_lap -2.406, a fractional
-    stop count raised a TypeError out of range(), and nine stops over three
-    laps produced six stints of zero laps.
+    Unchecked, a negative km_per_liter gives a negative liters_per_lap, a
+    fractional stop count raises TypeError out of range(), and nine stops
+    over three laps give six stints of zero laps.
     """
     ok = dict(race_laps=10, km_per_liter=KM_PER_L, track_length_m=MUGELLO_M,
               tank_liters=TANK)
@@ -269,11 +257,7 @@ def test_a_tank_too_small_for_one_lap_refuses_to_plan():
 
 
 def test_the_tank_is_found_even_when_the_game_locks_the_fuel_entry():
-    """read_only is right for writing a setup and wrong for tank size.
-
-    Flipping that one flag dropped tank_liters, stop_required_for_fuel and
-    the note out of the payload while a two-stint plan stayed behind.
-    """
+    """read_only matters for writing a setup, not for tank size."""
     with tempfile.TemporaryDirectory() as d:
         conn = db.connect(Path(d) / "t.db")
         sid = make_session(conn, car="carx")
@@ -292,11 +276,10 @@ def test_the_tank_is_found_even_when_the_game_locks_the_fuel_entry():
 
 
 def test_set_fuel_basis_checks_its_own_arguments():
-    """The range checks lived in the bridge, so they only guarded HTTP.
+    """Checks in the bridge alone would only guard HTTP.
 
-    Called directly with a numeric string this raised `'>' not supported
-    between instances of 'str' and 'int'`, naming neither the argument nor
-    the mistake.
+    A direct call with junk must get an error naming the argument, not a
+    TypeError from a comparison.
     """
     with tempfile.TemporaryDirectory() as d:
         conn = db.connect(Path(d) / "t.db")
@@ -330,10 +313,8 @@ def test_set_fuel_basis_checks_its_own_arguments():
 
 # Importing the server opens a database and binds the bridge, so it runs in
 # a subprocess against a throwaway data directory and an ephemeral port
-# rather than in the suite's own interpreter. Nothing else imports it, which
-# is why the tool layer -- where the tank lookup and the argument checks
-# live, and where a read-only FUEL entry silently emptied the payload -- had
-# no coverage at all.
+# rather than in the suite's own interpreter. The tank lookup and the
+# argument checks live in the tool layer.
 _SERVER_PROBE = """
 import json
 from assetto_mcp import db, server
@@ -374,12 +355,11 @@ def _run_probe(source: str) -> dict:
 
 
 def test_the_tool_layer_survives_a_read_only_fuel_entry():
-    """One flag emptied the payload while leaving a two-stint plan behind.
+    """A car whose fuel load the game locks still gets a stop verdict.
 
-    tank_liters, stop_required_for_fuel and the note all came from a ranges
-    lookup that excludes read-only entries, so a car whose fuel load the
-    game will not let you change produced a plan that never mentioned
-    stopping -- next to stints that only exist because of a stop.
+    The ranges lookup excludes read-only entries, so the tank has to come
+    from elsewhere, or the plan's stints would imply a stop it never
+    mentions.
     """
     got = _run_probe(_SERVER_PROBE)
 
@@ -393,8 +373,7 @@ def test_the_tool_layer_survives_a_read_only_fuel_entry():
     assert plan["fuel_rate_pct"] is None
     assert "fuel_rate_unknown" in plan
 
-    # And the tool's own arguments, which arrive from an MCP client and
-    # were taken entirely on trust.
+    # And the tool's own arguments, which arrive from an MCP client.
     assert "stops" in got["negative_stops"]["error"]
     assert "whole number" in got["fractional_stops"]["error"]
     print(f"  locked FUEL entry -> {plan['tank_liters']} L, "
@@ -403,10 +382,9 @@ def test_the_tool_layer_survives_a_read_only_fuel_entry():
 
 # The tank is resolved from two unrelated places -- the car's FUEL setup
 # range, and the static page's maxFuel -- and only the second is what
-# sessions.max_fuel_liters means. This walks both twice, because the
-# mislabelling only showed up on the second call: the first stored the
-# range-derived tank in the maxFuel column, and the second read it back out
-# of the session and called it "the game's maxFuel".
+# sessions.max_fuel_liters means. This walks both twice, because the second
+# call is the one that would read a range-derived tank back out of the
+# session and label it "the game's maxFuel".
 _PROVENANCE_PROBE = """
 import json
 from assetto_mcp import db, server
@@ -438,7 +416,7 @@ db.store_setup_snapshot(conn, ranged, "range_car", spinners=[
     {"name": "FUEL", "min": 1.0, "max": 48.0, "step": 1, "read_only": True}])
 out["range_first"] = basis(ranged)
 out["range_second"] = basis(ranged)
-# And with the ranges gone, which is the only case the caching was ever for.
+# And with the ranges gone.
 conn.execute("DELETE FROM setup_ranges WHERE car = 'range_car'")
 conn.commit()
 out["range_forgotten"] = basis(ranged)
@@ -458,12 +436,10 @@ print(json.dumps(out))
 def test_only_a_tank_from_maxfuel_is_stored_as_maxfuel():
     """The session column holds what the static page said, or nothing.
 
-    db.tank_liters answers from the car's FUEL setup range, which is a
-    property of the car; sim_info.fuel_facts answers from static.maxFuel,
-    which is a property of the session. Both used to be written to
-    sessions.max_fuel_liters -- a column whose schema comment says shared
-    memory -- so a setup-range number was read back on the next call and
-    reported as "the game's maxFuel", a source it had never been near.
+    db.tank_liters answers from the car's FUEL setup range, a property of
+    the car; sim_info.fuel_facts answers from static.maxFuel, a property of
+    the session. Only the second belongs in sessions.max_fuel_liters, or a
+    setup-range number reads back as "the game's maxFuel".
     """
     got = _run_probe(_PROVENANCE_PROBE)
 
@@ -493,12 +469,10 @@ def test_only_a_tank_from_maxfuel_is_stored_as_maxfuel():
 
 
 def test_a_basis_the_plan_would_refuse_is_refused_at_the_write():
-    """A lower bound of 0 stored numbers fuel_plan then rejected.
+    """An absurd value is refused where it is supplied.
 
-    track_length_m 0.5, km_per_liter 0.0005 and max_fuel_liters 0.001 were
-    all accepted and written to the session, where they sat until somebody
-    asked for a plan -- a session later, and nowhere near whoever supplied
-    them.
+    Stored, it would only fail when somebody asked for a plan, possibly a
+    session later and nowhere near whoever supplied it.
     """
     with tempfile.TemporaryDirectory() as d:
         conn = db.connect(Path(d) / "t.db")

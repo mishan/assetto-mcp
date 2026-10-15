@@ -205,7 +205,7 @@ def test_behind_is_listed_flagged_and_fast_forwarded():
         w.write("pyproject.toml", "[project]\nname = 'x'\nversion = '2'\n")
         w.push("Bump the package")
         w.write("lua_app/assetto_mcp/assetto_mcp.lua", "-- v2\n")
-        w.write("install-windows.ps1", "# new\n")
+        w.write("windows/install-windows.ps1", "# new\n")
         tip = w.push("Change the app and the installer\n\nWith a body.")
 
         out = w.check()

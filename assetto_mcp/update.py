@@ -1,7 +1,7 @@
 """Check GitHub for a newer version, and fast-forward to it when told to.
 
 The install is a git clone that pip points at in place (`pip install -e .`
-from install-windows.ps1), so an update is a fast-forward of that clone,
+from windows/install-windows.ps1), so an update is a fast-forward of that clone,
 plus the two things a pull alone does not do: reinstalling when
 pyproject.toml changed, and copying the in-game app into Assetto Corsa when
 lua_app/ did. The running server then needs restart_server to load it.
@@ -48,8 +48,8 @@ PIP_TIMEOUT = 900
 MAX_COMMITS = 25
 
 LUA_APP = Path("lua_app") / "assetto_mcp"
-INSTALLERS = ("install-windows.ps1", "install-windows.bat",
-              "install-claude-desktop.ps1")
+INSTALLERS = ("install-windows.bat", "windows/install-windows.ps1",
+              "windows/install-claude-desktop.ps1")
 
 
 def repo_root() -> Path:
@@ -235,7 +235,7 @@ def _compare(local: str) -> dict:
 
     GitHub's compare is phrased from the head's side: `local...main` is
     "ahead" when main has commits the install lacks. Everything returned
-    here is turned round to say what the install is.
+    here is turned around to say what the install is.
     """
     url = f"{_api()}/repos/{_repo()}/compare/{local}...{BRANCH}"
     data = json.loads(_get(url))
@@ -342,7 +342,7 @@ def _check(root: Path, data_dir, running_commit, force) -> dict:
     out["branch"] = current_branch(root)
     if running_commit and running_commit != local:
         # Updated on disk (by apply_update, a git pull, anything) and not
-        # yet loaded. Said whatever GitHub answered, since it is true
+        # yet loaded. Reported whatever GitHub answered, since it is true
         # either way.
         out["running"] = running_commit[:7]
         out["restart_needed"] = True

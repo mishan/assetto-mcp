@@ -1,9 +1,8 @@
 """Reading and writing AC setup files, and the ranges that clamp them.
 
-The stakes here are quiet failure. AC silently ignores out-of-range setup
-values, so a setup that writes nothing looks exactly like a setup that
-writes something the car declined -- both present as "I loaded it and
-nothing changed". Anything this module cannot honour has to say so loudly.
+AC silently ignores out-of-range setup values, so a setup that writes
+nothing looks exactly like one the car declined: "I loaded it and nothing
+changed". Anything this module cannot honor has to say so loudly.
 """
 
 import sys
@@ -52,12 +51,11 @@ def test_kunos_comment_styles_parse():
 
 
 def test_a_setup_is_never_silently_written_empty():
-    """The failure this whole module is shaped around.
+    """Trailing comments in a ranges file must not empty the setup.
 
-    Trailing comments made every MIN/MAX fail float(), load_ranges returned
-    {} rather than None, so write_setup read "ranges available, this car
-    allows nothing" -- dropped every value, reported success, and wrote a
-    file containing only [CAR]. The driver loads it and nothing changes.
+    If every MIN/MAX failed float() and load_ranges returned {}, write_setup
+    would read "this car allows nothing", drop every value, report success
+    and write a file containing only [CAR].
     """
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -75,13 +73,11 @@ def test_a_setup_is_never_silently_written_empty():
 
 
 def test_a_setup_with_nothing_in_it_is_refused_before_anything_is_written():
-    """And refused *before* the file is opened, which is the load-bearing part.
+    """And refused *before* the file is opened.
 
-    The check used to run after the write. That was survivable while a write
-    could only create a new file, and became destructive the moment
-    overwrite=True existed: a request naming only sections the car does not
-    have truncated a real setup to a [CAR] header and then reported
-    "NOTHING WAS WRITTEN" about the wreckage.
+    With overwrite=True, a check after the write would truncate a real
+    setup to a [CAR] header for a request naming only sections the car does
+    not have.
     """
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -105,7 +101,7 @@ def test_a_setup_with_nothing_in_it_is_refused_before_anything_is_written():
 
 
 def test_a_base_setup_with_no_valid_overrides_still_writes():
-    # Not empty -- the base's values are in it. Worth writing, worth saying
+    # Not empty -- the base's values are in it -- but the report must say
     # that none of the requested changes landed.
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -126,9 +122,9 @@ def test_a_refusal_leaves_no_trace_on_disk():
     """Not even an empty directory.
 
     setup_dir falls back to prefix-matching a track folder only while the
-    exact name does not exist, so creating an empty 'mugello' beside the real
-    'mugello_osrw' breaks that fallback permanently -- and a refused write is
-    exactly when someone has guessed the track id wrong.
+    exact name does not exist, so an empty 'mugello' beside the real
+    'mugello_osrw' would break that fallback for good -- and a refused write
+    is exactly when someone has guessed the track id wrong.
     """
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -155,11 +151,10 @@ def test_a_refusal_leaves_no_trace_on_disk():
 def test_an_unusable_ranges_file_refuses_the_write_and_says_why():
     """A silently-ignored setup costs a whole run to notice.
 
-    This used to write unclamped with a warning. The warning was true and
-    useless: the file loads, the garage shows no complaint, and the first
-    hint that values were discarded is a run that feels exactly like the one
-    before it. Refusing costs one round trip, and the message has to say
-    which of the two causes it is, because the fix differs.
+    A warning beside an unclamped write goes unseen: the file loads, the
+    garage shows no complaint, and the first hint is a run that feels like
+    the one before. Refusing costs one round trip, and the message has to
+    say which of the two causes it is, because the fix differs.
     """
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -199,8 +194,8 @@ def test_no_ranges_at_all_refuses_too_and_names_the_other_cause():
 
 
 def test_allow_unclamped_writes_and_keeps_the_warning():
-    # The escape hatch has to work: editing setups with the game closed and
-    # no ranges installed is a real thing to want to do.
+    # Editing setups with the game closed and no ranges installed is a
+    # real use, so the escape hatch has to work.
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         rng = d / "ranges"
@@ -220,11 +215,9 @@ def test_allow_unclamped_writes_and_keeps_the_warning():
 def test_the_warning_about_a_bad_ranges_file_does_not_deny_the_write():
     """The parse error is quoted twice, and once is after the write.
 
-    load_ranges used to end its message with "writes are refused until it
-    is fixed", which is true where write_setup refuses and false where
-    allow_unclamped has just written the file -- leaving a report that says
-    the write was refused next to the path it was written to. The error
-    describes the file; the caller states the policy.
+    So the error describes the file and the caller states the policy;
+    otherwise an allow_unclamped report would say the write was refused
+    next to the path it was written to.
     """
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -296,8 +289,8 @@ def test_overwrite_backs_the_old_setup_up_first():
 
 def test_no_name_is_suggested_when_the_suggestion_would_be_rejected():
     # _NAME_RE caps at 61 characters and _free_name appends _vN, so a long
-    # enough stem produces a suggestion the very next call refuses -- with a
-    # message about unsupported characters, when the problem is length.
+    # enough stem would produce a suggestion the next call refuses, with a
+    # message about unsupported characters when the problem is length.
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         rng = _ranges(d, "carx", KUNOS_STYLE)
@@ -341,11 +334,9 @@ def test_backups_do_not_pile_up_in_the_drivers_setup_folder():
 def test_a_track_prefix_writes_into_the_folder_ac_actually_reads():
     """A setup written to `mugello` when the folder is `mugello_osrw`.
 
-    Two failures at once, and the second is the bad one. The new setup
-    landed in a folder AC never opens -- and creating that folder stopped
-    setup_dir's prefix fallback firing, so `list_setups(car, "mugello")`
-    went from listing the driver's own setups to listing only ours. Their
-    files were still on disk and invisible to every tool here.
+    Creating `mugello` would put the setup where AC never looks, and would
+    also stop setup_dir's prefix fallback, so `list_setups(car, "mugello")`
+    would hide the driver's own setups from every tool here.
     """
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -387,11 +378,10 @@ def test_the_first_setup_at_a_new_track_creates_the_folder():
 def test_backups_are_pruned_oldest_first_even_past_nine_in_a_second():
     """The collision suffix has to be compared as a number.
 
-    Sorting the whole filename as text puts "-9" after "-10", so once ten
-    backups landed in the same second the pruner deleted the newest and
-    kept the oldest -- the exact opposite of its job. And the timestamp
-    contains a hyphen of its own, so the suffix is the third segment, not
-    the second.
+    Sorting the whole filename as text puts "-9" after "-10", so with ten
+    backups in the same second the pruner would delete the newest. The
+    timestamp contains a hyphen of its own, so the suffix is the third
+    segment, not the second.
     """
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -411,8 +401,7 @@ def test_backups_are_pruned_oldest_first_even_past_nine_in_a_second():
 
 def test_the_unsuffixed_backup_is_the_oldest_of_its_second():
     # "...bak-20260101-120000" is written before "...-1", so it must sort
-    # before it. Splitting on the first hyphen read it as collision 120000
-    # and made it the newest.
+    # before it, not read as collision 120000.
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         for n in ("s.ini.bak-20260101-120000", "s.ini.bak-20260101-120000-1"):
@@ -423,9 +412,8 @@ def test_the_unsuffixed_backup_is_the_oldest_of_its_second():
 
 def test_a_setup_whose_own_name_contains_the_backup_marker_still_prunes():
     # Dots and hyphens are legal in a setup name, so a name can contain
-    # ".ini.bak-" itself. Splitting on the FIRST marker parsed part of the
-    # driver's own name as a timestamp, and every backup of that setup fell
-    # to the fallback age -- pruning then stopped keeping the newest.
+    # ".ini.bak-" itself. Splitting on the first marker would parse part of
+    # the name as a timestamp, and pruning would stop keeping the newest.
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         name = "weird.ini.bak-thing"
@@ -456,8 +444,8 @@ def test_a_suggested_name_skips_over_names_already_taken():
 def test_inline_comment_stripped_from_a_setup_value():
     """read_setup must return a number, not the string '26 ; psi'.
 
-    load_ranges survives an inline comment either way because it pulls the
-    first number out of the field, so this is the test that actually pins
+    load_ranges pulls the first number out of the field and survives an
+    inline comment either way, so only this test pins
     inline_comment_prefixes.
     """
     with tempfile.TemporaryDirectory() as tmp:
@@ -504,11 +492,9 @@ def test_encodings_and_malformed_files_report_cleanly():
 def test_values_are_clamped_and_snapped_to_the_cars_grid():
     """Asking for more than the car allows gets the car's maximum.
 
-    This used to write 9. MIN=1 MAX=10 STEP=2 is not a whole number of
-    steps, so a grid anchored at the minimum stops at 9 and the maximum is
-    not on it -- asking for the stiffest bar the car has quietly returned
-    one notch softer. AC itself clamps at the end, so 10 is reachable and is
-    the right answer.
+    MIN=1 MAX=10 STEP=2 is not a whole number of steps, so a grid anchored
+    at the minimum stops at 9. AC clamps at the end, so 10 is reachable and
+    is the right answer.
     """
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -526,11 +512,11 @@ def test_values_are_clamped_and_snapped_to_the_cars_grid():
 
 # --- what the setup screen can actually reach ---------------------------
 #
-# Driver-observed, and the reason any of this is here: the RSS Formula 4's
-# rear wheel rate is MIN=53 MAX=88 STEP=17. Counting up on the spinner gives
-# 53, 70, 87, 88. Counting back down from 88 gives 71, 54, 53. The set is
-# not a grid, it is two ladders that miss each other, because AC adds and
-# subtracts from where it is and clamps at the ends.
+# Observed in game: the RSS Formula 4's rear wheel rate is MIN=53 MAX=88
+# STEP=17. Counting up on the spinner gives 53, 70, 87, 88. Counting back
+# down from 88 gives 71, 54, 53. The set is not a grid but two ladders that
+# miss each other, because AC adds and subtracts from where it is and
+# clamps at the ends.
 
 
 def test_both_ladders_are_reachable():
@@ -539,10 +525,10 @@ def test_both_ladders_are_reachable():
 
 
 def test_a_value_only_on_the_descending_ladder_is_written_exactly():
-    """54 is a real rear spring rate, and the old code called it 53.
+    """54 is a real rear spring rate, not something to snap to 53.
 
-    The failure was quiet in the worst way: it reported the substitution as
-    clamping, so a 2% softer spring looked like the request being tidied up.
+    Reporting that substitution as clamping would make a 2% softer spring
+    look like the request being tidied up.
     """
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -558,12 +544,10 @@ def test_a_value_only_on_the_descending_ladder_is_written_exactly():
 
 
 def test_the_anti_roll_bar_has_the_same_two_ladders():
-    """The setting this car is run at sits on the descending ladder, which
-    is how the problem surfaced in the first place.
+    """126607 is 182107 - 6*9250, on the descending ladder.
 
-    126607 is 182107 - 6*9250. The ascending ladder from 52608 passes
-    through 126608 instead, one N/m away, and a one-step reduction that
-    should have landed on 117357 was snapped to 117358.
+    The ascending ladder from 52608 passes through 126608 instead, one N/m
+    away, so a one-step reduction must land on 117357, not 117358.
     """
     vals = setups.legal_values(52608, 182107, 9250)
     for v in (126607, 126608, 117357, 117358, 52608, 182107):
@@ -591,13 +575,9 @@ def test_a_degenerate_range_does_not_raise():
 
 def test_snapping_agrees_with_enumerating_across_the_whole_range():
     """snap() is arithmetic and legal_values() enumerates, so they can
-    drift apart silently. They must not: the enumerated set is the
-    definition, and snap is only an optimisation of searching it.
-
-    The optimisation is not cosmetic. Enumerating cost 80ms and 100,001
-    floats for a 1-unit step over a wide range, per field, on every write --
-    and nothing bounds what the game reports for a car nobody has loaded
-    yet.
+    drift apart silently. The enumerated set is the definition, and snap is
+    only an optimization of searching it: enumerating a 1-unit step over a
+    wide range is 100,001 floats per field on every write.
     """
     cases = [(53, 88, 17), (52608, 182107, 9250), (0, 10, 1), (0, 3.5, 0.1),
              (-25, 25, 5), (1, 100, 7), (5, 5, 1), (0, 1, 0.25)]
@@ -613,25 +593,22 @@ def test_snapping_agrees_with_enumerating_across_the_whole_range():
     print(f"  {len(cases)} ranges x 201 requests: arithmetic == enumerated")
 
 
-def test_a_huge_ladder_is_not_materialised_to_snap_one_value():
-    """A 1-unit step over 100,000 units is a real thing for a game-reported
-    range, and building it to pick one value is pure waste.
+def test_a_huge_ladder_is_not_materialized_to_snap_one_value():
+    """A 1-unit step over 100,000 units is plausible for a game-reported
+    range, and building it to pick one value is waste.
 
-    Asserted by asking for a range that could not be materialised at all,
-    rather than by timing one that merely would be slow. A wall-clock bound
-    is a statement about the runner: a loaded CI box fails it while the
-    algorithm is perfect, and a fast one passes it while the algorithm is
-    quadratic. A range with 10^18 rungs cannot be enumerated on any machine,
-    so returning the right answer promptly is the proof, and it is the same
-    proof everywhere.
+    Asserted with a range that could not be materialized at all, rather
+    than by timing one that would merely be slow: a wall-clock bound
+    depends on the runner. A range with 10^18 rungs cannot be enumerated on
+    any machine, so returning the right answer is the proof.
     """
-    # The realistic case first: 100,001 rungs, which enumerating did build.
+    # The realistic case first: 100,001 rungs.
     assert setups.snap(126607.4, 100000, 200000, 1) == 126607
     assert setups.legal_values(100000, 200000, 1) == [], (
         "the enumerating helper must decline, not allocate")
 
-    # And the one that settles it. Materialising this is not slow, it is
-    # impossible; anything that returns has done arithmetic.
+    # Materializing this is impossible, so anything that returns has done
+    # arithmetic.
     lo, hi, step = 0.0, 1e9, 1e-9
     assert abs(setups.snap(123456.789, lo, hi, step) - 123456.789) < 1e-6
     assert abs(setups.snap(-5, lo, hi, step) - lo) < 1e-9

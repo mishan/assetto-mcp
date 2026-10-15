@@ -3,8 +3,8 @@
 slip_balance is the one number this tool exists to produce -- positive means
 the front is sliding more, and the setup advice that follows depends on its
 sign. AC occasionally emits a wheelSlip in the tens of thousands, and a
-single such sample moved a balance of 1.4 to 6002, so what gets filtered out
-and what survives is load-bearing in both directions.
+single such sample can move a balance of 1.4 into the thousands, so what
+gets filtered out and what survives is load-bearing in both directions.
 """
 
 import math
@@ -97,7 +97,8 @@ def test_steering_comes_from_the_samples_the_filter_kept():
 def test_steer_is_reported_as_a_fraction_of_lock():
     """AC normalizes steerAngle to -1..1, so 0.5 is half lock.
 
-    The old peak_steer_deg name invited reading it as half a degree.
+    A name in degrees, peak_steer_deg, would invite reading 0.5 as half a
+    degree.
     """
     stats = analysis._corner_stats(_corner(), 8, 15)
     assert "peak_steer_deg" not in stats

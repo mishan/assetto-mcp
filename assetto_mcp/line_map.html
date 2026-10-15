@@ -94,7 +94,7 @@ tr.hidden td{color:var(--muted)}
   <div class="map"><canvas id="c"></canvas><div class="tip" id="tip"></div></div>
   <div class="strip" id="strip"><canvas id="s"></canvas><div class="tip" id="stip"></div></div>
   <aside>
-    <div class="modes" role="group" aria-label="Colour the map by">
+    <div class="modes" role="group" aria-label="Color the map by">
       <button data-mode="lap" aria-pressed="true">Laps</button>
       <button data-mode="setup" aria-pressed="false">Setup</button>
       <button data-mode="speed" aria-pressed="false">Speed</button>
@@ -111,7 +111,7 @@ tr.hidden td{color:var(--muted)}
     <div class="toggles"><span class="head">Opponent</span><select id="rival" aria-label="Opponent lap to compare against"></select></div>
     <div class="hint" id="marknote"></div>
     <div class="laps"><table><thead><tr><th></th><th>Lap</th><th>Time</th><th id="col4">&Delta; best</th><th>Setup</th><th></th></tr></thead><tbody id="rows"></tbody></table></div>
-    <div class="hint" id="hint">Click a row to select a lap: the coloured views and the charts below the map follow it. Tick to show or hide. Hover the map or the charts for the nearest point.</div>
+    <div class="hint" id="hint">Click a row to select a lap: the colored views and the charts below the map follow it. Tick to show or hide. Hover the map or the charts for the nearest point.</div>
   </aside>
 </div>
 <script>
@@ -182,7 +182,7 @@ const upshifts = l => l.shifts.filter(s=>s.to>s.from);
 
 // Surface: the session's median roughness per stretch, one hue light to dark. The
 // scale runs from the 10th to the 98th percentile of the stretches, so one violent
-// kerb does not flatten the rest of the lap into one colour.
+// kerb does not flatten the rest of the lap into one color.
 const si = p => Math.min(SURF.slices-1, Math.max(0, Math.floor(p*SURF.slices)));
 const surfVals = SURF.rms_mm.filter(v=>v!=null).sort((a,b)=>a-b);
 const SURF_LO = surfVals.length ? surfVals[Math.floor(surfVals.length*0.1)] : 0;
@@ -266,7 +266,7 @@ document.getElementById("meta").innerHTML =
   (best?"<span>best <b>"+fmt(best.ms)+"</b> lap "+best.n+"</span>":"")+
   (DATA.skipped.length?"<span>"+DATA.skipped.length+" lap"+(DATA.skipped.length>1?"s":"")+" without position data not drawn</span>":"");
 
-// Lap colour: one hue, light to dark in lap order; the session best gets timing-screen purple.
+// Lap color: one hue, light to dark in lap order; the session best gets timing-screen purple.
 function lapColor(l){
   if (best && l.id===best.id) return css("--best");
   const i = laps.indexOf(l), n = Math.max(laps.length-1,1);
@@ -300,11 +300,11 @@ function fit(){
 const px = x => OX + x*S, py = z => OY + z*S;
 // The scale spans laps that counted, from their 1st percentile up: a pit lane, or a
 // spin on a lap that still counted, would otherwise stretch it down to walking pace
-// and wash every corner out. Anything slower shows as the slowest colour.
+// and wash every corner out. Anything slower shows as the slowest color.
 const speeds = (laps.some(l=>l.usable) ? laps.filter(l=>l.usable) : laps).flatMap(l=>l.v).filter(v=>v!=null).sort((a,b)=>a-b);
 const vmin = speeds[Math.floor(speeds.length*0.01)], vmax = speeds[speeds.length-1];
 
-// One lap's line, in one colour or coloured point by point. A point whose colour
+// One lap's line, in one color or colored point by point. A point whose color
 // comes back null is left undrawn.
 function strokeLap(l, colorAt, width, alpha){
   ctx.lineWidth=width; ctx.lineCap="round"; ctx.lineJoin="round"; ctx.globalAlpha=alpha;
@@ -348,7 +348,7 @@ function startFinish(){
 // they are least likely to sit on another stretch of track. Turns close together --
 // a hairpin, a chicane -- would stack their labels, so a label that lands on an
 // earlier one moves further out. Kept inside the map, so none is cut off at an edge.
-function labeller(){
+function labeler(){
   const placed=[], cx=W/2, cy=H/2;
   return (l, pos, text, color) => {
     const k=at(l,pos), x=px(l.x[k]), y=py(l.z[k]);
@@ -402,7 +402,7 @@ function pin(x, y, tag, elsewhere){
 const notesFor = sel => DATA.notes.filter(nt => nt.lap_id==null || nt.lap_id===sel.id || state.show.has(nt.lap_id));
 function drawMarks(sel){
   if (!sel) return;
-  // Off track as a dashed grey band: a texture rather than a hue, because every hue
+  // Off track as a dashed gray band: a texture rather than a hue, because every hue
   // left is already a throttle, a turn or a setup in one view or another.
   if (state.marks.has("off")) sel.off.forEach(r=>{ ctx.setLineDash([3,4]); strokeRange(sel, r.from, r.to, css("--muted"), 10, .8); ctx.setLineDash([]); });
   if (state.marks.has("lockups")) sel.lockups.forEach(r=>{ const k=at(sel,r.from); cross(px(sel.x[k]), py(sel.z[k])); });
@@ -416,7 +416,7 @@ function draw(){
   ctx.clearRect(0,0,W,H);
   const shown = laps.filter(l=>state.show.has(l.id));
   const sel = byId.get(state.sel);
-  const label = labeller();
+  const label = labeler();
   shown.forEach(l=>strokeLap(l, css("--track"), 7, .35));
   const others = () => shown.filter(l=>l!==sel).forEach(l=>strokeLap(l, css("--coast"), 1, .25));
   if (state.mode==="lap" || state.mode==="setup"){
@@ -452,7 +452,7 @@ function draw(){
     others();
     strokeLap(ref, (l,i)=>{ const v=SURF.rms_mm[si(l.p[i])]; return v==null ? css("--coast") : bumpColor(v); }, 6, 1);
   } else if (state.mode==="rival"){
-    // Your lap coloured by who was quicker at each point; their line dashed where it
+    // Your lap colored by who was quicker at each point; their line dashed where it
     // was recorded; braking points as ticks, yours to one side and theirs the other.
     others();
     const cr=curRival();
@@ -503,7 +503,7 @@ function plot(l, vals, y, color){
 function text(str, x, y, align, color){ sctx.fillStyle=color||css("--muted"); sctx.font="10px "+css("--font-mono"); sctx.textAlign=align||"left"; sctx.fillText(str, x, y); sctx.textAlign="start"; }
 const axis = (str, y) => text(str, PL-6, y, "right");
 const panelName = (P, str) => text(str, PL+6, P.y+11);
-// A small key at the top right of a chart: [[label, colour], ...].
+// A small key at the top right of a chart: [[label, color], ...].
 function key(P, items){
   let x=SW-PR-6;
   [...items].reverse().forEach(([t,c])=>{
@@ -625,7 +625,7 @@ const DRAW = {
     key(P, [[cr.l.clock==="timed" ? "both laps on their own clocks" : "from speed for both laps -- about ±0.5 s over a lap", null]]);
   },
 };
-// Two lines to a chart, in the same two colours everywhere -- left and right, or
+// Two lines to a chart, in the same two colors everywhere -- left and right, or
 // front and rear -- because four lines in one chart cannot be told apart.
 function pair(sel, P, a, b, name, labels, digits){
   panelName(P, name);
@@ -643,7 +643,7 @@ function plotGrid(vals, y, color){
   vals.forEach((v,i)=>{ if (v==null){ on=false; return; } const X=sx(gridPos[i]), Y=y(v); on?sctx.lineTo(X,Y):sctx.moveTo(X,Y); on=true; });
   sctx.stroke();
 }
-// You and the opponent on one channel, one scale, two colours.
+// You and the opponent on one channel, one scale, two colors.
 function vsPair(sel, P, ch, name){
   panelName(P, name);
   const cr=curRival();
@@ -674,7 +674,7 @@ function minIn(ps, vals, lo, hi){
   return m;
 }
 // Turn by turn: where each car got on the brakes and back on the throttle, and how
-// slow it went. Positions are differences along the lap, in metres where the track
+// slow it went. Positions are differences along the lap, in meters where the track
 // length is known.
 function turnTable(sel, rv){
   if (!TURNS.length || !sel) return "";
@@ -785,7 +785,7 @@ sv.addEventListener("mouseleave", ()=>{hov=null;stip.style.display="none";draw()
 const rows=document.getElementById("rows");
 const deltaText = l => (best && l.usable) ? (l.id===best.id?"best":((l.ms>=best.ms?"+":"")+((l.ms-best.ms)/1000).toFixed(3))) : "";
 // How this lap's corners line up with the turn map: turns it matched, and corners
-// no turn claims. A lap that disagrees with its neighbours here is the one to open.
+// no turn claims. A lap that disagrees with its neighbors here is the one to open.
 function turnsText(l){
   const matched=l.corners.filter(c=>c.turn).length, extra=l.corners.length-matched;
   if (!TURNS.length) return l.corners.length+" found";
@@ -806,8 +806,7 @@ laps.forEach(l=>{
     "<td class=\"setup\" title=\""+esc(setupLabel(l.setup))+"\">"+esc(l.setup||"-")+"</td>"+
     "<td class=\"flag\">"+[l.wide?"wide":"", l.outlier?"outlier":""].filter(Boolean).join(" ")+"</td>";
   tr.querySelector("input").addEventListener("change", ev=>{ ev.target.checked?state.show.add(l.id):state.show.delete(l.id); tr.classList.toggle("hidden",!ev.target.checked); draw(); });
-  // Focusable and operable from the keyboard: clicking a row was the only way to
-  // select a lap, which left every chart here out of reach without a mouse.
+  // Focusable and operable from the keyboard, so the charts are reachable without a mouse.
   tr.tabIndex=0;
   const select = ()=>{ state.sel=l.id; refreshRows(); legend(); draw(); };
   tr.addEventListener("click", ev=>{ if(ev.target.tagName==="INPUT") return; select(); });
@@ -859,7 +858,7 @@ function legend(){
     g.innerHTML="<span><i style=\"background:"+css("--over")+"\"></i>rear sliding more</span>"+
       "<span class=\"bar\" style=\"background:linear-gradient(90deg,"+css("--over")+","+css("--coast")+","+css("--under")+")\"></span>"+
       "<span><i style=\"background:"+css("--under")+"\"></i>front sliding more</span>"+
-      "<span>front slip − rear slip, ±"+BAL_S.toFixed(2)+" full colour; only while cornering</span>"+
+      "<span>front slip − rear slip, ±"+BAL_S.toFixed(2)+" full color; only while cornering</span>"+
       "<span>this lap's median while cornering <b>"+signed(sel&&sel.bal_med,2)+"</b>. Zero is equal slip, not necessarily neutral for this car -- compare laps and corners with each other</span>";
   }
   else if(state.mode==="gears"){
@@ -881,7 +880,7 @@ function legend(){
     g.innerHTML="<span><i style=\"background:"+css("--set1")+"\"></i>you quicker</span>"+
       "<span class=\"bar\" style=\"background:linear-gradient(90deg,"+css("--set1")+","+css("--coast")+","+css("--set2")+")\"></span>"+
       "<span><i style=\"background:"+css("--set2")+"\"></i>"+esc(rivalName(r))+" quicker</span>"+
-      "<span>±"+vsScale(sel, rv).toFixed(0)+" km/h full colour</span>"+
+      "<span>±"+vsScale(sel, rv).toFixed(0)+" km/h full color</span>"+
       "<span>"+esc(rivalName(r))+", lap "+rv.lap_count+": <b>"+fmt(rv.time_ms)+"</b> "+(rv.time_src ? SRC[rv.time_src] : "no time")+"</span>"+
       (r.car_model ? (r.car_model!==DATA.car ? "<span><b>a different car</b>: "+esc(pretty(r.car_model))+"</span>" : "") : "<span>car not recorded -- it may not be the same car as yours</span>")+
       (rv.x ? "<span>dashed: their line</span>" : "<span>their line was not recorded on this lap, so speed and pedals are compared by track position only</span>")+

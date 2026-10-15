@@ -7,14 +7,14 @@ reason, an out-of-range optional field is dropped rather than coerced into
 something plausible, and nothing here ever produces a 500.
 """
 
+import http.client
 import sys
-import tempfile
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import (FakeCollector, make_session, post,  # noqa: E402
+from support import (FakeCollector, get, make_session, post,  # noqa: E402
                      run_module, temp_db)
 
 from assetto_mcp import bridge as B, db  # noqa: E402
@@ -39,7 +39,7 @@ def test_optional_ints_are_bounded_and_never_truncated():
     assert B._opt_int(3.0, -10, 10) == 3
     assert B._opt_int(3, -10, 10) == 3
     assert B._opt_int(True, -10, 10) is None
-    # Unbounded, this produced an int SQLite cannot bind.
+    # Unbounded, this would be an int SQLite cannot bind.
     assert B._opt_int(1e30, 0, B.MAX_LAP_MS) is None
     assert B._opt_float(2.0, 0.0, 1.0) is None
     assert B._opt_float(float("nan"), 0.0, 1.0) is None
@@ -47,10 +47,8 @@ def test_optional_ints_are_bounded_and_never_truncated():
 
 
 def test_absurd_optional_fields_cost_one_car_not_the_batch():
-    """These used to raise OverflowError out of SQLite mid-loop.
-
-    The exception escaped the per-item skip, the connection closed in the
-    finally rolled the transaction back, and all 1400 samples went with it.
+    """An OverflowError from SQLite mid-loop would escape the per-item skip
+    and roll back the whole transaction, every sample with it.
     """
     with temp_db() as path:
         conn = db.connect(path)
@@ -109,10 +107,38 @@ def test_non_object_bodies_are_rejected_not_crashed():
             conn.close()
 
 
-def test_oversized_body_is_refused_with_an_answer():
-    """Refusing without draining left the client with a broken pipe.
+def test_requests_a_web_page_could_send_are_refused():
+    with temp_db() as path:
+        conn = db.connect(path)
+        br, _ = _recording_bridge(path, conn)
+        try:
+            body = b'{"tag": "understeer", "pos": 0.5}'
+            cases = [
+                ("POST", "/note", {"Content-Type": "text/plain"}),
+                ("POST", "/note", {}),
+                ("POST", "/note", {"Content-Type": "application/json",
+                                   "Host": "evil.example:%d" % br.port}),
+                ("GET", "/status", {"Host": "evil.example:%d" % br.port}),
+            ]
+            for method, endpoint, headers in cases:
+                c = http.client.HTTPConnection("127.0.0.1", br.port, timeout=5)
+                c.request(method, endpoint,
+                          body=body if method == "POST" else None,
+                          headers=headers)
+                code = c.getresponse().status
+                c.close()
+                assert code == 403, (method, endpoint, headers, code)
+            assert not conn.execute("SELECT 1 FROM notes").fetchall()
+            assert "message" in get(br.port, "/status")
+            print("  cross-site and rebound-host requests -> 403")
+        finally:
+            br.stop()
+            conn.close()
 
-    A 400 the client never reads is indistinguishable from a crash.
+
+def test_oversized_body_is_refused_with_an_answer():
+    """The body is drained before the refusal, or the client gets a broken
+    pipe, and a 400 the client never reads is indistinguishable from a crash.
     """
     with temp_db() as path:
         conn = db.connect(path)
@@ -130,9 +156,8 @@ def test_oversized_body_is_refused_with_an_answer():
 def test_batch_cap_exceeds_the_lua_clients_buffer():
     """Assert the relationship, not the number.
 
-    Bracketing this constant loosely is how it came to be sized for a single
-    grid snapshot: any value from 201 to 2499 passed the original tests, and
-    300 would reject every POST from a grid of four or more cars.
+    A loose bracket on the constant would accept a cap sized for one grid
+    snapshot, which rejects every POST from a grid of four or more cars.
     """
     assert B.MAX_RIVAL_BATCH >= B.RIVAL_BUFFER_MAX_CLIENT
     lua = (Path(__file__).resolve().parents[1]
@@ -184,7 +209,7 @@ def test_ack_ids_are_validated():
                 code, _ = post(br.port, "/ack", bad)
                 assert code == 400, (bad, code)
             assert post(br.port, "/ack", {"id": mid})[1]["ok"] is True
-            # Acking a message Claude already replaced is not an error.
+            # Acking a message that was already replaced is not an error.
             assert post(br.port, "/ack", {"id": 9999})[1]["ok"] is False
             print("  ack ids validated; stale ack is a false, not a 400")
         finally:

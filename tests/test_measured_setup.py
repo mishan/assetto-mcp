@@ -1,10 +1,10 @@
 """Which setup each lap was driven on, as measured rather than as stated.
 
-A setup name is a claim someone types, and it has been wrong every way a
-claim can be: stated late, stated early, not stated after a garage stop.
-The in-game app reads every value off the setup menu, so each lap carries a
-fingerprint of what the car actually had, and the name only follows laps
-driven on the values it was stated for.
+A setup name is a claim someone types, and it can be stated late, stated
+early, or not stated at all after a garage stop. The in-game app reads
+every value off the setup menu, so each lap carries a fingerprint of what
+the car actually had, and the name only follows laps driven on the values
+it was stated for.
 """
 
 import atexit
@@ -152,7 +152,7 @@ def test_naming_a_setup_before_loading_it_does_not_name_the_baseline():
     """"I'm loading v2" said with the baseline still on the car.
 
     Binding the name to what is measured at the moment of the call would
-    have given the baseline's values the new name.
+    give the baseline's values the new name.
     """
     with temp_db() as path:
         conn = db.connect(path)
@@ -170,7 +170,7 @@ def test_naming_a_setup_before_loading_it_does_not_name_the_baseline():
         conn.close()
 
 
-def test_without_the_app_a_stated_name_is_stamped_as_before():
+def test_without_the_app_a_stated_name_is_stamped_on_the_lap():
     with temp_db() as path:
         conn = db.connect(path)
         sid = make_session(conn, car=CAR)
@@ -233,7 +233,7 @@ def test_label_laps_keeps_a_name_to_the_setup_it_was_measured_on():
     assert [labels[i]["setup_name"] for i in b] == ["", ""]
 
 
-def test_label_laps_on_unmeasured_laps_works_as_before():
+def test_label_laps_labels_unmeasured_laps():
     srv = _server()
     sid = make_session(srv._conn, car=CAR)
     ids = [_lap(srv._conn, sid, n) for n in (1, 2)]

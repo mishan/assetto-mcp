@@ -25,7 +25,7 @@ from assetto_mcp import analysis, db, line_map, turns  # noqa: E402
 
 _COLS = db.SAMPLE_COLUMNS[1:]
 
-# Three corners, as (centre, half width, peak lateral g) -- enough for the
+# Three corners, as (center, half width, peak lateral g) -- enough for the
 # corner detector to number something, so the turn marks have a source.
 _CORNERS = ((0.2, 0.04, 2.0), (0.5, 0.05, 1.8), (0.8, 0.04, 2.2))
 
@@ -63,8 +63,8 @@ def _dicts(positions, step_ms=40, x0=0.0, placed=True, corners=_CORNERS):
 def _lap_positions(n=2000, lead_in=0, spill=0):
     """One lap, optionally with the samples either side of the line.
 
-    `lead_in` samples still read the last metres of the lap before, `spill`
-    the first metres of the lap after -- what the collector really stores
+    `lead_in` samples still read the last meters of the lap before, `spill`
+    the first meters of the lap after -- what the collector really stores
     at each end.
     """
     return ([0.995 + 0.001 * i for i in range(lead_in)]
@@ -89,7 +89,7 @@ def test_a_lap_straddling_the_line_is_drawn_without_a_chord():
 
     Cutting at the lap's highest position trims the end only. A lap that
     opens with a sample from the previous lap has its highest position
-    first, and was cut down to that one sample and dropped.
+    first, and would be cut down to that one sample and dropped.
     """
     line = line_map.trace(_dicts(_lap_positions(lead_in=5, spill=5)))
     assert line is not None
@@ -317,7 +317,7 @@ def test_balance_is_front_minus_rear_slip_and_only_counts_cornering():
     assert loaded and all(abs(b - 0.9) < 1e-6 for b in loaded), loaded[:5]
     assert idle and all(b == 0.0 for b in idle)
     # Straights are left out of both the lap's median and the shared scale,
-    # or 0.0 from every straight would pull both towards neutral.
+    # or 0.0 from every straight would pull both toward neutral.
     assert lap["bal_med"] == 0.9 and data["balance_scale"] == 0.9, (
         lap["bal_med"], data["balance_scale"])
 
@@ -391,7 +391,7 @@ def test_a_press_on_a_repeated_lap_number_is_not_guessed_at():
 
 
 def test_two_long_lap_lists_do_not_share_a_file_name():
-    """Ends and a count are not a name: the earlier export was overwritten."""
+    """Ends and a count are not a name: one export would overwrite another."""
     def named(ids):
         return line_map.default_name(
             {"from_laps": True, "session_ids": [1],
@@ -615,7 +615,7 @@ def test_the_pages_integrate_matches_the_one_that_fills_its_other_side():
 
 
 def test_an_empty_step_is_road_still_covered():
-    """Skipping empty steps ran a real two-minute lap four seconds short."""
+    """Skipping empty steps runs a two-minute lap about four seconds short."""
     speeds = [108.0 if i % 2 == 0 else None for i in range(1000)]
     tm = line_map.integrate_time(speeds, 3000.0)
     assert abs(tm[-1] - 99800) <= 1, tm[-1]     # to step 998, 3 m each
@@ -664,7 +664,7 @@ def test_an_opponent_lap_with_no_clock_is_timed_from_speed_and_says_so():
 
 
 def test_a_lap_of_nothing_but_teleports_is_not_integrated():
-    """Filtering every sample left an empty lap, and dividing by no distance."""
+    """Filtering every sample leaves an empty lap and no distance to divide."""
     lap = line_map.rival_lap(
         [dict(r, speed_kmh=999.9) for r in _rival_rows()], 3000.0)
     assert lap["clock"] is None and lap["tm"] is None, lap["clock"]
@@ -681,7 +681,7 @@ def test_a_clock_that_never_moves_is_not_a_clock():
 
 
 def test_a_lap_seen_from_just_after_the_line_still_gets_a_time():
-    """Requiring the end steps gave nearly a whole lap no time at all."""
+    """Requiring the end steps would give nearly a whole lap no time at all."""
     rows = [r for r in _rival_rows() if 0.01 <= r["spline"] <= 0.99]
     lap = line_map.rival_lap(rows, 3000.0)
     assert lap["clock"] == "timed", lap["clock"]

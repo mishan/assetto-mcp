@@ -25,10 +25,8 @@ WHEELS = ("fl", "fr", "rl", "rr")
 
 class SPageFilePhysics(ctypes.Structure):
     _pack_ = 4
-    # These structs mirror an MSVC-compiled layout byte for byte, which is
-    # what _pack_ is for. Say so explicitly: with _pack_ set and no _layout_,
-    # CPython warns from 3.14 and makes it an error in 3.19, and this file's
-    # entire correctness rests on the layout. Inert on older versions.
+    # The MSVC layout these structs mirror. With _pack_ set and no _layout_,
+    # CPython warns from 3.14 and errors from 3.19; inert on older versions.
     _layout_ = "ms"
     _fields_ = [
         ("packetId", c_int32),
@@ -96,10 +94,6 @@ class SPageFilePhysics(ctypes.Structure):
 
 class SPageFileGraphic(ctypes.Structure):
     _pack_ = 4
-    # These structs mirror an MSVC-compiled layout byte for byte, which is
-    # what _pack_ is for. Say so explicitly: with _pack_ set and no _layout_,
-    # CPython warns from 3.14 and makes it an error in 3.19, and this file's
-    # entire correctness rests on the layout. Inert on older versions.
     _layout_ = "ms"
     _fields_ = [
         ("packetId", c_int32),
@@ -135,10 +129,6 @@ class SPageFileGraphic(ctypes.Structure):
 
 class SPageFileStatic(ctypes.Structure):
     _pack_ = 4
-    # These structs mirror an MSVC-compiled layout byte for byte, which is
-    # what _pack_ is for. Say so explicitly: with _pack_ set and no _layout_,
-    # CPython warns from 3.14 and makes it an error in 3.19, and this file's
-    # entire correctness rests on the layout. Inert on older versions.
     _layout_ = "ms"
     _fields_ = [
         ("smVersion", c_wchar * 15),
@@ -206,13 +196,10 @@ class _Page:
 def page_is_live(static) -> bool:
     """Has AC actually written this static page, or is it freshly zeroed?
 
-    Split out so it can be tested off Windows, where SimInfo refuses to
-    construct at all and this condition is therefore unreachable.
-
-    smVersion is the shared-memory layout version. AC writes it once when
-    the session starts and it is never blank in a running game, so an empty
-    string means nobody has written here -- which is exactly what Windows
-    hands back for a mapping it created on our behalf.
+    A function of its own so it can be tested off Windows, where SimInfo
+    refuses to construct. smVersion is written once when the session starts
+    and never blank in a running game, so an empty one means Windows
+    created this mapping on our behalf and nothing has written to it.
     """
     return bool(getattr(static, "smVersion", "").strip())
 
@@ -220,9 +207,8 @@ def page_is_live(static) -> bool:
 class SharedMemoryUnavailable(RuntimeError):
     """AC's shared memory could not be read as a running session.
 
-    A RuntimeError so existing `except RuntimeError` paths keep working --
-    the not-on-Windows refusal below already raised one, and callers that
-    treated that as "no live data" should treat this the same way.
+    A RuntimeError like the not-on-Windows refusal, so callers that treat
+    `except RuntimeError` as "no live data" handle both the same way.
     """
 
 
@@ -239,19 +225,10 @@ class SimInfo:
         self._graphics = _Page("Local\\acpmf_graphics", SPageFileGraphic)
         self._static = _Page("Local\\acpmf_static", SPageFileStatic)
 
-        # Opening the mapping is not evidence that AC is running.
-        #
-        # mmap.mmap(-1, size, tag) on Windows *creates* a page-file-backed
-        # mapping when nothing owns that name, and only attaches to AC's if
-        # it already exists. With the game closed every read therefore
-        # succeeds and returns zeros -- which is not an error anywhere, it
-        # is a car with no fuel, no tyres and a session that burns nothing.
-        # aidFuelRate came back as 0.0, the fuel planner read it as a
-        # legitimate "0% fuel usage" league setting, and produced a plan
-        # that needed no fuel at all.
-        #
-        # On Linux the constructor above refuses outright, so this only
-        # ever bit Windows -- the one platform this actually runs on.
+        # Opening the mapping is not evidence that AC is running:
+        # mmap.mmap(-1, size, tag) on Windows *creates* a zeroed mapping when
+        # nothing owns that name. Zeros read as plausible values -- an
+        # aidFuelRate of 0.0 is a real "burns nothing" league setting.
         if not page_is_live(self._static.data):
             self.close()
             raise SharedMemoryUnavailable(
@@ -278,22 +255,19 @@ class SimInfo:
 
 
 # AC reports the fuel-usage assist as a multiplier, 1.0 being 100%. Anything
-# past this is not one -- a misread page, or a percentage that was never
-# converted -- and scaling a whole fuel plan by 100 without noticing is far
-# worse than reporting the rate as unknown, so out-of-range values are
-# handed back raw for the caller to report rather than used.
+# past this is a misread page or an unconverted percentage; scaling a fuel
+# plan by 100 is far worse than reporting the rate as unknown, so
+# out-of-range values are handed back raw for the caller to report.
 MAX_FUEL_RATE = 10.0
 
 
 def fuel_facts() -> dict:
     """Tank capacity and the session's fuel-usage multiplier.
 
-    Both sit on the static page and neither had ever been read. maxFuel is
-    the answer when the game reports the car's FUEL setup entry as
-    read-only, which is otherwise the difference between a fuel plan that
-    says whether a stop is forced and one that does not mention stopping.
-    aidFuelRate is the multiplier a league session changes: at 50% or 200%
-    every liter-per-lap figure moves by that factor.
+    maxFuel is the capacity when the car's FUEL setup entry is read-only,
+    and is what lets a fuel plan say whether a stop is forced. aidFuelRate
+    is the multiplier a league session changes: at 50% or 200% every
+    liter-per-lap figure moves by that factor.
 
     Keys are absent rather than guessed when the game gives a value that
     cannot be one, and `fuel_rate` of 0 is a real setting -- a session that

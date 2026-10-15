@@ -1,15 +1,9 @@
 """Track limits as evidence rather than as a verdict.
 
-One boolean used to decide whether a lap counted, and it was wrong in both
-directions. A clean 2:06.769 at Sebring was stored invalid because wide flat
-kerbs put three wheels over a line the game did not care about; a scrappy
-2:10 stayed valid because it was only 7% off the pace. Either way
-`compare_runs` dropped the lap and never said so.
-
-So a lap now stores what was measured -- how many wheels, how many times,
-for how long -- and the verdict is a threshold applied to it. Which means
-the threshold can change and be re-applied to laps already driven, and that
-is what these tests are mostly about.
+A lap stores what was measured -- how many wheels, how many times, for how
+long -- and the verdict is a threshold applied to it, so the threshold can
+change and be re-applied to laps already driven. A lap that ran wide is
+still a lap and stays usable.
 """
 
 import sys
@@ -37,11 +31,7 @@ def test_a_lap_that_never_left_the_track_is_clean():
 
 
 def test_three_wheels_on_a_kerb_is_not_a_cut():
-    """Sebring lap 129: a 2:06.769 the game counted, stored invalid.
-
-    The circuit is ringed with wide flat kerbs and painted apron that put
-    three wheels outside the surface routinely. The old rule was "> 2".
-    """
+    """Flat kerbs often put three wheels off on laps the game counts."""
     s = db.score_excursions(_pairs([0] * 20 + [3] * 25 + [0] * 55))
     assert s["invalid"] is False, s
     # But it is not pretending nothing happened, either.
@@ -67,13 +57,11 @@ def test_a_single_glitched_tick_is_not_an_excursion():
     assert s["max_tyres_out"] == 4, "still recorded, just not counted"
 
 
-def test_the_minimum_duration_is_where_the_comment_says_it_is():
+def test_the_minimum_excursion_is_three_samples_at_25hz():
     """MIN_EXCURSION_MS is 120ms, which at 25Hz is three samples.
 
-    It used to be four, because duration was measured to the last
-    off-track sample rather than to where the episode ended -- so the
-    constant and the behaviour disagreed by a tick, in the direction of
-    missing real excursions.
+    Duration runs to where the episode ended, not to its last off-track
+    sample.
     """
     assert db.score_excursions(_pairs([0] + [4] * 2 + [0]))["excursions"] == 0
     assert db.score_excursions(_pairs([0] + [4] * 3 + [0]))["excursions"] == 1
@@ -133,9 +121,9 @@ def test_duration_uses_the_samples_own_clock():
 def test_a_lap_ending_off_track_is_scored_like_one_that_did_not():
     """The verdict must not turn on whether a clean sample happened to follow.
 
-    Three off-track samples ending a lap scored 0 excursions; the identical
-    three followed by one clean sample scored 1. A lap that ends off track
-    is the likeliest to have run wide, and it was the one being let off.
+    Three off-track samples ending a lap count the same as the identical
+    three followed by one clean sample. A lap that ends off track is the
+    likeliest to have run wide.
     """
     ends_off = db.score_excursions(_pairs([4, 4, 4]))
     then_clean = db.score_excursions(_pairs([4, 4, 4, 0]))
@@ -211,9 +199,7 @@ def test_an_out_lap_is_stored_and_flagged_rather_than_dropped():
 def test_changing_the_threshold_re_scores_laps_already_driven():
     """The reason for storing evidence instead of a verdict.
 
-    Under the old design this was impossible: the boolean was computed as
-    the lap landed and the samples behind it were never read again, so a
-    threshold that turned out to be wrong cost every lap driven under it.
+    A threshold that turns out wrong costs no laps: every one is re-scored.
     """
     with tempfile.TemporaryDirectory() as d:
         conn = db.connect(Path(d) / "t.db")
@@ -224,7 +210,7 @@ def test_changing_the_threshold_re_scores_laps_already_driven():
             assert db.get_lap(conn, three)["invalid"] == 0
 
             original = db.TRACK_LIMITS_WHEELS
-            db.TRACK_LIMITS_WHEELS = 3          # the old, stricter rule
+            db.TRACK_LIMITS_WHEELS = 3          # a stricter rule
             try:
                 changed = db.backfill_excursions(conn)
                 assert changed >= 1, changed
@@ -280,12 +266,10 @@ def test_outliers_are_flagged_but_never_hidden():
 
 
 def test_an_out_lap_does_not_become_the_sessions_best_lap():
-    """`best_ms` read `valid`, which stopped meaning "counts for timing".
+    """`valid` does not mean "counts for timing".
 
-    Out-laps are stored with lap_time_ms = 0 and are not invalid, so MIN()
-    over valid laps returned 0 and every session reported a best lap of
-    0:00.000 -- on every session, since an out-lap is now recorded for all
-    of them.
+    Out-laps are stored with lap_time_ms = 0 and are not invalid, so a MIN()
+    over valid laps would report a best lap of 0:00.000 on every session.
     """
     with tempfile.TemporaryDirectory() as d:
         conn = db.connect(Path(d) / "t.db")
@@ -306,13 +290,10 @@ def test_an_out_lap_does_not_become_the_sessions_best_lap():
 
 
 def test_every_tool_that_subtracts_lap_times_says_when_it_should_not():
-    """Storing out-laps and pit laps made them reachable by id.
-
-    That is the point -- their telemetry is real -- but their stored
-    lap_time_ms is not a lap time: zero for an out-lap, wall clock for an
-    abandoned or pitted one. compare_runs and list_sessions were taught
-    this; compare_laps and delta_by_position were not, and quietly reported
-    a `time_delta_ms` against a zero.
+    """Out-laps and pit laps are reachable by id, and their telemetry is
+    real, but their stored lap_time_ms is not a lap time: zero for an
+    out-lap, wall clock for an abandoned or pitted one. A `time_delta_ms`
+    against one must come with a warning.
     """
     import importlib
     import atexit
@@ -356,12 +337,12 @@ def test_every_tool_that_subtracts_lap_times_says_when_it_should_not():
         # And two real laps carry no warning at all.
         both = call(tool, lap_id_a=clean, lap_id_b=clean)
         assert "lap_time_warning" not in both, both
-    print("  compare_laps and delta_by_position both flag it now")
+    print("  compare_laps and delta_by_position both flag it")
 
 
 def test_a_lap_that_ran_wide_can_still_be_the_best_lap():
-    # Running wide does not make a lap time fictional, and this is the
-    # clearest statement that `invalid` no longer gates anything.
+    # Running wide does not make a lap time fictional: `invalid` gates
+    # nothing.
     with tempfile.TemporaryDirectory() as d:
         conn = db.connect(Path(d) / "t.db")
         try:

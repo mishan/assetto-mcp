@@ -3,8 +3,8 @@
 Turn numbers built from the laps (turns.py) are the run's, not the
 circuit's: a kink taken flat is never detected, so every number after it is
 one short, and a circuit that calls a corner 10A is numbered straight
-through. At Road Atlanta the session's T12 was the circuit's Turn 10A, and
-a driver told "brake later into T12" has to guess which corner that is.
+through. A driver told "brake later into T12" should not have to guess that
+it is the circuit's Turn 10A.
 
 Many tracks ship `data/sections.ini` for exactly this -- the game's own
 track-description overlay reads it:
@@ -35,8 +35,7 @@ from .config import env
 # How far outside a section an apex may fall and still take its name, as a
 # fraction of the lap: about 25 m on a 4 km circuit. Section boundaries are
 # drawn by hand for an overlay, and the detector's apex is the lateral-g
-# peak, which on a long corner sits near an end. Road Atlanta's Turn 2 apex
-# is 20 m past the OUT its sections.ini gives it.
+# peak, which on a long corner can sit 20 m past a section's OUT.
 NAME_SLACK = 0.006
 
 ORDINALS = ("1st", "2nd", "3rd", "4th", "5th", "6th")
@@ -254,12 +253,9 @@ def _section_for(t: dict, sections: list[dict]) -> int | None:
     By overlap of the turn's approach -- turn-in to apex -- when the turn
     has a turn-in: that is the stretch a driver means by a corner's name.
     The apex alone is the lateral-g peak, which on a corner run wide or
-    taken in two bites can sit in the next section along: Road Atlanta's
-    10A read as 10B by its median apex, because two laps of the five went
-    straight on there. The exit is left out because it runs on into
-    whatever follows, and counting it named a turn whose apex sat in Turn 3
-    after the Esses that its exit ran into, and named a flat kink "Turn 4"
-    for the few meters its exit shared with Turn 4's entry.
+    taken in two bites can sit in the next section along. The exit is left
+    out because it runs on into whatever follows, and would hand a flat
+    kink the name of the corner its exit runs into.
 
     A section only names a turn whose apex is in it or within NAME_SLACK
     of it, or that holds at least half the approach, so a section the
@@ -298,9 +294,9 @@ def claim(turns: list[dict],
           sections: list[dict]) -> tuple[list[dict], list[int | None]]:
     """The turns named (as name_turns), and which section claimed each.
 
-    The index is what track_corners lists a section's turns by. Matching
-    by the name instead goes wrong twice over: two sections can share a
-    name, and a section called "Turn 1" would claim "Turn 1 (La Source)".
+    The index is what track_corners lists a section's turns by, not the
+    name: two sections can share a name, and a section called "Turn 1"
+    would claim "Turn 1 (La Source)".
     """
     out = [dict(t) for t in turns]
     if not sections:

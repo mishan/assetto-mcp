@@ -2,9 +2,9 @@
 
 ac.getSetupSpinners() reports, for every adjustable entry, its legal
 min/max/step and its current value, keyed by the same section names the
-setup files use. That retires three things this project previously did by
-hand: unpacking data.acd for ranges, inferring units by comparing a saved
-file against the setup screen, and asking the driver which setup is loaded.
+setup files use. That replaces unpacking data.acd for ranges, inferring
+units by comparing a saved file against the setup screen, and asking the
+driver which setup is loaded.
 """
 
 import sys
@@ -27,9 +27,8 @@ class _Col:
 
 
 # The real shape, taken from the RSS Formula 4 at Mugello. CAMBER and
-# ROD_LENGTH are the two that caused trouble: camber stores tenths of a
-# degree, ride height stores a click index, and both were previously
-# worked out by hand from a saved file.
+# ROD_LENGTH are the awkward ones: camber stores tenths of a degree, and
+# ride height stores a click index.
 SPINNERS = [
     {"name": "ARB_FRONT", "label": "Front ARB", "min": 52608, "max": 182107,
      "step": 9250, "value": 126607, "units": "N/m"},
@@ -77,7 +76,7 @@ def test_spinners_arrive_and_split_into_ranges_and_values():
 
             r = db.setup_ranges(conn, "rss_formula_rss_4")
             assert r["ARB_REAR"] == (25459, 88127, 4476), r["ARB_REAR"]
-            # The two that needed hand-conversion before, straight from AC.
+            # The two awkward ones, straight from AC.
             assert r["CAMBER_LF"] == (-36, -26, 1), r["CAMBER_LF"]
             assert r["ROD_LENGTH_LF"] == (0, 36, 1), r["ROD_LENGTH_LF"]
 
@@ -145,17 +144,15 @@ def test_write_setup_clamps_against_game_ranges():
                          "CAMBER_LF": (-36, -26, 1)})
         assert out["ranges_source"] == "game", out
         # 88127, not 88123. The rear bar's range is not a whole number of
-        # steps -- the ascending ladder from 25459 stops at 88123 -- so a
-        # grid anchored at the minimum could not express the car's own
-        # maximum, and asking for the stiffest bar returned one notch
-        # softer. AC clamps at the end, so the maximum is reachable.
+        # steps -- the ascending ladder from 25459 stops at 88123 -- but AC
+        # clamps at the end, so the maximum is reachable.
         assert out["written"]["ARB_REAR"] == 88127, out["written"]
         assert out["written"]["CAMBER_LF"] == -30, out["written"]
         print(f"  clamped to {out['written']['ARB_REAR']}, the game's max")
 
 
 def test_identify_finds_the_one_matching_setup():
-    """The case that motivated this: two setups differing only in ARB_REAR."""
+    """Two setups differing only in ARB_REAR are told apart."""
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         base = {"ARB_FRONT": 126607, "PRESSURE_LF": 16, "CAMBER_LF": -30,
@@ -216,10 +213,9 @@ def test_a_setup_for_another_car_is_refused_not_filed():
 
     setup_ranges is keyed on the car alone, and those ranges then clamp
     every value written for it and decide which saved setup is identified as
-    loaded. One client posting the wrong carId -- an app still holding the
-    previous session's car -- would file one car's limits under another's
-    name, where they would stay and quietly distort both. The session knows
-    its car from shared memory; that is the answer that counts.
+    loaded. An app still holding the previous session's car would file one
+    car's limits under another's name, where they would stay and distort
+    both. The session knows its car from shared memory, and that wins.
     """
     with temp_db() as path:
         conn = db.connect(path)
@@ -288,9 +284,8 @@ def test_a_written_value_says_what_it_reads_as_on_the_setup_screen():
 
     Ride height is stored as a click index and camber in tenths of a degree.
     Asking for 20mm of rod length and writing 20 *clicks* is a setup that
-    looks fine and isn't, reported as success -- which is exactly what
-    show_clicks_mode exists to prevent. Nothing is converted (the file must
-    hold the stored value), but the report has to say which is which.
+    looks fine and isn't. Nothing is converted (the file must hold the
+    stored value), but the report has to say which is which.
     """
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -319,10 +314,8 @@ def test_a_written_value_says_what_it_reads_as_on_the_setup_screen():
         assert report["written"]["ROD_LENGTH_LF"] == 20
         assert report["written"]["CAMBER_LF"] == -32
 
-        # A click index is the case where nothing here can know what the
-        # screen says. It used to answer "20 (click index, mode 2)", which
-        # is an admission of ignorance shaped like an answer -- and got
-        # repeated back to the driver as one.
+        # For a click index nothing here can know what the screen says, so
+        # it must say so rather than offer something shaped like an answer.
         rod = shown["ROD_LENGTH_LF"]
         assert rod["source"] == "unknown", rod
         assert rod["shown"] is None, "it must not state a displayed value"
@@ -353,9 +346,7 @@ def test_display_conventions_of_none_zero_and_one_all_mean_as_stored():
         assert got["shown"] == "26 psi", (mult, got)
         assert got["source"] == "stored", (mult, got)
         # No units either: the screen shows the bare stored number, which is
-        # an answer. Returning None dropped the entry out of displays_as
-        # entirely, so the one report that says what every written value
-        # means was missing exactly the entries with nothing to explain.
+        # still an answer and must not drop the entry from displays_as.
         bare = setups._displays_as(26, {"units": "",
                                         "display_multiplier": mult,
                                         "show_clicks_mode": 0})
@@ -369,9 +360,8 @@ def test_display_conventions_of_none_zero_and_one_all_mean_as_stored():
 def test_identify_will_not_match_on_a_handful_of_shared_fields():
     """A file holding only [FUEL] agrees with every setup at that fuel load.
 
-    Reporting that as an exact match is the same failure as the brake-bias
-    fingerprint this replaced: a confident answer from fields that cannot
-    separate the candidates.
+    Reporting that as an exact match would be a confident answer from
+    fields that cannot separate the candidates.
     """
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -403,8 +393,8 @@ def test_a_car_with_few_adjustable_entries_can_still_be_identified():
 def test_a_step_of_zero_is_not_rewritten_as_one():
     """0 is how a continuous entry reports itself.
 
-    `step or 1` turned that into a grid of 1 and snapped every value onto
-    it, which is a quiet way to write a setup nobody asked for.
+    `step or 1` would turn that into a grid of 1 and snap every value onto
+    it, quietly writing a setup nobody asked for.
     """
     with tempfile.TemporaryDirectory() as d:
         conn = db.connect(Path(d) / "t.db")
@@ -424,7 +414,7 @@ def test_a_step_of_zero_is_not_rewritten_as_one():
 
 
 def test_read_only_entries_are_not_offered_as_writable():
-    """AC reports them so the screen can grey them out; writing one is
+    """AC reports them so the screen can gray them out; writing one is
     silently ignored, so offering it produces a confident report of a value
     the car never sees."""
     with tempfile.TemporaryDirectory() as d:
@@ -445,13 +435,11 @@ def test_read_only_entries_are_not_offered_as_writable():
 def test_identify_falls_back_from_a_layout_id_to_the_track_folder():
     """Sessions report track_config like 'mugello_osrw'; setups live under
     'mugello'. list_setups matches directories that START WITH what it is
-    given, which is the wrong direction for a layout id -- so identifying a
-    setup returned nothing at all while 30 live values sat there unused.
+    given, which is the wrong direction for a layout id.
 
     Every AC id but the handful the original game shipped is
-    `<vendor>_<track>[_<layout>]`, so taking the text before the first
-    underscore resolved to "ks" -- a folder that exists nowhere. The one
-    shape it did work for is the one circuit it was developed against.
+    `<vendor>_<track>[_<layout>]`, so the text before the first underscore
+    is "ks", a folder that exists nowhere.
     """
     vals = {"ARB_FRONT": 126607, "ARB_REAR": 47839}
     # folder on disk, what the session calls the layout, plain track name
@@ -511,10 +499,8 @@ def test_a_vendor_prefix_is_never_resolved_to_another_circuit():
 def test_the_folder_read_is_the_folder_listed():
     """Listing one directory and reading from another finds nothing.
 
-    The loose match resolves a plain track name onto a layout folder, and
-    every read then went to the name it was asked for -- FileNotFoundError,
-    skipped, "no saved setup matches the car" from a search that never
-    opened a file.
+    The loose match resolves a plain track name onto a layout folder, so
+    every read has to go to that folder, not the name it was asked for.
     """
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
@@ -527,19 +513,12 @@ def test_the_folder_read_is_the_folder_listed():
 
 
 def test_track_dir_names_only_a_folder_that_was_really_there():
-    """track_dir used to echo back the id it was asked for on failure.
+    """track_dir is None when no folder was found, not the id asked for.
 
-    Three states, and the first two were reported identically:
-
-        no folder anywhere    -> track_dir 'ks_nowhere_special'
-        folder exists, empty  -> track_dir 'mugello'
-        folder with setups    -> track_dir 'mugello'
-
-    The first is a wrong track id or an install that was never found; the
-    second is a real folder with nothing saved in it yet. One is fixed by
-    correcting the lookup, the other by saving a setup, and the field that
-    is supposed to say which folder was read named a directory that does
-    not exist on disk.
+    No folder at all is a wrong track id or an install that was never
+    found; an empty folder is a real one with nothing saved in it yet. One
+    is fixed by correcting the lookup, the other by saving a setup, so the
+    two must be reported differently.
     """
     vals = {"ARB_FRONT": 126607, "ARB_REAR": 47839}
 

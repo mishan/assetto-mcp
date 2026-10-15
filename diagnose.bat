@@ -6,11 +6,11 @@ REM (execution policy). This .bat launches PowerShell with that policy
 REM bypassed for this one script only - it changes no system setting.
 
 setlocal
-set "SCRIPT=%~dp0diagnose.ps1"
+set "SCRIPT=%~dp0windows\diagnose.ps1"
 
 if not exist "%SCRIPT%" (
-    echo Could not find diagnose.ps1 next to this file.
-    echo Keep both files together in the repo folder.
+    echo Could not find windows\diagnose.ps1.
+    echo Run this from the repo folder, with the windows folder beside it.
     pause
     exit /b 1
 )

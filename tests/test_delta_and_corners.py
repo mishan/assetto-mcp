@@ -1,9 +1,9 @@
 """Delta-time by track position, and lateral-g corner detection.
 
-Both exist because of the same failure: a lap was 558ms slower with every
-detected corner equal or faster. The time had gone somewhere the analysis
-could not see -- a fast sweeper the speed-minima detector excluded by
-construction, on ground no corner metric covered.
+Both answer the same failure: a lap 558ms slower with every detected
+corner equal or faster. The time goes somewhere a speed-minima detector
+cannot see -- a fast sweeper it excludes by construction, on ground no
+corner metric covers.
 """
 
 import math
@@ -34,7 +34,7 @@ def _lap(n=1200, lap_ms=113000, corners=((0.15, 0.05, 2.4),
 
     `corners` is (center, half_width, peak_lat_g). The third is deliberately
     a fast sweeper -- wide, high lateral g, only a shallow speed dip -- which
-    is the shape the old speed-minima detector could not see.
+    is the shape a speed-minima detector cannot see.
     """
     out = []
     t = 0.0
@@ -84,8 +84,8 @@ def _meta(lap_id, ms):
 def test_a_fast_sweeper_is_detected():
     """The Arrabbiata case: high lateral g, only a shallow speed dip.
 
-    Taken at ~93% of top speed, so the old detector's `speed >= 0.92*vmax`
-    guard threw it away before prominence was even considered.
+    Taken at ~93% of top speed, so a `speed >= 0.92*vmax` guard would throw
+    it away before prominence was even considered.
     """
     corners = analysis.detect_corners(_lap())
     apexes = [c["apex_pos"] for c in corners]
@@ -187,9 +187,9 @@ def _braking_lap(corners=((0.50, 0.03, 2.2),), brakes=((0.400, 0.485),),
     """Corners and braking zones specified independently.
 
     The other fixtures derive `brake` from the speed dip, which puts braking
-    inside the corner by construction -- exactly the assumption that hid this
-    bug. Here the pedal trace is given explicitly, so it can start where a
-    driver actually brakes: on the straight, before the car is loaded up.
+    inside the corner by construction. Here the pedal trace is given
+    explicitly, so it can start where a driver actually brakes: on the
+    straight, before the car is loaded up.
     """
     out = []
     for i in range(n):
@@ -215,15 +215,14 @@ def _braking_lap(corners=((0.50, 0.03, 2.2),), brakes=((0.400, 0.485),),
 
 
 def test_the_brake_point_is_where_braking_began_not_where_the_car_turned_in():
-    """The brake point used to collapse onto turn-in.
+    """Drivers brake in a straight line, before lateral load builds.
 
-    Drivers brake in a straight line, before lateral load builds -- so at the
-    corner's entry, braking is already underway. Searching forward from the
-    entry for the first pedal application therefore found the sample the
-    search started on: this corner brakes from 0.400 and turns in at ~0.477,
-    and it reported 0.477 as the brake point. The 8% of the lap where the car
-    was actually being slowed was invisible, and compare_laps was
-    differencing turn-in points under the name "brake point".
+    So at the corner's entry braking is already underway, and searching
+    forward from the entry for the first pedal application finds the sample
+    the search started on. This corner brakes from 0.400 and turns in at
+    ~0.477: reporting 0.477 hides the 8% of the lap where the car is being
+    slowed, and has compare_laps differencing turn-in points under the name
+    "brake point".
     """
     corners = analysis.detect_corners(_braking_lap())
     assert len(corners) == 1, corners
@@ -298,12 +297,11 @@ def _slowed(lap, zones):
 
 
 def test_a_dab_before_the_apex_is_not_the_brake_point():
-    """Suzuka's Spoon, as it was driven.
+    """Spoon at Suzuka: braking before turn-in, then a brush before apex two.
 
-    A full stop before turn-in, off the pedal, then a brush of it before the
-    second apex. The walk back from the apex took the last braking it found,
-    so the brush was the brake point on 16 laps of 18 -- 0.036 of a lap,
-    about 210 m, after the braking that actually slowed the car.
+    Walking back from the apex and taking the last braking found makes the
+    brush the brake point -- 0.036 of a lap, about 210 m, after the
+    braking that actually slowed the car.
     """
     lap = _braking_lap(corners=((0.52, 0.05, 2.2),),
                        brakes=((0.440, 0.470), (0.505, 0.508)))
@@ -315,9 +313,10 @@ def test_a_dab_before_the_apex_is_not_the_brake_point():
 
 
 def test_a_trail_off_below_the_threshold_does_not_move_the_brake_point():
-    """The hairpin: the pedal sat just under BRAKE_ON for longer than the
-    modulation allowance, then came back on. Half the laps reported the
-    second application as the brake point."""
+    """The hairpin: the pedal sits just under BRAKE_ON for longer than the
+    modulation allowance, then comes back on. The second application is
+    not where braking began.
+    """
     lap = _braking_lap(brakes=((0.400, 0.470), (0.4775, 0.485)))
     gap = [s for s in lap if 0.470 <= s["norm_pos"] < 0.4775]
     assert len(gap) > analysis.BRAKE_ZONE_GAP_SAMPLES, len(gap)
@@ -337,8 +336,9 @@ def test_braking_that_did_real_work_still_counts_when_it_came_first():
 
 def test_a_brake_held_on_the_grid_is_not_braking_for_turn_one():
     """The first lap of a race starts behind the line, stationary, on the
-    brake. Weighed by pedal travel that was the biggest braking zone of the
-    lap; it took no speed off, and it is not even on this lap."""
+    brake. Weighed by pedal travel that is the biggest braking zone of the
+    lap; it takes no speed off, and it is not even on this lap.
+    """
     lap = _braking_lap(corners=((0.10, 0.03, 2.2),), brakes=((0.050, 0.080),))
     grid = [{**lap[0], "norm_pos": 0.99 + k * 1e-4, "brake": 1.0,
              "speed_kmh": 0.0, "acc_lat": 0.0, "t_ms": -4000.0 + k * 40}
@@ -370,7 +370,7 @@ def test_delta_finds_time_lost_between_corners():
     # Segments outside the slow stretch should be ~flat.
     quiet = [r for r in out["segments"] if r["to"] <= 0.55]
     assert all(abs(r["gain_ms"]) < 20 for r in quiet), quiet
-    print(f"  loss localised to {worst['from']}-{worst['to']}, "
+    print(f"  loss localized to {worst['from']}-{worst['to']}, "
           f"{worst['gain_ms']}ms")
 
 
@@ -445,11 +445,10 @@ def test_time_lost_at_the_very_end_of_the_lap_is_reported():
     """The failure this whole feature exists to prevent, at the boundary.
 
     Sampling stops when completedLaps ticks over, so the last sample is
-    always short of position 1.0 -- and dropping a segment because its
-    *endpoint* was uncovered discarded the final twentieth of every lap.
-    That is the last corner and the run to the line. It reported the gap in
-    the total, then showed every segment flat, with track_covered_pct at
-    99.5 saying everything was fine.
+    always short of position 1.0. Dropping a segment because its *endpoint*
+    is uncovered discards the final twentieth of every lap -- the last
+    corner and the run to the line -- leaving the gap in the total, every
+    segment flat, and track_covered_pct at 99.5 saying everything is fine.
     """
     sa, sb = _flat_lap(0), _flat_lap(8000)
     la = {"id": 1, "lap_time_ms": sa[-1]["t_ms"]}
@@ -481,8 +480,9 @@ def test_a_partial_segment_says_which_span_it_measured():
 
 
 def test_gains_are_gains_and_not_the_smallest_losses():
-    """Bottom-three of the same list reported a lap that was slower
-    everywhere as having three "biggest gains"."""
+    """The bottom three of the loss list would give a lap that was slower
+    everywhere three "biggest gains".
+    """
     sa, sb = _flat_lap(0), _flat_lap(4000)
     la = {"id": 1, "lap_time_ms": sa[-1]["t_ms"]}
     lb = {"id": 2, "lap_time_ms": sb[-1]["t_ms"]}
@@ -505,9 +505,8 @@ def test_segments_argument_cannot_divide_by_zero():
 def test_segments_asks_for_a_row_count_and_gets_it():
     """It is an MCP tool argument, so it has to mean what it says.
 
-    `step = fine // segments` meant it did not: 7 returned 8 rows, 300
-    returned 200, and nothing in the output said the request had been
-    reinterpreted.
+    `step = fine // segments` would return 8 rows for 7 and 200 for 300,
+    with nothing in the output saying the request had been reinterpreted.
     """
     sa, sb = _flat_lap(0), _flat_lap(4000)
     la = {"id": 1, "lap_time_ms": sa[-1]["t_ms"]}
@@ -524,7 +523,7 @@ def test_segments_asks_for_a_row_count_and_gets_it():
         for a, b in zip(rows, rows[1:]):
             assert a["to"] == b["from"], (n, a, b)
             assert a["from"] < a["to"], (n, a)
-        # A request that could not be honoured says so instead of quietly
+        # A request that could not be honored says so instead of quietly
         # returning a different number of rows.
         assert out.get("segments_requested") == (n if n > expected else None)
     print("  1, 3, 7, 20, 199, 200 and 500 all return the row count asked for")
@@ -551,12 +550,12 @@ def _corner_lap(spike=None, spike_at=600, spike_len=6, g=1.1,
 
 
 def test_a_lateral_g_spike_does_not_become_a_corner():
-    """One glitched sample used to decide the whole lap.
+    """One glitched sample must not decide the whole lap.
 
     The threshold is a fraction of the lap's own peak lateral g, so a spike
-    raises the bar above every real corner: a six-sample 9g artefact on a
-    1.1g road-car lap left exactly one "corner" -- the artefact -- with a
-    fabricated peak_lat_g. Smaller spikes were reported as an extra corner.
+    raises the bar above every real corner: a six-sample 9g artifact on a
+    1.1g road-car lap would leave exactly one "corner" -- the artifact --
+    with a fabricated peak_lat_g. Smaller spikes would add an extra corner.
     """
     baseline = len(analysis.detect_corners(_corner_lap()))
     assert baseline == 4, baseline
@@ -567,7 +566,7 @@ def test_a_lateral_g_spike_does_not_become_a_corner():
 
 
 def test_an_impossible_reading_is_rejected_however_long_it_lasts():
-    """The two defences cover different failures and both are needed.
+    """The two defenses cover different failures and both are needed.
 
     The median filter removes anything shorter than a corner, whatever its
     magnitude. It cannot remove a *sustained* bad reading -- a stuck channel
@@ -611,14 +610,12 @@ def test_cars_of_every_grip_level_still_find_their_corners():
 
 # --- the threshold must not depend on how hard the lap was driven -------
 #
-# The bug these were written for, seen from the car: comparing five Suzuka
-# laps against two, seven corners of seventeen were reported as found on
-# only one side. The threshold is a fraction of the lap's own 99th-
-# percentile lateral g, and across that run peak_lat_g ran 2.78 to 3.42 --
-# a 23% swing in the bar, which took every corner near it in and out of
-# existence. A corner absent from a lap is not compared on that lap, and
-# the corners nearest the threshold are the light ones, which is where a
-# roll-stiffness change shows up first.
+# A per-lap threshold is a fraction of the lap's own 99th-percentile
+# lateral g. Across five Suzuka laps against two, peak_lat_g ran 2.78 to
+# 3.42 -- a 23% swing in the bar, enough that seven corners of seventeen
+# were found on only one side. A corner absent from a lap is not compared
+# on that lap, and the corners nearest the threshold are the light ones,
+# which is where a roll-stiffness change shows up first.
 
 
 def _pair_of_efforts():
@@ -635,14 +632,14 @@ def _pair_of_efforts():
 
 
 def test_a_shared_reference_finds_the_same_corners_on_both_laps():
-    """The fix, stated as the property that has to hold.
+    """The property the shared reference exists for.
 
     Not "the light corner survives" -- that depends on where the constants
     sit. The invariant is that two laps of the same circuit yield the same
     corners, so a comparison between them is drawn on all of them.
 
-    This is what fails if reference_peak_g is ignored, which is the mutation
-    that reverts the fix while leaving every other test passing.
+    This is what fails if reference_peak_g is ignored, a mutation that
+    leaves every other test passing.
     """
     easy, hard = _pair_of_efforts()
 
@@ -686,9 +683,8 @@ def test_one_wild_lap_does_not_move_the_reference():
     """Median, not mean or max.
 
     One lap with a big correction on it, or one lap driven far harder than
-    the rest, must not raise the bar for the whole run -- that would be the
-    original bug with extra steps, since the run's marginal corners would
-    vanish from every lap at once instead of from one.
+    the rest, must not raise the bar for the whole run -- the run's marginal
+    corners would then vanish from every lap at once instead of from one.
     """
     normal = [_lap() for _ in range(4)]
     wild = _lap(corners=((0.15, 0.05, 5.5), (0.45, 0.04, 1.2),
@@ -704,8 +700,8 @@ def test_an_inlap_neither_moves_the_reference_nor_gains_corners():
 
     The reference makes the bar lower for a quiet lap, which is the point --
     but a lap with no cornering load at all has no corners regardless, and
-    promoting its noise would be worse than the bug being fixed. The guard
-    is on the lap's own peak and must stay there.
+    promoting its noise would be worse than a per-lap bar. The guard is on
+    the lap's own peak and must stay there.
     """
     flat = _lap(corners=())
     ref = analysis.lat_g_reference([_lap(), _lap(), flat])
@@ -731,15 +727,12 @@ def test_a_lap_read_on_its_own_is_unchanged():
 
 # --- the headline accelerations are filtered too ------------------------
 #
-# detect_corners has dropped impossible acceleration since a 9g burst
-# invented a corner. lap_summary's own peak_lat_g and peak_braking_g did
-# not, and they are compare_runs metrics -- so the same signal was cleaned
-# for one purpose and passed through raw for another.
-#
-# Seen live at Sebring: one ~10g lateral spike reported peak_lat_g as 6.32g
-# averaged over two laps against a real 2.4, and inflated the metric's noise
-# estimate until compare_runs' resolution for it reached 15g. The lap was
-# not merely misreported; the channel stopped being able to detect anything.
+# lap_summary's peak_lat_g and peak_braking_g are compare_runs metrics, so
+# they drop impossible acceleration just as detect_corners does. Unfiltered,
+# one ~10g lateral spike can read as a 6.32g peak averaged over two laps
+# against a real 2.4, and inflate the metric's noise estimate until
+# compare_runs' resolution for it reaches 15g: the lap is not merely
+# misreported, the channel stops being able to detect anything.
 
 
 def _spike(samples, field, value, at=600, n=3):
@@ -764,7 +757,7 @@ def test_a_lateral_spike_does_not_reach_the_headline_figure():
 
 
 def test_a_braking_spike_does_not_reach_the_headline_figure():
-    """peak_braking_g took a raw min() and had no ceiling at all."""
+    """A raw min() of longitudinal g has no ceiling at all."""
     clean = analysis.lap_summary(_meta(1, 113000), _lap())
     spiked = analysis.lap_summary(_meta(1, 113000),
                                   _spike(_lap(), "acc_lon", -12.0))
@@ -798,8 +791,8 @@ def test_dropped_samples_are_counted_once_not_once_per_channel():
 
     These spikes come from a reset or a teleport, which hits both
     acceleration axes on the same tick, so adding the two channels' drops
-    together double-counted the usual case -- and could report more samples
-    dropped than the lap contained.
+    together would double-count the usual case -- and could report more
+    samples dropped than the lap contained.
     """
     lap = _lap()
     total = len(lap)
@@ -855,8 +848,8 @@ def test_a_zero_reference_is_a_reference_not_an_absence():
 def test_both_channels_are_held_to_the_same_bar_as_corner_detection():
     """One signal, one definition of believable.
 
-    The bug was two code paths disagreeing about what counts as physics.
-    If these constants ever diverge, that disagreement is back.
+    If these constants diverge, two code paths disagree about what counts
+    as physics.
     """
     assert analysis.LAT_G_SANE_MAX == analysis.LON_G_SANE_MAX
     assert _lap(corners=()) is not None  # the helper still builds a flat lap
@@ -898,11 +891,10 @@ def test_a_lap_without_position_says_so_instead_of_guessing():
 def test_a_comparison_lap_with_no_samples_is_an_error_not_a_silent_skip():
     """Asking and getting nothing must not look like never asking.
 
-    The branch was gated on the truthiness of other_samples, so a lap whose
-    telemetry was never stored fell straight through it: no comparison, and
-    no comparison_error either. A reader cannot tell that from a
-    single-lap call, and the answer to "was that a wider line" would have
-    been silence.
+    Gated on the truthiness of other_samples, a lap whose telemetry was
+    never stored would fall straight through: no comparison, and no
+    comparison_error either. A reader cannot tell that from a single-lap
+    call, and the answer to "was that a wider line" would be silence.
     """
     mine = _placed(_lap())
     out = analysis.driving_line(_meta(1, 113000), mine, 20,
@@ -910,8 +902,8 @@ def test_a_comparison_lap_with_no_samples_is_an_error_not_a_silent_skip():
     assert "compared_with" not in out, out
     assert "no telemetry samples stored" in out["comparison_error"], out
 
-    # And not asking still says nothing, which is the case it was confused
-    # with.
+    # And not asking still says nothing, which is the case it must not be
+    # confused with.
     alone = analysis.driving_line(_meta(1, 113000), mine, 20)
     assert "comparison_error" not in alone, alone
     print(f"  {out['comparison_error']}")
@@ -922,8 +914,8 @@ def test_two_laps_that_never_overlap_say_so_rather_than_going_quiet():
 
     Both laps carry position, so the checks above pass, and then no slice
     holds both -- two partial laps that stopped in different places. gaps
-    comes back empty and the payload used to contain neither compared_with
-    nor comparison_error, which is the state those checks exist to prevent.
+    comes back empty, and a payload with neither compared_with nor
+    comparison_error is the state those checks exist to prevent.
     """
     first_half = [s for s in _placed(_lap()) if s["norm_pos"] < 0.4]
     second_half = [s for s in _placed(_lap()) if s["norm_pos"] > 0.6]
@@ -952,7 +944,7 @@ def test_the_line_follows_the_car_round_the_track():
 def test_separation_recovers_a_known_offset_between_two_lines():
     """The number that answers "was that a wider line, and by how much"."""
     mine = _placed(_lap())
-    wider = _placed(_lap(), x0=3.0)      # three metres across, all the way
+    wider = _placed(_lap(), x0=3.0)      # three meters across, all the way
     out = analysis.driving_line(_meta(1, 113000), mine, 40,
                                 _meta(2, 113400), wider)
     comp = out["compared_with"]
@@ -993,8 +985,9 @@ def test_the_point_count_is_clamped_rather_than_trusted():
 
 
 def test_a_smooth_track_reports_no_rough_sections():
-    """Sorting descending always returns six, so a glass-smooth lap listed
-    six roughest places at 0.0mm -- a list shaped like a finding."""
+    """Sorting descending always returns six, so a glass-smooth lap would list
+    six roughest places at 0.0mm -- a list shaped like a finding.
+    """
     out = analysis.driving_line(_meta(1, 113000), _placed(_lap()), points=20)
     assert out["roughest_sections"] == [], out["roughest_sections"]
     assert "nothing here reads as rough" in out["surface_note"], out
@@ -1005,7 +998,9 @@ def test_a_position_missing_one_axis_is_not_a_position():
     """The collector writes x, y and z together, so this cannot come from a
     live session -- but store_lap pads short tuples from earlier layouts,
     and one truncated a field past tyres_out lands exactly here. Checking
-    pos_x alone let it reach mean(pos_z) and raise from inside statistics."""
+    pos_x alone would let it reach mean(pos_z) and raise from inside
+    statistics.
+    """
     samples = _placed(_lap())
     for s in samples:
         s["pos_z"] = None
@@ -1022,7 +1017,7 @@ def test_a_flat_list_of_samples_is_refused_rather_than_answered():
     one entry per lap. Given the flat version, each "lap" is a single dict,
     len(dict) < 50 skips all of them, and the answer is None -- which
     detect_corners reads as "no shared bar" and silently falls back to the
-    per-lap threshold. That is precisely the behaviour the shared reference
+    per-lap threshold. That is precisely the behavior the shared reference
     exists to remove, arrived at from a call that looked like it worked.
     """
     laps = [_lap(), _lap()]
@@ -1078,10 +1073,10 @@ def test_a_corner_missed_on_one_lap_does_not_renumber_the_others():
 def test_a_corner_seen_on_one_lap_of_four_takes_no_number():
     """A spin is not a corner, however corner-shaped it looks.
 
-    The detector carves a violent enough spin out as its own corner -- which
-    is how the one at Sebring was eventually spotted. Numbered, it would
-    push every turn after it up by one on the strength of a single lap, so
-    it is reported separately instead and the lap that has it gets a null.
+    The detector carves a violent enough spin out as its own corner.
+    Numbered, it would push every turn after it up by one on the strength
+    of a single lap, so it is reported separately instead and the lap that
+    has it gets a null.
     """
     laps = [_obs(0.15, 0.45, 0.88) for _ in range(3)]
     spun = _obs(0.15, 0.45, 0.60, 0.88)
@@ -1114,7 +1109,7 @@ def test_two_corners_cannot_both_claim_one_turn():
     """Nearest-first and one-to-one, the pairing compare_runs uses.
 
     Taking each corner's nearest turn independently, an esse the map holds
-    as one piece of road gets both its halves labelled T1, and a payload
+    as one piece of road gets both its halves labeled T1, and a payload
     naming the same turn twice is worse than one that says it does not
     know.
     """
@@ -1142,7 +1137,7 @@ def _piece(entry, apex, exit_, sign=-1, speed=150.0):
 
 
 def test_a_long_corner_split_on_some_laps_is_still_one_turn():
-    """Sunset Bend, which was numbered four times.
+    """Sunset Bend: one long corner that some laps split in two.
 
     Six laps drive it as one corner, and its slowest point wanders across
     a lap-hundredth. On two more the lateral g sags under the bar mid-corner
@@ -1167,9 +1162,9 @@ def test_a_long_corner_split_on_some_laps_is_still_one_turn():
 def test_an_esse_is_two_turns_even_with_its_apexes_close():
     """Senna at Interlagos: a left then a right, apexes inside tolerance.
 
-    Chained by apex distance regardless of direction, the two halves were
-    one group, split wherever the widest gap fell -- which came out as a
-    turn seen on two laps and another on six, both on the left-hander.
+    Chained by apex distance regardless of direction, the two halves are
+    one group, split wherever the widest gap falls -- which can come out as
+    a turn seen on two laps and another on six, both on the left-hander.
     """
     lefts = (0.074, 0.069, 0.073, 0.063, 0.074, 0.072, 0.070, 0.062)
     rights = (0.090, 0.079, 0.088, 0.087, 0.088, 0.082, 0.089, 0.088)
@@ -1202,13 +1197,13 @@ def test_two_corners_one_lap_ran_together_are_still_two():
     assert cmap["turns"][0]["laps_seen"] == 5, cmap["turns"]
 
 
-def test_one_lap_alone_cannot_bridge_a_turn_into_its_neighbour():
+def test_one_lap_alone_cannot_bridge_a_turn_into_its_neighbor():
     """The span-support rule counts laps, not corners.
 
     One lap that split a corner into two pieces has two corners in a group,
-    and counting corners let that lap meet "two on each side" by itself.
-    Four laps cornered at 0.44; a fifth spun up two overlapping pieces just
-    before it, and they would have been merged into that turn.
+    and counting corners would let that lap meet "two on each side" by
+    itself. Four laps corner at 0.44; a fifth spins up two overlapping
+    pieces just before it, which must not be merged into that turn.
     """
     laps = [[_piece(0.42, 0.44, 0.46, sign=1)] for _ in range(4)]
     laps.append([_piece(0.395, 0.400, 0.450, sign=1),
@@ -1231,8 +1226,7 @@ def test_the_map_numbers_the_corners_a_real_lap_drove():
     apexes = [t["apex_pos"] for t in cmap["turns"]]
     assert all(abs(a - b) < 0.02 for a, b in
                zip(apexes, (0.15, 0.45, 0.70, 0.88))), apexes
-    # The fast sweeper at 0.70 is T3: the corner the old detector could not
-    # see at all is a named piece of road now.
+    # The fast sweeper at 0.70, invisible to a speed-minima detector, is T3.
     assert cmap["turns"][2]["turn_sign"] == -1, cmap["turns"][2]
 
     summary = analysis.lap_summary(_meta(1, 113000), laps[0], ref,

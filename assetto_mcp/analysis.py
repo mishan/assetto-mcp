@@ -34,20 +34,18 @@ SLIP_SANE_MAX = 50.0
 OUTLIER_MARGIN_MS = 25_000
 OUTLIER_FRACTION = 0.25
 
+# Ceiling on believable lateral g, the sibling of SLIP_SANE_MAX above. No
+# car in AC sustains this; anything past it is a reset, a wall strike or a
+# physics tick straddling a teleport. The corner threshold is a fraction of
+# the lap's own peak, so a single spiked sample would raise the bar above
+# every genuine corner on the lap.
+LAT_G_SANE_MAX = 6.0
+# The same ceiling on the longitudinal axis, for peak_braking_g.
+LON_G_SANE_MAX = 6.0
+
 # Corner detection thresholds. The fraction is of the lap's own peak lateral
 # g, so the same numbers work for a Formula car and a road car; the absolute
 # floor stops a slow lap promoting its own noise into corners.
-# Ceiling on believable lateral g, the sibling of SLIP_SANE_MAX above. No
-# car in AC sustains this; anything past it is a reset, a wall strike or a
-# physics tick straddling a teleport. It matters more here than it looks:
-# the corner threshold is a fraction of the lap's own peak, so a single
-# spiked sample raises the bar above every genuine corner on the lap.
-LAT_G_SANE_MAX = 6.0
-# Longitudinal is the same artefact on a different axis, and had no ceiling
-# at all: peak_braking_g took the raw minimum of acc_lon, so one spiked
-# sample reported a braking figure no car produced.
-LON_G_SANE_MAX = 6.0
-
 CORNER_LAT_G_FRACTION = 0.35
 CORNER_MIN_LAT_G = 0.35
 CORNER_MIN_PEAK_LAT_G = 0.5
@@ -77,10 +75,10 @@ BRAKE_ZONE_GAP_SAMPLES = 5
 # took at least this share of the speed the heaviest run did. The brake
 # point is the start of the earliest such run -- so a dab in the middle of a
 # corner is not one, and a zone split by a lift still starts where it began.
-# Measured on every real session with three or more laps: taking the last
-# run put 206 brake points in 1410 more than 0.005 of a lap (about 30 m)
-# from their corner's median, and this puts 77 in 1428. A half instead of a
-# quarter gives the same answer to within six laps.
+# Over every recorded session with three or more laps, taking the last run
+# instead puts 206 of 1410 brake points more than 0.005 of a lap (about
+# 30 m) from their corner's median; this rule puts 77 of 1428. A half
+# instead of a quarter gives the same answer to within six laps.
 BRAKE_ZONE_MIN_SHARE = 0.25
 
 
@@ -139,7 +137,7 @@ def sample_slip_balance(s: dict) -> float | None:
 
     The corner metric's quantity and sign -- positive is the front sliding
     more -- read at a single point instead of averaged round an apex, so a
-    whole lap can be coloured by it.
+    whole lap can be colored by it.
     """
     f = _sane_slip(s.get("slip_fl"), s.get("slip_fr"))
     r = _sane_slip(s.get("slip_rl"), s.get("slip_rr"))
@@ -147,10 +145,10 @@ def sample_slip_balance(s: dict) -> float | None:
 
 
 def _median_filter(values: list[float], window: int = 11) -> list[float]:
-    """Centerd running median; window forced odd.
+    """Centered running median; window forced odd.
 
     Removes impulses rather than spreading them, which is what a mean does.
-    A run shorter than half the window is replaced by its neighbours; a real
+    A run shorter than half the window is replaced by its neighbors; a real
     corner, which holds its load for far longer, passes through unchanged.
     """
     if window % 2 == 0:
@@ -186,25 +184,10 @@ def _sane_channel(samples: list[dict], field: str,
                   limit: float) -> list[float]:
     """One acceleration channel with the glitches removed.
 
-    detect_corners has filtered these spikes since the day a six-sample 9g
-    burst invented a corner. The two headline figures in lap_summary did
-    not: peak_lat_g took the raw maximum and peak_braking_g the raw minimum,
-    so the same signal was sanitised for one purpose and passed through
-    untouched for another.
-
-    For peak_lat_g that is worse than a wrong number on a summary, because
-    it is one of RUN_METRICS. Measured on one Sebring run: a single ~10g
-    lateral spike reported peak_lat_g as 6.32g averaged over two laps
-    against a real 2.4, and inflated the metric's own noise estimate until
-    compare_runs gave it a resolution of 15g -- a channel that could no
-    longer detect a change of any size. A spike does not just misreport the
-    lap it is on, it silently disables the comparison it takes part in.
-
-    peak_braking_g is not in RUN_METRICS and carries none of that. It is
-    filtered because it is the same signal on the other axis and a braking
-    figure no car could produce is worth removing on its own account -- and
-    because leaving one of a matched pair unfiltered is how the first one
-    came to be missed.
+    peak_lat_g is one of RUN_METRICS, so a single spike does more than
+    misreport its lap: it inflates the metric's noise estimate until
+    compare_runs cannot resolve a change of any size. peak_braking_g is the
+    same signal on the other axis and gets the same filter.
     """
     return [s[field] for s in samples if _is_sane(s.get(field), limit)]
 
@@ -222,31 +205,22 @@ def _lat_g_trace(samples: list[dict]) -> tuple[list[float], int]:
     without committing to a threshold -- lat_g_reference needs the trace
     from several laps before any of them can be thresholded.
     """
-    # Drop implausible lateral g before anything is derived from it. AC
-    # emits the same class of spike here that it does on wheelSlip -- a
-    # reset, a wall strike, a tick straddling a teleport -- and the
+    # Drop implausible lateral g before anything is derived from it: the
     # threshold is a fraction of a measured peak, so one bad sample raises
-    # the bar above every real corner. Measured: a six-sample 9g spike on a
-    # 1.1g road-car lap left one "corner", the artefact, with a fabricated
-    # peak_lat_g. Dropped rather than clamped, for the same reason as
+    # the bar above every real corner. Dropped rather than clamped, as with
     # wheelSlip: a spike is not a hard corner, it is not data.
     raw = [s.get("acc_lat", 0.0) or 0.0 for s in samples]
     sane = [v if (math.isfinite(v) and abs(v) <= LAT_G_SANE_MAX) else 0.0
             for v in raw]
     dropped = sum(1 for a, b in zip(raw, sane) if a != b)
 
-    # Median first, then mean. A moving average does not remove an impulse,
-    # it spreads it: a six-sample spike smeared across an 11-sample window
-    # becomes a sixteen-sample run above the threshold -- longer than
-    # CORNER_MIN_SAMPLES, and so reported as a corner.
-    #
-    # A median filter removes any run shorter than half its width. Sized
-    # from CORNER_MIN_SAMPLES rather than picked: a burst too short to be a
-    # corner is, by this module's own definition, not one -- so the same
-    # number that decides what counts as a corner decides what counts as a
-    # glitch. This catches spikes of plausible magnitude too, which the
-    # LAT_G_SANE_MAX ceiling above cannot: 2g on a road car is impossible to
-    # rule out by value and obvious by duration.
+    # Median first, then mean. A moving average spreads an impulse rather
+    # than removing it: a six-sample spike smeared across an 11-sample
+    # window becomes a run longer than CORNER_MIN_SAMPLES. The median
+    # window is sized from CORNER_MIN_SAMPLES, so a burst too short to be a
+    # corner is treated as a glitch -- which catches spikes the
+    # LAT_G_SANE_MAX ceiling cannot: 2g on a road car is impossible to rule
+    # out by value and obvious by duration.
     return _smooth(_median_filter(sane, LAT_G_MEDIAN_WINDOW), 11), dropped
 
 
@@ -267,34 +241,19 @@ def lat_g_reference_detail(
         sample_sets: Iterable[list[dict]]) -> dict:
     """One cornering load for a set of laps, and how firm that number is.
 
-    `sample_sets` is one entry per lap, each the sample list that lap's other
-    analysis takes -- NOT a flat list of samples, which is the shape every
-    other function in this module wants and therefore the mistake a call
-    site is most likely to make.
-
-    That misuse is refused rather than absorbed. Passed a flat list, every
-    "lap" is a single sample dict, `len(dict) < 50` skips all of them, and
-    the answer is None -- which detect_corners reads as "no shared bar" and
-    quietly falls back to per-lap thresholds. The caller would get the exact
-    behaviour this function exists to replace, from a call that appeared to
-    work.
+    `sample_sets` is one entry per lap, each that lap's sample list -- NOT a
+    flat list of samples, the shape every other function here takes. A
+    flat list raises: it would otherwise skip every "lap" and return None,
+    silently dropping detect_corners back to per-lap thresholds.
 
     Pass every lap that is going to be compared. `reference` is None when
     none of them carries enough lateral load to have corners at all, which
-    leaves detect_corners on its per-lap fallback. That is the real
-    "nothing here corners" answer, and it should not be reachable by a
-    typo as well.
+    leaves detect_corners on its per-lap fallback.
 
-    The median rather than the mean or the max: one scrappy lap with a big
-    correction on it, or one lap driven far harder than the rest, should not
-    move the bar for the whole run. The median of five laps is unmoved by
-    either.
-
-    `laps` is reported because that claim gets weaker as the count falls,
-    and at two it is not true at all -- the median of two IS their mean, so
-    a single scrappy lap drags the bar by half its own deviation. compare_laps
-    passes exactly two, so this is not a hypothetical, and a caller that
-    reports the reference should report how many laps produced it.
+    The median rather than the mean or the max: one scrappy lap, or one
+    driven far harder than the rest, should not move the bar for the whole
+    run. `laps` is reported because that holds less as the count falls; at
+    two the median is their mean, and compare_laps passes exactly two.
     """
     peaks = []
     for samples in sample_sets:
@@ -360,31 +319,24 @@ def corner_detection_note(reference: float | None, laps: int,
     Reported everywhere corners are, because it decides which corners exist
     and it is not the same number in every tool. lap_summary read on its own
     uses the lap's own peak; the same lap inside compare_runs uses the bar
-    shared across the comparison. Both are right, they disagree by design,
-    and a driver who reads one and then the other was previously given two
-    corner lists and no way to know why they differed.
+    shared across the comparison. Both are right and they disagree by
+    design, so the payload has to say which one it used.
 
-    `reference is not None` throughout rather than truthiness: it is
-    float | None, and 0.0 is a real reference meaning "nothing in this run
-    cornered". Treating that as absent would report the per-lap basis for a
-    payload whose corners were found against the shared one -- a note about
-    provenance that is wrong about provenance is worse than no note.
+    `reference is not None` rather than truthiness: 0.0 is a real reference
+    meaning "nothing in this run cornered", and treating it as absent would
+    report the wrong basis.
 
     `laps` is how many contributed to the reference; 0 means the caller did
     not say. The count is reported only when it is known, and the caution
-    is worded for the case it actually describes -- a warning about a
-    two-lap median attached to a payload built from one lap, or from an
-    unknown number, is metadata that misleads about metadata.
+    is worded for the case it actually describes.
     """
     shared = reference is not None
     bar = reference if shared else (own_peak or 0.0)
     out = {
-        # `shared_basis` names which laps shared it. It exists because the
-        # answer is no longer always "the laps being compared": a single
-        # lap read through lap_summary is now held to the bar its session's
-        # turn numbering was built against, and a payload that called that
-        # "the laps being compared" would be describing a comparison the
-        # reader never asked for.
+        # `shared_basis` names which laps shared it: a single lap read
+        # through lap_summary is held to the bar its session's turn
+        # numbering was built against, which is not "the laps being
+        # compared".
         "basis": (f"shared across "
                   f"{shared_basis or 'the laps being compared'}") if shared
                  else "this lap's own cornering load",
@@ -398,11 +350,9 @@ def corner_detection_note(reference: float | None, laps: int,
     if spread_g is not None:
         out["peak_spread_g"] = spread_g
     if laps == 1:
-        # Not a hypothetical: lat_g_reference only counts laps carrying
-        # enough lateral load to have corners at all, so a run where the
-        # rest were in-laps contributes exactly one peak. There is no
-        # median to be careful about -- the bar simply IS that lap's peak,
-        # and every other lap is judged against it.
+        # lat_g_reference only counts laps carrying enough lateral load to
+        # have corners, so a run where the rest were in-laps contributes
+        # exactly one peak.
         out["caution"] = (
             "only one lap carried enough cornering load to contribute, so "
             "this bar is that lap's own peak rather than a median over the "
@@ -423,12 +373,11 @@ def corner_detection_note(reference: float | None, laps: int,
 # alone cut it into two, three or four corners depending on the lap.
 #
 # The load in a gap between two real corners is a continuum, not two
-# groups, so no share is clean. Measured over every recorded session: at
-# 0.7, turns found on fewer than three laps in four fell from 50 to 24,
-# and two turns that were found on nearly every lap now are on one to three
-# fewer, where the gap sits near the line and is joined on some laps only.
-# At 0.5 the joins reach real gaps -- Interlagos 0.81 went from nine laps
-# of nine to five -- and at 0.9 they miss half of Suzuka's.
+# groups, so no share is clean. Over every recorded session, 0.7 halves
+# the turns found on fewer than three laps in four (50 to 24) at the cost
+# of two turns, whose gap sits near the line, being joined on some laps.
+# At 0.5 the joins reach real gaps between corners, and at 0.9 they miss
+# half of Suzuka's.
 CORNER_RELEASE_SHARE = 0.7
 
 
@@ -461,19 +410,11 @@ def detect_corners(samples: list[dict],
                    reference_peak_g: float | None = None) -> list[dict]:
     """Find corners as sustained regions of lateral acceleration.
 
-    The previous implementation looked for local minima of speed, and
-    required the apex to be below 92% of the lap's top speed. That is a
-    slow-corner detector: Mugello's Arrabbiata is taken at ~93% of top
-    speed, so it -- and every other fast sweeper, the corners that decide
-    a lap -- was excluded by construction. Time lost there showed up
-    nowhere, because the only corners on the list were the ones that were
-    never the problem.
-
-    Lateral load is what makes a corner a corner. A fast sweeper barely
-    dents the speed trace but pulls as hard as anything on the lap, so
-    that is what gets thresholded here. The apex is then the slowest point
-    inside the region, which is the same apex the old code was looking
-    for -- it just no longer has to be a global-ish minimum to be found.
+    Lateral load is what makes a corner a corner. A fast sweeper like
+    Mugello's Arrabbiata, taken at ~93% of top speed, barely dents the
+    speed trace but pulls as hard as anything on the lap, so a speed-minimum
+    detector would miss the corners that decide a lap. The apex is the
+    slowest point inside the region.
 
     Returns one dict per corner with apex position, min speed, brake point,
     peak steering, and a front-vs-rear slip balance metric around the apex
@@ -482,46 +423,24 @@ def detect_corners(samples: list[dict],
     if len(samples) < 50:
         return []
 
-    # `dropped` is read at the bottom of this function, where it is attached
-    # to every corner as lat_g_samples_dropped.
     lat, dropped = _lat_g_trace(samples)
     own_peak = _lat_g_peak(lat)
-    # An in-lap, or a lap spent trundling: nothing corner-shaped here. Note
-    # this is not the spin case -- a spin produces a very large lateral g,
-    # which the ceiling in _lat_g_trace deals with, not a small one.
-    #
-    # Judged on the lap's own load and never on the shared reference: a lap
-    # spent limping round is cornerless whatever the rest of the run did,
-    # and a reference borrowed from four quick laps would otherwise conjure
-    # corners out of its noise.
+    # An in-lap, or a lap spent trundling: nothing corner-shaped here. Judged
+    # on the lap's own load, never the shared reference, which would
+    # otherwise conjure corners out of a slow lap's noise.
     if own_peak < CORNER_MIN_PEAK_LAT_G:
         return []
 
-    # Relative to a cornering load, so this works for a Formula car pulling
-    # 3g and a road car pulling 1.1g, with an absolute floor so that a lap
-    # spent trundling doesn't promote its own noise into "corners".
+    # The caller passes one reference for every lap it means to compare. A
+    # per-lap peak makes the bar a property of how hard that lap was driven
+    # (2.78 to 3.42g across one Suzuka run, moving the threshold 23%), so
+    # marginal corners -- the low-load ones a setup change is most likely
+    # to move -- exist on one side of a comparison and not the other. A
+    # lap analyzed on its own falls back to its own peak.
     #
-    # Whose cornering load is the whole question. Taking each lap's own peak
-    # made the bar a property of how hard that particular lap was driven:
-    # across one Suzuka run peak_lat_g ran 2.78 to 3.42, moving the
-    # threshold by 23% and taking every corner near it in and out of
-    # existence. Seven corners of seventeen were found on only one side of a
-    # comparison. That is worse than untidy -- a corner missing from a lap
-    # is not compared on that lap at all, and the corners nearest the
-    # threshold are the marginal, low-load ones a setup change is most
-    # likely to move. The evidence went missing exactly where it mattered.
-    #
-    # So the caller passes one reference for every lap it means to compare,
-    # and each lap is measured against the same bar. A lap analysed on its
-    # own still falls back to its own peak, which is the best available
-    # answer when there is nothing to compare it to.
-    #
-    # `is not None`, not truthiness. These are float | None, and a 0.0
-    # reference is a real answer -- "nothing in this run cornered" -- that
-    # must not silently become "use your own peak instead". Falling back on
-    # a falsy float is how one lap ends up measured against a different bar
-    # from the rest without anything saying so, which is the whole failure
-    # this parameter exists to end.
+    # `is not None`, not truthiness: a 0.0 reference is a real answer --
+    # "nothing in this run cornered" -- and must not become "use your own
+    # peak instead".
     peak = own_peak if reference_peak_g is None else reference_peak_g
     thresh = corner_threshold(peak)
 
@@ -591,35 +510,32 @@ def detect_corners(samples: list[dict],
 
 
 # How far an apex may wander between laps and still be the same piece of
-# road. 1% of a lap, about 50m at Mugello. compare_runs has taken this as
-# its corner_tolerance since it stopped bucketing, and the turn numbers use
-# the same figure deliberately: "T7" and the corner comparison at that apex
-# have to be the same piece of road by construction, not by coincidence.
+# road. 1% of a lap, about 50m at Mugello. compare_runs takes this as its
+# corner_tolerance and the turn numbers use the same figure deliberately:
+# "T7" and the corner comparison at that apex have to be the same piece of
+# road by construction, not by coincidence.
 CORNER_TOLERANCE = 0.01
 
 # How much road two laps' corners have to share to be the same corner: half
 # the shorter of the two, turning the same way. Apex distance alone cannot
 # hold a long corner together -- its slowest point wanders by more than
-# CORNER_TOLERANCE from lap to lap -- and it was numbering Sunset Bend four
-# times. Half, not any overlap: an esse's two halves touch across laps, and
-# touching is not being the same corner.
+# CORNER_TOLERANCE from lap to lap. Half, not any overlap: an esse's two
+# halves touch across laps, and touching is not being the same corner.
 CORNER_SPAN_OVERLAP = 0.5
 
 # How many corners on each side have to share road before two groups are
-# joined. One is not enough: at Kyalami one lap's corner began early enough
-# to swallow the kink before it, and that single lap was pulling a kink
-# three other laps had found into the next turn.
+# joined. One is not enough: a single lap whose corner starts early can
+# swallow the kink before it and pull that kink into the next turn.
 CORNER_SPAN_SUPPORT = 2
 
 # How many laps have to have cornered on a piece of road before it is given
 # a turn number. Repeatability, not a majority: an event invents a corner on
 # one lap, driving does it on every lap it happens on.
 #
-# A majority rule was the first attempt and it refuses a real turn. Pool a
-# two-lap baseline with a two-lap candidate, as compare_runs does, and a
-# corner the candidate drove on both its laps and the baseline's detector
-# never found sits at exactly half -- so the one corner the comparison most
-# wants to name is the one it would have left unnamed.
+# A majority would refuse a real turn. Pool a two-lap baseline with a
+# two-lap candidate, as compare_runs does, and a corner the candidate drove
+# on both its laps and the baseline's detector never found sits at exactly
+# half -- the corner the comparison most wants to name.
 CORNER_MAP_MIN_LAPS_SEEN = 2
 
 # Below this many laps even that is too strong: of two laps, a corner found
@@ -650,22 +566,19 @@ def corner_map(lap_corners: list[list[dict]],
     ONE lap, which is an index into that lap's list and not an identity. A
     light corner that falls under the bar on lap 4 shifts every number after
     it, so corner 5 on one lap and corner 5 on the next need not be the same
-    piece of road -- the same failure that made compare_runs match corners
-    by position instead of by index. A number that cannot be quoted twice
-    cannot be quoted to a driver at all.
+    piece of road.
 
     Pooling every lap's corners first is what turns the number into an
-    identity. The grouping is _corner_clusters, the one compare_runs already
-    pairs corners with, so a turn number means the same road as a corner
-    lead at the same apex.
+    identity. The grouping is _corner_clusters, the one compare_runs pairs
+    corners with, so a turn number means the same road as a corner lead at
+    the same apex.
 
     A cluster is numbered only where more than one lap cornered on it.
     One-lap clusters are returned under `unnumbered` rather than dropped --
-    they are real observations and worth seeing -- but they must not take a
-    number: a spin violent enough for the detector to carve out as its own
-    corner (which is how one at Sebring was eventually spotted) would
-    otherwise renumber every turn after it on the strength of one lap.
-    Below CORNER_MAP_MIN_LAPS that bar is dropped too; see the constants.
+    they are real observations -- but must not take a number: a spin the
+    detector carves out as its own corner would otherwise renumber every
+    turn after it on the strength of one lap. Below CORNER_MAP_MIN_LAPS
+    that bar is dropped too; see the constants.
 
     Two limits worth knowing, both shared with compare_runs and neither
     hidden by the payload. A corner the start/finish line runs through is
@@ -679,10 +592,9 @@ def corner_map(lap_corners: list[list[dict]],
     kept, minor = [], []
     for g in _corner_clusters(laps, tolerance):
         obs = [o[2] for o in g]
-        # Distinct laps, not observations. _corner_clusters caps a cluster
-        # at one corner per lap, so these agree today -- counting laps says
-        # what the rule below actually needs, and keeps it honest if that
-        # ever changes.
+        # Distinct laps, not observations: that is what the rule below
+        # needs, even though _corner_clusters caps a cluster at one corner
+        # per lap.
         seen = len({o[1] for o in g})
         signs = [c["turn_sign"] for c in obs if c.get("turn_sign") in (1, -1)]
         entry = {
@@ -730,7 +642,7 @@ def label_corners(corners: list[dict], turns: list[dict],
 
     `turn` is set on every corner, None where nothing matched, so a reader
     never has to tell "this corner has no number" from "this payload was
-    never labelled". Returns how many were labelled.
+    never labeled". Returns how many were labeled.
     """
     for c in corners:
         c["turn"] = None
@@ -740,15 +652,15 @@ def label_corners(corners: list[dict], turns: list[dict],
         if isinstance(c.get("apex_pos"), (int, float))
         for j, t in enumerate(turns)
         if abs(c["apex_pos"] - t["apex_pos"]) <= tolerance)
-    taken_c, taken_t, labelled = set(), set(), 0
+    taken_c, taken_t, labeled = set(), set(), 0
     for _, i, j in pairs:
         if i in taken_c or j in taken_t:
             continue
         taken_c.add(i)
         taken_t.add(j)
         corners[i]["turn"] = turns[j]["turn"]
-        labelled += 1
-    return labelled
+        labeled += 1
+    return labeled
 
 
 def _brake_zone_start(samples, apex_idx: int, floor_idx: int) -> int | None:
@@ -756,27 +668,18 @@ def _brake_zone_start(samples, apex_idx: int, floor_idx: int) -> int | None:
 
     The brake point is the moment the driver first got on the pedal for this
     corner, and normal driving does that in a straight line -- before the
-    car is loaded up laterally, so before the corner region starts. Searching
-    forward from the corner's entry therefore found braking already in
-    progress and reported the brake point at turn-in: a corner braked from
-    0.400 to 0.485 with turn-in at ~0.48 reported ~0.48, and the 8% of the
-    lap where the driver was actually slowing the car was invisible. Since
-    compare_laps differences these positions between laps, the "brake point
-    delta" it produced was a turn-in delta.
+    car is loaded up laterally, so before the corner region starts. A
+    forward search from the corner's entry would find braking already in
+    progress and report turn-in instead, so this works backwards from the
+    apex.
 
-    So work backwards from the apex. The first version then took the *last*
-    braking run before the apex, and that was unstable in its own way: any
-    touch of the pedal between the real braking zone and the apex became the
-    brake point. A 0.39 brush before Spoon's second apex at Suzuka put it
-    0.036 of a lap (about 210 m) after the 1.0 stop before turn-in, on 16 of
-    18 laps, and a hairpin whose trail-off sat just under BRAKE_ON for eight
-    samples split into two zones on half the laps. Lap-to-lap brake point
-    deltas were comparing different braking events.
-
-    So every braking run between `floor_idx` (the previous corner's exit)
-    and the apex is collected, each weighed by the speed it took off -- not
-    by pedal travel, which a car held on the brakes on the grid has plenty
-    of. The brake point is the start of the earliest run that took at least
+    Nor is it the last braking run before the apex: any touch of the pedal
+    between the real braking zone and the apex would become the brake point,
+    and lap-to-lap deltas would compare different braking events. Every
+    braking run between `floor_idx` (the previous corner's exit) and the
+    apex is collected, each weighed by the speed it took off -- not by pedal
+    travel, which a car held on the brakes on the grid has plenty of. The
+    brake point is the start of the earliest run that took at least
     BRAKE_ZONE_MIN_SHARE of what the heaviest one did.
     """
     runs = _brake_runs(samples, apex_idx, floor_idx)
@@ -786,7 +689,7 @@ def _brake_zone_start(samples, apex_idx: int, floor_idx: int) -> int | None:
     if heaviest <= 0:
         # Nothing slowed the car: a brake held at a standstill, or a speed
         # channel that never moved. The pedal nearest the apex is the least
-        # wrong answer, and what the first version would have said.
+        # wrong answer.
         return runs[0][0]
     return min(start for start, drop in runs
                if drop >= BRAKE_ZONE_MIN_SHARE * heaviest)
@@ -836,11 +739,11 @@ def _heading_steps(samples: list[dict]) -> list[tuple[float, float]]:
     0.08 rad and not of 6.2. Each step is unwrapped on its own for that
     reason, rather than differencing the raw column.
 
-    Signed as AC reports it, and which sign is left has never been checked
-    here -- so everything built from this reports magnitudes, which do not
-    need the convention. A step implying more than YAW_RATE_SANE_MAX_DEG_S
-    is dropped rather than clamped: it is a reset, and clamping would
-    report a spin that never happened.
+    Signed as AC reports it. Which sign is left is unverified, so everything
+    built from this reports magnitudes, which do not need the convention.
+    A step implying more than YAW_RATE_SANE_MAX_DEG_S is dropped rather
+    than clamped: it is a reset, and clamping would report a spin that
+    never happened.
     """
     steps = []
     for a, b in zip(samples, samples[1:]):
@@ -865,11 +768,8 @@ def _entry_phase(samples, brake_idx, entry_idx, apex_idx) -> dict | None:
 
     Everything else about a corner is measured at the apex, and the apex is
     where the car has already been rotated. Trail braking, entry rotation
-    and most spins happen before it: claude_sebring_v6 moved the coast
-    differential from 40% to 60% purely for entry stability at Sunset Bend,
-    every metric read "within noise", and no corner produced a lead,
-    because nothing was looking at the part of the corner the change was
-    for.
+    and most spins happen before it, so a change made for entry stability
+    -- a coast differential setting, say -- shows nothing at the apex.
 
     From the brake point where there is one; from turn-in -- the start of
     the lateral load -- on a corner taken without braking, since a sweeper
@@ -883,7 +783,7 @@ def _entry_phase(samples, brake_idx, entry_idx, apex_idx) -> dict | None:
       which is a property of the brake point rather than of the steering.
     - `rotation_deg` is how far the car turned by the apex, and
       `yaw_rate_peak_deg_s` how fast it did at its quickest. Both from
-      heading, so both null on laps recorded before it was.
+      heading, so both null on laps recorded without it.
     """
     if brake_idx is not None and brake_idx < apex_idx:
         start, source = brake_idx, "brake point"
@@ -964,9 +864,8 @@ def _corner_stats(samples, apex_idx, exit_idx, brake_floor_idx=0,
         front_slip = rear_slip = None
 
     # A tick that emits wheelSlip = 30007 is not a tick to trust for steering
-    # either. Reuse the sample list the slip filter already vetted, so we
-    # can't report a peak_steer_norm of 4021 from a sample we just decided
-    # was not data. Fall back to the raw window only if nothing survived.
+    # either, so steering comes from the samples the slip filter kept. Fall
+    # back to the raw window only if nothing survived.
     steer_src = clean or seg
     peak_steer = max(abs(s["steer"]) for s in steer_src)
 
@@ -986,8 +885,7 @@ def _corner_stats(samples, apex_idx, exit_idx, brake_floor_idx=0,
         "brake_point_pos": round(brake_pos, 4) if brake_pos is not None else None,
         "throttle_on_pos": round(throttle_pos, 4) if throttle_pos is not None else None,
         # steerAngle from AC is normalized -1..1 (fraction of full lock),
-        # not degrees. The old "peak_steer_deg" name invited misreading 0.5
-        # as half a degree rather than half lock.
+        # not degrees.
         "peak_steer_norm": round(peak_steer, 2),
         "slip_balance": (round(front_slip - rear_slip, 3)
                          if front_slip is not None else None),
@@ -1050,19 +948,16 @@ def _contacts(samples: list[dict]) -> list[dict] | None:
 # --- contacts without the damage counter ----------------------------------
 #
 # With the server's damage model off the counter reads zero all lap and
-# _contacts above has nothing to say, which on race night is the wrong
-# moment to have nothing to say: "was that a hit or was that me" is the
-# first question after every spin. What is left is the physics. This car
-# peaks at about 2.8 g on its tyres, so a sample past 3 g is an impact, a
-# kerb launch or the floor -- and which of those it was is decided by who
-# was alongside at the same wall-clock instant.
+# _contacts above has nothing to say, so what is left is the physics. The
+# threshold was set on a GT3 car that peaks at about 2.8 g on its tyres, so
+# a sample past it is an impact, a kerb launch or the floor; a high-downforce
+# car can pass it on its tyres alone. Which of those it was is decided by
+# who was alongside at the same wall-clock instant.
 CONTACT_G = 3.0
 # Further than a car length, on purpose. Opponents are network-interpolated
 # and their stored position lags the ego car's by a tenth or two, which at
-# 60 m/s is 6 to 12 m. Three hits confirmed from the driver's seat -- a 6.8 g
-# hit at Interlagos with the throttle at 97%, a 3.1 g touch under braking
-# there, and a stop against a car at the Glen -- all placed the other car
-# at 6.4 to 7.9 m. Within 10 m, then, is touching.
+# 60 m/s is 6 to 12 m. Three hits confirmed from the driver's seat all
+# placed the other car at 6.4 to 7.9 m.
 CONTACT_NEAR_M = 10.0
 # How far either side of the spike to look for an opponent row. Opponents
 # arrive at 10 Hz in batches, so this is a few of their samples.
@@ -1070,18 +965,17 @@ CONTACT_WINDOW_S = 0.6
 # What separates a wall from a kerb when nobody was near: a kerb launches
 # the car and it carries on, a wall (or a car the feed never saw) takes the
 # speed out of it in the same instant as the spike. Measured across the
-# spike samples only -- from the sample before the first to the sample
-# after the last, a few hundredths of a second -- because sand, grass and
-# hard braking all lose speed too, at one to two g over seconds: a
-# half-second window read a full-ABS stop and a spin on the grass as walls.
-# Seven kerb strikes at Interlagos and the Glen lost 0 to 9 km/h across
-# the spike; the stop against the barrier at the Glen lost 73.
+# spike samples only, a few hundredths of a second, because sand, grass and
+# hard braking all lose speed too, at one to two g over seconds; a wider
+# window reads a full-ABS stop or a spin on the grass as a wall. Seven
+# measured kerb strikes lost 0 to 9 km/h across the spike; a stop against
+# a barrier lost 73.
 WALL_SPEED_LOSS_KMH = 15.0
 # A car going round reads as g on its own: at 25 m/s and 190 deg/s its
 # own frame sees 8 g with nothing touched. Rotation at the hardest tick
 # faster than this, with nobody near, is the car snapping -- a spin, or a
-# slide caught. A full spin at the Glen read 116 deg/s here, a caught
-# snap off a kerb 96; clean cornering is under 45.
+# slide caught. A measured full spin read 116 deg/s, a caught snap off a
+# kerb 96; clean cornering is under 45.
 SNAP_YAW_DEG_S = 90.0
 
 
@@ -1185,7 +1079,7 @@ def infer_contacts(lap: dict, samples: list[dict],
     matching positions without matching clocks read every close follower
     as a hit.
 
-    The raw acceleration channels are used, not the sanitised ones: the
+    The raw acceleration channels are used, not the sanitized ones: the
     sanity ceiling that keeps a spike out of peak_lat_g is exactly what
     would hide the hit here.
     """
@@ -1243,8 +1137,8 @@ def infer_contacts(lap: dict, samples: list[dict],
             feet = "coasting"
         # The sample either side of the hardest tick, not of the group: a
         # spin keeps the car over 3 g for as long as it is going round, so
-        # the group spans the whole spin and the speed it bled off on the
-        # grass read as a wall.
+        # the group spans the whole spin and the speed it bleeds off on the
+        # grass would read as a wall.
         before = samples[max(0, index[id(peak_s)] - 1)]
         after = samples[min(len(samples) - 1, index[id(peak_s)] + 1)]
         lost = max(0.0, (before.get("speed_kmh") or 0.0)
@@ -1342,7 +1236,7 @@ def lap_summary(lap: dict, samples: list[dict],
     `turns` is a corner_map's turn list, and it is what puts T-numbers on
     this lap's corners. Pass the map built from the same laps the reference
     came from: a map built against a different bar holds corners this lap
-    was never judged for, and the labelling would then be matching apexes
+    was never judged for, and the labeling would then be matching apexes
     across two different corner lists.
     """
     if not samples:
@@ -1360,11 +1254,9 @@ def lap_summary(lap: dict, samples: list[dict],
 
     sane_lat = _sane_channel(samples, "acc_lat", LAT_G_SANE_MAX)
     sane_lon = _sane_channel(samples, "acc_lon", LON_G_SANE_MAX)
-    # Distinct samples, not the two channels' drops added together. These
-    # spikes come from a reset or a teleport and hit both axes on the same
-    # tick, so summing double-counted the usual case -- and a lap where
-    # every sample was glitched reported 800 dropped out of 400, a figure
-    # the driver is meant to read against the lap's own sample count.
+    # Distinct samples, not the two channels' drops added together: a reset
+    # or a teleport spikes both axes on the same tick, and the count is read
+    # against the lap's own sample count.
     accel_dropped = sum(
         1 for s in samples
         if not _is_sane(s.get("acc_lat"), LAT_G_SANE_MAX)
@@ -1378,11 +1270,9 @@ def lap_summary(lap: dict, samples: list[dict],
     # should not arrive as a missing key.
     if turns is not None:
         label_corners(corners, turns)
-    # own_peak only when there is no shared reference, because that is the
-    # only case corner_detection_note reports it in. Computing it always
-    # meant smoothing and median-filtering the lateral-g trace a second
-    # time -- detect_corners has already done it -- for every lap of every
-    # comparison, to fill a field that would then be thrown away.
+    # own_peak only when there is no shared reference, the only case
+    # corner_detection_note reports it in: it costs a second pass over the
+    # lateral-g trace for every lap of every comparison.
     detection = corner_detection_note(
         reference_peak_g, reference_laps,
         own_peak=(None if reference_peak_g is not None
@@ -1419,11 +1309,9 @@ def lap_summary(lap: dict, samples: list[dict],
         # Two separate facts, deliberately. `ran_wide` is about track
         # limits; `usable_for_timing` is about whether the lap time means
         # anything. A lap can run wide and still be the most informative one
-        # of the session, so both are reported rather than a single verdict
-        # that used to decide, silently, that the lap did not exist.
-        # None, not False, when the lap was never scored. A lap stored with
-        # no samples has nothing to say about track limits, and "did not run
-        # wide" would be a claim there is no evidence for.
+        # of the session.
+        # None, not False, when the lap was never scored: a lap stored with
+        # no samples has nothing to say about track limits.
         "ran_wide": (bool(lap.get("invalid"))
                      if lap.get("excursions") is not None else None),
         "track_limits": {
@@ -1434,17 +1322,15 @@ def lap_summary(lap: dict, samples: list[dict],
         },
         # A bool plus a separate reason, not a bool-or-a-sentence: both
         # halves of the latter are truthy, so `if lap["usable_for_timing"]`
-        # was always true and read as though it had been checked.
+        # would always pass.
         "usable_for_timing": usable,
         "not_usable_because": not_usable_because,
         # Above 1, this lap's trace has been decimated to keep the database
         # within its size budget: 2 means every second sample survives. The
         # lap and its numbers are intact; the resolution is not.
         "sample_stride": lap.get("sample_stride") or 1,
-        # How many telemetry samples this lap is made of. Reported so
-        # accel_samples_dropped below has something to be read against: "12
-        # dropped" means nothing without it, and it is the denominator for
-        # judging whether a lap's peaks are trustworthy.
+        # The denominator for accel_samples_dropped below: "12 dropped"
+        # means nothing without it.
         "samples": total,
         "top_speed_kmh": round(max(s["speed_kmh"] for s in samples), 1),
         "time_full_throttle_pct": round(
@@ -1456,17 +1342,13 @@ def lap_summary(lap: dict, samples: list[dict],
                       if s["gas"] < 0.05 and s["brake"] < 0.05) / total, 1),
         # None rather than a number when every sample of a channel was a
         # glitch. Clamping would report the ceiling as though the car had
-        # actually pulled it, which is the failure this guard exists to stop.
+        # actually pulled it.
         "peak_lat_g": (round(max(abs(v) for v in sane_lat), 2)
                        if sane_lat else None),
         "peak_braking_g": round(min(sane_lon), 2) if sane_lon else None,
         # Said out loud rather than filtered silently: a lap that needed
         # this is one to look at twice, and it is the only warning that a
         # comparison including it may be reading a kerb strike as physics.
-        # Counts distinct samples, so it is directly comparable to `samples`
-        # above -- a spike usually hits both axes on the same tick, and
-        # adding the two channels' drops made this exceed the lap's own
-        # sample count.
         "accel_samples_dropped": accel_dropped or None,
         # Where damage went up, when it did. Null for a lap with no contact
         # and for one where damage was off, which read the same -- so a
@@ -1638,19 +1520,17 @@ def trace_lap_times(rows: list[dict]) -> dict[int, int]:
 
     What the server reports for a remote car's last lap arrives late, so
     the time stored when its lap counter ticked over is often the lap
-    before's, repeated -- at the Glen one rival read 1:45.97 on eleven laps
-    running while his trace showed 1:44.5 to 1:45.3. The trace does not
-    have that problem: every sample carries the car's own clock (`t_ms`)
+    before's, repeated. The trace does not have that problem: every sample
+    carries the car's own clock (`t_ms`)
     and its track position, so the moment it crossed the line is
     interpolated between the two samples either side of the position
     wrapping from near 1 to near 0, and a lap's time is the difference
     between two crossings.
 
-    The crossings come from the position alone, in clock order. The lap
+    The crossings come from the position alone, in clock order: the lap
     counter ticks over within a sample or two of the wrap but not always on
-    the same side of it, and matching crossings to counter changes lost
-    most laps. Each timed lap is filed under the lap_count most of its
-    samples carry.
+    the same side of it. Each timed lap is filed under the lap_count most
+    of its samples carry.
 
     `rows` are one car's samples with lap_count, spline and t_ms, in any
     order. A lap is timed only when both of its crossings were seen
@@ -1978,12 +1858,9 @@ def delta_by_position(lap_a: dict, samples_a: list[dict],
         return {"error": "laps do not overlap enough on track to compare",
                 "covered_pct": round(100 * covered / (fine + 1), 1)}
 
-    # `segments` is an MCP tool argument, so it should mean what it says: the
-    # number of rows returned. `step = fine // segments` did not -- integer
-    # division made segments=7 return 8 rows and segments=300 return 200,
-    # with nothing saying so. Divide the grid into exactly this many spans
-    # instead, clamped to what the grid can express: one row per grid point
-    # is the finest division there is, and asking for more cannot produce it.
+    # `segments` is an MCP tool argument, so it is the number of rows
+    # returned: the grid is divided into exactly this many spans, clamped to
+    # one row per grid point, the finest division the grid can express.
     requested = segments
     segments = max(1, min(int(segments), fine))
     edges = [round(i * fine / segments) for i in range(segments + 1)]
@@ -1991,11 +1868,10 @@ def delta_by_position(lap_a: dict, samples_a: list[dict],
     # A row spans two grid points, and the endpoints of the lap are never
     # both covered: sampling starts just after the line and stops when
     # completedLaps ticks over, so grid[0] and grid[200] are outside the
-    # sampled range by a sample or two. Dropping a row because an *endpoint*
-    # is uncovered discarded the first and last twentieth of every lap --
-    # including the final corner and the run to the line, which is exactly
-    # where a bad exit shows up. So each row falls back to the nearest
-    # covered points inside its own span, and says when it did.
+    # sampled range by a sample or two. Requiring both endpoints would lose
+    # the first and last row of every lap -- the final corner and the run to
+    # the line, where a bad exit shows up -- so each row falls back to the
+    # nearest covered points inside its own span, and says when it did.
     rows = []
     for start, end in zip(edges, edges[1:]):
         i0 = _first_covered(delta, start, end)
@@ -2025,9 +1901,8 @@ def delta_by_position(lap_a: dict, samples_a: list[dict],
 
     timed = [r for r in rows if r["gain_ms"] is not None]
     losses = sorted(timed, key=lambda r: -r["gain_ms"])[:3]
-    # Only rows that actually gained: taking the bottom three of the same
-    # list reported the smallest loss as the biggest gain, so a lap slower
-    # everywhere came back with three "gains" that were all losses.
+    # Only rows that actually gained: a lap slower everywhere has no gains,
+    # not three smallest losses.
     gains = [r for r in sorted(timed, key=lambda r: r["gain_ms"])
              if r["gain_ms"] < 0][:3]
 
@@ -2077,18 +1952,11 @@ def _last_covered(delta: list, lo: int, hi: int) -> int | None:
 
 # --- Student's t, computed rather than looked up -----------------------
 #
-# This was a fourteen-entry table of 95% critical values with a lookup that
-# rounded an untabulated df UP to the next key, so df=21 was judged at
-# df=20's 2.09 and anything past df=30 at 1.96 -- always the smaller
-# multiplier, always erring toward calling a change real. That is the wrong
-# direction for a tool whose entire job is refusing to overclaim.
+# One run asks eight questions of the same laps, so each is judged at
+# 0.05/8 or thereabouts, and no table of critical values covers those
+# levels. A p-value function answers at any level and any df.
 #
-# The table also could not express any confidence level other than 95%,
-# which is the thing that had to change: one run asks eight questions of the
-# same laps, so each one is judged at 0.05/8 or thereabouts, and there is no
-# table of those. A p-value function answers at any level.
-#
-# The regularised incomplete beta is all that is needed, and math.lgamma
+# The regularized incomplete beta is all that is needed, and math.lgamma
 # makes it about forty lines of standard library. No numpy, no scipy: the
 # gaming PC gets a stock Python and nothing else. Checked against
 # scipy.stats.t across df 1..40 and t 0..8, worst absolute disagreement
@@ -2124,7 +1992,7 @@ def _betacf(a: float, b: float, x: float) -> float:
 
 
 def _betainc(a: float, b: float, x: float) -> float:
-    """Regularised incomplete beta I_x(a, b)."""
+    """Regularized incomplete beta I_x(a, b)."""
     if x <= 0.0:
         return 0.0
     if x >= 1.0:
@@ -2202,8 +2070,7 @@ def _t_power(delta: float, df: int, t_crit: float, steps: int = 200) -> float:
 
     # Two panels. When the threshold is strict the rejection region collapses
     # into a sliver near u=0, and a single evenly spaced rule walks straight
-    # past it -- that error reached 1e-2, which is visible in a reported
-    # figure.
+    # past it, with errors up to 1e-2 -- visible in a reported figure.
     split = min(top, max(4.0, delta + 4.0) / t_crit)
     total = 0.0
     for lo, hi in ((0.0, split), (split, top)):
@@ -2268,9 +2135,9 @@ def _stats(values):
 FAMILY_ALPHA = 0.05
 
 # Key holding a test's raw ingredients until the whole family is known. It
-# is stripped before the payload goes out -- a verdict cannot be reached
-# metric by metric any more, so the measurement and the judgement have to be
-# separate passes.
+# is stripped before the payload goes out. A verdict cannot be reached
+# metric by metric, so the measurement and the judgment are separate
+# passes.
 _TEST = "_test"
 
 # Clears 95% on its own, does not clear the corrected level. Reporting this
@@ -2288,11 +2155,11 @@ CORNER_LEADS_SHOWN = 6
 def _measure(base, cand, floor):
     """Measure one channel. The verdict waits until the family is known.
 
-    Splitting this out is the whole point: judging each metric the moment it
-    was measured is what made a run of 38 questions answer "something moved"
-    82.5% of the time with nothing changed. Nothing here decides anything --
-    that is _holm for a confirmatory test and _explore for an exploratory
-    one, and neither can run until every question has been asked.
+    Judging each metric the moment it is measured would make a run of 38
+    questions answer "something moved" 82.5% of the time with nothing
+    changed. Nothing here decides anything -- that is _holm for a
+    confirmatory test and _explore for an exploratory one, and neither can
+    run until every question has been asked.
     """
     n1, m1, s1 = _stats(base)
     n2, m2, s2 = _stats(cand)
@@ -2326,7 +2193,7 @@ def _measure(base, cand, floor):
 # feel or a stopwatch argue about.
 CONSISTENCY_FLOOR_MS = 50.0
 
-# Relabellings enumerated exactly up to this many, drawn at random past it.
+# Relabelings enumerated exactly up to this many, drawn at random past it.
 # Eight laps a side is 12870 and exact; ten a side is 184756 and not worth
 # the wait for a figure the draws get to within a fraction of a percent.
 PERMUTATION_EXACT_MAX = 20000
@@ -2340,12 +2207,12 @@ PERMUTATION = "permutation"
 def _smallest_permutation_p(n1: int, n2: int) -> float:
     """The smallest p the spread test can return with this many laps.
 
-    Every relabelling of the laps is equally likely under no change, so no
-    result can be rarer than one relabelling in all of them -- two when the
+    Every relabeling of the laps is equally likely under no change, so no
+    result can be rarer than one relabeling in all of them -- two when the
     sides are the same size, because swapping the sides gives the same
     ratio turned over.
 
-    Past PERMUTATION_EXACT_MAX the relabellings are drawn rather than
+    Past PERMUTATION_EXACT_MAX the relabelings are drawn rather than
     enumerated, and a drawn estimate is (hits + 1) / (draws + 1): never
     below one in the draws, however lopsided the laps. That floor sits
     above the theoretical one, and it is the one this code can actually
@@ -2360,7 +2227,7 @@ def _smallest_permutation_p(n1: int, n2: int) -> float:
 
 
 def _permutation_spread_p(base: list[float], cand: list[float]) -> float:
-    """Two-sided p for a change in spread, by relabelling the laps.
+    """Two-sided p for a change in spread, by relabeling the laps.
 
     The statistic is |log| of the ratio of the two variances, so tighter
     and looser are judged alike. Under no change every split of these laps
@@ -2369,10 +2236,10 @@ def _permutation_spread_p(base: list[float], cand: list[float]) -> float:
     lap times have, which is the point -- see _measure_consistency.
     """
     n1, n = len(base), len(base) + len(cand)
-    # Centred first: lap times are ~1e5 ms and their squares ~1e10, and the
+    # Centered first: lap times are ~1e5 ms and their squares ~1e10, and the
     # variances are differences of those.
-    centre = (sum(base) + sum(cand)) / n
-    xs = [v - centre for v in list(base) + list(cand)]
+    center = (sum(base) + sum(cand)) / n
+    xs = [v - center for v in list(base) + list(cand)]
     tot, tot_sq = sum(xs), sum(v * v for v in xs)
     nb = n - n1
 
@@ -2417,10 +2284,10 @@ def _measure_consistency(base: list[float], cand: list[float],
     normal. Simulated with a 0.3s spread and a 15% chance of a 3-8s spin
     on any lap, identical on both sides: at six laps a side the F test
     called the spread changed in 47% of runs at 95%, and 44% even at the
-    corrected 0.05/9. Relabelling the laps assumes nothing about their
+    corrected 0.05/9. Relabeling the laps assumes nothing about their
     shape and held 0.3% at 0.05/9 on the same runs.
 
-    What that costs is laps. The smallest p a relabelling can produce is
+    What that costs is laps. The smallest p a relabeling can produce is
     set by how many ways there are to relabel, so with few laps no result
     can clear the bar however lopsided it is. Such a test is left out of
     the family entirely rather than counted in it -- a test that cannot
@@ -2429,12 +2296,9 @@ def _measure_consistency(base: list[float], cand: list[float],
     laps would make it testable. Whether it is in is decided by the lap
     counts alone, never by the result.
 
-    And the honest reading of the case that motivated it. Sebring v9: six
-    laps inside 0.97s after a run where two of six ended in a spin. Taken
-    as that shape, p = 0.41. If one lap in three spins by chance, a run of
-    six has no spin 9% of the time, so six laps a side cannot tell "the
-    setup stopped the spins" from "no spin happened this time" -- and a
-    test that says otherwise is the F test above, wrong four times in ten.
+    Six laps a side cannot tell "the setup stopped the spins" from "no spin
+    happened this time": if one lap in three spins by chance, a run of six
+    has no spin 9% of the time.
     """
     n1, _, s1 = _stats(base)
     n2, _, s2 = _stats(cand)
@@ -2453,7 +2317,7 @@ def _measure_consistency(base: list[float], cand: list[float],
         "change_sd": round(s2 - s1, 1),
         "direction": direction,
         "note": "standard deviation of lap time on each side, judged by "
-                "relabelling the laps rather than by an F test -- a spin "
+                "relabeling the laps rather than by an F test -- a spin "
                 "now and then makes lap times far from normal, and an F "
                 "test on them calls a change in spread in over 40% of runs "
                 "where nothing changed. The price is that few laps cannot "
@@ -2500,41 +2364,24 @@ def _effect(t) -> float:
 def _holm(entries, alpha=FAMILY_ALPHA):
     """Holm-Bonferroni across the confirmatory family, then decide.
 
-    The family is the run metrics, and only those. Everything here is a
-    trade between two ways of being wrong, and both of them were measured
-    on this project's own figures -- a 0.25s lap-time spread, a rear
+    The family is the run metrics, and only those. The figures below are
+    from this project's own noise -- a 0.25s lap-time spread, a rear
     anti-roll bar moving front load transfer 2.2 points against under 0.3
     of noise -- at a fifteen-corner circuit.
 
-    Judging each of 38 tests at 95% on its own and reporting whatever
-    cleared: the per-test false-positive rate was a correct 5%, and the
-    chance of a null run naming something that had "moved beyond this
-    driver's own lap-to-lap spread" was 82.5%. Four runs in five, and the
-    summary line stated it as fact.
+    Judged at 95% each, the 38 tests of metrics plus corners name something
+    in 82.5% of null runs. Corrected across all 38, a real 2.2-point load
+    transfer change is caught 7% of the time at two laps a side, which is
+    not a test. The corners are not hypotheses: they answer "where did it
+    change", which only has an answer once something changed. So they are
+    exploratory (see _explore) and the family stays at the metrics however
+    many corners the track has -- Suzuka must not be a stricter test of a
+    rear bar change than a corner-free oval.
 
-    Correcting across all 38 fixed that -- 4.8% -- and cost more than it
-    bought. At alpha/38 a real 2.2-point load transfer change was caught 7%
-    of the time at two laps a side and 70% at three; a real 500ms lap gain,
-    3% at three laps a side. A two-lap test on a quiet channel is the
-    premise of this whole tool, and 7% is not a test, it is a coin weighted
-    against finding anything. An 82.5% false-positive rate traded for a 93%
-    false-negative rate on the headline case is not an improvement.
-
-    What inflated 8 into 38 was the corners, and the corners are not
-    hypotheses. They answer "where did it change", which only has an answer
-    once something changed; they are diagnostic detail on the metrics, not
-    38 independent claims. So they are exploratory (see _explore): measured,
-    ranked, reported with an uncorrected p and no verdict, and not counted
-    in the family. The confirmatory family stays at 8 however many corners
-    the track has, which is the other half of the point -- Suzuka must not
-    be a stricter test of a rear bar change than a corner-free oval.
-
-    Measured on the design that shipped, over 2500 null runs at fifteen
-    corners: the chance of a false confirmatory "moved" anywhere in the
-    payload is 5.0%. At alpha/8 the load transfer change is caught 29% of
-    the time at two laps a side and 97% at three, and the 500ms lap gain
-    11% at three laps and 39% at five. Lap time is still a poor instrument;
-    it is just no longer a poor instrument made worse by the corner count.
+    Over 2500 null runs at fifteen corners, the chance of a false
+    confirmatory "moved" anywhere in the payload is 5.0%. At alpha/8 the
+    load transfer change is caught 29% of the time at two laps a side and
+    97% at three, and a 500ms lap gain 11% at three laps and 39% at five.
 
     Holm rather than plain Bonferroni because it is uniformly more powerful
     at the same guarantee, and power is scarce here: these are two- and
@@ -2663,14 +2510,9 @@ MIN_TANK_LITERS = 1.0
 def _fuel_input_error(name, value, low, high, integer=False) -> str | None:
     """Why `value` is not a usable number for `name`, or None if it is.
 
-    fuel_plan is reachable from an MCP tool argument, and every one of these
-    used to fall straight through into arithmetic: km_per_liter=-2.18 came
-    back as liters_per_lap -2.406, a non-integer stop count raised a
-    TypeError out of range(), and a stop count above the lap count produced
-    stints of zero laps. None of it is reachable through the in-game app,
-    all of it is reachable by any other caller, and a plan built on a
-    negative burn rate is indistinguishable from a good one until it is
-    driven.
+    fuel_plan is reachable from an MCP tool argument, not just the in-game
+    app, and a plan built on a negative burn rate is indistinguishable from
+    a good one until it is driven.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return f"{name} must be a number, got {value!r}"
@@ -2688,23 +2530,16 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
               fuel_rate: float | None = None) -> dict:
     """Fuel for a race distance, and whether a stop is forced.
 
-    Every number here was worked out by hand for Mugello, twice, from a
-    KM_PER_LITER decrypted out of data.acd and a track length looked up
-    rather than measured. Both now arrive from the game, so this holds for
-    any car and any circuit without being told anything.
-
     margin_laps is deliberately fractional: arriving at the flag with two
     thirds of a lap in hand costs about 0.02s a lap in weight and covers a
     burn rate slightly above the nominal, which racing in traffic produces.
     It is applied to the totals and to the no-stop verdict as well as to the
-    stints. Deciding "no stop needed" at exactly total == tank, from a
-    function whose own stints ask for 0.6 lap more than that, told drivers
-    the distance was reachable on a plan that arrives at the flag dry.
+    stints, so "no stop needed" never comes from a plan that arrives at the
+    flag dry.
 
-    The stop count is a floor, not an instruction. Asking for one stop over
-    a distance needing three used to return two stints, "the stop" singular,
-    and a negative number in a field called spare -- a plan that cannot be
-    driven, presented as a plan.
+    The stop count is a floor, not an instruction: a distance that needs
+    more stops than asked for is planned with as many as it needs, and the
+    payload says so.
 
     fuel_rate is AC's fuel-usage multiplier. None means it was not reported,
     which is said in the payload rather than assumed away: at 200% every
@@ -2812,9 +2647,7 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
 
         if stints < needed_stints:
             # Never the caller's number when the caller's number cannot be
-            # driven. Clamping each stint to the tank instead, which is what
-            # this did, produced a two-stint plan for a three-stop race whose
-            # only symptom was a negative number in a field called spare.
+            # driven.
             out["stops_requested"] = stops
             out["stops_planned"] = needed_stints - 1
             out["stops_note"] = (
@@ -2847,18 +2680,17 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
                 f"this stint needs {carried + add:.1f} L on board and the "
                 f"tank holds {tank_liters:g} L, so {laps} laps cannot be "
                 f"driven in one stint")
-        # Deliberately unclamped, both here and in what carries forward. The
-        # old max(0.0, ...) hid a deficit and then costed the next stint as
-        # if the previous one had finished normally.
+        # Deliberately unclamped, both here and in what carries forward:
+        # clamping would hide a deficit and cost the next stint as if this
+        # one had finished normally.
         carried = carried + add - per_lap * laps
         entry["spare_at_end_liters"] = round(carried, 1)
         plan.append(entry)
     out["stints"] = plan
     if not tank_liters:
-        # Nothing is known about the tank, so nothing can be said about
-        # whether the distance fits in it. Saying that is not the same as
-        # dropping the three keys and leaving a two-stint plan behind,
-        # which reads as a stop that was reasoned about.
+        # Nothing is known about the tank, so say so: dropping these keys
+        # would leave a stint plan that reads as a stop that was reasoned
+        # about.
         out["tank_liters"] = None
         out["stop_required_for_fuel"] = None
         out["note"] = (
@@ -2884,17 +2716,13 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
     the run could have detected -- about half the time, which is what a
     detection threshold means and what `power` puts a number on.
 
-    The metrics are one family, judged together (see _holm); asking them at
-    95% each and reporting whatever cleared found something in 82.5% of runs
-    where nothing had been changed. Up to eight of them, not eight: the
-    family is built from the metrics these laps actually carried, so a run
-    recorded without suspension data is corrected across fewer, and
-    `tests_in_family` in the payload is the real count rather than a
-    constant this docstring can promise. The corners are not in
-    that family. They say where a change landed, not whether one happened,
-    and counting them made the correction depend on the circuit -- 38 tests
-    at Mugello, at which a real 2.2-point load transfer change was caught 7%
-    of the time in two laps a side. They are reported as leads instead:
+    The metrics are one family, judged together (see _holm). Up to eight of
+    them, not eight: the family is built from the metrics these laps
+    actually carried, so a run recorded without suspension data is
+    corrected across fewer, and `tests_in_family` in the payload is the real
+    count. The corners are not in that family. They say where a change
+    landed, not whether one happened, and counting them would make the
+    correction depend on the circuit. They are reported as leads instead:
     uncorrected, ranked by effect size, asserted by nothing.
 
     What that is worth, at alpha/8 against this project's own measured
@@ -2905,10 +2733,8 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
     `resolution` and `power` are there to say so in the metric's own units.
 
     corner_tolerance is how far an apex may wander between laps and still
-    be the same corner: 0.01 of a lap, about 50m at Mugello. It used to be
-    0.02, used as a bucket width rather than a tolerance, which is 105m
-    there -- wide enough to average a hairpin together with the kink after
-    it and call the result one corner.
+    be the same corner: 0.01 of a lap, about 50m at Mugello. Much wider and
+    a hairpin averages together with the kink after it as one corner.
 
     `lap_time_consistency` asks the other question -- did the laps get more
     or less repeatable -- and joins the family only once there are enough
@@ -2943,7 +2769,7 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
     # bar over both: numbered per side, the piece of road that is T7 in the
     # baseline could be T6 in the candidate, and a payload that names the
     # same corner two different things inside itself is worse than one that
-    # only gives apex positions. The unmatched list is labelled too -- a
+    # only gives apex positions. The unmatched list is labeled too -- a
     # corner found on one side only is exactly the one a reader wants to
     # name, and it is the reason the two sides can disagree about numbering
     # in the first place.
@@ -2991,9 +2817,7 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
             _report(t)
 
     # This is the line a model quotes, so it asserts the confirmatory
-    # family and nothing else. It used to be built from the metrics alone
-    # while a corner list sat underneath it saying the opposite; now the
-    # corners are in it, and are in it as leads.
+    # family and nothing else; corners appear in it only as leads.
     if moved:
         head = (f"moved beyond this driver's own lap-to-lap spread, out of "
                 f"{len(family)} metrics judged together -- "
@@ -3026,8 +2850,7 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
     # -- the channels of one corner move together -- so it runs a little
     # high: over 2500 null runs of thirty tests the measured rate was
     # 77.6% against 78.5% counted this way. Computed rather than quoted,
-    # because the entry channels took a corner from two tests to five and
-    # a fixed figure for thirty was understating it by the time they did.
+    # because it depends on how many corner tests this run made.
     null_lead_pct = round(100 * (1 - (1 - FAMILY_ALPHA) ** len(leads)))
     leads_note = (
         f"EXPLORATORY, not findings. {compared} corner(s) were compared on "
@@ -3105,7 +2928,7 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
 # How much of a change is worth reporting at all on a corner channel, the
 # corner-level sibling of the floors in RUN_METRICS. (name, where in the
 # corner dict, floor). The entry channels are what a change aimed at corner
-# entry moves, and without them such a change had nowhere to show up.
+# entry moves, and without them such a change has nowhere to show up.
 CORNER_CHANNELS = [
     ("slip_balance", ("slip_balance",), 0.05),
     ("min_speed_kmh", ("min_speed_kmh",), 0.5),
@@ -3118,38 +2941,31 @@ CORNER_CHANNELS = [
 def _corner_clusters(laps: list[dict], tolerance: float) -> list[list[tuple]]:
     """Group one run's corner observations into pieces of road.
 
-    Bucketing positions with round(pos / tol) * tol fails three ways at
-    once, all of them measured: apexes at 0.0299 and 0.0301 -- a meter apart
-    -- land in different buckets and each corner comes back n=2 from 3 laps; a
-    bucket 105m wide swallows two genuine corners, so n=6 from 3 laps
-    inflates df from 4 to 10 on samples that are not independent and the
-    "corner" is the mean of a hairpin and a kink; and the reported position
-    is the bucket center, up to half a bucket from any real apex.
+    Grouped by proximity rather than bucketed: fixed buckets split two
+    apexes a meter apart across a boundary, swallow two genuine corners in
+    one bucket, and report the bucket center rather than any real apex. Any
+    group holding two corners from the same lap is then split at its widest
+    internal gap. A car passes an apex once a lap, so a duplicate is proof
+    two corners were pooled -- which caps every cluster at one observation
+    per lap and keeps df honest by construction.
 
-    So: group by proximity, then split any group holding two corners from
-    the same lap at its widest internal gap. A car passes an apex once a
-    lap, so a duplicate is proof two corners were pooled -- which caps every
-    cluster at one observation per lap and keeps df honest by construction.
-
-    Proximity alone split long corners. On a long constant-radius corner
+    Proximity alone splits long corners. On a long constant-radius corner
     the slowest point wanders by more than `tolerance` between laps, and
     wherever the lateral g sags under the bar mid-corner the detector
-    reports two pieces on that lap. Sunset Bend at Sebring came back as four
-    turns seen on 2, 4, 2 and 2 laps of 8, and Interlagos, Suzuka and
-    Kyalami did the same. So two groups are joined when their corners
-    cover the same road, turning the same way (CORNER_SPAN_OVERLAP), on
-    enough laps on both sides (CORNER_SPAN_SUPPORT).
-    A joined group with duplicates is then read by what most laps did: if
-    most drove it as one corner, it is one, and a lap the detector split
-    keeps its slowest piece, where its apex really was. If most drove it as
-    two, the widest-gap split below separates them as before -- which is
-    what keeps a pair one lap ran together as two corners.
+    reports two pieces on that lap. So two groups are joined when their
+    corners cover the same road, turning the same way (CORNER_SPAN_OVERLAP),
+    on enough laps on both sides (CORNER_SPAN_SUPPORT). A joined group with
+    duplicates is then read by what most laps did: if most drove it as one
+    corner, it is one, and a lap the detector split keeps its slowest
+    piece, where its apex really was. If most drove it as two, the
+    widest-gap split separates them, which keeps a pair one lap ran
+    together as two corners.
 
     Proximity only chains corners turning the same way. An esse's two
-    halves can have apexes closer than `tolerance` -- Senna at Interlagos
-    does, on every lap -- and chained together they were split wherever the
-    widest gap happened to fall, which is not where the direction changes.
-    Corners with no recorded direction chain with anything, as before.
+    halves can have apexes closer than `tolerance`, and chained together
+    they would be split wherever the widest gap fell, which is not where
+    the direction changes. Corners with no recorded direction chain with
+    anything.
     """
     obs = []
     for i, lap in enumerate(laps):
@@ -3168,8 +2984,7 @@ def _corner_clusters(laps: list[dict], tolerance: float) -> list[list[tuple]]:
         return i
 
     # Chain each corner to the nearest earlier one it could be, within
-    # tolerance -- the same chaining as before, skipping over corners that
-    # turn the other way.
+    # tolerance, skipping over corners that turn the other way.
     for i in range(1, len(obs)):
         j = i - 1
         while j >= 0 and obs[i][0] - obs[j][0] <= tolerance:
@@ -3180,11 +2995,10 @@ def _corner_clusters(laps: list[dict], tolerance: float) -> list[list[tuple]]:
 
     # Then join whole groups that share road, counting the LAPS on each side
     # that do. Laps, not corners: a lap that split one corner into two has
-    # two corners in the group, and counting corners let that one lap meet a
-    # rule written as "two laps on each side" by itself -- which is how a
-    # one-lap artefact could pull a real turn into its neighbour. The count
-    # is per side because a split piece seen on two laps is still two
-    # pieces, however many whole laps it sits inside.
+    # two corners in the group, and counting corners would let that one lap
+    # meet "two laps on each side" by itself and pull a real turn into its
+    # neighbor. The count is per side because a split piece seen on two
+    # laps is still two pieces, however many whole laps it sits inside.
     #
     # Support is counted against the groups proximity left, and is not
     # recounted as those groups merge. Three pieces supported by one lap
@@ -3193,9 +3007,8 @@ def _corner_clusters(laps: list[dict], tolerance: float) -> list[list[tuple]]:
     # the safe direction to be wrong in -- a turn split in two is visible
     # on the map and in the payload, where two turns silently welded into
     # one are not -- but it is a limit, not an accident.
-    # Each corner's stretch and direction once, not once per pair: this loop
-    # is quadratic in observations, and re-reading four dict keys through
-    # four isinstance checks inside it was most of what it cost.
+    # Each corner's stretch and direction read once, not once per pair:
+    # this loop is quadratic in observations.
     roads = [_road(o[2]) for o in obs]
 
     bridges: dict[tuple, tuple[set, set]] = {}
@@ -3323,10 +3136,9 @@ def _compare_corners(baseline, candidate, tolerance):
                  if v is not None]
             c = [v for v in (_dig(o[2], path) for o in c_groups[j])
                  if v is not None]
-            # A corner is comparable on whichever channels it has. Requiring
-            # slip balance -- which detect_corners drops whenever the slip
-            # samples look like glitches -- threw away corners whose minimum
-            # speed had moved 15 km/h on every lap.
+            # A corner is comparable on whichever channels it has:
+            # detect_corners drops slip balance whenever the slip samples
+            # look like glitches, and the other channels still count.
             if not b or not c:
                 continue
             entry = _measure(b, c, floor)
@@ -3337,7 +3149,7 @@ def _compare_corners(baseline, candidate, tolerance):
                             "tests": tests})
 
     # A corner the detector found on only one side is not evidence of
-    # nothing; it used to be dropped without a word.
+    # nothing, so it is reported rather than dropped.
     unmatched = ([{"side": "baseline", "apex_pos": round(p, 4)}
                   for k, p in enumerate(b_pos) if k not in taken_b]
                  + [{"side": "candidate", "apex_pos": round(p, 4)}
@@ -3349,9 +3161,9 @@ LINE_MAX_POINTS = 200
 LINE_DEFAULT_POINTS = 100
 
 # How much a slice's front ride height must move before it is worth calling
-# a rough section. Below this the ranking is just sorting noise, and a
-# glass-smooth lap was still reporting its six "roughest" places at 0.0mm --
-# which reads as a finding rather than as the absence of one.
+# a rough section. Below this the ranking is just sorting noise, and six
+# "roughest" places at 0.0mm read as a finding rather than the absence of
+# one.
 ROUGH_MIN_RANGE_MM = 1.0
 
 
@@ -3387,13 +3199,9 @@ def _binned_line(samples: list[dict], points: int) -> list[dict | None]:
         # Both axes the line is drawn from -- x and z. pos_y is the height
         # and nothing here reads it, so it is deliberately not required: a
         # row missing only the vertical still describes a line on the map.
-        #
-        # Checking pos_x alone was the bug. The three are written together
-        # by the collector, so a row with one and not the others cannot come
-        # from a live session -- but store_lap accepts short tuples from
-        # earlier layouts, and one truncated a field past tyres_out produces
-        # exactly this. It reached mean(s["pos_z"]) and raised a TypeError
-        # from inside statistics, naming nothing the caller could act on.
+        # The collector writes all three together, but store_lap accepts
+        # short tuples from earlier layouts, so a row can carry one axis
+        # without the other.
         placed = [s for s in group
                   if s.get("pos_x") is not None and s.get("pos_z") is not None]
         if not placed:
@@ -3422,10 +3230,8 @@ def driving_line(lap: dict, samples: list[dict], points: int = 0,
                  other_samples: list[dict] | None = None) -> dict:
     """Where the car actually went, slice by slice around the lap.
 
-    norm_pos has always said where the car was ALONG the lap. Position says
-    where it was across it, which is the whole of what a line is -- so until
-    the samples carried it, "I took a wider entry" was a claim nothing here
-    could check.
+    norm_pos says where the car was ALONG the lap. Position says where it
+    was across it, which is the whole of what a line is.
 
     Pass a second lap to get `separation_m`: the straight-line distance
     between where the two cars were at the same point of the circuit. That
@@ -3457,19 +3263,16 @@ def driving_line(lap: dict, samples: list[dict], points: int = 0,
         "lap_time": _fmt_time(lap["lap_time_ms"]),
         "has_position": True,
         "points": points,
-        "note": "x/z are world metres from the track's own origin; the "
+        "note": "x/z are world meters from the track's own origin; the "
                 "numbers only mean anything relative to each other. "
                 "ride_f_range_mm is how much the front ride height moved "
                 "within the slice -- the higher it is, the rougher the "
                 "surface there.",
     }
 
-    # `is not None` on the samples too, not truthiness. A caller that asked
-    # for a comparison and passed a lap with no stored samples would
-    # otherwise fall through the whole branch silently, and a payload with
-    # no comparison in it and no comparison_error is indistinguishable from
-    # one where no comparison was asked for. Skipping is only correct when
-    # nothing was requested.
+    # `is not None` on the samples too, not truthiness: a comparison asked
+    # for against a lap with no stored samples must come back with a
+    # comparison_error, not look like no comparison was asked for.
     if other_lap is not None and other_samples is not None:
         if not other_samples:
             out["comparison_error"] = (
@@ -3502,9 +3305,8 @@ def driving_line(lap: dict, samples: list[dict], points: int = 0,
             else:
                 # Both laps carry position and still no slice holds both:
                 # two partial laps that stopped in different places, or two
-                # sets of gaps that happen not to overlap. Rare, and it
-                # leaves the payload in exactly the state the checks above
-                # exist to prevent -- no comparison, and nothing saying why.
+                # sets of gaps that happen not to overlap. Rare, but without
+                # this there would be no comparison and nothing saying why.
                 out["comparison_error"] = (
                     f"lap {other_lap['id']} and this one have no slice of "
                     f"track in common, so there is nothing to subtract. "
@@ -3512,9 +3314,8 @@ def driving_line(lap: dict, samples: list[dict], points: int = 0,
                     f"part of the lap.")
 
     measured = [p for p in line if p is not None]
-    # A floor, not just a ranking. Sorting descending always yields six
-    # entries, so a glass-smooth track reported six roughest sections at
-    # 0.0mm -- a list that looks like a finding and is the absence of one.
+    # A floor, not just a ranking: sorting always yields six entries, and
+    # six roughest sections at 0.0mm look like a finding.
     rough = [p for p in measured
              if p.get("ride_f_range_mm", 0.0) >= ROUGH_MIN_RANGE_MM]
     if rough:
@@ -3660,13 +3461,9 @@ def split_stints(laps: list[dict],
                       "before this lap")
 
         current.append(entry)
-        # Unconditionally, including when this lap has no end reading. A
-        # lap whose end wear is missing clears the baseline rather than
-        # leaving the previous lap's behind: keeping a stale one made the
-        # NEXT lap look like a jump back up, so a set changed on the very
-        # lap that lost its reading came out as two one-lap stints instead
-        # of one. Losing the baseline only costs a missed boundary, which
-        # is the safe direction; a stale one invents boundaries.
+        # Unconditionally, including when this lap has no end reading: a
+        # stale baseline can make the NEXT lap look like a jump back up and
+        # invent a boundary, while losing it only costs a missed one.
         prev_end = end
 
     flush()
@@ -3686,20 +3483,17 @@ def stint_wear(laps: list[dict]) -> dict:
     session run it through `split_stints` first.
 
     The question this exists for is "did the tyres go off", and the honest
-    answer needs the wear itself rather than its shadow. Until now that was
-    argued from hot pressure and core temperature, which are affected by
-    wear and by half a dozen other things -- so a flat pressure trace was
-    being read as evidence of no degradation when it is only evidence of
-    stable pressure.
+    answer needs the wear itself rather than its shadow. Hot pressure and
+    core temperature are affected by wear and by half a dozen other things,
+    so a flat pressure trace is only evidence of stable pressure.
 
     AC counts wear down from 100. Reported as `used`, counting up, so more
     always means worse.
     """
     rows = []
-    # The wear the stint STARTED on, which is not the same as the first
-    # measured lap's remaining_pct -- that one is taken at the end of the
-    # lap, so reporting it as "at start" quietly hid the first lap's wear
-    # and claimed the driver began on a tyre already used.
+    # The wear the stint STARTED on, which is not the first measured lap's
+    # remaining_pct: that one is taken at the end of the lap, and reporting
+    # it as "at start" would hide the first lap's wear.
     first_start = None
     for entry in laps:
         lap = entry["lap"]
@@ -3721,8 +3515,8 @@ def stint_wear(laps: list[dict]) -> dict:
             "lap_time": _fmt_time(lap["lap_time_ms"]),
             "has_wear": True,
             # An out-lap covers part of a lap's distance, so its wear is not
-            # comparable with a flying lap's. It counts towards the total --
-            # the rubber came off -- but not towards any per-lap RATE.
+            # comparable with a flying lap's. It counts toward the total --
+            # the rubber came off -- but not toward any per-lap RATE.
             "out_lap": bool(lap.get("out_lap")),
             # Remaining, as the game shows it, and used, counting up.
             "remaining_pct": {w: round(end[w], 2) for w in WEAR_CORNERS},
@@ -3805,19 +3599,15 @@ def stint_wear(laps: list[dict]) -> dict:
 
 # --- braking, and what the aid fields are not ---------------------------
 #
-# This started life as an ABS activity report, on the assumption that
-# shared memory's `abs` and `tc` were the amount of intervention happening
-# right now. The first real lap falsified it: both were constant to three
-# decimal places across 3024 samples -- down every straight and through
-# every braking zone alike. Nothing that measures moment-to-moment
-# intervention behaves that way, so they are a setting or a threshold, and
-# reporting them as activity was inventing a measurement.
+# Shared memory's `abs` and `tc` look like intervention but hold constant to
+# three decimal places across a lap, down every straight and through every
+# braking zone alike, so they are a setting or a threshold, not activity.
 #
 # CSP does expose the real thing -- `absInAction` and
 # `tractionControlInAction`, both booleans on ac.CarState -- but they are
 # marked physics-only, which means a physics worker, which CSP forbids
-# online. Same constraint the damper histograms already live under. Until
-# that is wired up, ABS activity is unmeasured and this module says so.
+# online. Same constraint the damper histograms live under. ABS activity is
+# therefore unmeasured, and this module says so.
 #
 # What IS measurable from data already stored is the thing the driver
 # actually described: wheels locking under braking. A tyre at the limit
@@ -3873,7 +3663,7 @@ def braking_report(lap: dict, samples: list[dict],
     """What the tyres did under braking, and whether anything locked.
 
     The question behind this is "is ABS aggressive enough", which cannot be
-    answered from the setup value and -- for now -- cannot be answered from
+    answered from the setup value and cannot be answered from
     shared memory either, because the fields that look like ABS activity
     are constant across a lap. See the notes above LOCKUP_SLIP.
 
@@ -3951,8 +3741,8 @@ def braking_report(lap: dict, samples: list[dict],
     # Lockup runs: consecutive samples *in the recorded order* that were
     # over the threshold under hard straight-line braking.
     #
-    # This walks the whole lap rather than the filtered `straight` list, and
-    # that is the entire point. `straight` has already dropped every
+    # This walks the whole lap rather than the filtered `straight` list:
+    # `straight` has already dropped every
     # coasting, cornering and light-brake sample, so two one-tick spikes in
     # braking zones half a lap apart sit next to each other in it and would
     # be reported as a single two-sample run -- a lockup invented out of two
@@ -4034,9 +3824,9 @@ def braking_report(lap: dict, samples: list[dict],
 # being read as roll the springs allowed.
 
 # A lap needs samples with real load on them before a slope means anything:
-# these are the thresholds that count a sample as loaded. They no longer
+# these are the thresholds that count a sample as loaded. They do not
 # filter what is fitted -- the low-g samples are what anchor the intercept
-# -- only whether there was enough load on the lap to fit at all.
+# -- only decide whether there was enough load on the lap to fit at all.
 ROLL_MIN_LAT_G = 0.5
 BRAKE_MIN_LON_G = 0.5
 # Enough loaded samples that a gradient means something. A handful of
@@ -4050,14 +3840,13 @@ def _fit_line(pairs: list[tuple[float, float]]) -> dict | None:
     Both the sign of x and the sign of y are kept, and the intercept is
     free, and both of those are load-bearing.
 
-    An earlier version fitted |roll| against |lateral g| through the
-    origin, which does not measure suspension roll at all. The attitude AC
-    reports is absolute, so it carries track banking, camber and whatever
-    static tilt the car sits at -- a car with a fixed 0.4 degrees of lean
-    and no suspension travel whatsoever still produced a confident positive
-    gradient. Taking absolutes made it worse than that: a sample where the
-    body leant *into* the corner, against the load, was folded onto the
-    same side as one leaning out and counted as supporting the fit.
+    Fitting |roll| against |lateral g| through the origin would not
+    measure suspension roll at all. The attitude AC reports is absolute, so
+    it carries track banking, camber and whatever static tilt the car sits
+    at -- a car with a fixed 0.4 degrees of lean and no suspension travel
+    would still produce a confident positive gradient. Taking absolutes
+    also folds a sample where the body leans *into* the corner onto the
+    same side as one leaning out.
 
     With signs kept, roll opposing the load subtracts from the slope the
     way it should, and the intercept absorbs the static offset instead of
@@ -4085,10 +3874,8 @@ def _fit_line(pairs: list[tuple[float, float]]) -> dict | None:
 def attitude_report(lap: dict, samples: list[dict]) -> dict:
     """Body roll and pitch, and how much of each the car gives up per g.
 
-    Every anti-roll bar and spring argument this project has had was
-    settled -- or more often not settled -- by reasoning from load transfer
-    or from what the car felt like. Roll gradient is the direct
-    measurement: degrees of roll per g of lateral acceleration is total
+    Roll gradient is the direct measurement of what load transfer and feel
+    only argue about: degrees of roll per g of lateral acceleration is total
     roll stiffness, so a bar change either moves it or did not do what it
     was meant to.
     """
@@ -4162,11 +3949,10 @@ def attitude_report(lap: dict, samples: list[dict]) -> dict:
                 f"belong within one track.")
             # The signed slope, kept because the magnitude alone cannot show
             # a lap where roll ran the wrong way against load. Which sign
-            # means "leaning out of the corner" is AC's convention and this
-            # project has never verified it, so no direction is claimed --
-            # what is usable is that the sign should be the SAME on every
-            # lap of a car, and a lap that disagrees with its neighbours is
-            # the anomaly.
+            # means "leaning out of the corner" is AC's convention and is
+            # unverified here, so no direction is claimed -- but the sign
+            # should be the SAME on every lap of a car, and a lap that
+            # disagrees with its neighbors is the anomaly.
             entry["fitted_slope_deg_per_g"] = round(fit["slope"], 3)
             entry["gradient_caveats"] = caveats = []
             if not entry["loaded_both_directions"]:
@@ -4204,15 +3990,12 @@ def attitude_report(lap: dict, samples: list[dict]) -> dict:
         # Fitted over braking and coasting only -- every sample at or below
         # zero longitudinal g. Squat under power is a different suspension
         # question, rear springs and anti-squat, and folding it in would
-        # make a number labelled "dive" partly a measurement of the rear of
+        # make a number labeled "dive" partly a measurement of the rear of
         # the car. The cut is at zero rather than at -BRAKE_MIN_LON_G
         # because the near-zero samples are what pin the intercept; without
         # them it would be extrapolated from braking points alone.
         braking = [(g, p) for p, g in pitches if g <= -BRAKE_MIN_LON_G]
         fitted = [(g, p) for p, g in pitches if g <= 0.0]
-        # Samples near zero longitudinal load. Without them the intercept
-        # is extrapolated from braking points alone -- the same weakness
-        # roll has on a track that only turns one way.
         unloaded = [1 for g, _ in fitted if g > -BRAKE_MIN_LON_G]
         entry = {
             "max_abs_deg": round(max(abs(p) for p, _ in pitches), 2),
@@ -4276,11 +4059,9 @@ def attitude_report(lap: dict, samples: list[dict]) -> dict:
 def compare_laps(lap_a: dict, samples_a: list[dict],
                  lap_b: dict, samples_b: list[dict]) -> dict:
     """Corner-by-corner comparison of two laps, matched by track position."""
-    # One bar for both laps. Detecting each against its own peak meant the
-    # harder-driven lap dropped its marginal corners, and a corner missing
-    # from one side simply does not appear in the comparison -- so the two
-    # laps were being compared on whichever corners they happened to agree
-    # existed.
+    # One bar for both laps. Against its own peak the harder-driven lap
+    # drops its marginal corners, and a corner missing from one side does
+    # not appear in the comparison at all.
     detail = lat_g_reference_detail([samples_a, samples_b])
     ref = detail["reference"]
     ca = detect_corners(samples_a, ref)

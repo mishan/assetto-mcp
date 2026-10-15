@@ -1,23 +1,15 @@
 """The suite checking itself: every module must run, and run all of itself.
 
-Two ways a test module can stop testing without anyone noticing, both of
-which had actually happened when this file was written:
+It protects two properties of the test modules, not of the code under test:
 
-  * A `if __name__ == "__main__": sys.exit(...)` block placed before the
-    last few test functions. Under pytest all of them run; standalone, the
-    interpreter reaches sys.exit while executing the module and the
-    functions below it are never even defined. test_setup_attribution ran 5
-    of its 7 tests that way and reported success.
+  * Every test function is defined above the `if __name__ == "__main__":`
+    runner, so running a module standalone runs all of its tests.
 
-  * A module that only works because something else already arranged
-    sys.path. test_delta_and_corners inserted tests/ and never the repo
-    root, so `python tests/test_delta_and_corners.py` was a
-    ModuleNotFoundError -- invisible under pytest, which sets the path
-    itself, and invisible in CI, which runs `pip install -e .` first and so
-    makes assetto_mcp importable from anywhere.
+  * Every module puts the repo root on sys.path itself, so
+    `python tests/test_x.py` imports without pytest or an installed package.
 
-Both are properties of the suite rather than of the code under test, which
-is why they belong here rather than in any module about the game.
+It also holds repo-wide checks that no module about the game would catch:
+stray merge-conflict markers and the schema version BACKLOG.md states.
 """
 
 import ast
@@ -44,11 +36,8 @@ def modules() -> list[Path]:
 def _main_guard(tree: ast.Module) -> ast.If | None:
     """The top-level `if __name__ == "__main__":` statement, if there is one.
 
-    The operator is part of the match, not just the two names. Accepting any
-    comparison that mentions both would accept `if __name__ != "__main__":`,
-    which runs the module's tests only when it is *imported* -- exactly
-    backwards, and precisely the "never runs standalone" failure this file
-    exists to catch.
+    The operator is part of the match: `if __name__ != "__main__":` runs the
+    tests only when the module is imported, never standalone.
     """
     for node in tree.body:
         if not isinstance(node, ast.If):
@@ -69,8 +58,7 @@ def test_only_an_equality_guard_counts_as_a_main_block():
     """`!=` is not a runner and must not be mistaken for one.
 
     A module guarded by `if __name__ != "__main__":` never runs its own
-    tests standalone. Accepting it here would make the detector agree with
-    the bug it was written to find.
+    tests standalone.
     """
     accepted = ast.parse('if __name__ == "__main__":\n    pass\n')
     assert _main_guard(accepted) is not None, "the real guard must be found"
@@ -112,14 +100,11 @@ def test_no_test_is_defined_after_the_main_block():
     print(f"  {len(modules())} modules, __main__ block last in each")
 
 
-# The subprocess below runs with -I (isolated: no PYTHONPATH, no user site,
-# sys.path[0] is the wrapper's own directory) from a temporary working
-# directory, and then removes every remaining way to import assetto_mcp
-# that the module did not arrange itself. That last part is the point: CI
-# runs `pip install -e ".[test]"` before the suite, which puts the package
-# on sys.path for every interpreter on the machine and so hides a module
-# that never adds the repo root. Without this, the standalone path only
-# looks tested.
+# Runs with -I (no PYTHONPATH, no user site) from a temporary directory,
+# then removes every remaining way to import assetto_mcp that the module did
+# not arrange itself. CI's `pip install -e ".[test]"` makes the package
+# importable everywhere, which would hide a module that never adds the repo
+# root.
 _WRAPPER = '''
 import importlib.util, runpy, sys
 
@@ -170,10 +155,8 @@ def test_every_module_imports_standalone_without_the_package_installed():
         wrapper = Path(d) / "standalone_check.py"
         wrapper.write_text(_WRAPPER, encoding="utf-8")
 
-        # -I already drops PYTHONPATH, but not our own variables. Whether a
-        # missing lupa should skip or fail is a different question from
-        # whether the module can find its imports, and mixing them makes
-        # this report "sys.path is wrong" when it is not.
+        # -I drops PYTHONPATH but not AC_TESTS_*, which decide whether a
+        # missing lupa skips or fails; that is not a sys.path problem.
         env = {k: v for k, v in os.environ.items()
                if not k.startswith("AC_TESTS_")}
 
@@ -193,22 +176,14 @@ def test_every_module_imports_standalone_without_the_package_installed():
         print(f"  {len(modules())} modules import with nothing installed")
 
 
-# Source files tracked by git, minus the ones whose whole job is to contain
-# these strings. STACK.md and the REVIEW notes quote conflict output.
 CONFLICT_MARKERS = ("<<<<<<< ", ">>>>>>> ")
 
 
 def test_no_source_file_carries_a_merge_conflict_marker():
     """A marker left in a docstring is valid Python and passes everything.
 
-    This happened: resolving a rebase by line index kept the `<<<<<<< HEAD`
-    line and dropped a line of prose. It sat inside a function docstring, so
-    the module imported, the suite passed on every branch, and it rode three
-    more rebases before anyone looked at that paragraph.
-
-    Nothing else here would catch it -- it is not a syntax error, not a
-    behaviour, and not visible in any output. A grep is the only instrument
-    that works, so this is the file it belongs in.
+    It is not a syntax error and changes no output, so only a grep of the
+    tracked files catches it.
     """
     tracked = subprocess.run(
         ["git", "ls-files", "-z", "*.py", "*.lua", "*.md", "*.ps1", "*.bat"],
@@ -220,7 +195,7 @@ def test_no_source_file_carries_a_merge_conflict_marker():
     hits = []
     for name in filter(None, tracked.stdout.split("\0")):
         path = ROOT / name
-        # These two files quote conflict output on purpose.
+        # STACK.md and the REVIEW notes quote conflict output on purpose.
         if path.name in ("STACK.md",) or path.name.startswith("REVIEW-"):
             continue
         try:
@@ -239,10 +214,8 @@ def test_no_source_file_carries_a_merge_conflict_marker():
 def test_the_backlog_names_the_schema_version_the_code_is_at():
     """Two places state the schema version, and only one of them runs.
 
-    BACKLOG.md is the first thing read at the start of a session, and it
-    said v12 in the same change that set SCHEMA_VERSION to 13 -- so the
-    document that exists to save re-deriving things had to be re-derived.
-    Cheap to check, and the only way this is ever caught.
+    BACKLOG.md is read first at the start of a session, so its stated
+    schema version must match db.SCHEMA_VERSION.
     """
     import re
     sys.path.insert(0, str(ROOT))

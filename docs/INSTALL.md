@@ -227,7 +227,7 @@ Get-ChildItem "$env:LOCALAPPDATA\Packages\Claude*" -Directory |
 
 `install-windows.bat` finds every config location, picks the one the running
 Claude Desktop actually reads, writes the entry **there only**, and removes the
-entry from the others. All of that logic lives in `install-claude-desktop.ps1`,
+entry from the others. All of that logic lives in `windows/install-claude-desktop.ps1`,
 separate from the rest of the installer.
 
 The safest manual route is **Claude Desktop → Settings → Developer → Edit
@@ -241,12 +241,11 @@ Config**, which always opens the file the running app actually reads.
 | Variable | Default | What it does |
 |---|---|---|
 | `AC_DOCS_DIR` | `~/Documents/Assetto Corsa` | Where AC keeps setups and logs |
-| `ASSETTO_MCP_AC_ROOT` | found from Steam's library list | The Assetto Corsa install folder, for corner names from each track's `sections.ini` |
+| `ASSETTO_MCP_AC_ROOT` | found from Steam's library list | The Assetto Corsa install folder: corner names from each track's `sections.ini`, and where updates copy the in-game app |
 | `ASSETTO_MCP_DATA` | `~/.assetto-mcp` | Database, car range files, `exports/` and `notes/` |
 | `ASSETTO_MCP_BRIDGE_PORT` | `9666` | In-game app bridge port |
 | `ASSETTO_MCP_NO_AUTOSTART` | unset | `1` stops *this* instance recording on startup. Rarely wanted: instances already coordinate so only one records. |
 | `ASSETTO_MCP_NO_SUPERVISOR` | unset | `1` runs the server directly, without the supervisor in front of it. `restart_server` then refuses, and picking up new code means restarting the client. |
-| `ASSETTO_MCP_AC_ROOT` | found via Steam | Assetto Corsa's folder, for copying the in-game app on update |
 | `ASSETTO_MCP_UPDATE_REPO` | `mishan/assetto-mcp` | The GitHub repository updates come from |
 | `ASSETTO_MCP_UPDATE_API` | `https://api.github.com` | GitHub API base, for the update check |
 | `ASSETTO_MCP_UPDATE_GIT_URL` | `https://github.com/<repo>.git` | Where `apply_update` fetches from |
@@ -263,7 +262,7 @@ If you change the bridge port, edit `BASE` in
 ## Upgrading from `ac-race-engineer`
 
 This project was renamed from `ac-race-engineer`, and the old names are still
-honoured so nothing is lost:
+honored so nothing is lost:
 
 - **Your laps come with you.** `~/.ac-race-engineer` is renamed to
   `~/.assetto-mcp` — by the installer if you run it, otherwise by the server

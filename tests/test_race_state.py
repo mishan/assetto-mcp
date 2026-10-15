@@ -1,7 +1,6 @@
 """Where the driver is in the session: position, lap N of M.
 
-At Road Atlanta a "fuel for two laps" call came at the start of the last
-lap of a 16-lap race, when two laps of fuel was plenty. The game reports
+Fuel and strategy calls depend on how many laps are left. The game reports
 the race distance and the position; these pin how they are read.
 """
 

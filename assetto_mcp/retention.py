@@ -4,23 +4,19 @@ A lap costs about 0.4 MB, almost all of it the 25Hz sample rows: roughly
 12 MB per hour of driving, so a few hundred hours is a few gigabytes sitting
 in the driver's home directory forever.
 
-The obvious answer -- delete old sessions -- is the wrong one here. The
-whole point of storing laps is that a reference lap from three months ago is
-still the thing a change is being measured against, and a driver who comes
-back to a circuit after a season away wants the run they did last time.
+Old sessions are not deleted: a reference lap from months ago is still
+what a change is measured against, and a driver back at a circuit after a
+season away wants the run they did last time. Instead the oldest sessions
+are **thinned**: their samples are decimated, keeping every Nth, and the
+stride is recorded on the lap so a coarse trace can say it is coarse rather
+than reading as a lap driven at 5Hz. Lap rows, lap times, setup
+attribution and the track-limits evidence are computed at full resolution
+before any thinning and are never touched, so what a thinned lap loses is
+trace detail, not its existence.
 
-So nothing is deleted. Instead the oldest sessions are **thinned**: their
-samples are decimated, keeping every Nth, and the stride is recorded on the
-lap so a coarse trace can say it is coarse rather than reading as a lap
-driven at 5Hz. Lap rows, lap times, setup attribution and the track-limits
-evidence are computed at full resolution before any thinning and are never
-touched, so what a thinned lap loses is trace detail, not its existence.
-
-`sample_stride` is load-bearing for that promise, not decoration:
-db.backfill_excursions refuses to re-score a lap whose stride is above 1,
-because recomputing from a decimated trace would replace a real measurement
-with a worse one -- at stride 8 an excursion under about 640ms disappears
-and the lap becomes permanently "clean".
+`sample_stride` is load-bearing: db.backfill_excursions refuses to
+re-score a lap whose stride is above 1, because at stride 8 an excursion
+under about 640ms disappears and the lap would become permanently "clean".
 
 Order of sacrifice, worst-value-per-byte first:
   1. rival samples (other cars, only useful during the session they were in)
@@ -34,15 +30,11 @@ import sqlite3
 # Stride ladder. A lap is thinned one step at a time, so a session is only
 # taken to the coarsest stride once every older session is already there.
 #
-# The ladder has a floor, and that floor is why the budget is a target
-# rather than a guarantee: lap rows and their derived facts are never
-# deleted, so a database of nothing but fully-thinned laps still grows,
-# slowly, forever. Stopping at 8 made that bite sooner than it needed to --
-# every further session added an eighth of its samples on top of an already
-# over-budget file. 32 is about 0.8Hz, which is still enough to place a lap
-# on the circuit and see roughly where the driver lifted, and it buys a
-# factor of four before the floor is real. Below that a trace answers
-# nothing and is not worth the bytes it still costs.
+# The ladder has a floor, which is why the budget is a target rather than a
+# guarantee: lap rows are never deleted, so a fully-thinned database still
+# grows slowly. 32 is about 0.8Hz, still enough to place a lap on the
+# circuit and see roughly where the driver lifted; below that a trace
+# answers nothing.
 STRIDE_LADDER = (2, 4, 8, 16, 32)
 
 DEFAULT_BUDGET_BYTES = 2 * 1024 ** 3  # 2 GB
@@ -128,9 +120,9 @@ def _thin_lap(conn, lap_id: int, current: int, target: int) -> int:
     """Decimate one lap's samples to `target` stride. Returns rows removed.
 
     Keeps samples whose index is a multiple of the step, counting in
-    recorded order. Deleting by `t_ms % k` instead would bias towards
-    whatever the sampling jitter happened to land on, and would delete
-    unevenly across a lap where the tick rate wobbled.
+    recorded order. Deleting by `t_ms % k` would bias toward whatever the
+    sampling jitter landed on, and delete unevenly where the tick rate
+    wobbled.
     """
     if target <= current:
         return 0
@@ -140,13 +132,11 @@ def _thin_lap(conn, lap_id: int, current: int, target: int) -> int:
         (lap_id,))]
     doomed = [r for i, r in enumerate(rows) if i % step]
 
-    # All of it, or none of it. The deletes go out in chunks and the stride
-    # is stamped at the end, so a failure in between left a lap decimated
-    # and still marked stride 1 -- and those partial deletes did not even
-    # stay uncommitted, because the caller's next heartbeat commits (
-    # renew_recorder uses `with conn`). A lap that has quietly lost seven
-    # eighths of its trace while claiming full resolution is then eligible
-    # for re-scoring, which reads the gaps as clean track.
+    # All of it, or none of it: a lap decimated but still marked stride 1 is
+    # eligible for re-scoring, which reads the gaps as clean track. Partial
+    # deletes left pending would be committed by the caller's next heartbeat
+    # (renew_recorder uses `with conn`), and a full rollback would discard
+    # the caller's own transaction, hence a savepoint.
     conn.execute("SAVEPOINT thin_lap")
     try:
         for i in range(0, len(doomed), 500):
@@ -182,12 +172,9 @@ def enforce_budget(conn, db_path, budget: int | None = None) -> dict:
                 "budget": _human(budget) if budget else "unlimited"}
 
     # Progress is *estimated* from rows removed rather than measured by
-    # stat()ing the file. Deleted pages sit on the freelist and in the WAL
-    # until a VACUUM, so the file does not shrink as we go: an implementation
-    # that re-measured after each step read "no progress" every time and ran
-    # to the bottom of the ladder however little it needed to remove. And
-    # VACUUMing after each step to get an honest number would rewrite the
-    # whole database once per rung.
+    # stat()ing the file: deleted pages sit on the freelist and in the WAL
+    # until a VACUUM, so the file does not shrink as we go, and VACUUMing
+    # after each step would rewrite the whole database once per rung.
     per_row = _bytes_per_sample_row(conn, before)
     to_free = before - budget
     freed = 0
@@ -198,9 +185,8 @@ def enforce_budget(conn, db_path, budget: int | None = None) -> dict:
     # 1. Rival samples from every session but the newest. They answer "how
     # did I compare to the car ahead" and only while that race is the one
     # being discussed; nobody comes back to them a month later.
-    # The protected session is the newest by the same ordering the
-    # thinning uses. Picking MAX(id) here while ordering by started_at
-    # below would protect one session and thin from the other end.
+    # "Newest" uses the same ordering as the thinning below, so the
+    # protected session is the one thinned last.
     newest = conn.execute(
         "SELECT id FROM sessions ORDER BY started_at DESC, id DESC"
         " LIMIT 1").fetchone()
@@ -281,9 +267,9 @@ def _bytes_per_sample_row(conn, total_bytes: int) -> float:
 
     Sample rows are ~95% of the database, so attributing all of it to them
     is close enough to decide when to stop thinning, and it tracks the real
-    column count instead of a constant that rots when a migration adds a
-    channel. Falls back to a floor so a nearly empty database cannot make
-    this zero and turn the stopping condition into "never stop".
+    column count instead of a constant that goes stale when a migration
+    adds a channel. Falls back to a floor so a nearly empty database cannot
+    make this zero and turn the stopping condition into "never stop".
     """
     rows = conn.execute("SELECT COUNT(*) c FROM samples").fetchone()["c"]
     if not rows:
@@ -296,9 +282,7 @@ def _reclaim(conn, actions: list) -> None:
 
     Both halves matter. Without VACUUM the pages sit on the freelist and the
     file never shrinks; without the WAL checkpoint the deletions sit in the
-    -wal file, which counts towards the size just as much. Measuring one and
-    reclaiming the other is how thinning ran to the bottom of the ladder and
-    still reported no progress.
+    -wal file, which counts toward the size just as much.
     """
     try:
         conn.execute("VACUUM")

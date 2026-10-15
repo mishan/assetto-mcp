@@ -43,10 +43,9 @@ gives 53, 70, 87, 88. Counting back down from 88 gives 71, 54, 53. Six
 reachable values, of which a grid anchored at the minimum can express three —
 and 54 is not one of them.
 
-That mattered: asked to write 54, a grid-snapping `write_setup` returned 53
-and reported it as clamping, so a 2% softer spring looked like the request
-being tidied up. Values are now snapped to what the spinner can actually
-reach, and `write_setup` only reports `clamped` when it genuinely changed
+A grid-snapping writer asked for 54 would return 53 and call it clamping,
+hiding a 2% softer spring. Values are snapped to what the spinner can
+actually reach, and `write_setup` reports `clamped` only when it changed
 something.
 
 ## When there are no ranges
@@ -96,9 +95,9 @@ the backup doesn't clutter your setup menu.
 ## What the setup screen actually shows
 
 A stored value and the number on the setup screen are often different, and the
-game's own `display_multiplier` is not enough to bridge them. It has been wrong
+game's own `display_multiplier` is not enough to bridge them. It can be wrong
 about the **sign** (the F4 negates the front toe axis), the **scale** (rod
-length is a fraction of a millimetre per click, not about one), and the
+length is a fraction of a millimeter per click, not about one), and the
 **zero** (the NSX stores 10 for 0.00° of toe). And `show_clicks_mode` says only
 that the number is a position, not what that position reads as.
 
@@ -113,9 +112,9 @@ So the mapping is **measured, not derived**. Every value reported carries a
 | `stored` | the game says the screen shows the stored number itself |
 | `unknown` | nothing here can say; it will not invent one |
 
-`unknown` is the important one. It used to print `"20 (click index, mode 2)"`,
-which is an admission of ignorance shaped like an answer, and got repeated back
-as one.
+`unknown` is the important one. A string like `"20 (click index, mode 2)"`
+is an admission of ignorance shaped like an answer, and gets repeated back as
+one.
 
 ### Teaching it what your screen says
 

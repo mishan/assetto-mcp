@@ -90,8 +90,7 @@ def _windows_job():
 
     Without it, a supervisor killed from outside -- Claude Desktop ending
     the process tree badly, Task Manager -- leaves the child running,
-    holding the recorder claim and port 9666. That orphan is exactly what
-    the bridge's exclusive bind was written to diagnose. With
+    holding the recorder claim and port 9666. With
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE the kernel closes our handle when we
     die, however we die, and takes the child with it.
 
@@ -260,7 +259,7 @@ class Supervisor:
         elif method == "notifications/initialized":
             self._initialized = msg
         elif method == "notifications/cancelled":
-            # The server should not answer a cancelled request, so it must
+            # The server should not answer a canceled request, so it must
             # not be answered on its behalf after a restart either.
             rid = (msg.get("params") or {}).get("requestId")
             self._in_flight.pop(_key(rid), None)

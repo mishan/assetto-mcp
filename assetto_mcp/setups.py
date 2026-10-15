@@ -30,12 +30,8 @@ _NAME_RE = re.compile(r"^[\w][\w \-.]{0,60}$")
 
 # What fraction of the live setup a saved file must actually cover before
 # agreeing on all of it counts as identification. A file holding only
-# [FUEL] agrees with every setup carrying the same fuel load; calling that a
-# match is the same failure as the brake-bias fingerprint this replaced --
-# a confident answer from channels that cannot separate the candidates.
-#
-# A share rather than a count, because the count that means "thorough"
-# depends on the car: 2 of 2 adjustable entries is everything there is to
+# [FUEL] agrees with every setup carrying the same fuel load. A share rather
+# than a count, because 2 of 2 adjustable entries is everything there is to
 # know, while 2 of 21 is a coincidence.
 MIN_IDENTIFY_COVERAGE = 0.5
 
@@ -47,9 +43,8 @@ class SetupParseError(ValueError):
     into a message instead of an unhandled traceback.
 
     Its message says what is wrong with the file and nothing about what the
-    caller should do -- callers quote it in more than one context, and at
-    least one of them (write_setup with allow_unclamped) has already gone
-    ahead by the time it is printed.
+    caller should do: write_setup with allow_unclamped quotes it after going
+    ahead anyway.
     """
 
 
@@ -70,18 +65,16 @@ class EmptySetupError(ValueError):
 
     A [CAR] header and nothing else loads in the garage without complaint
     and changes nothing, which is indistinguishable from a setup the car
-    declined -- the failure this whole module is shaped around.
+    declined.
     """
 
 
 def _parser() -> configparser.ConfigParser:
-    # Kunos' own setup.ini files are hand-maintained and hit most of
-    # configparser's strictness in turn:
+    # Kunos' own setup.ini files are hand-maintained and contain:
     #   //  C-style banner comments between sections
     #   ;   trailing comments on a value ("MIN=15 ; psi")
     #   KEY with no '=' at all
     #   duplicate keys within a section
-    # Each of these raised out of the tool call rather than being handled.
     cp = configparser.ConfigParser(
         strict=False,                       # tolerate duplicate keys/sections
         interpolation=None,                 # '%' in a value is not a format
@@ -128,11 +121,9 @@ def setup_dir(ac_docs_dir: Path, car: str, track: str,
               loose: bool = True) -> Path | None:
     """The folder holding this car's setups for this track, if there is one.
 
-    Returns the real directory rather than the name it was asked for. A
+    Returns the real directory rather than the name it was asked for: a
     loose match can land on a folder called something else entirely, and
-    every caller then has to read from *that* -- listing one folder and
-    reading from another is how identification once searched a directory it
-    could not open and reported finding nothing.
+    every caller then has to read from *that*.
     """
     d = setups_root(ac_docs_dir) / car / track
     if d.is_dir():
@@ -160,25 +151,18 @@ def _track_candidates(track: str) -> list[str]:
 
     AC ids come in two shapes: `<track>_<layout>` for what the original game
     shipped ("mugello_osrw"), and `<vendor>_<track>[_<layout>]` for
-    everything since ("ks_nordschleife_endurance"). Taking the text before
-    the FIRST underscore reads the second shape as its vendor tag -- "ks",
-    which is not a folder in any install -- so that fallback only ever
-    resolved the first shape, and the first shape is the one circuit it was
-    developed against.
-
-    Stripping the LAST suffix instead walks ks_barcelona_layout_moto ->
-    ks_barcelona_layout -> ks_barcelona -> ks, reaching the real folder in a
-    step or two whichever shape the id has.
+    everything since ("ks_nordschleife_endurance"). Stripping the LAST
+    suffix walks ks_barcelona_layout_moto -> ks_barcelona_layout ->
+    ks_barcelona -> ks, reaching the real folder in a step or two whichever
+    shape the id has. Cutting at the first underscore instead would read
+    `ks` as the track.
 
     The bare vendor tag is left at the end of the list rather than filtered
     out, because _resolve_track_dir matches every shortened candidate
     EXACTLY. "ks" as a prefix would match whichever ks_ folder that car
-    happens to have setups in -- reading another circuit's setups and
-    reporting a confident match -- while "ks" as a folder name exists
-    nowhere, so an exact match can never accept it. Screening by a list of
-    known vendor tags would need maintaining for every mod pack; requiring
-    the folder to actually be called that does not, and it protects
-    "mugello" and "spa", which are single segments and real folders.
+    happens to have setups in, while "ks" as a folder name exists nowhere.
+    That needs no list of vendor tags, and still accepts "mugello" and
+    "spa", which are single segments and real folders.
     """
     parts = [p for p in track.split("_") if p]
     return ["_".join(parts[:i]) for i in range(len(parts), 0, -1)]
@@ -196,12 +180,8 @@ def _resolve_track_dir(ac_docs_dir: Path, car: str,
 
     On failure the first element is a folder that exists and turned out to
     hold no .ini files, or "" if no folder was found at all -- never the id
-    it was asked for. Returning the requested id claimed a folder had been
-    read that was never even opened: identify_setup then reported
-    track_dir: 'ks_nowhere_special' for a directory that does not exist,
-    indistinguishable from a real folder that happened to be empty. The two
-    want opposite next steps -- correct the track id, or go and save a
-    setup -- so they are answered differently.
+    it was asked for. The two want opposite next steps (save a setup, or
+    correct the track id), so they are answered differently.
     """
     tried: list[str] = []
     empty = ""
@@ -219,10 +199,8 @@ def _resolve_track_dir(ac_docs_dir: Path, car: str,
             names = sorted(p.stem for p in d.glob("*.ini"))
             if names:
                 return d.name, names
-            # Keep the first empty one: the search carries on in case a
-            # later candidate has setups in it, but if none does, this is
-            # the folder that genuinely exists and the caller should hear
-            # about it rather than about a name nothing was found under.
+            # Keep the first empty one in case no later candidate has
+            # setups: it is the folder that genuinely exists.
             empty = empty or d.name
     return empty, []
 
@@ -232,9 +210,7 @@ def read_setup(ac_docs_dir: Path, car: str, track: str, name: str) -> dict:
 
     Through setup_dir rather than the literal path, so a track prefix --
     "mugello" for "mugello_osrw" -- reads the folder that list_setups and
-    write_setup use. Reading the literal path meant a name that listing had
-    just offered came back as "no setup at ...", and a base_setup that
-    plainly existed could not be found.
+    write_setup use.
     """
     d = setup_dir(ac_docs_dir, car, track)
     path = (d or setups_root(ac_docs_dir) / car / track) / f"{name}.ini"
@@ -301,11 +277,8 @@ def identify_setup(ac_docs_dir: Path, car: str, track: str,
                 "reason": "no live setup values; is the in-game app running?"}
 
     # Sessions report a layout id ('mugello_osrw', 'ks_silverstone_gp')
-    # while setups are filed under the track folder. The resolved folder has
-    # to be used for reading as well as listing: fixing only the listing
-    # left every read_setup() raising FileNotFoundError and being skipped,
-    # so identification still found nothing while looking like it had
-    # searched.
+    # while setups are filed under the track folder. The resolved folder is
+    # used for reading as well as listing.
     track_dir, names = _resolve_track_dir(ac_docs_dir, car, track,
                                           track_folder or "")
     # At least half of what the game reports, and never fewer than one --
@@ -339,10 +312,8 @@ def identify_setup(ac_docs_dir: Path, car: str, track: str,
     out = {"candidates": [e["name"] for e in exact],
            "compared": min((e["compared"] for e in exact), default=0),
            "near_misses": sorted(near, key=lambda n: len(n["differs_in"]))[:3],
-           # Always reported, and reported even when nothing matched. A
-           # fallback that quietly reads a different track's setups looks
-           # exactly like one that read the right folder, and the answer it
-           # gives is a setup name with no way to tell where it came from.
+           # Always reported, even when nothing matched, so a fallback to a
+           # different folder is visible.
            "track_dir": track_dir or None}
     if names and track_dir and track_dir != track:
         out["track_dir_note"] = (
@@ -365,16 +336,9 @@ def identify_setup(ac_docs_dir: Path, car: str, track: str,
                 f"identify one -- agreeing on a handful of shared fields "
                 f"says little about the rest")
         elif not names:
-            # Distinct from "nothing matched": one says the saved setups
-            # disagree with the car, the other that there were none to read.
-            # They call for opposite next steps, and answering both with
-            # "no saved setup matches the car" is what made a broken folder
-            # lookup look like a genuine result.
-            #
-            # And the two ways of having nothing to read are themselves
-            # distinct, which is why track_dir is "" for one and the folder
-            # for the other: an empty folder means save a setup, no folder
-            # at all means the track id never resolved to one.
+            # Distinct from "nothing matched": there were no setups to
+            # read. An empty folder means save a setup; no folder at all
+            # (track_dir "") means the track id never resolved to one.
             if track_dir:
                 out["reason"] = (
                     f"the setup folder for {car!r} at {track_dir!r} holds no "
@@ -396,8 +360,7 @@ def load_ranges(ranges_dir: Path, car: str) -> dict | None:
     None means "no ranges file for this car" -- write_setup then refuses,
     unless the caller passes allow_unclamped. An empty dict must never be
     returned in its place: it reads as "ranges available, and this car allows
-    nothing", which made write_setup drop every requested value and report
-    success while writing a setup file containing no settings at all.
+    nothing", and write_setup would drop every requested value.
     """
     path = ranges_dir / f"{car}.ini"
     if not path.is_file():
@@ -418,10 +381,8 @@ def load_ranges(ranges_dir: Path, car: str) -> dict | None:
         ranges[section] = (lo, hi, step if step and step > 0 else 1.0)
 
     if not ranges:
-        # Descriptive, not prescriptive: this same string is quoted both by
-        # the refusal in write_setup and by the warning it prints when the
-        # caller asked to write anyway. Saying "writes are refused" here
-        # made the second one contradict the write that had just happened.
+        # Descriptive, not prescriptive: write_setup quotes this both in its
+        # refusal and in the warning it gives when told to write anyway.
         raise SetupParseError(
             f"{path.name}: no usable MIN/MAX sections found"
             + (f" ({len(skipped)} section(s) had unreadable numbers)"
@@ -431,9 +392,9 @@ def load_ranges(ranges_dir: Path, car: str) -> dict | None:
 
 
 # Two stored values closer together than this, relative to their own
-# magnitude, are the same spinner position. Deliberately not exact equality:
-# a continuous entry can report stored values that differ only in the last
-# bit, and dividing by that difference gave a slope of 2e14.
+# magnitude, are the same spinner position. Not exact equality: a continuous
+# entry can report stored values that differ only in the last bit, and
+# dividing by that difference gives an absurd slope.
 _STORED_EPS = 1e-9
 
 
@@ -450,11 +411,10 @@ def fit_display(observations: list[tuple], multiplier: float | None = None
 
     One observation cannot separate a scale error from an offset error, so
     it borrows the game's own `display_multiplier` as the slope and fits
-    only the offset. That is not a guess dressed up -- it is the NSX toe
-    case exactly, where the scale was right and the zero was not (stored 10
-    reads 0.00 degrees), and it costs the driver one number instead of two.
-    `basis` says which happened so a reader can tell a fitted line from a
-    half-fitted one.
+    only the offset. That covers the common case of a right scale and a
+    wrong zero (stored 10 reads 0.00 degrees), for one reading instead of
+    two. `basis` says which happened so a reader can tell a fitted line from
+    a half-fitted one.
 
     Fits from the two most extreme stored values rather than a least
     squares over all of them. The relationship is exactly linear -- it is a
@@ -475,11 +435,9 @@ def fit_display(observations: list[tuple], multiplier: float | None = None
         return None
 
     (s0, d0), (s1, d1) = pts[0], pts[-1]
-    # Relative, not exact. Two readings whose stored values differ only by
-    # floating-point noise are one reading, and dividing by that difference
-    # produced a slope of 2e14 and a screen value of 1.5e15 reported as
-    # `observed`. Continuous entries (step 0) are supported deliberately, so
-    # this is reachable rather than theoretical.
+    # Relative, not exact: two readings whose stored values differ only by
+    # floating-point noise are one reading. Continuous entries (step 0) make
+    # this reachable.
     spread = abs(s1 - s0)
     if spread > _STORED_EPS * max(1.0, abs(s0), abs(s1)):
         if d1 == d0:
@@ -494,9 +452,8 @@ def fit_display(observations: list[tuple], multiplier: float | None = None
         out = {"slope": slope, "offset": d0 - slope * s0,
                "basis": "two observations", "points": len(pts),
                "fitted_over": [s0, s1]}
-        # Residual against the fitted line. `points` used to be published as
-        # "observations: 3" while a wildly contradictory middle reading was
-        # silently discarded -- confirmation counted without being checked.
+        # Residual against the fitted line, so extra readings are checked
+        # rather than merely counted.
         worst = max(((s, d, abs(d - (slope * s + out["offset"])))
                      for s, d in pts), key=lambda t: t[2], default=None)
         if worst and worst[2] > _residual_tolerance(pts):
@@ -517,7 +474,7 @@ def _residual_tolerance(pts: list) -> float:
     """How far a reading may sit off the line before it is a disagreement.
 
     Proportional to the displayed span, because a screen showing degrees to
-    two places and one showing millimetres to one place round differently.
+    two places and one showing millimeters to one place round differently.
     Never zero, so an exactly-linear set does not flag itself.
     """
     span = abs(pts[-1][1] - pts[0][1])
@@ -530,10 +487,7 @@ def _offset_only(s0: float, d0: float, multiplier, pts: list,
 
     None when the game gives no usable multiplier -- which is exactly the
     click-index entries, the ones with no known display at all. Returning a
-    mapping there would mean inventing the scale, and returning success
-    without one was worse: the tool reported the reading accepted, the entry
-    stayed "unknown", and the advice was to do the thing that had just been
-    done.
+    mapping there would mean inventing the scale.
     """
     if multiplier in (None, 0) or multiplier is False:
         return None
@@ -609,11 +563,7 @@ def describe_display(conv: dict | None) -> dict:
 def _displays_as(stored: float, conv: dict | None) -> dict | None:
     """How a stored value reads on AC's setup screen.
 
-    Returns a dict rather than the bare string it used to. The string said
-    things like "0 (click index, mode 2)", which is the tool admitting it
-    does not know what the screen will say, in a format that reads like an
-    answer. It got repeated back to the driver as one five times in an
-    evening.
+    A dict rather than a string, so "not known" cannot read like an answer.
 
     Always: `source`, and `stored`. Then, depending on `source`:
 
@@ -634,10 +584,8 @@ def _displays_as(stored: float, conv: dict | None) -> dict | None:
       stored           the game says the screen shows the stored number
       unknown          nothing here knows; do not state a displayed value
 
-    `observed_offset` is separate from `observed` on purpose. It borrows the
-    game's multiplier for the scale -- the same number that has been wrong
-    about scale -- so it is not the same claim, and `source` is the field
-    every docstring tells a reader to key off.
+    `observed_offset` is separate from `observed` because it borrows the
+    game's multiplier for the scale, which can itself be wrong.
 
     None only when there is no entry at all.
     """
@@ -681,8 +629,7 @@ def _displays_as(stored: float, conv: dict | None) -> dict | None:
 
     # show_clicks_mode says the number IS an index into the car's positions,
     # so there is no unit and no multiplier to apply. Nothing here can turn
-    # it into what the screen shows, and saying so plainly is the whole
-    # point -- this is where the guessing used to happen.
+    # it into what the screen shows, so say so rather than guess.
     if clicks:
         return out(
             shown=None, source="unknown", stored=stored,
@@ -728,25 +675,16 @@ def legal_values(lo: float, hi: float, step: float) -> list[float]:
     spinner already is and clamps at the ends, so the reachable set depends
     on which way you arrived and is not `lo + n*step`.
 
-    Driver-observed on the RSS Formula 4's rear wheel rate, lo 53, hi 88,
-    step 17. Counting up: 53, 70, 87, then 87+17 clamped to 88. Counting
-    back down from 88: 71, 54, then 53. Six reachable values, of which a
-    grid anchored at lo can express three.
+    Observed on the RSS Formula 4's rear wheel rate, lo 53, hi 88, step 17.
+    Counting up: 53, 70, 87, then 87+17 clamped to 88. Counting back down
+    from 88: 71, 54, then 53. Six reachable values, of which a grid anchored
+    at lo can express three -- and 54, a rate this car is actually run at,
+    sits only on the descending ladder.
 
-    This is not pedantry. 54 is a rate this car is actually run at, and it
-    sits only on the descending ladder. Asked to write 54, the old snapping
-    returned 53 and reported it as clamping -- the correct value, declared
-    illegal and quietly replaced by a 2% softer spring. The same offset
-    ladders exist on the front anti-roll bar: 126607 is on the descending
-    one and 126608 on the ascending one, and a one-step reduction landed on
-    117358 when 117357 was available and exact.
-
-    Enumerating is for reporting and for tests. snap() does not use it: a
-    1-unit step over a wide range -- which nothing rules out, since these
-    numbers come from whatever the game reports for whatever car is loaded
-    -- is a hundred thousand values per field per write, and there is no
-    reason to build them to pick one. Returns [] above LEGAL_VALUES_MAX
-    rungs, which means "too many to list", not "none".
+    Enumerating is for reporting and for tests; snap() works arithmetically,
+    since a 1-unit step over a wide range is a hundred thousand values.
+    Returns [] above LEGAL_VALUES_MAX rungs, which means "too many to list",
+    not "none".
     """
     n = _rungs(lo, hi, step)
     if n is None or n > LEGAL_VALUES_MAX:
@@ -758,7 +696,7 @@ def legal_values(lo: float, hi: float, step: float) -> list[float]:
     return sorted(x for x in out if lo - _EPS <= x <= hi + _EPS)
 
 
-# Above this the ladders are not worth materialising, and nothing needs them
+# Above this the ladders are not worth materializing, and nothing needs them
 # to be: legal_values is a reporting helper, and snap works arithmetically.
 LEGAL_VALUES_MAX = 10000
 _EPS = 1e-9
@@ -776,9 +714,7 @@ def snap(value: float, lo: float, hi: float, step: float) -> float:
     """The reachable value nearest what was asked for.
 
     Both ladders are arithmetic, so the nearest rung on each is computed
-    rather than searched: at most six candidates, whatever the range. The
-    enumerating version cost 80ms and 100,001 floats on a 1-unit step, per
-    field, on every write.
+    rather than searched: at most six candidates, whatever the range.
 
     Ties go to the lower value, so a request exactly between two rungs is
     answered the same way twice rather than depending on set ordering.
@@ -802,9 +738,7 @@ def _free_name(d: Path, name: str) -> str | None:
 
     None when there isn't one worth suggesting -- which in practice means the
     stem is already so long that appending _vN would exceed what _NAME_RE
-    accepts. Suggesting a name the very next call rejects, with a message
-    about unsupported *characters* when the problem is length, is worse than
-    suggesting nothing.
+    accepts. Suggesting a name the next call rejects is worse than none.
     """
     stem = re.sub(r"_v(\d+)$", "", name)
     m = re.search(r"_v(\d+)$", name)
@@ -821,22 +755,13 @@ _KEEP_BACKUPS = 5
 def _backup_age(path: Path) -> tuple:
     """Sort key for a backup filename: (timestamp, collision number).
 
-    The collision number has to be compared as a *number*. Sorting the
-    whole name as text puts "-9" after "-10", so once ten backups landed in
-    the same second the pruner deleted the newest ones and kept the oldest
-    -- the precise opposite of the job. Ten writes inside one second is
-    unlikely by hand and trivial in a loop.
+    The collision number is compared as a *number*: as text, "-9" sorts
+    after "-10".
     """
     # The timestamp contains a hyphen of its own (yyyymmdd-HHMMSS), so the
-    # collision number is the THIRD segment when there is one. Partitioning
-    # on the first hyphen instead read "20260101-120000" as stamp
-    # "20260101" collision 120000, which sorted the very first backup of a
-    # second as the newest of them.
-    # rsplit, not split: a setup name may itself contain ".ini.bak-" --
-    # dots and hyphens are both legal in _NAME_RE -- and splitting on the
-    # FIRST marker then parsed part of the driver's own name as a timestamp,
-    # so every backup of that setup fell to the fallback age and pruning
-    # stopped keeping the newest.
+    # collision number is the THIRD segment when there is one. rsplit,
+    # because a setup name may itself contain ".ini.bak-" (dots and hyphens
+    # are both legal in _NAME_RE).
     parts = path.name.rsplit(".ini.bak-", 1)[-1].split("-")
     try:
         if len(parts) == 2:
@@ -891,9 +816,8 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
     Setup files store raw values, and the number on the screen is often a
     different one: camber is stored in tenths of a degree, ride height as a
     click index. Nothing here converts -- writing the stored value is
-    correct -- but a report saying "wrote 20" without saying whether that is
-    20 mm or 20 clicks is how a setup that looks fine and isn't gets
-    written. Every written entry carries `displays_as`.
+    correct -- but every written entry carries `displays_as`, so "wrote 20"
+    says whether that is 20 mm or 20 clicks.
 
     Two refusals, both because the failure they prevent is silent:
 
@@ -919,20 +843,16 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
 
     # Write into the folder every *reader* will look in, not into the
     # literal name the caller passed. setup_dir resolves a track prefix to
-    # the real directory -- "mugello" to "mugello_osrw" -- and taking the
-    # literal path instead did two bad things at once: the new setup landed
-    # in a folder AC never reads, and creating that folder stopped the
-    # prefix fallback firing at all, so `list_setups(car, "mugello")` went
-    # from listing the driver's own setups to listing only ours. Their files
-    # were still on disk and invisible to every tool here.
+    # the real directory -- "mugello" to "mugello_osrw". A literal folder
+    # would be one AC never reads, and its existence would stop the prefix
+    # fallback from finding the driver's own setups.
     #
     # None means no folder for this track yet, which is ordinary for the
     # first setup at a new circuit -- use the name as given.
     #
-    # Deliberately no mkdir yet either. A refusal must leave the filesystem
-    # exactly as it found it, for the same reason: an empty directory
-    # created on the way to failing breaks the fallback permanently, and a
-    # refused write is the likeliest moment for a track id to be wrong.
+    # No mkdir yet: a refusal must leave the filesystem as it found it, for
+    # the same reason, and a refused write is the likeliest moment for a
+    # track id to be wrong.
     d = setup_dir(ac_docs_dir, car, track) or (
         setups_root(ac_docs_dir) / car / track)
     path = d / f"{name}.ini"
@@ -1004,12 +924,8 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
             if shown.get("source") == "unknown":
                 report.setdefault("display_unknown", []).append(section)
 
-    # Refuse an empty result *before* touching the file. This check used to
-    # run after the write, which was survivable when the write created a new
-    # file and became destructive the moment overwrite=True existed: a
-    # request naming only sections the car does not have truncated a real
-    # setup to a [CAR] header and then said "NOTHING WAS WRITTEN". The
-    # backup made it recoverable; not doing it is better.
+    # Refuse an empty result *before* touching the file: with overwrite=True
+    # it would truncate a real setup to a [CAR] header.
     #
     # merged carries base_setup's values, so "nothing was written" is about
     # this request, not about the file -- a base plus zero valid overrides

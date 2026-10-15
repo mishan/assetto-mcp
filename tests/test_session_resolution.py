@@ -2,10 +2,10 @@
 
 The app runs one server instance per client surface and only one of them
 wins the bridge port, so the process receiving the driver's notes is
-routinely not the process doing the recording. Everything here exists
-because the overlay and the write path disagreeing is worse than either
-being wrong on its own: a note filed into a plausible-looking session from
-another circuit is far harder to notice than one filed nowhere.
+routinely not the process doing the recording. The overlay and the write
+path must agree, and a note with no live session is filed nowhere: one filed
+into a plausible-looking session from another circuit is far harder to
+notice.
 """
 
 import sys
@@ -64,8 +64,8 @@ def test_a_stale_session_is_never_written_to():
 def test_status_and_writes_agree_after_the_collector_stops():
     """collector.session_id survives stop(), so it cannot be trusted alone.
 
-    Reproduced before the fix: /status reported session 2 (Mugello) while
-    the same request cycle filed the note into session 1 (Monza).
+    Otherwise /status can report session 2 (Mugello) while the same request
+    cycle files the note into session 1 (Monza).
     """
     with temp_db() as path:
         conn = db.connect(path)
@@ -110,8 +110,8 @@ def test_this_instances_own_recording_takes_precedence():
 
 
 def test_another_instances_recording_is_reported_and_used():
-    """The overlay saying "not recording" while laps are being stored was
-    the single most misleading thing this tool did."""
+    """The overlay must not say "not recording" while laps are being stored.
+    """
     with temp_db() as path:
         conn = db.connect(path)
         theirs = make_session(conn, "mugello")
@@ -143,15 +143,11 @@ def test_orphaned_notes_are_countable():
 
 
 def test_a_collector_that_went_quiet_stops_claiming_to_record():
-    """Seven laps at Suzuka went unrecorded behind a green indicator.
+    """A failed collector must not leave the indicator green.
 
-    A session row is created the instant a collector starts, and started_at
-    never advances. Reading that timestamp meant a session whose collector
-    had failed asserted itself as "recording, other instance" for a full
-    fifteen minutes while the driver drove.
-
-    The heartbeat is what separates the two. It stops when the collector
-    does, so this is now noticed in seconds rather than minutes.
+    started_at never advances, so it cannot tell a live session from one
+    whose collector died. The heartbeat stops when the collector does, so
+    this is noticed in seconds.
     """
     with temp_db() as path:
         conn = db.connect(path)
@@ -175,18 +171,13 @@ def test_a_collector_that_went_quiet_stops_claiming_to_record():
 
 
 def test_an_out_lap_is_not_mistaken_for_a_dead_session():
-    """The failure the lap-based rules produced in the other direction.
+    """A live heartbeat keeps a session live before its first timed lap.
 
-    The first lap a session STORES is its first flying lap -- the out-lap
-    has no time and is skipped by design. So judging liveness from stored
-    laps declared a live session dead for the length of a garage sit plus
-    an out-lap plus a flying lap: over five minutes at Sebring, and over
-    ten at Nordschleife. During that window the overlay read "not
-    recording" and every complaint tag the driver pressed was orphaned --
-    on the first laps of a new setup, which is when she presses them.
-
-    An hour, because a session can be that old and still not have stored a
-    lap. What settles it is that the collector is still talking.
+    Judging liveness from stored laps would call a session dead through a
+    garage sit, an out-lap and a flying lap -- over ten minutes at the
+    Nordschleife -- and orphan every complaint tag pressed on the first laps
+    of a new setup. An hour, because a session can be that old and still
+    not have stored a lap.
     """
     with temp_db() as path:
         conn = db.connect(path)
@@ -210,8 +201,8 @@ def test_a_session_from_before_the_heartbeat_falls_back_to_its_laps():
     """v9 and earlier have no last_seen_at and never will.
 
     Guessing one from started_at would make a session that ended last week
-    look like one being recorded right now, so these keep the old rule:
-    the last stored lap, and the generous window it needs.
+    look like one being recorded right now, so these are judged by the
+    last stored lap, and the generous window it needs.
     """
     with temp_db() as path:
         conn = db.connect(path)

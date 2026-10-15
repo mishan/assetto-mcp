@@ -1,10 +1,9 @@
 """Tyre wear across a stint, and what the driver aids actually did.
 
-Both channels were stored for weeks and read by nothing, which is its own
-kind of failure: the driver asked "did the tyres go off" and got an answer
-argued from hot pressure and core temperature, while the game's own wear
-figures sat in the same rows unread. A proxy that happens to be flat is not
-evidence, and neither is a setup value nobody has measured the effect of.
+"Did the tyres go off" is answered from the game's own wear figures, not
+argued from a proxy such as hot pressure or core temperature: a proxy that
+happens to be flat is not evidence, and neither is a setup value whose
+effect nobody has measured.
 """
 
 import json
@@ -140,8 +139,7 @@ def test_wear_is_reported_counting_up_even_though_ac_counts_down():
     """`used` has to grow as the tyre gets worse.
 
     AC's field decreases from 100. Passing it straight through would give a
-    driver a number that falls as their tyres deteriorate, which is the
-    kind of thing that gets read wrong once and trusted forever.
+    driver a number that falls as their tyres deteriorate.
     """
     out = analysis.stint_wear(_stint(lambda n, w: 0.5, laps=6))
     s = out["summary"]
@@ -404,8 +402,7 @@ def test_a_stint_that_is_only_an_out_lap_states_no_rate():
 
 # The segmentation only helps if the TOOL does it. The analysis function
 # will happily report whatever laps it is handed as one stint, so this
-# walks the real MCP tool against a real database and a real pit stop --
-# which is where the wrong answer would actually have reached the driver.
+# walks the real MCP tool against a real database and a real pit stop.
 
 _STINT_PROBE = """
 import json
@@ -462,13 +459,13 @@ def _run_probe(source: str) -> dict:
 
 
 def test_the_tool_reports_a_session_with_a_pit_stop_as_two_stints():
-    """The wrong answer this would have given the driver.
+    """Each set is reported on its own, not as one set spanning the stop.
 
-    Sessions keep pit laps on purpose, so a race with a stop in it used to
-    go through as one stint: the first set's 100% start against the second
-    set's 98% end, reported as one set that lost 2% over eleven laps, with
-    both sets thrown into a single early-against-late trend. Each set here
-    loses exactly 2% over five laps, and that is what has to come back.
+    Sessions keep pit laps on purpose. Taken whole, a race with a stop
+    would compare the first set's 100% start against the second set's 98%
+    end -- one set that lost 2% over eleven laps -- and throw both sets
+    into a single early-against-late trend. Each set here loses exactly 2%
+    over five laps, and that is what has to come back.
     """
     got = _run_probe(_STINT_PROBE)["session"]
     assert got["stint_count"] == 2, got
@@ -495,11 +492,11 @@ def test_the_tool_accepts_an_explicit_lap_range():
 
 # --- braking ------------------------------------------------------------
 #
-# This began as an ABS activity report and the first real lap killed it:
-# shared memory's `abs` and `tc` were constant to three decimal places
-# across a whole lap, straights included. So these test what can actually
-# be measured -- what the tyres did under braking -- and that the aid
-# fields are described as the constants they are.
+# Shared memory's `abs` and `tc` are constant to three decimal places
+# across a whole lap, straights included, so they cannot report aid
+# activity. These test what can be measured -- what the tyres did under
+# braking -- and that the aid fields are described as the constants they
+# are.
 
 
 def test_trail_braking_is_not_mistaken_for_a_locked_wheel():
@@ -553,10 +550,9 @@ def _two_zone_lap(n=600, spike_slip=4.5, base=0.4):
     """Two straight-line braking zones, one single-sample spike in each.
 
     The spikes are placed at the END of the first zone and the START of the
-    second, which is the arrangement that used to produce a false lockup:
-    once the coasting samples between them have been filtered out, the two
-    spikes are neighbours in the filtered list even though half a lap of
-    telemetry separates them.
+    second: once the coasting samples between them have been filtered out,
+    the two spikes are adjacent in the filtered list even though half a lap
+    of telemetry separates them.
     """
     zone_a = range(int(0.20 * n), int(0.26 * n))
     zone_b = range(int(0.60 * n), int(0.66 * n))
@@ -618,9 +614,7 @@ def test_a_lockup_run_is_broken_by_the_driver_lifting_mid_zone():
 
 
 def test_a_constant_aid_field_is_reported_as_constant_not_as_activity():
-    """The mistake this module was rebuilt around.
-
-    A field holding one value down every straight cannot be measuring
+    """A field holding one value down every straight cannot be measuring
     intervention, and the payload must not let a reader believe it is.
     """
     out = analysis.braking_report(_meta(), _brake_lap(aid_constant=0.06))
@@ -639,9 +633,9 @@ def test_a_constant_aid_field_is_reported_as_constant_not_as_activity():
 def test_the_roll_gradient_recovers_a_known_stiffness():
     """Degrees of roll per g -- the direct measure of roll stiffness.
 
-    Every anti-roll bar argument so far has been reasoned from load
-    transfer or from the driver's description. This is the number that
-    either moves when a bar moves, or shows that it did not.
+    This is the number that either moves when an anti-roll bar moves, or
+    shows that it did not, instead of reasoning from load transfer or the
+    driver's description.
     """
     out = analysis.attitude_report(_meta(), _attitude_lap(roll_per_g=1.5))
     roll = out["roll"]
@@ -673,14 +667,13 @@ def test_a_gradient_is_withheld_when_the_car_was_never_loaded():
 
 
 def test_a_car_that_never_rolls_reports_no_roll_gradient():
-    """The bug the signed fit exists to kill.
+    """A constant lean must not come back as a gradient.
 
     This car leans a constant 0.8 degrees and its suspension does not move
-    at all -- banking, camber, a crooked garage floor, take your pick. The
-    old fit took |roll| against |lateral g| through the origin, which turns
-    a constant lean into a confident positive gradient: it has to, because
-    forcing a line through the origin leaves the offset nowhere to go
-    except into the slope.
+    at all. Fitting |roll| against |lateral g| through the origin would
+    turn that lean into a confident positive gradient, because forcing the
+    line through the origin leaves the offset nowhere to go except into
+    the slope; the signed fit with an intercept does not.
     """
     out = analysis.attitude_report(
         _meta(), _attitude_lap(roll_per_g=0.0, static_roll_deg=0.8))
@@ -834,8 +827,7 @@ def test_a_lap_with_load_but_no_spread_says_so_instead_of_miscounting():
 
     A lap held at a constant 1.2g has hundreds of loaded samples and still
     cannot be fitted -- there is no spread in x. Saying "only 700 samples,
-    under the 40 needed" would be a false statement produced by reusing
-    the wrong branch's text.
+    under the 40 needed" would be false.
     """
     lap = [{"norm_pos": i / 400, "acc_lat": 1.2, "acc_lon": 0.0,
             "roll": math.radians(1.8), "pitch": 0.0} for i in range(400)]

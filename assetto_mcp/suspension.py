@@ -21,7 +21,7 @@ bump/rebound split is withheld.
 **Sample rate.** Damper velocity is a fast signal. Sampled at render rate
 (60-144Hz) and differentiated, the high-speed band is aliased into nonsense.
 Samples therefore carry the tier that produced them, and anything derived
-from render-rate data is labelled as body motion rather than damper
+from render-rate data is labeled as body motion rather than damper
 behavior. See SOURCE_* below.
 """
 
@@ -32,8 +32,8 @@ WHEELS = ("fl", "fr", "rl", "rr")
 FRONT = ("fl", "fr")
 REAR = ("rl", "rr")
 
-# Where a batch of samples came from. The distinction is not cosmetic: it
-# decides which analyzes are honest to run.
+# Where a batch of samples came from. The distinction decides which
+# analyses are honest to run.
 SOURCE_APP = "app"          # render rate, ~60-144Hz, aliased above ~30Hz
 SOURCE_WORKER = "worker"    # CSP physics worker, 333Hz, true damper rate
 
@@ -55,11 +55,9 @@ BRAKING_THRESHOLD = 0.6
 
 # The sign inference assumes brake pedal == weight transferring forward. A
 # stationary car with the pedal held satisfies the first and none of the
-# second, and an out-lap spent sitting in the garage on the brakes supplied
-# thousands of such samples -- enough to outvote the real braking zones and
-# invert the answer, at confidence 1.0. Both the speed floor and the cap on
-# how much of a lap may be classified as braking exist to keep parked and
-# crawling samples out of it.
+# second, and enough such samples outvote the real braking zones and invert
+# the answer. The speed floor and the cap on how much of a lap may be
+# classified as braking keep parked and crawling samples out of it.
 SIGN_MIN_SPEED_KMH = 50.0
 SIGN_MAX_BRAKING_SHARE = 0.5
 
@@ -100,7 +98,7 @@ def infer_compression_sign(samples: list[dict]) -> dict:
 
     Returns {"sign": -1|1|None, "confidence": 0..1, "basis": str}. sign is
     the multiplier that makes compression positive. None means we could not
-    tell, and callers must then withhold anything bump/rebound flavoured.
+    tell, and callers must then withhold anything bump/rebound flavored.
     """
     # Compare where the front axle *sits* under braking against where it
     # sits at rest, not how fast it is moving. Under sustained braking the
@@ -115,7 +113,7 @@ def infer_compression_sign(samples: list[dict]) -> dict:
             continue
         # A car below this isn't transferring meaningful load, whatever the
         # pedal says. Missing speed is treated as too slow rather than
-        # assumed fast: guessing here is what produced the inverted answer.
+        # assumed fast.
         speed = s.get("speed_kmh")
         if not _finite(speed) or speed < SIGN_MIN_SPEED_KMH:
             slow += 1
@@ -198,17 +196,16 @@ def _bin_labels() -> list[str]:
 def _rate_matches_tier(samples: list[dict], source: str) -> str | None:
     """Does the measured rate support the tier the rows claim to be?
 
-    The tier label comes from the client, and a client that starts a physics
-    worker which then never produces will happily go on labelling its
-    render-rate fallback as 333Hz data. That is the one failure mode this
-    module exists to prevent, so the label is checked against the evidence
-    rather than believed. Returns a warning, or None if the claim holds.
+    The tier label comes from the client, and a client whose physics worker
+    never produces can go on labeling its render-rate fallback as 333Hz
+    data, so the label is checked against the evidence rather than believed.
+    Returns a warning, or None if the claim holds.
     """
     measured = _effective_rate_hz(samples)
     if source == SOURCE_WORKER and measured < 150.0:
         return (f"These rows claim to come from the 333Hz physics worker, "
                 f"but they arrived at ~{measured:.0f}Hz. Something upstream "
-                f"is mislabelling them, so treat the damper numbers with "
+                f"is mislabeling them, so treat the damper numbers with "
                 f"the same suspicion as render-rate data.")
     return None
 
@@ -363,7 +360,7 @@ def ride_height_report(samples: list[dict], buckets: int = 20) -> dict:
 
 
 def _spread(values: list[float]) -> dict:
-    """Summarise a distance channel in mm. Inputs are meters."""
+    """Summarize a distance channel in mm. Inputs are meters."""
     mm = [v * 1000.0 for v in values]
     mm.sort()
     return {
@@ -468,7 +465,7 @@ def roll_balance(samples: list[dict]) -> dict:
 # --- top level ----------------------------------------------------------
 
 
-def summarise(samples: list[dict], source: str | None = None) -> dict:
+def summarize(samples: list[dict], source: str | None = None) -> dict:
     """Everything above, for one lap.
 
     Rows carry their own `source`, and the two tiers are not interchangeable

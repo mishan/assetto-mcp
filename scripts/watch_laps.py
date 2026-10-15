@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from assetto_mcp import config  # noqa: E402
 
 # Resolved by the same code the server uses, so this follows both a moved
-# data dir and a pre-rename one.
+# data dir and one under the old name.
 DB_PATH = config.data_dir() / "telemetry.db"
 
 QUERY = ("select id, session_id, lap_number, lap_time_ms, invalid, out_lap,"

@@ -4,7 +4,7 @@ The map is drawn from the world position each lap stores at 25 Hz, so it
 shows where the car actually went -- across the road, not just along it.
 Every lap is a line; the fastest lap that counted is picked out; hovering
 any point gives lap, setup, position, speed, gear and pedals. The laps can
-be coloured by setup, so an A/B split shows at a glance, and any one lap
+be colored by setup, so an A/B split shows at a glance, and any one lap
 by speed or by what the pedals were doing, so a corner reads as a braking
 zone, a coast and a throttle pick-up.
 
@@ -60,12 +60,12 @@ LIMITER_MIN_POINTS = 3
 FULL_THROTTLE = 0.9
 
 # The bump map. The lap is cut into this many stretches, about 10 m each on
-# a 4 km circuit, and each suspension channel has a centred moving average
+# a 4 km circuit, and each suspension channel has a centered moving average
 # of this length taken off it, so what is left is what the road did rather
 # than what the driver did: weight moving under braking and cornering takes
-# longer than a quarter second, a bump or a kerb takes less. Centred, not
+# longer than a quarter second, a bump or a kerb takes less. Centered, not
 # trailing -- a trailing average lags a braking weight transfer enough to
-# report five millimetres of bumps that are not there.
+# report millimeters of bumps that are not there.
 SURFACE_SLICES = 400
 BUMP_WINDOW_MS = 250
 TRAVEL_KEYS = ("travel_fl", "travel_fr", "travel_rl", "travel_rr")
@@ -75,7 +75,7 @@ RIDE_KEYS = ("ride_f", "ride_r")
 # about 10 m a step on a 5 km circuit -- because an opponent is sampled at
 # 10 Hz and you at 25, at different moments, and the only axis the two cars
 # share is where on the lap each was. Finer than the opponent's own sampling
-# is worse, not better: at 1000 steps a 10 Hz lap left every other step
+# is worse, not better: at 1000 steps a 10 Hz lap leaves every other step
 # empty. The few quickest laps of each car are what anyone compares
 # against, and every lap carried costs file size.
 RIVAL_GRID = 500
@@ -105,11 +105,9 @@ def trace(samples: list[dict], every_ms: int = EVERY_MS,
     A lap's samples can straddle the start/finish line at either end: the
     first few can still read 0.999 from the lap before, the last few 0.001
     of the lap after. Drawn as they are, either one puts a chord across the
-    map. Cutting each lap at its highest norm_pos handles the end and not
-    the start -- a lap whose first sample read 0.999 has its highest point
-    first and is cut to nothing. So the trace is split at every wrap and
-    the longest run kept, which also keeps a lap that began mid-circuit
-    because recording started partway round.
+    map. So the trace is split at every wrap and the longest run kept,
+    which also keeps a lap that began mid-circuit because recording started
+    partway round.
 
     `derived` maps a name to a channel aligned with `samples` -- the
     lateral-g trace corner detection reads, the slip balance, the tyres --
@@ -255,7 +253,7 @@ def bump_profile(rows: list[dict], keys, pos_key: str = "norm_pos",
                  window_ms: int = BUMP_WINDOW_MS) -> list[float | None]:
     """How rough each stretch of the lap was: mm RMS, after the slow part is gone.
 
-    Every channel in `keys` (metres) contributes to the same stretches, so
+    Every channel in `keys` (meters) contributes to the same stretches, so
     four wheels of travel pool into one figure per stretch. A stretch with
     fewer than four readings is None rather than a figure from almost
     nothing. In the first and last half-window of a lap the average can only
@@ -330,8 +328,7 @@ def integrate_time(speeds: list, track_length_m: float) -> list[int]:
             ms = (v + last) / 2 / 3.6
             if ms > 1:
                 # Across every step since the last reading, not just one: an
-                # empty step is road the car still covered, and skipping it
-                # ran a real 2:00 lap four seconds short.
+                # empty step is road the car still covered.
                 t += (i - last_i) * step / ms * 1000
         if v is not None:
             last, last_i = v, i
@@ -421,8 +418,8 @@ def _grid_lap_ms(lap: dict) -> int | None:
 
     From the span actually covered rather than from the first and last
     step: a lap sampled from just after the line round to just before it
-    covers nearly the whole circuit, and requiring the end steps gave it no
-    time at all.
+    covers nearly the whole circuit, and requiring the end steps would give
+    it no time at all.
     """
     tm, v = lap["tm"], lap["v"]
     if not tm:
@@ -716,7 +713,7 @@ def build(conn, session_id: int | None = None,
         "detection": detection,
         "turns_from_laps": turns_from,
         "turns_note": turns_note,
-        # One colour scale for every lap's balance, so a lap that pushed
+        # One color scale for every lap's balance, so a lap that pushed
         # reads as pushing next to one that did not: the 95th percentile of
         # the laps that counted, while cornering.
         "balance_scale": (round(_pct(loaded_all, 0.95), 3)

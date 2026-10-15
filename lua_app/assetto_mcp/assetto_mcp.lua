@@ -25,8 +25,8 @@ local RIVAL_SAMPLE_INTERVAL = 0.1
 local RIVAL_POST_INTERVAL = 1.0
 -- Offset so the rival POST and the status poll don't land on the same frame.
 -- Both timers start at zero and are decremented by the same dt, so without
--- this they fire together every two seconds by construction -- which is the
--- concurrency cap on its own, before the driver presses anything.
+-- this they fire together every two seconds and use up the concurrency cap
+-- on their own.
 local RIVAL_POST_PHASE = 0.5
 -- Two seconds of a full 64-car grid at 10Hz, so a single delayed POST does
 -- not start shedding samples. Must stay under the bridge's MAX_RIVAL_BATCH.
@@ -43,12 +43,12 @@ local RIVAL_BUFFER_MAX = 1400
 --           be available.
 --   app     this script, at render rate. Fine for ride height and wheel
 --           loads, which move slowly. Not fine for damper valving, and the
---           server labels it accordingly rather than quietly pretending.
+--           server labels it accordingly.
 local SUSP_SAMPLE_INTERVAL = 1 / 60      -- app tier; no point beating frames
 local SUSP_POST_INTERVAL = 1.0
 -- Distinct from both the poll (period 2.0, fires on even seconds) and the
--- rival post (period 1.0, phase 0.5). 1.5 would have looked staggered and
--- collided with rivals on every single second: 1.5 mod 1.0 == 0.5.
+-- rival post (period 1.0, phase 0.5). Not 1.5: 1.5 mod 1.0 == 0.5, which
+-- collides with rivals every second.
 local SUSP_POST_PHASE = 0.25
 -- Setup values only change in the pits. Slow poll, and the fingerprint
 -- check below means an unchanged setup never hits the network.
@@ -74,9 +74,7 @@ local rivalDropped = 0
 local rivalSent = 0
 -- Opponent lap timing, kept across batches. The app times each opponent's
 -- laps itself, from its lap counter and the car's own clock: CSP exposes no
--- best- or previous-lap field on another car's state, and the names this
--- app used to read for them exist nowhere in CSP, so they were nil in every
--- session ever recorded.
+-- best- or previous-lap field on another car's state.
 local rivalClock = {}      -- [car_index] = { lap, spline, t, start }
 local rivalTimes = {}      -- [car_index] = { best = ms, last = ms }
 local rivalSession = nil
@@ -91,10 +89,9 @@ local toast, toastTimer = nil, 0
 -- Two buffers, not one. The tiers are different channels on different
 -- clocks: the worker reads damper travel from the physics API at 333Hz,
 -- while the render-rate sampler reads suspension travel, wheel loads and
--- ride height from ac.getCar(). Posting them under a single label let a
--- histogram be built across the seam between two zero points, which
--- manufactures a high-speed tail out of nothing -- and reads exactly like
--- valving that packs down over kerbs.
+-- ride height from ac.getCar(). A histogram built across the seam between
+-- two zero points manufactures a high-speed tail out of nothing, which reads
+-- exactly like valving that packs down over kerbs.
 local suspAppBuffer = {}
 local suspWorkerBuffer = {}
 local suspSampleTimer = 0
@@ -144,13 +141,9 @@ local function clamp(v, lo, hi)
   return v
 end
 
--- What a bridge reply actually means, decided in one place.
---
--- Three of these handlers were written separately and three of them got the
--- same thing wrong: a 200 carrying {ok=false} means the server had nowhere
--- to file the data -- no session recording -- and treating it as delivered
--- shows a healthy status line over data that went nowhere. HTTP said yes;
--- the body said no.
+-- What a bridge reply actually means, decided in one place. A 200 carrying
+-- {ok=false} means the server had nowhere to file the data (no session
+-- recording), which is not delivery.
 --
 -- Returns one of:
 --   'offline'  no reply at all: the bridge is down or the request failed
@@ -196,13 +189,9 @@ local function enqueueNote(tag)
   toast, toastTimer = tag:upper() .. ' noted', 1.5
 end
 
--- Declared before pumpNotes so both the enqueue and the retry path share it.
-
--- A note the bridge never received must go back on the queue. The bridge
--- now refuses to share its port, so an ordinary server restart leaves it
--- unbindable for as long as Windows holds the old socket -- minutes, during
--- which every complaint tag the driver pressed used to be dropped on the
--- floor behind a two-second toast.
+-- A note the bridge never received goes back on the queue. The bridge
+-- refuses to share its port, so an ordinary server restart can leave it
+-- unbindable for minutes while Windows holds the old socket.
 local NOTE_QUEUE_MAX = 200
 
 local function pumpNotes()
@@ -241,23 +230,16 @@ end
 
 -- Try for the 333Hz physics worker, and be explicit when we don't get it.
 --
--- Everything here is defensive on purpose: physics scripting is gated by
--- CSP and by the track, the two getters are undocumented, and older CSP
--- builds may not have startPhysicsWorker at all. A missing capability must
--- degrade to render-rate sampling, never take the app down -- losing the
--- complaint tags because a damper channel was unavailable would be a poor
--- trade.
--- Everything we know about why a worker might be refused, gathered once and
--- logged together. Each of these has been a plausible cause at some point
--- and none of them is visible from the server side, so guessing from a bare
--- "cannot start" costs a round trip to the driver every time.
--- Every line of this is a guess about an undocumented API, so every line
--- gets its own pcall. ac.getSim() hands back a proxy that RAISES on an
--- unknown field rather than returning nil, so one wrong field name here
--- takes down the whole probe -- which is precisely what happened when this
--- was written as a straight sequence of reads: the diagnostic threw, the
--- caller's pcall swallowed it, and the worker was never even attempted.
--- A diagnostic that can break the thing it inspects is worse than none.
+-- Everything here is defensive: physics scripting is gated by CSP and by
+-- the track, the two getters are undocumented, and older CSP builds may not
+-- have startPhysicsWorker at all. A missing capability must degrade to
+-- render-rate sampling, never take the app (and the complaint tags) down.
+--
+-- The environment log gathers every likely reason a worker is refused,
+-- since none of them is visible from the server side. Each read gets its
+-- own pcall: ac.getSim() hands back a proxy that RAISES on an unknown field
+-- rather than returning nil, so one wrong field name would take down the
+-- whole probe.
 local function ask(label, fn)
   local ok, v = pcall(fn)
   ac.log('  ' .. label .. ': ' ..
@@ -279,16 +261,12 @@ local function logWorkerEnvironment()
   -- multiplayer, since a script on the physics thread is a cheat vector.
   ask('online race', function() return ac.getSim().isOnlineRace end)
   ask('session type', function() return ac.getSim().raceSessionType end)
-  -- 'extended physics' used to be read here as sim.isNewBehaviorActive.
-  -- That field does not exist -- checked against the CSP SDK definitions,
-  -- ac.StateSim has isOnlineRace but nothing of that name -- and reading it
-  -- raised, which took the whole probe down with it. physics.allowed()
-  -- above is the real answer to the same question.
+  -- No 'extended physics' field: ac.StateSim has nothing of that name, and
+  -- physics.allowed() above answers the same question.
 end
 
 -- true / false / nil, where nil means we could not tell. Guarded because
--- ac.getSim() raises on unknown fields and this app has already been broken
--- once by assuming a field name exists.
+-- ac.getSim() raises on unknown fields.
 local function isOnlineSession()
   local ok, v = pcall(function() return ac.getSim().isOnlineRace end)
   if not ok or v == nil then return nil end
@@ -300,13 +278,10 @@ local function startSuspensionWorker()
   -- diagnostic must never be the reason the worker doesn't start.
   pcall(logWorkerEnvironment)
 
-  -- CSP refuses to run a script on the physics thread in multiplayer, and
-  -- it is right to: that thread decides what the car does, so a script on
-  -- it is a cheat vector. Detect the case and say so plainly instead of
-  -- reporting "Physics API not available", which reads as something being
-  -- broken when nothing is. Only an explicit true suppresses it -- if the
-  -- field is missing we still try, because being unable to tell is not a
-  -- reason to disable the feature.
+  -- CSP refuses to run a script on the physics thread in multiplayer (a
+  -- script there is a cheat vector). Detect the case and say so plainly
+  -- rather than report something broken. Only an explicit true suppresses
+  -- it: being unable to tell is not a reason to disable the feature.
   --
   -- Render-rate capture continues either way: ride height, wheel loads and
   -- roll balance never needed the worker, and those work online.
@@ -328,11 +303,9 @@ local function startSuspensionWorker()
   -- scripting at all. When it is false the docs say only raycasting works,
   -- so there is no point starting a worker that can't read anything.
   --
-  -- Deliberately only bails on an explicit false: older builds return nil
-  -- here, and treating nil as "not allowed" would disable the worker on
-  -- setups where it would have worked. The cost is that a session which
-  -- refuses workers without saying so reaches startPhysicsWorker and fails
-  -- there instead -- which is why that error is now kept and logged.
+  -- Only bails on an explicit false: older builds return nil here. A
+  -- session that refuses workers without saying so fails at
+  -- startPhysicsWorker instead, and that error is logged.
   if type(physics.allowed) == 'function' then
     local ok, allowed = pcall(physics.allowed)
     if ok and allowed == false then
@@ -341,7 +314,7 @@ local function startSuspensionWorker()
     end
   end
 
-  -- Probe the exact getter the worker will call, not a neighbouring one.
+  -- Probe the exact getter the worker will call, not a neighboring one.
   -- If it returns nothing useful, a worker would faithfully record zeroes
   -- at 333Hz -- worse than honest render-rate data, because it looks
   -- precise.
@@ -372,13 +345,11 @@ local function startSuspensionWorker()
   workerReadIndex = 0
 
   -- Keep pcall's second return: it is the only description of why the call
-  -- failed, and discarding it left the app saying "cannot start physics
-  -- worker" with no way to tell a missing script file from a wrong
-  -- signature from a session that forbids workers.
+  -- failed (a missing script file, a wrong signature, a session that
+  -- forbids workers).
   -- Signature is startPhysicsWorker(script, data, callback): the second
-  -- argument is data handed to the worker as `__input`, not a car index as
-  -- this code originally assumed. The 0 is harmless -- the worker ignores
-  -- it -- but the assumption was wrong and worth not passing on.
+  -- argument is data handed to the worker as `__input`, not a car index.
+  -- The worker ignores it.
   local started, startErr = pcall(physics.startPhysicsWorker,
     'suspension_worker', 0,
     function(err)
@@ -394,12 +365,11 @@ local function startSuspensionWorker()
     ac.warn('assetto_mcp: startPhysicsWorker failed: ' .. tostring(startErr))
     return
   end
-  -- Deliberately not claiming the worker tier yet. startPhysicsWorker
-  -- returning without throwing only means the call was accepted; it says
-  -- nothing about whether the script loaded or is producing. The tier is
-  -- promoted in drainWorker() once samples actually arrive -- otherwise a
-  -- worker that never runs would have its render-rate fallback labelled
-  -- 333Hz, which is the one thing this whole design is trying to prevent.
+  -- Not claiming the worker tier yet. startPhysicsWorker returning without
+  -- throwing only means the call was accepted, not that the script loaded
+  -- or is producing. The tier is promoted in drainWorker() once samples
+  -- actually arrive, so a worker that never runs cannot have its
+  -- render-rate fallback labeled 333Hz.
   suspNote = 'physics worker starting...'
 end
 
@@ -545,8 +515,7 @@ local function postSuspensionBuffer(which, buffer)
         return
       end
       -- A 200 with ok=false means the server had nowhere to file this --
-      -- no session was recording. Nothing was stored, so counting it as
-      -- sent would show a healthy status line while the data went nowhere.
+      -- no session was recording -- so nothing was stored.
       if parsed.ok == false then
         suspDropped = suspDropped + #batch
         suspNote = 'server not recording - suspension not stored'
@@ -558,8 +527,7 @@ local function postSuspensionBuffer(which, buffer)
         suspDropped = suspDropped + (#batch - stored)
       end
       -- The server nulls out-of-range fields and says which. Almost always
-      -- a units disagreement, and silent nulls would surface much later as
-      -- an empty report with no explanation.
+      -- a units disagreement.
       if parsed.rejected_fields then
         ac.warn('assetto_mcp: /suspension rejected fields: '
           .. tostring(response.body))
@@ -578,17 +546,10 @@ local function postSuspension()
     return
   end
 
-  -- This used to be `if worker then ... elseif app then ...`, which the
-  -- comment called alternating but which is strict priority. The worker
-  -- fills at 333Hz and is drained once a second, so its buffer is
-  -- effectively never empty -- the app branch never ran. Ride height and
-  -- wheel loads come only from the app tier, so the moment a physics
-  -- worker started, the two channels that answer "is the car too low" and
-  -- "which axle takes the load transfer" silently stopped arriving, while
-  -- the status line happily reported a healthy 333Hz feed.
-  --
-  -- Alternate for real: each tier gets every other slot, and only falls
-  -- through to the other when its own buffer is empty.
+  -- Alternate, not prioritize: the worker buffer is effectively never empty,
+  -- and ride height and wheel loads come only from the app tier. Each tier
+  -- gets every other slot, and only falls through to the other when its
+  -- own buffer is empty.
   local function flush(which)
     local buf = (which == 'worker') and suspWorkerBuffer or suspAppBuffer
     if #buf == 0 then return false end
@@ -660,11 +621,8 @@ local function sampleRivals()
   local n = ac.getSim().carsCount
   if not n or n < 2 then return end
   -- Lap times belong to a session; a new one starts every car from nothing.
-  -- Anything still queued belongs to the session it was sampled in, and
-  -- posting it now would file those samples, and those names and lap
-  -- counts, against this one. The counters go with them: they are what the
-  -- status line reports, and carrying the last session's totals into this
-  -- one makes a fresh session look like it already lost samples.
+  -- Anything still queued belongs to the session it was sampled in, so it
+  -- is dropped. The status-line counters reset with it.
   if status.sessionId ~= rivalSession then
     rivalBuffer, rivalMeta = {}, {}
     rivalClock, rivalTimes, rivalSession = {}, {}, status.sessionId
@@ -689,11 +647,9 @@ local function sampleRivals()
           -- went and not only how fast they were along the lap.
           local pos = c.position
           -- Per-sample fields only. Driver name, car model and lap times
-          -- describe the car, not the moment, and the server collapses them
-          -- to one row per car anyway -- stamping them onto all ten samples
-          -- a second doubled the JSON we serialize on the render thread.
-          -- They ride along on the first sample of each car per batch,
-          -- below.
+          -- describe the car, not the moment; they ride along on the first
+          -- sample of each car per batch (see postRivals), which keeps the
+          -- JSON serialized on the render thread small.
           rivalBuffer[#rivalBuffer + 1] = {
             car_index = i,
             lap_count = lapCount,
@@ -737,13 +693,9 @@ local function postRivals()
   local batch = rivalBuffer
   local meta = rivalMeta
   -- The session these were sampled in, sent so the server can tell that it
-  -- is still the one recording. Clearing the queue above is not enough on
-  -- its own: this app learns of a session change a poll late, and an HTTP
-  -- round trip lands after that again, so a batch can be in the air -- or
-  -- still queued, in a session the sampler is skipping for having one car
-  -- in it -- while the server moves on. Filed against whatever is
-  -- recording when it arrives, it would put one session's opponents, names
-  -- and lap counts in another.
+  -- is still the one recording. This app learns of a session change a poll
+  -- late, and the HTTP round trip lands later still, so a batch can arrive
+  -- after the server has moved on.
   local sampledIn = rivalSession
   rivalBuffer = {}
   rivalMeta = {}
@@ -782,7 +734,6 @@ local function postRivals()
       end
       -- A 200 with ok=false means the server had nowhere to file it -- no
       -- session was recording -- which is not the same as having stored it.
-      -- Counting it as sent shows a healthy status line over lost data.
       if parsed.ok == false then
         rivalDropped = rivalDropped + #batch
         return
@@ -799,9 +750,8 @@ end
 --
 -- ac.getSetupSpinners() reports every adjustable entry keyed by the same
 -- section names the setup files use, with its legal min/max/step and the
--- two display conventions (displayMultiplier, showClicksMode). That is the
--- car's own answer to questions this project previously answered by
--- unpacking data.acd and comparing saved files against the setup screen.
+-- two display conventions (displayMultiplier, showClicksMode): the car's
+-- own answer, with no need to unpack data.acd.
 --
 -- Sent only when something changes: the values are static while driving,
 -- and the point of resampling at all is to catch a setup swapped in the
@@ -831,11 +781,9 @@ end
 -- Everything needed to work out fuel per lap, read from the game rather
 -- than looked up.
 --
--- KM_PER_LITER lives in the car's fuel_cons.ini inside data.acd. That file
--- is encrypted for paid mods, and getting at it previously meant decrypting
--- the archive by hand -- which worked once, for one car, and produced a
--- number nobody could check. ac.INIConfig.carData() reads it directly:
--- CSP already holds the key.
+-- KM_PER_LITER lives in the car's fuel_cons.ini inside data.acd, which is
+-- encrypted for paid mods. ac.INIConfig.carData() reads it directly: CSP
+-- already holds the key.
 --
 -- trackLengthM comes from the AI spline, so it is the length the game
 -- itself believes in rather than whatever a layout is nominally called.
@@ -896,9 +844,7 @@ local function postSetup()
           .. tostring(response.status) .. ' ' .. tostring(response.body))
       end
       if outcome ~= 'ok' then
-        -- Not stored. Leaving setupSent alone is what makes the next tick
-        -- retry; latching it here on a refusal was how a whole session
-        -- could end up with no setup values while the app looked fine.
+        -- Not stored. Leaving setupSent alone makes the next tick retry.
         setupNote = outcome == 'refused' and 'setup: not recording'
           or 'setup: bridge unreachable'
         return
@@ -911,52 +857,27 @@ end
 
 -- Is what the server claims consistent with what the driver has done?
 --
--- The overlay used to render whatever /status said. That made it exactly as
--- trustworthy as the server, and when the server was wrong -- an empty
--- session asserting itself as "recording, other instance" -- the driver had
--- a green light through seven laps that were never stored, with no way to
--- check it from the car.
+-- car.lapCount is the driver's own completed laps, owned by the game and
+-- not by us. If laps are being finished and none are landing, the app can
+-- see that contradiction on its own, whatever /status says.
 --
--- The app can check. car.lapCount is the driver's own completed laps, owned
--- by the game and not by us. If laps are being finished and none are
--- landing, that is a contradiction the app can see on its own, and it is
--- worth more than any status string the server sends.
+-- Conservative: the lap in progress is not stored yet, and an out-lap has
+-- no time, so a shortfall of one or two is normal. Two finished laps with
+-- nothing stored at all is not.
 --
--- Deliberately conservative. The lap in progress is not stored yet, and an
--- out-lap has no time so it is skipped by design: a shortfall of one or two
--- is normal. Two finished laps with nothing stored at all is not.
---- car.lapCount counts the whole GAME session; status.laps counts what this
---- recording has stored. Those are only the same window if recording began
---- when the session did, and it very often does not -- the server restarts,
---- or the driver starts recording twenty laps in. Comparing them directly
---- cried wolf immediately: 26 laps driven in the game, a recorder that had
---- been alive for ten seconds, and a red NOT STORING LAPS over a perfectly
---- healthy collector.
----
---- So the count that matters is laps driven SINCE recording started, which
---- means remembering where the lap counter stood at that moment.
----
---- The baseline is only as good as its knowing when "recording started"
---- changed, and there are three ways it can, only one of which is the
---- server saying so:
----
----   * status.running goes false. The obvious one.
----   * the bridge goes unreachable. This is a server RESTART, which is the
----     event the whole recorder-heartbeat mechanism exists for and the one
----     that happens most. The app kept its baseline across the outage and
----     met a fresh recording with status.laps back at 0, so the very
----     scenario that motivated this warning -- 26 laps in, server replaced,
----     collector perfectly healthy -- produced a red NOT STORING LAPS again
----     with one extra step. That is worse than the original bug: the alarm
----     now fires precisely when the driver has been told to expect a
----     restart.
----   * the session id changes, or the stored count falls. A new session, or
----     another instance taking the recorder over. Either way the window
----     being counted is not the one the baseline was taken in.
----
---- All three re-take the baseline rather than warn. Taking it late can only
---- postpone a warning, never invent one, which is the right way round for
---- something that shouts at a driver mid-corner.
+-- car.lapCount counts the whole GAME session; status.laps counts what this
+-- recording has stored, and recording often starts partway through (a
+-- server restart, or recording started twenty laps in). So the count that
+-- matters is laps driven SINCE recording started, from a baseline taken at
+-- that moment. Recording has restarted when:
+--
+--   * status.running goes false;
+--   * the bridge goes unreachable -- a server restart, the commonest case;
+--   * the session id changes, or the stored count falls: a new session, or
+--     another instance taking the recorder over.
+--
+-- All three re-take the baseline rather than warn. Taking it late can only
+-- postpone a warning, never invent one.
 local LAPS_BEFORE_STORAGE_EXPECTED = 2
 local recordingBaseline = nil
 local baselineSession = nil
@@ -964,10 +885,8 @@ local baselineLaps = 0
 
 local function recordingHealth()
   if not status.connected then
-    -- Not just "no answer": we cannot know whether the recorder behind it
-    -- survived, so nothing measured before the silence can be trusted after
-    -- it. Cheap to re-take, and the alternative is crying wolf at a
-    -- collector that is working.
+    -- We cannot know whether the recorder behind it survived, so nothing
+    -- measured before the silence can be trusted after it.
     recordingBaseline = nil
     baselineSession = nil
     baselineLaps = 0
@@ -1019,11 +938,8 @@ local function poll()
 
     -- Setup values are stored per session on the server, so a new session
     -- starts with none. The fingerprint only re-posts when the *values*
-    -- change, and restarting a session with the same setup loaded -- the
-    -- ordinary tuning loop -- changes nothing. Without this the new session
-    -- never receives a setup, and identify_setup answers "no live setup
-    -- values; is the in-game app running?", which is a wrong diagnosis of a
-    -- working app.
+    -- change, and restarting a session with the same setup loaded changes
+    -- nothing, so clear it.
     if d.session_id and d.session_id ~= status.sessionId then
       status.sessionId = d.session_id
       setupSent = nil
@@ -1089,9 +1005,8 @@ function script.update(dt)
   -- Wheel loads and ride height are not in the physics API, so the
   -- render-rate sampler runs either way -- just at a lower rate when the
   -- worker is supplying travel.
-  -- Keep the read index in step even while stopped, discarding as we go.
-  -- Otherwise ten minutes in the garage charges 200,000 samples to the
-  -- drop counter on the next green flag, none of which were lost.
+  -- Keep the read index in step even while stopped, discarding as we go,
+  -- so time in the garage is not charged to the drop counter.
   drainWorker(status.running)
 
   if status.running then
@@ -1123,11 +1038,9 @@ function script.update(dt)
   if toastTimer > 0 then toastTimer = toastTimer - dt end
 end
 
--- Exposed for the test harness only. Everything in this file is `local`,
--- which is right for a CSP app -- but a local function cannot be called
--- from outside, so the scheduling and gating logic had no way to be tested
--- and a starvation bug lived in it undetected while the status line
--- reported success. CSP never reads this table.
+-- Exposed for the test harness only: everything in this file is `local`,
+-- which is right for a CSP app but cannot be called from outside. CSP never
+-- reads this table.
 -- Hung off CSP's own `script` table rather than declared as a global: the
 -- app forbids implicit globals and there is a test that enforces it.
 script.__test = {
@@ -1161,12 +1074,8 @@ script.__test = {
   -- The baseline is remembered across calls, so a test that wants to start
   -- from "recording has only just begun" has to be able to say so.
   --
-  -- All three pieces, not just the lap count. What the warning compares
-  -- against is now (baseline, session, stored laps) together, and clearing
-  -- one of them leaves a test half-reset -- which would look like a fresh
-  -- recording and behave like a continuing one. That is the exact confusion
-  -- the session and lap-count checks were added to remove, so a helper that
-  -- reintroduces it in the tests is worse than no helper.
+  -- All three pieces: the warning compares (baseline, session, stored
+  -- laps) together, and clearing one leaves a test half-reset.
   resetBaseline = function()
     recordingBaseline = nil
     baselineSession = nil
@@ -1174,7 +1083,7 @@ script.__test = {
   end,
   baseline = function() return recordingBaseline end,
   -- All three, so a test can assert the reset rather than infer it from
-  -- behaviour that happens to be identical either way.
+  -- behavior that happens to be identical either way.
   baselineState = function()
     return recordingBaseline, baselineSession, baselineLaps
   end,
@@ -1200,8 +1109,7 @@ function windowMain(dt)
     ui.textColored('● bridge offline', rgbm(1, 0.3, 0.3, 1))
   elseif health == 'not-storing' then
     -- The driver has finished laps and none of them landed. Loud, because
-    -- the alternative is what actually happened: a green indicator, seven
-    -- laps at Suzuka, and nothing kept.
+    -- otherwise laps go unrecorded behind a green indicator.
     ui.textColored('● NOT STORING LAPS', rgbm(1, 0.3, 0.3, 1))
     ui.textColored(detail, rgbm(1, 0.6, 0.3, 1))
   elseif status.running then
@@ -1243,8 +1151,7 @@ function windowMain(dt)
   end
   ui.textColored(marker .. suspNote, color)
   -- The setup feed is what makes lap attribution and clamping work, and
-  -- the driver is the only one who can see whether it is running. It was
-  -- being written and never shown.
+  -- the driver is the only one who can see whether it is running.
   if setupNote ~= '' then
     ui.textColored(setupNote, rgbm(0.7, 0.7, 0.7, 1))
   end

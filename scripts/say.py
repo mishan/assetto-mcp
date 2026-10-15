@@ -35,8 +35,8 @@ import sys
 # One PowerShell invocation per message. The text and the voice go in as
 # environment variables, never pasted into the script: PowerShell ends a
 # single-quoted string at a curly quote as well as a straight one, so
-# "Don’t push" with only the straight quotes escaped closed the string
-# early and ran the rest of the sentence as code.
+# escaping only the straight quotes in "Don’t push" would run the rest of
+# the sentence as code.
 _SPEAK = (
     "Add-Type -AssemblyName System.Speech;"
     "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer;"

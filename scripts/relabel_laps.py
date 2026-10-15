@@ -1,17 +1,10 @@
-"""Correct the setup_name on laps that were labelled wrong.
+"""Correct the setup_name on laps that were labeled wrong.
 
-label_laps deliberately refuses to relabel a lap that already carries a
-different setup name, because a late correction applied to the wrong half
-of an A/B split silently destroys the comparison it exists to enable. That
-guard is right whenever the existing label came from the driver.
-
-It is wrong in exactly one case: the label was written by mistake in the
-first place. set_session_setup used to backfill every unlabelled lap in the
-session as well as applying forward, so calling it *after* loading a new
-setup stamped the new name onto the baseline. That is how laps 87-90 came
-to be labelled claude_toe_v1 while running claude_press_v1. The tools no
-longer do that -- see "Addressed" in BACKLOG -- but the laps it already mislabelled
-still need this.
+label_laps refuses to relabel a lap that already carries a different setup
+name, because a late correction applied to the wrong half of an A/B split
+silently destroys the comparison it exists to enable. That guard is right
+whenever the existing label came from the driver, and wrong when the label
+was written by mistake in the first place.
 
 This is the escape hatch, kept out of the MCP surface on purpose: it is
 rare, it is destructive, and it should require someone to type it.
@@ -32,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from assetto_mcp import config  # noqa: E402
 
 # Resolved by the same code the server uses, so this follows both a moved
-# data dir and a pre-rename one.
+# data dir and one under the old name.
 DATA_DIR = config.data_dir()
 DB_PATH = DATA_DIR / "telemetry.db"
 
@@ -74,7 +67,7 @@ def main(argv=None):
             return 1
 
         # A lap belonging to a different session than the rest is the shape
-        # of a typo in the lap list, and relabelling it would be the exact
+        # of a typo in the lap list, and relabeling it would be the exact
         # damage the guard in label_laps exists to prevent.
         sessions = {r["session_id"] for r in rows}
         if len(sessions) > 1:
@@ -85,14 +78,9 @@ def main(argv=None):
         print(f"{args.db}\n")
         changing = 0
         for r in rows:
-            # Decide from the stored value, print a readable one. Deciding
-            # from the display string got it wrong at both edges: '' is the
-            # schema default and renders as "(none)", so an unlabelled lap
-            # being given the literal name "(none)" read as unchanged, and a
-            # lap already labelled "(none)" was counted as changing. Neither
-            # is likely. Both are the kind of thing a destructive script
-            # should not be wrong about, and the fix is to compare the value
-            # the UPDATE is actually going to write.
+            # Decide from the stored value, print a readable one: '' is the
+            # schema default and renders as "(none)", which is also a legal
+            # setup name. Compare what the UPDATE is going to write.
             stored = r["setup_name"] or ""
             changed = stored != args.setup_name
             was = stored or "(none)"
@@ -119,7 +107,7 @@ def main(argv=None):
             conn.execute(
                 f"UPDATE laps SET setup_name = ? WHERE id IN ({placeholders})",
                 [args.setup_name] + lap_ids)
-        print(f"\nrelabelled {changing} lap(s) to {args.setup_name}")
+        print(f"\nrelabeled {changing} lap(s) to {args.setup_name}")
         return 0
     finally:
         conn.close()

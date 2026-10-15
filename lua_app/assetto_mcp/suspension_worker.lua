@@ -53,7 +53,7 @@ function script.update(dt)
   -- the app can place the sample on a lap and on the track.
   --
   -- Hoisted to a local: this runs 333 times a second on the physics
-  -- thread, where slow code degrades the whole simulation, not just us.
+  -- thread, where slow code slows the whole simulation.
   local d = s.damper
   d[0] = getDamper(0, 0) or 0
   d[1] = getDamper(0, 1) or 0

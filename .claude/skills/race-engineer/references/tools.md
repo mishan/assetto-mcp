@@ -1,7 +1,7 @@
 # The assetto-mcp tools, by the question they answer
 
 Forty-two tools. They fall into nine groups. For each: what to pass,
-what to read in the reply, and the trap that has already caught someone.
+what to read in the reply, and the traps.
 Pass every parameter explicitly, including nulls: the schemas this client
 exposes have turned optional parameters into required ones between updates,
 and a call refused for a missing parameter is fixed by adding it, not by
@@ -42,6 +42,7 @@ temperature, `fuel_l`, tyre pressures and core temperatures right now, last
 and best lap. Poll it at each lap boundary for fuel, and whenever you want
 the tyre state between laps. `status: "off"` means the game is not in a
 session. The `tyre_compound` reads garbage when the car is not live.
+Judge fuel against `laps_remaining`, not against the next lap or two.
 
 **`list_sessions()`** -- id, car, track, lap count, best time. Every tool
 that reports a position adds meters and a `where` beside it, and says
@@ -56,7 +57,9 @@ on a lap means its trace was decimated; numbers are intact, resolution is
 not.
 
 **`rescore_track_limits()`** -- re-derive ran-wide verdicts after changing
-the wheels-out threshold. Skips thinned laps and says so.
+the wheels-out threshold. Skips thinned laps and says so: a new threshold
+does not reach them, so do not describe the pass as covering the driver's
+whole history.
 
 ## 2. Setup attribution
 
@@ -73,6 +76,10 @@ now carry the name; nothing already stored changes, including unlabeled
 laps. Call it when the driver says they loaded something, after every pit
 stop that changed anything, on every new session id, and for on-wheel
 changes with a suffix (`claude_v15 bias58`).
+
+Back-filling would be wrong: the baseline run is normally unlabeled too,
+and stamping the new name on it destroys the A/B being set up. Call it
+before the first lap on the new setup where you can.
 
 Every lap also carries `setup_fp`, the setup it was measured on, and the
 name only follows laps on the values it was bound to: the first lap after
@@ -108,7 +115,11 @@ not a tool.
   `slip_balance` (positive front slides more), `front_slip`, `rear_slip`,
   `turn_sign` (groups corners by direction; not left/right, AC does not
   document which sign is which), and `entry_phase` (from brake point or
-  turn-in to apex: slip balance, mean steer, yaw peak, rotation).
+  turn-in to apex: slip balance, mean steer, yaw peak, rotation). Entry
+  phase is where trail braking, entry rotation and most spins live; a
+  change aimed at entry stability shows here when the apex figures do
+  not move. Yaw and rotation are null on laps recorded before heading.
+  `brake_before_turn_in_m` is the board to brake at.
 - `tyres`: pressure average and end-of-lap, core temperature average, per
   corner of the car.
 - `top_speed_kmh`, `time_full_throttle_pct`, `time_braking_pct`,
@@ -137,7 +148,9 @@ named section with the session turns inside it; a named section with no
 turns is a kink the detector never saw. The comparisons carry apexes only,
 so they name a corner by the section its apex is in or just beside: a
 corner whose apex sits near a section boundary can come back with no
-`name` there, or a different one from `track_corners`.
+`name` there, or a different one from `track_corners`. `unnumbered` holds
+pieces of road only one lap cornered on, kept out so that a spin carved
+out as its own corner does not renumber every turn after it.
 
 **`locate(meters, fractions, session_id)`** -- any position you found
 outside the tools (a script over `samples`, a rival trace) said the way the
@@ -154,8 +167,9 @@ were at each point: the answer to "was that a wider line".
 directory's `exports/` folder with every lap drawn, best lap picked out,
 coloring by setup or speed or pedals, tyre and rev charts, opponents'
 brake points. `lap_ids` is a JSON list, or null for the whole session.
-Hand the path to the driver. `scripts/driving_line_map.py` does the same
-from a shell.
+Hand the path to the driver; the file opens from disk and fetches nothing,
+and exporting the same session again replaces it.
+`scripts/driving_line_map.py` does the same from a shell.
 
 **`suspension_report(lap_id, lap_count, session_id)`** -- damper histograms,
 ride height, roll balance. Read `source`: "app" is render-rate and the
@@ -163,14 +177,24 @@ damper histograms are body motion, not valving; "worker" is 333 Hz and
 real. **`suspension_capture_status()`** explains which tier is arriving.
 The worker is single-player only.
 
-**`attitude_report(lap_id)`** -- roll and pitch per g. A car-and-track
-number: banking and grade are in it, so it was useless at Kyalami and
-Interlagos and is only comparable between laps at the same circuit. Check
-`fit_r2` before quoting a gradient.
+**`attitude_report(lap_id)`** -- roll and pitch per g. The roll gradient
+measures total roll stiffness: a bar or spring change should move it, and
+one that does not did not do what it was meant to. A car-and-track
+number: AC reports attitude against the world, and the fit's free
+intercept moves the constant part of banking, camber and rake into
+`static_offset_deg`, but banking that rises with cornering load stays in
+the slope. It was useless at Kyalami and Interlagos and is only
+comparable between laps at the same circuit. Check `fit_r2` before
+quoting a gradient. Squat under power is left out of `dive_deg_per_g`; it
+is a rear-suspension question.
 
 **`braking_report(lap_id, points)`** -- slip per axle under straight-line
 braking, which axle is nearer its limit (what brake bias moves), lockup
-runs. The ABS and TC fields hold one value all lap and measure nothing.
+runs. The ABS and TC fields hold one value all lap and measure nothing,
+so "is ABS aggressive enough" cannot be answered from them or from the
+setup value; the axle slip is what the driver feels. The straight-line
+filter matters: slip under combined braking and cornering is high by
+construction, and every trail-braked entry would read as a lockup.
 The lockup threshold is uncalibrated; read the distribution. Pass `points`.
 
 ## 4. Comparing laps and runs
@@ -179,7 +203,8 @@ The lockup threshold is uncalibrated; read the distribution. Pass `points`.
 brake point delta, slip balance delta. Deltas are a minus b; a negative
 `min_speed_delta_kmh` means lap b carried more speed. Read
 `lap_time_warning` before quoting `time_delta_ms`. Its turn numbering is
-its own.
+its own. An out-lap or a lap that ended in the barrier still has real
+corner speeds, so any two laps compare.
 
 **`delta_by_position(lap_id_a, lap_id_b, segments)`** -- where the time went,
 including straights and sweepers no corner detector flagged. Read
@@ -194,11 +219,19 @@ single id, or a list. Read:
   corrected together), `change`, `resolution` (smallest change these laps
   could catch half the time), `power` (chance of catching the change
   actually measured). "Suggestive" means run more laps, not "no".
+  The family is up to eight means plus `lap_time_consistency`; a channel
+  the laps never carried is not counted, and `tests_in_family` is the
+  number the correction used. Only a metric may be described as having
+  moved. A large `resolution` means the run was too short, not that the
+  change did nothing.
 - `lap_time_consistency`: needs six a side to say anything.
 - `corner_leads`: exploratory, uncorrected, about 5% of quiet corners show
-  up. Where to look when a metric moved; never a finding.
-- `excluded_laps` with reasons, `ran_wide` and `contacts` lists: laps
-  counted but flagged. A result resting on a contact lap may be measuring
+  up, and with up to five channels a corner most runs with nothing changed
+  carry at least one (`corner_leads_note` gives the figure). Where to look
+  when a metric moved; never a finding.
+- `excluded_laps` with reasons: laps left out. `ran_wide` and `contacts`:
+  laps counted but flagged (with `clean_laps_only`, ran-wide laps move to
+  `excluded_laps`). A result resting on a contact lap may be measuring
   the hit.
 - `baseline_setups` and `candidate_setups`: check the tags are what you
   think they are before reading anything else.
@@ -211,7 +244,18 @@ single id, or a list. Read:
   nothing measured.
 
 Pass `clean_laps_only=false` and `include_invalid=null` explicitly. Both
-sides must be the same car on the same layout.
+sides must be the same car on the same layout. `clean_laps_only=true`
+drops ran-wide laps (worth it when the question is a clean lap time); it
+does not drop contact laps. `include_invalid=false` is honored as
+`clean_laps_only=true`, and the reply says so.
+
+What a "within noise" is worth, against this driver's own spread: a
+2.2-point front load transfer change (a rear bar, against 0.3 of noise) is
+caught 29% of the time at two laps a side and 97% at three. A 500 ms lap
+gain against a 0.25 s spread is caught 3% at two laps, 11% at three, 39%
+at five and 77% at eight. Two laps a side is a real test on a quiet
+channel and none on lap time; a null lap-time answer from under five or
+six laps is not evidence the change did nothing.
 
 ## 5. Tyres, brakes, suspension, fuel
 
@@ -220,7 +264,11 @@ per lap, the rate, and whether the rate is rising. Segmented into stints
 at out-laps, pit visits and tyre changes. `from_lap`/`to_lap` are inclusive
 lap numbers and are required by this client; use the session's first and
 last lap numbers for everything. Wear, not pressure, is the evidence a
-tyre went off.
+tyre went off: hot pressure and core temperature move with half a dozen
+other things. A steady wear rate is not a tyre going off; only a rising
+rate is. A session is not a stint, which is why it segments: differencing
+the first set's start against the last set's end can call a healthy tyre
+gone. AC counts remaining down from 100; `used` counts up.
 
 **`fuel_plan(race_laps, stops, session_id)`** -- needs the car's
 `km_per_liter` from the in-game app, which is almost never present, and
@@ -266,19 +314,25 @@ the client often sends the text as a number or a list, and all three
 work.
 
 **`contacts_inferred`** (on `lap_summary`) and **`contacts`** (on
-`compare_runs`) -- impacts without the damage model. Each entry: `pos`,
+`compare_runs`, only the `contact` verdicts) -- impacts without the damage
+model. An empty list is a lap with no spike over 3 g; null is a lap with
+no acceleration channels. `lap_summary`'s separate `contacts` field (from
+damage) is null both for no contact and for damage switched off, so it is
+never evidence of a clean lap. Each entry: `pos`,
 `t_ms`, `peak_g`, `axis`, `speed_kmh`, `speed_lost_kmh`, `yaw_rate_deg_s`,
 `gas`, `brake`, `input` (throttle, brake, both, coasting), `nearest`
 (car index, driver name, distance, speed) and `verdict`:
 
 - `contact`: a car within 10 m at the same instant. The radius is wide
   because opponent positions lag; confirmed hits read 6 to 8 m.
-- `wall`: nobody near and 15 km/h or more gone in the instant of the spike.
+- `wall`: nobody near and 15 km/h or more gone in the instant of the spike:
+  a barrier, or a car the opponent feed never carried.
   Sand, grass and ABS braking lose speed over seconds and do not qualify.
 - `snap`: nobody near, speed kept, rotating over 90 deg/s. A spin, or a
   slide caught. The g is the rotation.
 - `kerb`: nobody near, speed kept, no rotation. Kerbs, the floor, launches.
-- `no_opponent_data`: nothing to place it against.
+- `no_opponent_data`: nothing to place it against; `if_alone` gives the
+  wall, snap or kerb reading it would have with nobody near.
 
 A car parked alongside on a practice-start grid reads as a contact if the
 game spikes on the reset. Distance and speed are in the entry; read them.
@@ -292,8 +346,10 @@ copied there by the driver, and the file name may still say the old track.
 
 **`setup_ranges(car)`** -- legal min, max, step per entry in file units,
 plus `display_multiplier`, `show_clicks_mode` and `display` with its
-`source`: "observed" (read off the screen), "game" (the multiplier, which
-has been wrong), "unknown" (say so). Reachable values are the spinner's
+`source`: "observed" (read off the screen), "observed_offset" (one
+reading: the zero is corrected, the scale is still the game's), "game"
+(the multiplier, which has been wrong), "stored" (shows as stored),
+"unknown" (say so). Reachable values are the spinner's
 ladder from min and from max, not a grid.
 
 **`write_setup(car, track, name, values_json, base_setup, overwrite,
@@ -304,7 +360,10 @@ what the screen will show, with a source per entry. Refuses to reuse a
 name (write under `suggested_name`, or ask; `overwrite=true` backs the old
 file up first) and refuses without ranges (`allow_unclamped=true` is the
 driver's call, not yours: the fix is opening the setup screen once with
-the app running). Pass `allow_unclamped=false` explicitly.
+the app running). Pass `allow_unclamped=false` explicitly. Both refusals
+cover what is invisible from here: a replaced hand-built setup looks like
+nothing from the setup screen, and AC loads an out-of-range value, shows
+it, and ignores it.
 
 **`record_display_value(field, displayed, stored, car, note, session_id)`**,
 **`record_display_range(field, displayed_at_min, displayed_at_max, car,
@@ -313,6 +372,13 @@ note, session_id)`**, **`record_display_note(field, note, car, session_id)`**,
 screen shows for a stored value. Two readings pin scale, sign and zero;
 the range tool does it in one exchange at the spinner's ends. Notes are
 for what is not a number: TC and ABS count 1 as the most intervention.
+One reading fixes only the zero (`observed_offset`), which is enough when
+the game's scale is right; ask the driver for one number, since `stored`
+comes from the app. A second reading at another position, or one
+`record_display_range`, makes it `observed`. Where the game reports no
+scale at all, one reading is kept but leaves it `still_unknown`. Forget a
+misreading at once: a wrong observation is worse than none, because the
+mapping fitted from it is stated with confidence.
 Known on this car: camber stored in tenths of a degree (-40 is -4.0),
 FINAL_RATIO 0/1/2 shows 171/181/191 mph as 6th-gear top speed, brake bias
 is percent front.
@@ -358,8 +424,8 @@ cached for an hour and may come back `stale`.
 
 **`apply_update(to_commit)`** -- `to_commit` is `latest` from the check.
 Only after the driver has seen the commit list and said yes, and never
-mid-session. A `commit_mismatch` refusal means main moved: check again and
-ask again. Read `pip` and `lua` in the reply and pass on any `warning` or
+mid-session: a dependency reinstall can take minutes. A
+`commit_mismatch` refusal means main moved: check again and ask again. Read `pip` and `lua` in the reply and pass on any `warning` or
 `lua.note` as it is -- the in-game app is not copied while the game runs.
 Then `restart_server`, with the driver's OK, to load the new code.
 

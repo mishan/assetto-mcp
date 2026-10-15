@@ -32,9 +32,9 @@ Read the reference files when you need them, not all at once:
 
 Ask at the start of every session which the driver wants, and default to
 the debrief when they have not said. Not every driver wants a voice in
-their ear; one said plainly that a download after the session beats a
-stream of feedback during it, and a driver at 260 km/h cannot read a chat
-window either way.
+their ear; many prefer one download after the session to a stream of
+feedback during it, and a driver at 260 km/h cannot read a chat window
+either way.
 
 **Debrief.** Record, tag, watch the laps land, and say nothing until the
 driver comes in or asks. Keep your per-lap reading to yourself as notes.
@@ -69,8 +69,9 @@ live answer.
 The driver knows what the car did; you know what the data says. When they
 disagree, the driver is describing a real sensation and the data is measuring
 something adjacent to it, so look for what reconciles them rather than
-picking a side. Twice the data was read as "bumpy kerbs" when the driver said
-"slippery kerbs", and the setup change that followed was wrong both times.
+picking a side. "Slippery kerbs" from the driver and "bumpy kerbs" from the
+data are different complaints, and a setup change for the wrong one is
+wrong.
 
 Say the answer first, in one sentence, then the evidence. A driver between
 laps reads the first line and maybe a table. Positions are relative to the
@@ -85,8 +86,8 @@ before it goes to the driver.
 Do not call a spin a driving error until you have checked for a contact.
 Damage is usually off on race servers, so `contacts` is null on every lap;
 `contacts_inferred` is the field that answers. A brake input after a hit is
-mitigation, not a habit. The one time this was skipped, the driver was told
-their race-losing spin was their fault and it was a 6.8 g hit from behind.
+mitigation, not a habit. A spin that looks like a driving error can be a
+6.8 g hit from behind.
 
 ## Session start
 
@@ -151,7 +152,7 @@ the four things below and say nothing. In live mode, say them, briefly:
   pressures front to rear, the slip ratio under braking, top speed against
   the 6th-gear shift point. One line, only when it moved.
 - **What the driver should do next lap.** Keep going, switch something on
-  the wheel, or pit. With fuel in laps, not litres, when it is getting low.
+  the wheel, or pit. With fuel in laps, not liters, when it is getting low.
   This is the one line that also goes by voice when it is a call to act.
 
 Rules that hold on every lap:
@@ -240,7 +241,7 @@ What to change, in the order it has paid off with this driver:
 
 - **Fuel.** The session almost never has `km_per_liter`, so `fuel_plan`
   cannot run. Use the measured per-lap rate from lap-boundary readings, or
-  better, the in-game estimator's "laps at N litres" figure the driver can
+  better, the in-game estimator's "laps at N liters" figure the driver can
   read off the fuel screen. Plan the race laps plus one lap of margin and no
   more; the driver trims anything beyond that. Say what margin the number
   carries. A race lap count is a thing to ask for; the tool cannot read it.
@@ -296,12 +297,12 @@ answer is usually the contact list and the tyre wear, not the setup:
   were measured; say plainly what was not.
 - Length is a budget. A lap read is under 150 words. An answer to "did it
   help" or "what happened" is under 400 words with at most one table; the
-  rest of what you found goes in the handoff, not on the radio. Test runs
-  of this skill produced 600 to 900 word answers that were right in every
-  particular and too long to read between laps.
+  rest of what you found goes in the handoff, not on the radio. An answer
+  right in every particular is still wrong if it is too long to read
+  between laps.
 - Tables for numbers, prose for reasoning. Never a paragraph of numbers.
 - Corners by the circuit's `name` (from the track's sections.ini, on every
-  turn in `track_corners` and on corners labelled with its T-numbers) or
+  turn in `track_corners` and on corners labeled with its T-numbers) or
   what the driver calls it when you know it (the 90, the Bus Stop, the long
   left). `compare_laps` and `compare_runs` name a corner by its apex alone,
   so there a name can be missing, or differ from `track_corners`, near a

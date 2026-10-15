@@ -109,7 +109,7 @@ def _parked_on_the_brakes(n=7295, parked_samples=5905):
             "brake": 0.9 if parked else 0.0,
             "speed_kmh": 0.0 if parked else 120.0,
             # Parked sits fractionally lower than rolling: the wrong sign,
-            # which is exactly what the old code latched onto.
+            # which a median comparison would latch onto.
             "travel_fl": -0.0057 if parked else 0.0,
             "travel_fr": -0.0057 if parked else 0.0,
             "travel_rl": 0.0, "travel_rr": 0.0,
@@ -121,12 +121,11 @@ def _parked_on_the_brakes(n=7295, parked_samples=5905):
 
 
 def test_a_car_parked_on_the_brakes_cannot_set_the_sign():
-    """Regression: an out-lap inverted the sign at confidence 1.0.
+    """'Brake pressed' is not 'weight transferring forward'.
 
-    Session 9 produced sign=-1 from the out-lap and sign=+1 from a flying
-    lap, both claiming confidence 1.0, because 'brake pressed' was taken as
-    'weight transferring forward'. Since this sign decides bump vs rebound,
-    a wrong answer is worse than no answer.
+    Read that way, this out-lap and a flying lap of the same session give
+    opposite signs, both at confidence 1.0. Since this sign decides bump vs
+    rebound, a wrong answer is worse than no answer.
     """
     samples = _parked_on_the_brakes()
     # The numbers the docstring quotes are the session's; assert them here
@@ -211,11 +210,11 @@ def test_compression_lands_in_bump_not_rebound():
 # --- tier honesty -------------------------------------------------------
 
 
-def test_render_rate_histograms_are_labelled_as_body_motion():
+def test_render_rate_histograms_are_labeled_as_body_motion():
     """60Hz cannot describe damper valving and must not claim to.
 
     Nyquist for a 60Hz stream is 30Hz; real damper content runs well past
-    it, so the high-speed bins are aliasing artefacts.
+    it, so the high-speed bins are aliasing artifacts.
     """
     hist = susp.damper_histogram(_lap(rate_hz=60, n=400), susp.SOURCE_APP)
     assert hist["available"] is True
@@ -240,8 +239,8 @@ def test_a_short_sample_run_is_not_a_histogram():
 
 
 def test_effective_rate_is_measured_not_assumed():
-    fast = susp.summarise(_lap(rate_hz=333), susp.SOURCE_WORKER)
-    slow = susp.summarise(_lap(rate_hz=60), susp.SOURCE_APP)
+    fast = susp.summarize(_lap(rate_hz=333), susp.SOURCE_WORKER)
+    slow = susp.summarize(_lap(rate_hz=60), susp.SOURCE_APP)
     assert 300 < fast["sample_rate_hz"] < 400, fast["sample_rate_hz"]
     assert 50 < slow["sample_rate_hz"] < 70, slow["sample_rate_hz"]
     print(f"  measured {fast['sample_rate_hz']}Hz and "
@@ -325,8 +324,8 @@ def test_straight_line_running_is_not_counted_as_load_transfer():
 # --- top level and storage ---------------------------------------------
 
 
-def test_summarise_covers_all_three_questions():
-    out = susp.summarise(_lap(), susp.SOURCE_WORKER)
+def test_summarize_covers_all_three_questions():
+    out = susp.summarize(_lap(), susp.SOURCE_WORKER)
     assert out["available"] is True
     assert out["dampers"]["available"] is True
     assert out["ride_height"]["available"] is True
@@ -336,7 +335,7 @@ def test_summarise_covers_all_three_questions():
 
 def test_compact_summary_is_small_enough_for_lap_summary():
     import json
-    compact = susp.compact(susp.summarise(_lap(), susp.SOURCE_WORKER))
+    compact = susp.compact(susp.summarize(_lap(), susp.SOURCE_WORKER))
     size = len(json.dumps(compact))
     assert size < 400, f"{size} bytes is too much for lap_summary's budget"
     assert compact["source"] == susp.SOURCE_WORKER
@@ -406,8 +405,8 @@ def test_analysis_never_differentiates_across_a_tier_boundary():
                 travel_rr=s["travel_rr"] + 0.030)
            for s in _lap(rate_hz=60, n=300)]
 
-    mixed = susp.summarise(worker + app)
-    clean = susp.summarise(worker)
+    mixed = susp.summarize(worker + app)
+    clean = susp.summarize(worker)
 
     assert mixed["source"] == "worker", mixed["source"]
     assert mixed["dampers"]["axles"]["front"]["peak_bump_mm_s"] == \
@@ -431,25 +430,25 @@ def test_ride_height_still_comes_from_the_render_rate_rows():
               for s in _lap(rate_hz=333, n=900)]
     app = [dict(s, source="app") for s in _lap(rate_hz=60, n=300)]
 
-    out = susp.summarise(worker + app)
+    out = susp.summarize(worker + app)
     assert out["dampers"]["available"] is True
     assert out["ride_height"]["available"] is True, out["ride_height"]
     assert out["roll"]["available"] is True, out["roll"]
     print("  dampers from the worker, ride height and roll from the app rows")
 
 
-def test_a_mislabelled_tier_is_caught_by_its_own_rate():
-    """A worker that never produces would have its fallback labelled 333Hz.
+def test_a_mislabeled_tier_is_caught_by_its_own_rate():
+    """A worker that never produces would have its fallback labeled 333Hz.
 
     The client sets the label, so the label is checked against the evidence:
     rows claiming to be physics-rate that arrived at 10Hz get the same
     warning as render-rate data rather than a clean bill of health.
     """
     lying = [dict(s, source="worker") for s in _lap(rate_hz=10, n=400)]
-    out = susp.summarise(lying)
+    out = susp.summarize(lying)
     assert out["dampers"]["available"] is True
     assert "caution" in out["dampers"], out["dampers"]
-    assert "mislabelling" in out["dampers"]["caution"]
+    assert "mislabeling" in out["dampers"]["caution"]
     assert out["dampers"]["measured_rate_hz"] < 20
     print(" ", out["dampers"]["caution"][:60] + "...")
 
@@ -486,12 +485,10 @@ def test_lua_and_python_batch_limits_agree():
 def test_the_lua_app_assigns_no_implicit_globals():
     """Lua creates a global on assignment to an undeclared name.
 
-    That is silent, and it bites twice: the value leaks into the shared
-    environment, and a typo or a leftover from a refactor reads back as nil
-    forever. This exact bug shipped in review -- a `suspTier` variable
-    survived the change that replaced it, was never declared and never set
-    to 'worker', so the app's capture-tier indicator would have shown the
-    degraded marker permanently no matter what was actually running.
+    That is silent, and it does damage twice: the value leaks into the
+    shared environment, and a typo or a leftover from a refactor reads back
+    as nil forever -- a stale tier variable that is never set to 'worker',
+    say, pins the capture-tier indicator on the degraded marker.
     """
     # This is the only check for this bug class, so "luaparser is missing"
     # must not read as "passed". require() raises under AC_TESTS_STRICT --
@@ -659,7 +656,7 @@ def test_samples_survive_the_round_trip_through_http():
 
             stored = db.get_suspension_samples(conn, sid, 0)
             assert len(stored) == 600
-            out = susp.summarise(stored, "worker")
+            out = susp.summarize(stored, "worker")
             assert out["dampers"]["available"] is True
             assert out["dampers"]["sign_convention"]["sign"] == 1
             print("  600 samples posted, stored and analyzed")
@@ -730,9 +727,9 @@ def test_batch_is_refused_when_nothing_is_recording():
                               {"source": "app", "samples": _lap(n=20)})
             assert code == 200 and body["ok"] is False, body
             # No `stored` key at all. The Lua client keys its success
-            # accounting off `ok`, not off the presence of `stored` --
-            # treating a missing `stored` as success counted these as sent
-            # and showed a healthy status line over discarded data.
+            # accounting off `ok`, not off the presence of `stored`; reading
+            # a missing `stored` as success would count discarded data as
+            # sent.
             assert "stored" not in body, body
             assert conn.execute(
                 "SELECT COUNT(*) FROM suspension_samples").fetchone()[0] == 0
@@ -752,6 +749,7 @@ def test_concurrent_posts_do_not_lose_prune_increments():
     """
     import threading
     import time as _time
+
     from support import post
     with temp_db() as path:
         conn = db.connect(path)
@@ -791,8 +789,7 @@ def test_concurrent_posts_do_not_lose_prune_increments():
                         # loaded Windows runner does under two dozen
                         # simultaneous connects. That is not the server
                         # losing a write, so retry rather than record a
-                        # miss: recording it is what made this a CI flake,
-                        # failing the quorum check below at 5 of 24.
+                        # miss that would fail the quorum check below.
                         #
                         # Unless the request was served and only the reply
                         # was lost -- sending it again would write twice and

@@ -3,7 +3,7 @@
     One-shot installer for assetto-mcp on the Windows gaming PC.
 
 .DESCRIPTION
-    Does everything the README used to ask you to do by hand:
+    Does the whole install:
 
       1. Finds a real Python 3.10+ (ignoring the Microsoft Store stub)
       2. pip install -e . from this folder
@@ -56,8 +56,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$script:RepoRoot = if ($PSScriptRoot) { $PSScriptRoot }
-                   else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
+$script:ScriptDir = if ($PSScriptRoot) { $PSScriptRoot }
+                    else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
+$script:RepoRoot = Split-Path -Parent $script:ScriptDir
 $script:Problems = @()
 
 # install-windows.bat pauses on its own; don't prompt twice.
@@ -137,10 +138,10 @@ $LegacyDataDir         = Join-Path $env:USERPROFILE '.ac-race-engineer'
 # cares which client launches it. Everything Claude-Desktop-specific lives in
 # its own file, so supporting another client means adding a file beside it.
 # Dot-sourced, so it runs in this scope and can use the helpers above.
-$clientScript = Join-Path $script:RepoRoot 'install-claude-desktop.ps1'
+$clientScript = Join-Path $script:ScriptDir 'install-claude-desktop.ps1'
 if (-not (Test-Path -LiteralPath $clientScript)) {
-    Stop-WithError "install-claude-desktop.ps1 is missing from this folder." @"
-  It sits next to install-windows.bat and holds the MCP client setup.
+    Stop-WithError "install-claude-desktop.ps1 is missing from the windows folder." @"
+  It sits next to install-windows.ps1 and holds the MCP client setup.
   If you copied only some files out of the repo, copy the whole folder.
   Otherwise, re-clone or re-download and run the installer again.
 "@

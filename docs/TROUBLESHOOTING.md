@@ -105,10 +105,10 @@ break that:
 
 ## Setup values don't stick in-game
 
-You're writing outside the car's legal range and AC is silently ignoring them.
-That should not happen any more — values are clamped to what the car accepts —
-unless the setup was written with `allow_unclamped`, which is what you get if
-you told it to write anyway after it refused. See
+AC silently ignores values outside the car's legal range. Values are clamped
+to what the car accepts, so this only happens when the setup was written with
+`allow_unclamped`, which is what you get if you told it to write anyway after
+it refused. See
 [SETUP-RANGES.md](SETUP-RANGES.md).
 
 ## "No setup ranges are known for this car"
@@ -143,9 +143,9 @@ across restarts and across every instance; `start_recording` turns it back on.
 
 ## A lap I drove clean is marked as having run wide
 
-It no longer costs you anything — laps that ran wide are still compared, and
-reported as `ran_wide` with the evidence — but if the call itself looks wrong,
-`lap_summary` shows `max_tyres_out`, `excursions` and `off_track_ms` so you can
+Laps that ran wide are still compared, and reported as `ran_wide` with the
+evidence, so the lap isn't lost. If the call itself looks wrong, `lap_summary`
+shows `max_tyres_out`, `excursions` and `off_track_ms` so you can
 see what it saw.
 
 Track limits are still *inferred* from wheels-off-track, because vanilla AC

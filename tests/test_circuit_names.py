@@ -1,11 +1,9 @@
 """Corners called by the circuit's names, from the track's sections.ini.
 
-At Road Atlanta the session's T12 was the circuit's Turn 10A, and the
-driver said plainly that meters past the start/finish line meant nothing
-to them either: "I need relative positions -- like how far from the
-corner?" These pin how a track's sections.ini is found and read, how a
-detected turn is matched to a named section, and the wording that comes
-out.
+A driver knows a corner as Turn 10A, not as the session's T12 or as meters
+past the start/finish line. These pin how a track's sections.ini is found
+and read, how a detected turn is matched to a named section, and the
+wording that comes out, relative to the nearest corner.
 """
 
 import atexit
@@ -17,7 +15,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import make_session, run_module  # noqa: E402
+from support import run_module  # noqa: E402
 
 from assetto_mcp import circuit, places  # noqa: E402
 
@@ -51,7 +49,7 @@ OUT=0.5
 TEXT=Not a section
 """
 
-# Detected turns on a 4 km lap, shaped like session 55's.
+# Detected turns on a 4 km lap, shaped like a real session's.
 TURNS = [
     {"turn": "T1", "brake_point_pos": 0.076, "entry_pos": 0.082,
      "apex_pos": 0.108, "exit_pos": 0.156},

@@ -1,37 +1,34 @@
 """Judging a setup change against the driver's own repeatability.
 
-Lap time is the noisiest channel on the car. Measured spread across four
-laps of an unchanged setup ran 0.3-0.6s, so a change worth less than about
-half a second cannot be seen in a short run however well it is driven --
-while front load transfer moved 2.2 points for a rear anti-roll bar change
-against under 0.3 of noise. Same laps, wildly different resolving power.
+Lap time is the noisiest channel on the car. Four laps of an unchanged
+setup spread 0.3-0.6s, so a change worth less than about half a second
+cannot be seen in a short run however well it is driven -- while front
+load transfer moved 2.2 points for a rear anti-roll bar change against
+under 0.3 of noise. Same laps, wildly different resolving power.
 
 These tests are about not overclaiming, and there are two ways to overclaim
 here. One is calling a difference smaller than the noise a change. The other
 is asking forty questions of the same six laps and reporting whichever came
-back loudest: at 95% each that flagged something in 83% of runs where
-nothing had been touched, which is not a subtle bias, it is the usual
-answer. So the statistics themselves are pinned here, against values from
-scipy computed when these tests were written and hardcoded as literals --
-scipy is not a dependency of this project and must not become one, on the
-gaming PC least of all.
+back loudest: at 95% each that flags something in 83% of runs where
+nothing has been touched. So the statistics themselves are pinned here,
+against scipy values hardcoded as literals -- scipy is not a dependency of
+this project and must not become one, on the gaming PC least of all.
 
 There is a third way, which is to correct so hard that nothing can ever be
-found. Correcting across all 38 tests of a fifteen-corner payload held the
-false-positive rate at 5% and dropped the chance of catching a real
-2.2-point load transfer change in two laps a side from 93% to 7%. So the
-family is the eight metrics, which is fixed, and the corners are
-exploratory: measured, ranked, reported uncorrected, and asserted by
-nothing. Both halves are pinned below -- the family-wise rate by
-simulation, the detection rates against scipy, and the fact that a lead is
-never called a finding.
+found. Correcting across all 38 tests of a fifteen-corner payload holds the
+false-positive rate at 5% and drops the chance of catching a real 2.2-point
+load transfer change in two laps a side from 93% to 7%. So the family is
+the eight metrics, which is fixed, and the corners are exploratory:
+measured, ranked, reported uncorrected, and asserted by nothing. Both
+halves are pinned below -- the family-wise rate by simulation, the
+detection rates against scipy, and the fact that a lead is never called a
+finding.
 
-The mutations these were written to kill, every one of which the previous
-suite passed: the critical-value table set to 2.0 at df 1-2, t(df=4) set to
-1.05, resolution multiplied by three, resolution replaced by 999999, the
-standard error missing its factor of sqrt(2), and df computed as n1+n2.
-Since the split, two more: putting the corner tests back in the family, and
-taking the correction out altogether.
+Mutations these must catch: the critical value set to 2.0 at df 1-2,
+t(df=4) set to 1.05, resolution multiplied by three or replaced by 999999,
+the standard error missing its factor of sqrt(2), df computed as n1+n2,
+the corner tests put back in the family, and the correction taken out
+altogether.
 """
 
 import atexit
@@ -75,15 +72,13 @@ def _close(a, b, tol=5e-4):
 
 
 def test_the_t_distribution_is_computed_not_looked_up():
-    """Reference values from scipy.stats.t, hardcoded at authoring time.
+    """Reference values from scipy.stats.t, hardcoded.
 
-    The old implementation was a fourteen-entry table plus a lookup that
-    rounded an untabulated df UP to the next key, so df=21 was judged at
-    2.0860 instead of 2.0796 and everything past df=30 at 1.96 -- 3.9% low
-    at df=31, and low always means readier to call a change real.
-
-    The table also could not express any level but 95%, which is exactly
-    what the family correction needs, so it is gone entirely.
+    A lookup table that rounds an untabulated df to a neighboring key judges
+    df=21 at 2.0860 instead of 2.0796 and everything past df=30 at 1.96 --
+    3.9% low at df=31, and low always means readier to call a change real.
+    A table of 95% values also cannot serve the corrected levels the family
+    needs.
     """
     for t, df, expected in [(1.0, 1, 0.5), (2.0, 1, 0.295167235301),
                             (2.776445, 4, 0.0500000053821),
@@ -95,7 +90,7 @@ def test_the_t_distribution_is_computed_not_looked_up():
         got = analysis._t_p_value(t, df)
         assert abs(got - expected) < 1e-9, (t, df, got, expected)
 
-    # The df the table never held are exactly the ones it got wrong.
+    # Untabulated df, exactly where a lookup table goes wrong.
     for df, expected in [(1, 12.7062047362), (2, 4.3026527297),
                          (3, 3.1824463053), (4, 2.7764451052),
                          (5, 2.5705818356), (10, 2.2281388520),
@@ -116,9 +111,8 @@ def test_the_documented_detection_rates_are_what_the_code_does():
 
     Both docstrings tell a model what a "within noise" answer is worth at
     two, three, five and eight laps a side, and a model will act on those
-    numbers without any way to check them. They were true of a family of
-    38 once and became wrong the moment the family changed, silently, in
-    prose. So they are pinned.
+    numbers without any way to check them. Prose goes stale silently when
+    the family changes, so they are pinned.
 
     References from scipy.stats.nct at the critical value for 0.05/8, and
     for the two the noncentral t implementation returns nan for, from a
@@ -173,9 +167,8 @@ def test_resolution_is_the_critical_value_times_the_standard_error():
 def test_resolution_is_a_fifty_percent_threshold_not_a_promise():
     """It is printed to three decimals and detects half the time.
 
-    A resolution reported without that reads as "changes this big will be
-    seen", and the docstring did say two laps a side was enough for a large
-    effect. It is the point where the coin is fair, nothing more.
+    Reported without that, it reads as "changes this big will be seen". It
+    is the point where the coin is fair, nothing more.
     """
     e = analysis._measure([113400, 113600, 113300],
                           [112900, 112700, 112800], 1.0)
@@ -231,12 +224,11 @@ def test_the_family_wise_false_positive_rate_is_held_at_five_percent():
     """Nothing changed, fifteen corners, three laps a side, 300 times.
 
     This is the rate for the claim the payload actually makes: a metric
-    that "moved". Uncorrected, one metric or another cleared 95% in a
-    quarter of null runs, and with the corners judged the same way it was
+    that "moved". Uncorrected, one metric or another clears 95% in a
+    quarter of null runs, and with the corners judged the same way it is
     83%, stated as fact in the summary line a model quotes.
 
-    Fifteen corners rather than six because that is where the old design
-    hurt, and because the number below must not move when the circuit
+    Fifteen corners because the number below must not move when the circuit
     does: the corners are not in the family, so a null run at Mugello and a
     null run at an oval have to come out the same.
 
@@ -267,7 +259,7 @@ def test_the_family_wise_false_positive_rate_is_held_at_five_percent():
                                     [noise_lap() for _ in range(3)])
         if any(m.get("verdict") == "moved" for m in out["metrics"].values()):
             flagged += 1
-        # The same runs judged the old way: any one metric under 0.05.
+        # The same runs judged uncorrected: any one metric under 0.05.
         if any((m.get("p_value") if m.get("p_value") is not None else 1.0)
                < 0.05 for m in out["metrics"].values()):
             uncorrected += 1
@@ -310,13 +302,13 @@ def test_the_correction_is_stated_in_the_payload():
 
 
 def test_the_corner_count_does_not_change_what_the_metrics_need():
-    """The whole reason for the split, in one comparison.
+    """Why the corners are kept out of the family, in one comparison.
 
     Two laps a side, a rear anti-roll bar worth 2.2 points of front load
     transfer against under 0.3 of noise -- the case the tool exists for.
     With the corner tests in the family that same run is 38 questions at
-    Mugello and 8 at an oval, so the answer depended on where it was
-    driven: p 0.0041 against a threshold of 0.05/38, "within noise".
+    Mugello and 8 at an oval, so the answer depends on where it was
+    driven: p 0.0041 against a threshold of 0.05/38 is "within noise".
 
     Fifteen corners of pure noise are added here and must change nothing
     about the verdict, the family size, or the threshold.
@@ -447,11 +439,11 @@ def test_a_very_repeatable_run_still_needs_a_real_difference():
 def test_a_corner_lead_is_never_reported_as_a_finding():
     """A corner answers where, not whether, and the payload has to say so.
 
-    The summary is the line a model quotes. It used to be computed from the
-    metrics alone and so said "nothing moved beyond noise" directly above a
-    populated corner list; the fix for that was to count the corners in it,
-    which made the summary assert something no correction stood behind.
-    Now it carries them and marks them as leads.
+    The summary is the line a model quotes. Computed from the metrics
+    alone, it would say "nothing moved beyond noise" directly above a
+    populated corner list; counting the corners as findings would assert
+    something no correction stands behind. So it carries them and marks
+    them as leads.
     """
     def run(speed):
         return [_lap(113400, 1.05, 58.0,
@@ -570,11 +562,11 @@ def test_corner_leads_are_named_by_turn_number():
 def test_a_corner_only_one_run_drove_is_still_numbered():
     """Two laps a side, and the candidate found a corner the baseline did not.
 
-    Pooled, that corner is on exactly half the laps. Under a majority rule
-    it took no number -- so the one corner in the payload that most needs a
-    name, the one under corners_in_one_run_only, was the one left with only
-    an apex position. Numbering asks for repeatability instead: two laps
-    drove it, which is driving rather than an event.
+    Pooled, that corner is on exactly half the laps. A majority rule would
+    leave it unnumbered -- the one corner in the payload that most needs a
+    name, the one under corners_in_one_run_only. Numbering asks for
+    repeatability instead: two laps drove it, which is driving rather than
+    an event.
     """
     base = [_lap(113400, 1.0, 58.0, corners=[_corner(0.691, 1.10, 110.0)]),
             _lap(113500, 1.0, 58.0, corners=[_corner(0.689, 1.12, 110.4)])]
@@ -595,10 +587,9 @@ def test_a_corner_only_one_run_drove_is_still_numbered():
 def test_apexes_a_meter_apart_are_the_same_corner():
     """0.0299, 0.0300 and 0.0301 are one corner, not two.
 
-    Bucketing with round(pos / 0.02) * 0.02 put 0.0299 in one bucket and the
-    other two in the next, so a three-lap run reported baseline_n 2 -- and on
-    a realistic fifteen-corner run every single corner came back n=2 from
-    three laps, with df and the noise estimate wrong for all of them.
+    Bucketing with round(pos / 0.02) * 0.02 puts 0.0299 in one bucket and the
+    other two in the next, so a three-lap run reports baseline_n 2, with df
+    and the noise estimate wrong for that corner.
 
     Swept along the track rather than tested at one position, because any
     fixed grid of buckets works perfectly for a corner in the middle of one
@@ -626,8 +617,8 @@ def test_apexes_a_meter_apart_are_the_same_corner():
 def test_two_corners_in_one_bucket_are_not_pooled():
     """0.02 of a lap is 105m at Mugello: a hairpin and the kink after it.
 
-    Pooled they gave n=6 from three laps -- df=10 where the data supports 4,
-    on samples that are not independent -- and the "corner" reported was the
+    Pooled, they give n=6 from three laps -- df=10 where the data supports 4,
+    on samples that are not independent -- and the "corner" reported is the
     mean of two different pieces of road.
 
     The two here are 0.008 apart, closer than the matching tolerance, so
@@ -658,9 +649,9 @@ def test_two_corners_in_one_bucket_are_not_pooled():
 def test_a_corner_with_no_slip_balance_is_still_judged_on_min_speed():
     """detect_corners drops slip that looks like a glitch, and does so often.
 
-    Intersecting the slip-balance buckets alone then excluded the corner
-    from the comparison entirely: a corner gaining 15 km/h on every
-    candidate lap, with slip_balance null, produced an empty list.
+    Matching on slip balance alone would exclude such a corner from the
+    comparison entirely: a corner gaining 15 km/h on every candidate lap,
+    with slip_balance null, would produce an empty list.
     """
     def run(speed):
         return [_lap(113400, 1.0, 58.0,
@@ -679,7 +670,7 @@ def test_a_corner_with_no_slip_balance_is_still_judged_on_min_speed():
 
 
 def test_a_corner_found_in_only_one_run_is_reported():
-    """It used to be dropped without a word, which reads as agreement."""
+    """Dropping it without a word would read as agreement."""
     base = [_lap(113400, 1.0, 58.0, corners=[_corner(0.30, 1.2, 120.0)]),
             _lap(113400, 1.0, 58.0, corners=[_corner(0.301, 1.2, 120.0)])]
     cand = [_lap(113400, 1.0, 58.0, corners=[_corner(0.30, 1.2, 120.0),
@@ -730,15 +721,10 @@ def _server():
         os.environ["ASSETTO_MCP_DATA"] = d
         os.environ["AC_DOCS_DIR"] = d
         os.environ["ASSETTO_MCP_BRIDGE_PORT"] = "0"
-        # Importing the server now starts recording, which is right in the
-        # game and wrong here: these tests exercise the tool layer over a
-        # database they build themselves, and a collector polling for
-        # Assetto Corsa in the background contributes a thread, a second
-        # SQLite connection and a retry timer to every one of them.
-        #
-        # Set before the import because the decision is made at import time,
-        # and that is the point -- an import with side effects can only be
-        # opted out of before it happens.
+        # Importing the server starts recording, which is right in the game
+        # and wrong here: a collector polling for Assetto Corsa would add a
+        # thread, a second SQLite connection and a retry timer to every
+        # test. The decision is made at import time, so this is set first.
         os.environ["ASSETTO_MCP_NO_AUTOSTART"] = "1"
         import importlib
         _SERVER = importlib.import_module("assetto_mcp.server")
@@ -763,7 +749,7 @@ def _store(srv, session_id, lap_number, lap_ms, complete=True,
            wide=False, pitted=False, out_lap=False):
     """Store a lap. `wide` puts four wheels off long enough to count.
 
-    Track limits are scored from the samples now rather than asserted, so a
+    Track limits are scored from the samples rather than asserted, so a
     test that wants an off-track lap has to actually drive one off.
     """
     samples = [(i * 100, i / 60.0, *_SAMPLE) for i in range(60)]
@@ -785,12 +771,11 @@ def _run(srv, a, b, **kw):
 def test_a_lap_that_ran_wide_is_compared_and_said_to_have_run_wide():
     """It is still a lap. The corner speeds and brake points happened.
 
-    This used to drop it, on the grounds that one off-track lap turned a
-    real 500ms gain into "within noise". True, and the wrong fix: the lap
-    was thrown out of every channel to protect one of them, and the driver
-    was told nothing. Now it is counted and reported, so a result that
-    rests on it can be read as such -- and clean_laps_only is there for
-    when the question really is about a clean lap time.
+    One off-track lap can turn a real 500ms gain into "within noise", but
+    throwing the lap out of every channel to protect one of them, and telling
+    the driver nothing, is the wrong answer. It is counted and reported, so
+    a result that rests on it can be read as such -- and clean_laps_only is
+    there for when the question really is about a clean lap time.
     """
     srv = _server()
     sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
@@ -821,12 +806,12 @@ def test_a_lap_that_ran_wide_is_compared_and_said_to_have_run_wide():
     print("  clean_laps_only:", clean["excluded_laps"][0]["reason"])
 
 
-def test_the_old_include_invalid_argument_still_works_and_says_so():
+def test_the_deprecated_include_invalid_argument_still_works_and_says_so():
     """Renaming a tool argument breaks every caller that passes it.
 
-    `include_invalid=false` meant "drop the laps that ran wide", which is
-    now `clean_laps_only=true`. Accepting the old name and ignoring it
-    would be worse than removing it: the call would succeed and quietly
+    `include_invalid=false` means "drop the laps that ran wide", which is
+    spelled `clean_laps_only=true` now. Accepting the old name and ignoring
+    it would be worse than removing it: the call would succeed and quietly
     include laps the caller had asked to leave out.
     """
     srv = _server()
@@ -843,7 +828,7 @@ def test_the_old_include_invalid_argument_still_works_and_says_so():
     assert "deprecated" in old, old.keys()
     assert "clean_laps_only" in old["deprecated"], old["deprecated"]
 
-    # include_invalid=True is the current default, and still says it is old.
+    # include_invalid=True is the default, and is still flagged deprecated.
     kept = _run(srv, base, cand, include_invalid=True)
     assert kept["metrics"]["lap_time_ms"]["baseline_n"] == 4, kept["metrics"]
     assert "deprecated" in kept, kept.keys()
@@ -856,15 +841,15 @@ def test_the_old_include_invalid_argument_still_works_and_says_so():
     # And a caller that never knew the old name sees nothing about it.
     plain = _run(srv, base, cand)
     assert "deprecated" not in plain, plain.keys()
-    print("  include_invalid honoured, flagged, and refused when contradicted")
+    print("  include_invalid honored, flagged, and refused when contradicted")
 
 
 def test_a_lap_abandoned_before_the_line_is_dropped_and_named():
     """Its stored time is wall-clock elapsed, not a lap time.
 
-    Laps ending in a crash or a reset to the pits are deliberately stored
-    now, so this is live rather than hypothetical: one in the baseline moved
-    lap time by +17630ms and the verdict stayed "within noise".
+    Laps ending in a crash or a reset to the pits are deliberately stored,
+    and one in the baseline can move lap time by +17630ms while the verdict
+    stays "within noise".
     """
     srv = _server()
     sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
@@ -883,10 +868,11 @@ def test_a_lap_abandoned_before_the_line_is_dropped_and_named():
 
 
 def test_two_different_tracks_or_cars_are_refused_by_name():
-    """A Suzuka MX-5 run against a Mugello F4 run came back "moved", -37.3s.
+    """A Suzuka MX-5 run against a Mugello F4 run is not a setup comparison.
 
-    Stated as confidently as a real result, and the payload named neither
-    track nor car, so there was nothing in it to notice the mistake by.
+    Unrefused, it comes back "moved", -37.3s, as confidently as a real
+    result, and the payload has to name the track and car so a reader can
+    notice the mistake.
     """
     srv = _server()
     a = make_session(srv._conn, track="suzuka", car="ks_mazda_mx5_cup")
@@ -903,7 +889,7 @@ def test_two_different_tracks_or_cars_are_refused_by_name():
 
 
 def test_the_track_and_car_are_stated_in_the_answer():
-    """Nothing in the old payload said what had been compared."""
+    """A reader has to be able to see what was compared."""
     srv = _server()
     sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
     base = [_store(srv, sid, 1, 113400), _store(srv, sid, 2, 113600)]
@@ -915,7 +901,7 @@ def test_the_track_and_car_are_stated_in_the_answer():
 
 
 def test_a_side_left_with_no_usable_laps_refuses():
-    # Unusable, not merely off track: a lap that ran wide is compared now,
+    # Unusable, not merely off track: a lap that ran wide is still compared,
     # so a side has to be emptied by laps whose *times* are not lap times.
     srv = _server()
     sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
@@ -932,15 +918,11 @@ def test_a_side_left_with_no_usable_laps_refuses():
 
 
 def test_lap_ids_survive_the_way_a_list_actually_arrives():
-    """A trailing separator was refused: "not a lap id: '\\n'".
+    """Ids written by a model arrive wrapped and with trailing separators.
 
-    These ids arrive as text written by a model, which wraps lines and
-    leaves the odd trailing comma. Empty parts were skipped -- but a part
-    holding only whitespace is not empty, it is truthy, so it reached int()
-    and raised, and a perfectly readable list came back as an error naming a
-    newline as a lap id. Stripping spaces up front did not cover it: the
-    newline was left in place, and "1 2" was quietly read as lap 12 rather
-    than refused.
+    A part holding only whitespace is skipped rather than handed to int(),
+    so a perfectly readable list is not refused for "a lap id" that is a
+    newline. Spaces inside a part still refuse: "1 2" is not lap 12.
     """
     srv = _server()
     sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
@@ -965,8 +947,8 @@ def test_lap_ids_survive_the_way_a_list_actually_arrives():
     print(" ", out["error"])
 
     # Genuinely unreadable input still refuses, and still quotes the part it
-    # could not read so the caller can see which one to fix. "12 13" is in
-    # there because removing the spaces used to turn it into lap 1213.
+    # could not read so the caller can see which one to fix. "12 13" must
+    # not be read as lap 1213.
     for bad in (f"{b0};{b1}", "abc", f"{b0} {b1}"):
         out = json.loads(srv.compare_runs(bad, cand))
         assert out.get("error") == f"not a lap id: {bad!r}", (bad, out)
@@ -978,10 +960,10 @@ def test_a_run_with_no_cornering_does_not_claim_a_shared_reference():
 
     When no lap on either side carries enough lateral load, there is no
     shared bar: lat_g_reference returns None and every lap falls back to its
-    own peak. The note was appended unconditionally and said a single shared
-    reference had been used across both sides -- flatly contradicting the
-    `basis` field beside it, for the one reader who looks at both, which is
-    someone debugging a corner list that surprised them.
+    own peak. A note saying a single shared reference was used across both
+    sides would contradict the `basis` field beside it, for the one reader
+    who looks at both, which is someone debugging a corner list that
+    surprised them.
     """
     srv = _server()
     sid = make_session(srv._conn, track="mugello",
@@ -1022,7 +1004,7 @@ def test_a_run_that_tightens_up_is_confirmed():
 
     assert c["direction"] == "tighter", c
     assert c["verdict"] == "moved", c
-    # The most lopsided of all C(16, 8) = 12870 relabellings, and its mirror.
+    # The most lopsided of all C(16, 8) = 12870 relabelings, and its mirror.
     assert c["p_value"] == analysis._sig(2 / 12870), c
     assert out["metrics"]["lap_time_ms"]["verdict"] == "within noise"
     assert out["multiple_comparisons"]["tests_in_family"] == 9, \
@@ -1038,7 +1020,7 @@ def test_one_spin_in_a_run_is_not_a_change_in_consistency():
     One lap in six lost five seconds and the rest are as repeatable as the
     other run. A variance-ratio F test calls that a change in spread; under
     no change at all it does so in over 40% of runs where a spin happens
-    now and then. Relabelling the laps knows that a spin landing in one run
+    now and then. Relabeling the laps knows that a spin landing in one run
     rather than the other is a coin toss.
     """
     base = _times(0.2, -0.3, 0.1, 5.0, -0.2, 0.3)
@@ -1050,14 +1032,13 @@ def test_one_spin_in_a_run_is_not_a_change_in_consistency():
 
 
 def test_removing_two_spins_from_six_laps_is_not_yet_evidence():
-    """Sebring v9, and why no valid test would have confirmed it.
+    """Six clean laps after a run where two of six spun prove nothing yet.
 
-    Six laps inside a second after a run where two of six spun. If one lap
-    in three spins by chance, six laps without one happens 9% of the time,
-    so these laps cannot separate "the setup fixed it" from "not this
-    time". The payload has to say "within noise" here. It is the honest
-    answer, and the backlog entry that asked for an F test was asking for a
-    test that gets this case right by being wrong four times in ten.
+    If one lap in three spins by chance, six laps without one happens 9% of
+    the time, so these laps cannot separate "the setup fixed it" from "not
+    this time". The payload has to say "within noise" here. It is the honest
+    answer, and an F test gets this case right only by being wrong four
+    times in ten.
     """
     base = _times(0.1, -0.2, 0.3, 5.1, -0.1, 6.4)
     cand = _times(0.0, 0.4, -0.3, 0.6, -0.2, 0.2)
@@ -1071,10 +1052,10 @@ def test_removing_two_spins_from_six_laps_is_not_yet_evidence():
 def test_too_few_laps_to_test_says_how_many_it_would_take():
     """Three laps a side cannot confirm a change in spread of any size.
 
-    Twenty relabellings, two of them the most lopsided: nothing can come in
-    under p = 0.1. Counting that test in the family would have raised every
-    other metric's bar for a test that could never reject, so it is left
-    out, and the family stays at eight.
+    Twenty relabelings, two of them the most lopsided: nothing can come in
+    under p = 0.1. Counting that test in the family would raise every other
+    metric's bar for a test that could never reject, so it is left out, and
+    the family stays at eight.
     """
     base = _times(1.0, -1.0, 0.8)
     cand = _times(0.02, -0.01, 0.0)
@@ -1093,8 +1074,8 @@ def test_a_run_with_spins_does_not_invent_consistency_changes():
     """Nothing changed, spins happen, six laps a side, 150 times.
 
     The lap-time model the F test fails on: a 0.3s spread and a 15% chance
-    of a 3-8s spin on any lap, the same on both sides. Seeded; the design
-    simulated over 600 such runs came in at 0.3%.
+    of a 3-8s spin on any lap, the same on both sides. Seeded; over 600 such
+    runs the rate is 0.3%.
     """
     rng = random.Random(20260910)
 
@@ -1114,9 +1095,9 @@ def test_a_run_with_spins_does_not_invent_consistency_changes():
 def test_the_smallest_p_is_what_the_code_can_actually_return():
     """Exact below the enumeration cap, the drawn estimate's floor above it.
 
-    Ten laps a side is 184756 relabellings, so they are drawn, and a drawn
+    Ten laps a side is 184756 relabelings, so they are drawn, and a drawn
     p is (hits + 1) / (draws + 1): never under 1/20001, even though one
-    relabelling in 184756 is rarer. Reporting the rarer figure would
+    relabeling in 184756 is rarer. Reporting the rarer figure would
     promise a p the estimate cannot produce.
     """
     assert analysis._smallest_permutation_p(6, 6) == 2 / 924
@@ -1129,8 +1110,8 @@ def test_a_threshold_no_lap_count_can_meet_is_said_not_searched_for():
     """A family big enough to push 0.05/m under the drawn floor.
 
     No number of laps gets a drawn p below 1/20001, so the search for how
-    many laps it would take has no answer -- and used to loop forever
-    looking for one.
+    many laps it would take has no answer and must not loop looking for
+    one.
     """
     c = analysis._measure_consistency([1.0, -1.0, 0.8], [0.0, 0.1, -0.1],
                                       family_size=5000)
@@ -1139,11 +1120,10 @@ def test_a_threshold_no_lap_count_can_meet_is_said_not_searched_for():
 
 
 def test_the_leads_note_counts_the_channels_and_tests_it_had():
-    """Five channels a corner now, and the null-lead rate rises with them.
+    """Five channels a corner, and the null-lead rate rises with them.
 
-    The note said "up to two channels each" and quoted 77.6% -- the rate
-    measured for thirty tests -- after the entry channels had taken a
-    corner to five.
+    The note has to count the channels the payload has, and not quote
+    77.6%, the rate measured for thirty tests at two channels a corner.
     """
     base = [_lap(113400, 1.0, 58.0, corners=[_entered(0.4, 1.10, b)])
             for b in (-0.20, -0.21, -0.19)]
@@ -1165,11 +1145,11 @@ def _entered(pos, apex_bal, entry_bal):
 
 
 def test_a_change_on_entry_shows_even_when_the_apex_did_not_move():
-    """claude_sebring_v6: a diff change aimed at entry, and nowhere to see it.
+    """A diff change aimed at entry, and nowhere else to see it.
 
     The apex balance is identical across the two runs. Only the entry
-    phase moved -- the car stopped being loose under braking -- and before
-    the entry channels existed this comparison reported no lead at all.
+    phase moved -- the car stopped being loose under braking -- so without
+    the entry channels this comparison would report no lead at all.
     """
     base = [_lap(113400, 1.0, 58.0, corners=[_entered(0.4, 1.10, b)])
             for b in (-0.20, -0.21, -0.19)]
@@ -1186,7 +1166,7 @@ def test_a_change_on_entry_shows_even_when_the_apex_did_not_move():
 #
 # analysis.corner_map is tested on corner dicts in test_delta_and_corners.
 # What is tested here is the wiring: that the numbering a session gets is
-# the same numbering every lap of it is labelled against, which is a
+# the same numbering every lap of it is labeled against, which is a
 # property of the server and not of the analysis.
 
 _CORNERS = ((0.15, 2.4, 1), (0.45, 2.2, 1), (0.80, 2.6, -1))
@@ -1230,8 +1210,8 @@ def test_the_tools_number_the_turns_and_label_every_laps_corners():
 
     The lap here misses its middle corner, the way a lap near the detection
     bar does. Its own corner list closes the gap -- the third corner becomes
-    its second -- so this is exactly the lap that used to make "corner 2"
-    mean two different pieces of road inside one session.
+    its second -- so this is exactly the lap that would make "corner 2" mean
+    two different pieces of road inside one session.
     """
     srv = _server()
     sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
@@ -1261,11 +1241,11 @@ def test_the_tools_number_the_turns_and_label_every_laps_corners():
 def test_a_lap_is_detected_against_the_bar_its_turn_numbers_came_from():
     """Corners and their numbers have to come from the same threshold.
 
-    lap_summary used to hold a single lap to its own peak lateral g, which
-    is a different bar from the one the session's numbering was built
-    against -- so a corner could exist on the lap and not in the map, or
-    the reverse, and the labelling would be matching apexes across two
-    different corner lists. The payload says which bar it used.
+    Holding a single lap to its own peak lateral g is a different bar from
+    the one the session's numbering was built against -- so a corner could
+    exist on the lap and not in the map, or the reverse, and the labeling
+    would be matching apexes across two different corner lists. The payload
+    says which bar it used.
     """
     srv = _server()
     sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
@@ -1309,8 +1289,8 @@ def test_a_session_with_nothing_to_number_says_which_kind_of_nothing():
 
     A session with no usable laps is answered by driving one. A session
     whose laps carry no cornering load at all is answered by looking at the
-    laps -- and reporting the first for the second sent a reader hunting a
-    bug in corner detection on a session that had never stored a flying lap.
+    laps -- and reporting the first as the second sends a reader hunting a
+    bug in corner detection on a session that never stored a flying lap.
     """
     srv = _server()
     empty = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")

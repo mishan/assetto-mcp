@@ -1,13 +1,9 @@
 """Keeping the database bounded without losing a lap.
 
-A lap costs ~0.4 MB and a driver accumulates them forever, so something has
-to give. What must not give is a lap's existence: the reference lap from
-three months ago is exactly the thing a change is measured against, and a
-season away from a circuit is precisely when the old run matters most.
-
-So nothing is deleted -- the oldest sessions' traces are decimated instead,
-and the lap keeps its time, its setup and its track-limits evidence at full
-fidelity. These tests are almost entirely about that distinction.
+A lap costs ~0.4 MB and a driver accumulates them forever, but an old lap
+is still what a change is measured against. So nothing is deleted: the
+oldest sessions' traces are decimated instead, and each lap keeps its time,
+its setup and its track-limits evidence at full fidelity.
 """
 
 import sqlite3
@@ -144,7 +140,7 @@ def test_a_thinned_lap_says_it_is_thinned():
 
 
 def test_thinning_keeps_an_even_spread_across_the_lap():
-    # Deleting by "every Nth millisecond" would bias towards wherever the
+    # Deleting by "every Nth millisecond" would bias toward wherever the
     # sampling jitter happened to land and leave holes in one part of a lap.
     with tempfile.TemporaryDirectory() as d:
         conn, path = _build(Path(d), sessions=2, laps=1)
@@ -248,12 +244,10 @@ class _FailAfter:
 def test_a_failed_thin_leaves_the_lap_whole():
     """All of it or none of it.
 
-    The deletes go out in chunks and the stride is stamped at the end, so a
-    failure between them left a lap decimated and still marked stride 1 --
-    and those partial deletes did not stay uncommitted, because the
-    collector's next heartbeat commits (renew_recorder uses `with conn`). A
-    lap that has quietly lost most of its trace while claiming full
-    resolution is then eligible for re-scoring, which reads the gaps as
+    The deletes go out in chunks and the stride is stamped at the end. A
+    failure between them must not leave a lap decimated but marked stride 1:
+    the collector's next heartbeat would commit the partial deletes
+    (renew_recorder uses `with conn`), and re-scoring would read the gaps as
     clean track.
     """
     with tempfile.TemporaryDirectory() as d:
@@ -288,8 +282,8 @@ def test_a_failed_thin_leaves_the_lap_whole():
 
 
 def test_the_stride_ladder_goes_deeper_than_eight():
-    # Stopping at 8 meant every further session added an eighth of its
-    # samples on top of an already over-budget file, forever.
+    # A ladder that stops at 8 lets every further session add an eighth of
+    # its samples to an already over-budget file, forever.
     assert retention.STRIDE_LADDER[-1] >= 32, retention.STRIDE_LADDER
     with tempfile.TemporaryDirectory() as d:
         conn, path = _build(Path(d), sessions=4, laps=3)
@@ -307,10 +301,8 @@ def test_the_stride_ladder_goes_deeper_than_eight():
 def test_the_documented_ladder_is_the_ladder():
     """storage_report's docstring is what an assistant reads to explain it.
 
-    It said "every 2nd, 4th or 8th sample" after the ladder was extended to
-    32, so the one description a user ever sees understated how coarse
-    their oldest sessions could get. Docstrings do not run, so this is the
-    only thing that can notice.
+    It must name the coarsest stride, or it understates how coarse the
+    oldest sessions can get.
     """
     # Read from source rather than importing the server, which opens a
     # database and starts a bridge as a side effect of import.
@@ -326,16 +318,18 @@ def test_the_documented_ladder_is_the_ladder():
                                               (11, 12, 13) else 0, "th")
     assert f"{coarsest}{ordinal}" in doc, \
         f"docstring never mentions every {coarsest}{ordinal} sample"
-    # And it does not still promise the old floor as the last step.
+    # Nor name 8 as the last step.
     assert "or 8th sample" not in doc, doc
     print(f"  docstring names every {coarsest}{ordinal} sample")
 
 
 
 def test_storage_report_says_where_the_drivers_notes_go():
-    """The race-engineer skill keeps notes about the driver in the data
-    directory, and finds it here. Notes kept in the repository ended up in
-    a public commit."""
+    """The race-engineer skill finds the data directory here.
+
+    It keeps notes about the driver there, not in the repository, where they
+    would be published.
+    """
     import ast
     src = (Path(__file__).resolve().parent.parent
            / "assetto_mcp" / "server.py").read_text()

@@ -1,10 +1,8 @@
 """In-game Lua app behavior, run against a stubbed CSP API.
 
-Syntax-checking the app caught nothing, because none of the bugs it has
-shipped were syntax errors. They were a scheduler whose comment disagreed
-with its code, a diagnostic that threw and disabled the thing it inspected,
-and an expression whose operator precedence made it a constant. All three
-would have been caught by running it.
+A syntax check only catches syntax errors. Running the app catches a
+scheduler that starves a tier, a diagnostic that throws and disables what it
+inspects, or an expression whose operator precedence makes it a constant.
 """
 
 import sys
@@ -15,16 +13,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lua_harness  # noqa: E402
 from support import run_module  # noqa: E402
 
-# Raises when AC_TESTS_STRICT is set, which is what CI and
-# run_tests.py --no-skip do: there, lupa missing is a broken install, and a
-# module that skips reports identically to one that passes. Everywhere else
-# this is just a bool and the tests skip.
+# Raises when AC_TESTS_STRICT is set, as CI and run_tests.py --no-skip do:
+# there, lupa missing is a broken install, and a skipped module would look
+# like a passing one. Everywhere else this is a bool and the tests skip.
 SKIP = lua_harness.require("lupa", "the Lua app tests")
 
-# Without this, pytest collects these tests, calls lua_harness.load(), and
-# reports ImportError as an ERROR rather than a skip -- so a machine simply
-# lacking lupa looks like a broken build. pytest itself is optional here
-# (every module runs standalone for the gaming PC), hence the guarded import.
+# Without this, pytest reports lupa's ImportError as an ERROR rather than a
+# skip. pytest itself is optional (every module runs standalone on the
+# gaming PC), hence the guarded import.
 try:
     import pytest
     pytestmark = pytest.mark.skipif(
@@ -43,13 +39,11 @@ def _posted_sources(rec):
 
 
 def test_an_opponent_carries_its_name_car_clock_position_and_lap_time():
-    """Every one of these was missing from every session ever recorded.
+    """CSP's car state has no car id or lap times, so the app derives them.
 
-    The app read carId, bestLapTimeMs and previousLapTimeMs off the car
-    state -- fields CSP does not have -- and this harness supplied them, so
-    the tests passed and the database filled with nameless, timeless
-    opponents. The car model now comes from ac.getCarID, and the lap time
-    from the app's own timing of the car across the line.
+    The car model comes from ac.getCarID, and the lap time from the app's
+    own timing of the car across the line. The harness must not supply the
+    fields CSP lacks, or this would pass against an app that reads them.
     """
     rec = lua_harness.Recorder()
     rec.sim_fields = {"raceSessionType": 1, "carsCount": 2}
@@ -108,9 +102,9 @@ def test_a_batch_carries_the_session_it_was_sampled_in():
     """Dropping the queue on a session change is not enough by itself.
 
     The app learns of a change a poll late, and a single-car session returns
-    from sampleRivals before the guard that drops the queue ever runs. The
-    stamp is then the only thing telling the server these samples are not
-    the session it is recording.
+    from sampleRivals before the guard that drops the queue runs. The stamp
+    is then the only thing telling the server these samples belong to an
+    earlier session.
     """
     rec = lua_harness.Recorder()
     rec.sim_fields = {"raceSessionType": 1, "carsCount": 2}
@@ -164,8 +158,8 @@ def test_what_the_server_stored_is_what_counts_as_sent():
 def test_a_batch_the_server_refused_is_dropped_not_sent():
     """ok=false is the server saying it had nowhere to file the batch.
 
-    That is what a stale session now gets, and counting it as sent would
-    show a healthy status line over samples nothing kept.
+    A stale session gets this, and counting it as sent would show a healthy
+    status line over samples nothing kept.
     """
     rec = lua_harness.Recorder()
     lua, api, rec = lua_harness.load(rec)
@@ -241,20 +235,18 @@ def test_the_runtime_is_the_lua_the_game_runs():
     """CSP runs LuaJIT 2.1, which is Lua 5.1 -- not whatever lupa ships newest.
 
     lupa bundles 5.1 through 5.5 plus LuaJIT in one wheel and its default
-    LuaRuntime picks the newest. Testing on 5.5 is wrong in both directions:
-    `7 // 2` and `3 & 1` run there and are syntax errors in the game, and
-    string.format('%d', 1.5) raises there and works in the game. Without
-    this test a wheel that drops LuaJIT would quietly move the whole Lua
-    suite onto an interpreter the app never meets.
+    LuaRuntime picks the newest. 5.5 differs in both directions: `7 // 2`
+    and `3 & 1` run there and are syntax errors in the game, and
+    string.format('%d', 1.5) raises there and works in the game. A wheel
+    that drops LuaJIT must fail this rather than quietly move the suite.
     """
     info = lua_harness.runtime_info()
     assert info["module"] == lua_harness.LUAJIT_MODULE, info
     assert info["lua_version"] == "Lua 5.1", info
     assert info["jit"] and info["jit"].startswith("LuaJIT 2.1"), info
 
-    # The load-bearing consequence, asserted rather than assumed: 5.1 has no
-    # integer division operator, so a 5.x-ism in the app is a syntax error
-    # here exactly as it would be in the game.
+    # 5.1 has no integer division operator, so a 5.x-ism in the app is a
+    # syntax error here exactly as it would be in the game.
     lua = lua_harness.new_runtime()
     try:
         lua.eval("7 // 2")
@@ -273,13 +265,11 @@ def test_the_app_loads_under_a_stubbed_csp():
 
 
 def test_both_tiers_get_posted_not_just_the_worker():
-    """Regression: strict priority starved the app tier completely.
+    """Strict priority for the worker would starve the app tier.
 
     The worker fills at 333Hz and drains once a second, so its buffer is
-    never empty. Under `if worker then ... elseif app then ...` the app
-    branch never ran, and ride height and wheel loads -- which only the app
-    tier produces -- silently stopped arriving while the status line
-    reported a healthy 333Hz feed.
+    never empty. Ride height and wheel loads come only from the app tier,
+    and would stop arriving while the status line showed a healthy feed.
     """
     lua, api, rec = lua_harness.load()
     api.setRunning(True)
@@ -374,8 +364,8 @@ def test_a_failed_worker_start_keeps_the_reason():
 def test_the_environment_probe_cannot_break_the_worker():
     """A diagnostic that disables what it inspects is worse than none.
 
-    ac.getSim() raises on unknown fields, and an unguarded read of one took
-    down the whole probe -- the worker was never even attempted.
+    ac.getSim() raises on unknown fields, so an unguarded read of one would
+    abort the probe before the worker is attempted.
     """
     rec = lua_harness.Recorder()
     rec.sim_fields = {}
@@ -401,15 +391,12 @@ def test_clamp_and_num_reject_nan_and_out_of_range():
 
 
 def test_the_overlay_calls_out_laps_driven_but_not_stored():
-    """The failure the driver actually hit, seen from the car.
+    """The overlay must not just trust /status.
 
-    The overlay rendered whatever /status said, which made it exactly as
-    trustworthy as the server. When the server was wrong -- an empty session
-    asserting itself as recording -- the driver had a green light through
-    seven laps that were never stored, and no way to check from the car.
-
-    car.lapCount belongs to the game, not to us. Laps finishing while none
-    are stored is a contradiction the app can see on its own.
+    A server wrongly reporting an empty session as recording would show a
+    green light over laps that were never stored. car.lapCount belongs to
+    the game, so laps finishing while none are stored is a contradiction
+    the app can see on its own.
     """
     lua, api, rec = lua_harness.load()
     api.setConnected(True)
@@ -434,16 +421,12 @@ def test_the_overlay_calls_out_laps_driven_but_not_stored():
 
 
 def test_a_recorder_that_started_late_does_not_cry_wolf():
-    """The false alarm this warning produced the first time it mattered.
+    """Laps driven before recording started are the baseline, not a loss.
 
-    The driver restarted the MCP server twenty-six laps into a game session.
-    The collector opened cleanly and was waiting for lap twenty-seven. The
-    overlay compared the game's twenty-six against the recorder's zero and
-    put NOT STORING LAPS over a collector that was working perfectly.
-
-    A warning that fires when nothing is wrong is worse than no warning: it
-    is the one the driver learns to ignore, and this one exists because
-    seven laps at Suzuka were lost while the light was green.
+    A collector started twenty-six laps into a game session is waiting for
+    lap twenty-seven; comparing the game's 26 with its 0 would warn over a
+    collector that is working. A warning that fires when nothing is wrong
+    is the one the driver learns to ignore.
     """
     lua, api, rec = lua_harness.load()
     api.setConnected(True)
@@ -500,8 +483,8 @@ def test_a_driver_who_has_not_finished_a_lap_is_not_a_failure():
 
 
 def test_an_offline_bridge_is_reported_as_offline_not_as_data_loss():
-    """Two different problems, and conflating them sends you after the
-    wrong one: the bridge being down is not the collector being stopped."""
+    """The bridge being down is not the collector being stopped, and
+    conflating them sends you after the wrong problem."""
     lua, api, rec = lua_harness.load()
     api.setConnected(False)
     api.setLapCount(7)
@@ -510,17 +493,12 @@ def test_an_offline_bridge_is_reported_as_offline_not_as_data_loss():
 
 
 def test_a_server_restart_does_not_produce_a_false_alarm():
-    """The same false alarm as above, reached through the common route.
+    """Losing the connection clears the baseline too.
 
-    Clearing the baseline when status.running goes false does not cover a
-    server RESTART, because that is not what a restart looks like from the
-    car: the bridge simply stops answering, so recordingHealth returns
-    'offline' before it reaches the branch that clears anything. The stale
-    baseline then met a fresh recording with status.laps back at zero.
-
-    A restart is the event the recorder heartbeat exists for and the thing
-    that happens most, so the alarm was firing precisely when the driver
-    had been told to expect one.
+    From the car a server restart is not status.running going false: the
+    bridge stops answering, so recordingHealth returns 'offline' before the
+    branch that clears the baseline. A stale baseline would then meet a
+    fresh recording with status.laps back at zero.
     """
     lua, api, rec = lua_harness.load()
     api.setConnected(True)
@@ -580,8 +558,8 @@ def test_a_new_session_re_takes_the_baseline():
 
 def test_a_stored_count_going_backwards_re_takes_the_baseline():
     """The same event with the session id unchanged -- a database that was
-    moved, or a count that reset for any reason we did not predict. A
-    number that can only go up going down means the window changed."""
+    moved, or a count that reset for any other reason. A number that can
+    only go up going down means the window changed."""
     lua, api, rec = lua_harness.load()
     api.setConnected(True)
     api.setRunning(True)
@@ -599,18 +577,12 @@ def test_a_stored_count_going_backwards_re_takes_the_baseline():
 
 
 def test_the_test_helper_resets_every_piece_of_the_baseline():
-    """resetBaseline has to clear the whole baseline, not a third of it.
+    """resetBaseline has to clear all three parts of the baseline.
 
-    Asserted on the state directly rather than through behaviour, because
-    behaviour cannot currently tell the difference: baselineSession and
-    baselineLaps are reassigned unconditionally on the next call, so a
-    helper clearing only recordingBaseline produces the same answers today.
-
-    It is still worth fixing, and worth a test. The helper names a thing --
-    "the baseline" -- that now has three parts, and one that clears one part
-    is a trap for the next person: any new check that reads the stale two
-    before they are rewritten would fail in tests only, and look like the
-    code under test rather than the harness.
+    Asserted on the state directly, because behavior cannot tell the
+    difference: baselineSession and baselineLaps are reassigned on the
+    next call. A check that read them before that would otherwise fail in
+    tests only, and look like a bug in the app rather than the harness.
     """
     lua, api, rec = lua_harness.load()
     api.setConnected(True)
@@ -636,14 +608,10 @@ def test_the_test_helper_resets_every_piece_of_the_baseline():
 
 
 def test_the_lap_count_helper_survives_a_car_that_is_not_there_yet():
-    """ac.getCar(0) can return nil early in load, and recordingHealth already
-    reads `car and car.lapCount` for that reason. The test helper indexed it
-    unguarded, so a harness that loaded the app before the stub car existed
-    would fail inside setLapCount -- on the harness, not on the behaviour
-    under test, and with a Lua error rather than an assertion.
-
-    It reports whether it took, so a test cannot set nothing and then assert
-    on it.
+    """ac.getCar(0) can return nil early in load, as recordingHealth's
+    `car and car.lapCount` guard allows for. setLapCount must not raise a
+    Lua error there, and it reports whether it took, so a test cannot set
+    nothing and then assert on it.
     """
     lua, api, rec = lua_harness.load()
     api.setConnected(True)
@@ -661,18 +629,16 @@ def test_the_lap_count_helper_survives_a_car_that_is_not_there_yet():
     api2.setRunning(True)
 
     assert api2.setLapCount(9) is False, "helper claimed a nil car took it"
-    # And the app itself answers rather than raising, which is what the
-    # `car and car.lapCount` guard in recordingHealth is already for.
+    # And the app itself answers rather than raising.
     assert api2.recordingHealth()[0] is not None
     print(f"  car present -> {with_car!r}; loaded without a car -> helper "
           f"returns False and health still answers")
 
 if __name__ == "__main__":
     if SKIP:
-        # Not 0: exiting 0 made `run_tests.py --isolate` report this module
-        # as passing when it had run nothing at all, which is how a build
-        # with no lupa in it went green. SKIP_EXIT says "ran nothing",
-        # and under AC_TESTS_STRICT the require() above has already raised.
+        # Not 0, or `run_tests.py --isolate` would report a module that ran
+        # nothing as passing. SKIP_EXIT says "ran nothing"; under
+        # AC_TESTS_STRICT the require() above has already raised.
         print("skipped - pip install lupa to run the Lua app tests")
         sys.exit(lua_harness.SKIP_EXIT)
     sys.exit(1 if run_module(globals()) else 0)

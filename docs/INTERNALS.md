@@ -6,6 +6,7 @@ Read this when a number surprises you.
 - [Recording](#recording)
 - [Storage and retention](#storage-and-retention)
 - [Corner detection](#corner-detection)
+- [Lap-time consistency](#lap-time-consistency)
 - [Data quality flags](#data-quality-flags)
 - [Driving line](#driving-line)
 - [Suspension](#suspension)
@@ -18,8 +19,7 @@ Read this when a number surprises you.
 
 The collector starts with the server and waits for Assetto Corsa rather than
 failing when it isn't there. You do not have to remember to start it, and a
-server restart mid-session doesn't silently end recording — which is how
-sixteen laps went missing across three evenings.
+server restart mid-session doesn't silently end recording.
 
 Clients often run one copy of this server per chat surface — Claude Desktop
 does — so several are usually alive at once. Only one records: they contend for
@@ -45,9 +45,9 @@ Bump `TARGET_HZ` in `collector.py` if you want finer traces.
 ### What a lap records
 
 **Every lap is stored.** Out-laps, pit laps, laps that ran wide, laps
-abandoned in the barrier — all of them, with their telemetry. The single
-`valid` boolean that used to gate all this was wrong in both directions and
-took the lap out of every analysis without saying so.
+abandoned in the barrier — all of them, with their telemetry. A single
+`valid` flag would be wrong in both directions and would take the lap out of
+every analysis without saying so.
 
 Instead a lap records facts, and the verdicts are derived:
 
@@ -62,7 +62,7 @@ Instead a lap records facts, and the verdicts are derived:
 | `invalid_source` | `inferred`, or `game` if it came from the game itself |
 | `sample_stride` | 1 normally; higher if the trace has been thinned |
 
-Two questions are kept apart, because conflating them is what lost data:
+Two questions are kept apart, because conflating them loses data:
 
 - **Did it run wide?** `invalid`, from the evidence. A lap that ran wide is
   still a lap — the corner speeds and brake points happened — so it is
@@ -86,22 +86,20 @@ changed threshold does not reach those laps, and `rescore_track_limits`
 reports how many it skipped for that reason rather than describing the pass
 as covering everything.
 
-The threshold was effectively 3 wheels, which is what stored a clean 2:06.769
-at Sebring as invalid — that circuit's flat kerbs put three wheels over the
-line routinely and the game counted the lap.
+The threshold is four wheels, not three: on circuits with flat kerbs, such
+as Sebring, three wheels over the line is routine on laps the game counts.
 
 **Because the evidence is stored, the verdict is re-derivable.** Change
 `TRACK_LIMITS_WHEELS` and run `rescore_track_limits`, and every lap still
-holding a full-resolution trace is re-scored from its own samples. That's the point of storing
-evidence rather than a decision: the v11 migration did this to the existing
-database and gave back laps that had been wrongly marked, without re-driving
-anything.
+holding a full-resolution trace is re-scored from its own samples, without
+re-driving anything. That's the point of storing evidence rather than a
+decision.
 
 **It is still inference, not the game's verdict.** Vanilla AC doesn't expose
 lap validity in shared memory. CSP does — `ac.onLapCompleted` hands a
 physics worker the game's own `valid` and `cuts` — and that's reachable from
 the worker this project already runs, but it isn't wired up yet and it would
-be single-player only. See [BACKLOG.md](../BACKLOG.md) item 3.
+be single-player only. See [BACKLOG.md](../BACKLOG.md) item 2.
 
 ---
 
@@ -168,12 +166,11 @@ The **brake point** is where braking for the corner began, found by walking
 back from the apex to the previous corner's exit. Every braking run on that
 stretch is weighed by the speed it took off, and the brake point is the start
 of the earliest one that took at least a quarter of what the heaviest did.
-Taking the last run instead made any touch of the pedal before the apex the
-brake point — at Suzuka's Spoon, 210 m after the real one on 16 laps of 18.
-The walk never crosses the start/finish line.
+Taking the last run instead would make any touch of the pedal before the apex
+the brake point. The walk never crosses the start/finish line.
 
 The sign says which corners turn the same way — it is deliberately *not*
-labelled left or right, because AC does not document which sign is which, and a
+labeled left or right, because AC does not document which sign is which, and a
 consistent sign is more useful than a label that is right half the time.
 
 **`corner_detection`** appears alongside every corner list and says which
@@ -204,8 +201,7 @@ track — at least half the shorter corner's length — on at least two laps
 on each side. The second rule matters for long corners. On a long corner the
 slowest point wanders from lap to lap, and where lateral g dips under the
 threshold mid-corner the detector can still report two pieces — the joining
-above only covers a dip that stays over 70% of the bar. Sebring's Sunset
-Bend used to be numbered four times because of this. If most laps drove a piece
+above only covers a dip that stays over 70% of the bar. If most laps drove a piece
 of road as one corner, it gets one number, and a lap that was split keeps
 its slowest piece. The other piece still appears on that lap with
 `turn: null`. If most laps drove it as two corners, it stays two.
@@ -230,13 +226,12 @@ Three things the numbering does not claim.
   turn labels says which laps produced the numbering.
 - **A corner only one lap drove takes no number.** It comes back under
   `unnumbered` instead. A spin violent enough for the detector to carve out as
-  its own corner — which is how one at Sebring was eventually spotted — would
-  otherwise renumber every turn after it on the strength of one lap. Corners
+  its own corner would otherwise renumber every turn after it on the strength of one lap. Corners
   a lap drove that the numbering has no entry for report `turn: null` rather
   than dropping the key.
 
 A corner the start/finish line runs through is two pieces of road here, because
-positions don't wrap. `compare_runs` has always matched corners the same way.
+positions don't wrap. `compare_runs` matches corners the same way.
 
 ### Entry phase
 
@@ -274,10 +269,10 @@ variance-ratio F test, which assumes normal lap times. A run where a spin now
 and then costs five seconds is nothing like normal. Simulated with a 0.3 s
 spread and a 15% chance of a 3–8 s spin on any lap, the same on both sides, the
 F test called the spread changed in 47% of six-lap runs at 95% — and 44% even at
-the corrected level. Relabelling the laps assumes nothing about their shape and
+the corrected level. Relabeling the laps assumes nothing about their shape and
 held 0.3%.
 
-The cost is laps. The smallest p a relabelling can produce is fixed by how many
+The cost is laps. The smallest p a relabeling can produce is fixed by how many
 ways there are to relabel: three laps a side can never get below p = 0.1. A test
 that can't clear its threshold is left out of the Holm family altogether —
 it can't reject falsely, and counting it would only raise every other metric's
@@ -285,9 +280,8 @@ bar — and the payload says `too few laps to test` and how many laps a side it
 would take (six, at the usual family size). Whether it's in is decided by the
 lap counts alone, never by the result.
 
-That has an uncomfortable consequence for the case that asked for this.
-Sebring v9 — six laps inside a second after a run where two of six spun — comes
-out at p = 0.41. If one lap in three spins by chance, six laps without one
+That has an uncomfortable consequence. Six laps inside a second, after a run
+where two of six spun, come out at p = 0.41. If one lap in three spins by chance, six laps without one
 happens 9% of the time, so six laps a side can't tell "the setup fixed it" from
 "not this time". The payload says "within noise", and that is the honest
 answer.
@@ -331,7 +325,7 @@ averaging it away.
   wide.
 - **`accel_samples_dropped`** — the same idea for the acceleration channels.
   AC sometimes emits a 10 g spike from a reset or a kerb strike, and one of
-  those used to inflate `peak_lat_g` for the lap *and* the noise estimate for
+  those would inflate `peak_lat_g` for the lap *and* the noise estimate for
   every comparison the lap took part in. Spikes are dropped rather than
   clamped — reporting the ceiling would be a claim the car pulled it — and the
   count is stated next to `samples` so you can see how much of the lap it was.
@@ -350,9 +344,9 @@ the car was in the world, how fast, the mean front ride height, and how much
 that ride height moved within the slice — the last of which is a bump map,
 since smooth tarmac holds the car at a steady height and broken tarmac doesn't.
 
-Track position has always said where the car was *along* the lap. This says
-where it was *across* it, which is the whole of what a line is, so "I took a
-wider entry there" is finally something the tooling can check. Pass a second
+Track position says where the car was *along* the lap. This says where it
+was *across* it, which is the whole of what a line is, so "I took a wider
+entry there" is something the tooling can check. Pass a second
 lap for `separation_m`: how far apart the two cars were at the same point of
 the circuit.
 
@@ -368,14 +362,14 @@ session, or the laps you name, in one HTML file written to `exports/` in the
 data directory. `scripts/driving_line_map.py` writes the same file from the
 command line, opening the database read-only.
 
-- **Laps** colours by lap order and picks out the fastest lap that counted —
+- **Laps** colors by lap order and picks out the fastest lap that counted —
   a real lap time (`db.lap_usability`) inside track limits. Out-laps, pit
   laps and abandoned laps are listed but hidden until ticked.
-- **Setup** colours by setup name, so an A/B split shows at a glance. Only
-  the first three setups driven get a colour of their own: with every line
+- **Setup** colors by setup name, so an A/B split shows at a glance. Only
+  the first three setups driven get a color of their own: with every line
   able to cross every other, a fourth hue can't be told apart from its
-  neighbours, so the rest share one neutral and the table names each lap's.
-- **Speed** and **Pedals** colour one selected lap and grey the rest.
+  neighbors, so the rest share one neutral and the table names each lap's.
+- **Speed** and **Pedals** color one selected lap and gray the rest.
 - **Turn numbers and brake points** come from `turns.py`, the numbering
   `lap_summary` uses. Laps from several sessions are drawn without them,
   because each session numbers its own.
@@ -384,15 +378,15 @@ command line, opening the database read-only.
   orange ones. Over them go the corners the detector found on the selected
   lap, with a `?` where no turn matched. The table's Turns column counts
   how many turns each lap matched, plus any corners no turn claims.
-- **Balance** colours the selected lap by front slip minus rear slip — the
+- **Balance** colors the selected lap by front slip minus rear slip — the
   corner metric's quantity and sign, point by point — but only while the
   car is cornering, meaning lateral g is over the corner threshold. On a
   straight both axles idle at the same slip, and under straight-line
   braking the fronts slip more whatever the balance. Every lap shares one
-  colour scale. Zero means equal slip, which is not necessarily neutral for
+  color scale. Zero means equal slip, which is not necessarily neutral for
   a given car: on the NSX the median while cornering sits near +0.1. Read
   it by comparing laps and corners with each other.
-- **Gears** colours the lap by gear and marks every shift. A shift is read
+- **Gears** colors the lap by gear and marks every shift. A shift is read
   across the neutral AC reports mid-change, and neutral held longer than a
   second counts as a stop, not a shift. The legend's per-gear table has
   upshift revs (median and 10th–90th percentile) and the revs each
@@ -400,18 +394,18 @@ command line, opening the database read-only.
   at full throttle. No redline is recorded, so it is not necessarily the
   limiter, and stretches held near it are marked. Revs come from the
   samples either side of a change, 40 ms apart.
-- **Surface** is the bump map. Each suspension channel has a centred
+- **Surface** is the bump map. Each suspension channel has a centered
   quarter-second average taken off it. What is left is the road, not the
   weight transfer, and it is reported as mm RMS per ~10 m stretch, the
   median over the laps that counted. It uses the in-game app's suspension
   travel where that was captured, and 25 Hz ride height where it was not.
   Pooling removes a kerb struck once but not a kerb taken every lap, which
-  reads like a bump. The five roughest stretches are labelled.
+  reads like a bump. The five roughest stretches are labeled.
 
 The charts under the map follow the selected lap, and any of them can be
 ticked on: lateral g, speed, revs and gear, balance, front and rear tyre
 core temperatures, surface, ride height and elevation. Tyres are two to a
-chart, left and right in the same two colours front and rear, because
+chart, left and right in the same two colors front and rear, because
 four lines in one chart can't be told apart.
 
 Marks can be toggled on top of any view:
@@ -427,12 +421,12 @@ Marks can be toggled on top of any view:
 
 The **Rival** view compares the selected lap with an opponent's lap from
 the same session, picked in the sidebar; the default is the quickest
-opponent's quickest lap. Your lap is coloured by who was quicker at each
+opponent's quickest lap. Your lap is colored by who was quicker at each
 point, both cars' braking points are ticks on your line, and where the
 opponent's world position was recorded their line is drawn dashed. Charts
 for speed, brake, throttle and the time gap can be ticked on, and the
 legend has a turn-by-turn table: how much later the opponent braked and
-got back on the throttle, in metres, and both cars' minimum speeds.
+got back on the throttle, in meters, and both cars' minimum speeds.
 
 Opponents are sampled at 10 Hz and you at 25, at different moments, so
 both are compared on one grid of 500 track positions, with gaps of up to two
@@ -557,23 +551,33 @@ assetto_mcp/
   turns.py      a session's turn numbering, shared by tools and scripts
   line_map.py   driving-line map as one HTML file (+ line_map.html)
   setups.py     setup INI read/write, range clamping
+  circuit.py    corner names from the track's sections.ini
+  places.py     positions in meters and turns, for drivers
+  retention.py  database size budget, trace thinning
   bridge.py     localhost HTTP bridge for the in-game app
   config.py     data dir + environment, including pre-rename fallbacks
   server.py     MCP tools
+  supervisor.py keeps the client connection open across restarts
+  update.py     update check and fast-forward from GitHub
   suspension.py damper histograms, ride height, roll balance
 lua_app/
   assetto_mcp/  CSP Lua in-game app (copy to apps/lua/)
     assetto_mcp.lua        the app itself, render thread
     suspension_worker.lua  CSP physics worker, 333Hz damper sampling
-install-windows.ps1  one-shot Windows installer
-install-windows.bat  double-clickable wrapper for the above
-diagnose.ps1 / .bat  what-is-broken report
-run_tests.py         run and summarise the suite, no dependencies
+install-windows.bat  double-clickable installer
+diagnose.bat         double-clickable what-is-broken report
+windows/
+  install-windows.ps1         the installer the .bat runs
+  install-claude-desktop.ps1  Claude Desktop config, dot-sourced by it
+  diagnose.ps1                the report the .bat runs
+run_tests.py         run and summarize the suite, no pytest needed
 tests/               behavior-named test modules + shared harness
 scripts/
   relabel_laps.py    fix laps stamped with the wrong setup name
   driving_line_map.py  write a session's line map without a server
-BACKLOG.md           open work first, what was addressed last
+  watch_laps.py      print a line as each lap is stored
+  say.py             read a message aloud to the driver
+BACKLOG.md           open work
 ```
 
 ### Setup attribution, in three pieces
@@ -608,10 +612,10 @@ measured setups on each side, the entries that actually differ, and a
 warning when both sides were on identical values. Laps nothing measured
 fall back to the claim alone.
 
-The middle one used to be part of the first, filling every blank lap in the
-session automatically. That sounds helpful and was the bug: the baseline run is
-normally unlabelled too, so "I've loaded claude_v1" relabelled the baseline as
-claude_v1 and destroyed the comparison. The boundary between two runs is a
+`label_laps` is separate from `set_session_setup` because filling every
+blank lap in the session automatically would mislabel the baseline: it is
+normally unlabeled too, so "I've loaded claude_v1" would relabel it as
+claude_v1 and destroy the comparison. The boundary between two runs is a
 garage stop, which the telemetry marks only when the values changed and the
 app was running — so the ids still come from the person who was there, and
 the measurement checks them.

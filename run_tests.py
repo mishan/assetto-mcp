@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the whole suite and summarise it. No dependencies, no shell loop.
+"""Run the whole suite and summarize it. No dependencies, no shell loop.
 
     python run_tests.py                 everything, one line per module
     python run_tests.py -v              one line per test
@@ -11,16 +11,13 @@
     python run_tests.py --min-tests N   fail unless at least N tests ran
 
 pytest works too and gives nicer diffs -- `pytest tests/ -q`. This exists so
-the suite is runnable on the gaming PC, which has Python because the server
-needs it but has no reason to have pytest, and so CI can check the
-standalone path without a `for` loop in YAML.
+the suite runs on the gaming PC, which has Python for the server but no
+pytest, and so CI can check the standalone path without a `for` loop in YAML.
 
 The gaming PC also has no lupa and no luaparser, so tests needing them skip
-rather than fail -- that is the whole point of the no-dependency path. CI
-declares those in the [test] extra, so there a skip means the install did
-not do what it says: --no-skip turns every skip into a failure and sets
-AC_TESTS_STRICT for the modules themselves, so a missing optional
-dependency cannot produce a green build.
+rather than fail. CI installs both through the [test] extra, so there a skip
+means a broken install: --no-skip turns every skip into a failure and sets
+AC_TESTS_STRICT for the modules themselves.
 
 Exit code is 0 only if everything passed. Skips are not failures unless
 --no-skip says so.
@@ -52,8 +49,7 @@ STRICT_ENV = "AC_TESTS_STRICT"
 # the bare standalone runner in tests/support.py does not.
 RUNNER_ENV = "AC_TESTS_RUNNER"
 # Exit code a module uses when it ran nothing because an optional
-# dependency is absent -- see tests/lua_harness.SKIP_EXIT, which is where
-# the same number is written for the modules' side of the deal.
+# dependency is absent. Must match tests/lua_harness.SKIP_EXIT.
 SKIP_EXIT = 77
 
 # ANSI only when we're attached to something that can show it.
@@ -141,11 +137,9 @@ def tests_in(module) -> list[tuple[str, callable]]:
 # --- running ------------------------------------------------------------
 
 
-# The [test] extra in pyproject, minus pytest, which this runner exists to
-# do without. These are the only imports whose absence is a skip: an
-# ImportError for anything else -- a renamed module, a typo in a test -- is
-# a failure, and swallowing those as skips would be the same bug this file
-# was fixed for, one level down.
+# The [test] extra in pyproject, minus pytest. These are the only imports
+# whose absence is a skip: an ImportError for anything else -- a renamed
+# module, a typo in a test -- is a failure.
 OPTIONAL_DEPS = {"lupa", "luaparser"}
 
 
@@ -163,10 +157,8 @@ def run_module(path: Path, pattern: str | None, verbose: bool,
         if not _optional_import_error(e):
             run.load_error = traceback.format_exc()
             return run
-        # An optional test dependency is absent -- lupa, luaparser. On the
-        # gaming PC that is expected and the module is skipped, not broken.
-        # Under --no-skip the module has already raised something else,
-        # because AC_TESTS_STRICT is set by then.
+        # Expected on the gaming PC. Under --no-skip the module raises
+        # something else instead, because AC_TESTS_STRICT is set by then.
         run.skip_reason = f"{type(e).__name__}: {e}"
         return run
     except Exception:
@@ -244,20 +236,17 @@ def run_isolated(paths: list[Path], pattern: str | None,
                  no_skip: bool = False) -> int:
     """Each module in its own interpreter, via its __main__ block.
 
-    This is what the shell loop used to do. Keeping it as a mode rather than
-    the default means the standalone path stays exercised -- it is the one
-    the gaming PC uses -- without anyone having to remember to check it.
+    This keeps the standalone path the gaming PC uses exercised in CI.
 
-    A module whose optional dependency is missing prints "skipped" and exits
-    0, which is right on that machine and useless in CI -- so --no-skip
-    hands the children AC_TESTS_STRICT and they exit nonzero instead.
+    A module whose optional dependency is missing exits with SKIP_EXIT,
+    which passes; --no-skip hands the children AC_TESTS_STRICT so they fail
+    instead.
     """
     env = dict(os.environ)
     if no_skip:
         env[STRICT_ENV] = "1"
-    # These children are the bare standalone path, whose runner
-    # (tests/support.py) has no notion of a skip. Telling it otherwise would
-    # turn a skipped test into an error.
+    # The children use the bare runner in tests/support.py, which has no
+    # notion of a skip; advertising one would turn a skip into an error.
     env.pop(RUNNER_ENV, None)
     width = max((len(p.stem) for p in paths), default=10) + 2
     failures = []
@@ -409,8 +398,7 @@ def main() -> int:
     started = time.perf_counter()
     for path in paths:
         run = run_module(path, args.pattern, args.verbose, args.failfast)
-        # A filter usually selects from one or two modules; printing a
-        # header for the eight it skipped buries the results.
+        # Omit modules a -k filter selected nothing from.
         if not run.results and not run.load_error and not run.skip_reason:
             continue
         if args.verbose:
@@ -425,11 +413,11 @@ def main() -> int:
         print(YELLOW(f"no tests matched {args.pattern!r}"))
         return 1
 
-    return summarise(runs, total, args.lua, args.verbose,
+    return summarize(runs, total, args.lua, args.verbose,
                      args.no_skip, args.min_tests)
 
 
-def summarise(runs: list[ModuleRun], total: float, lua: bool,
+def summarize(runs: list[ModuleRun], total: float, lua: bool,
               verbose: bool, no_skip: bool = False,
               min_tests: int = 0) -> int:
     if not verbose:
@@ -483,8 +471,8 @@ def summarise(runs: list[ModuleRun], total: float, lua: bool,
             print(r.error)
             print()
 
-    # A skip is a normal outcome on the gaming PC and a lie in CI, so it is
-    # counted separately and only fails the run when the caller said so.
+    # A skip is normal on the gaming PC and a broken install in CI, so it
+    # fails the run only under --no-skip.
     skips = skipped_tests + len(skipped_modules) + (1 if lua_skipped else 0)
     if no_skip and skips:
         for run in skipped_modules:

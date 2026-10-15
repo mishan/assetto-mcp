@@ -1,11 +1,9 @@
 """Which setup each lap was driven on.
 
 AC's shared memory doesn't expose the loaded setup, so it has to be stated.
-The subtlety is that the tuning loop changes setup *within* a session --
-pit, load claude_v2, keep driving -- so attribution has to live on the lap.
-Storing it on the session meant recording the new setup relabelled the
-baseline laps as the new setup, destroying the A/B comparison the field
-exists to enable.
+The tuning loop changes setup *within* a session -- pit, load claude_v2,
+keep driving -- so attribution lives on the lap, and naming a new setup must
+never relabel the baseline laps it is being compared against.
 """
 
 import atexit
@@ -22,11 +20,9 @@ from support import make_session, run_module  # noqa: E402
 
 from assetto_mcp import db  # noqa: E402
 
-# The trap these tests exist for lived in the *tool*, not in db.py: the SQL
-# did exactly what it said, and the tool called it on every blank lap in the
-# session. So this reaches through the server module, imported lazily against
-# a scratch data directory and a bridge on port 0 so that importing this file
-# starts nothing on its own.
+# The tools decide which laps the SQL touches, so these tests go through the
+# server module, imported lazily against a scratch data directory and a
+# bridge on port 0 so that importing this file starts nothing.
 
 _SERVER = None
 
@@ -121,11 +117,9 @@ def test_an_explicit_setup_name_overrides_the_session_default():
 def test_blank_laps_are_filled_in_but_named_ones_are_not():
     """A blank is a gap; a name is a competing claim.
 
-    Telling the tool which setup you were on *after* a run is the normal
-    case -- five laps of claude_arb_v1 were stored unattributed for exactly
-    that reason. Filling those completes a comparison. Overwriting a lap
-    that already names a different setup would destroy one, which is why
-    the two cases are not treated alike.
+    Naming the setup *after* a run is the normal case, and filling those
+    laps completes a comparison. Overwriting a lap that already names a
+    different setup would destroy one.
     """
     with tempfile.TemporaryDirectory() as d:
         conn = db.connect(Path(d) / "t.db")
@@ -166,12 +160,10 @@ def test_filling_blanks_twice_is_idempotent():
 
 
 def test_naming_a_new_setup_does_not_relabel_the_baseline():
-    """The Suzuka/Sebring bug, in the shape it actually happened.
+    """Drive an unnamed baseline, pit, load claude_v1, say so.
 
-    Drive a baseline nobody named, pit, load claude_v1, say so. The old tool
-    filled every blank lap in the session, so the baseline became claude_v1
-    and the A/B compared a run against itself. It cost roughly a dozen laps
-    across two circuits before anyone noticed.
+    The baseline laps stay blank; labeling them claude_v1 would make the
+    A/B compare a run against itself.
     """
     srv = _server()
     sid = make_session(srv._conn)
@@ -183,8 +175,8 @@ def test_naming_a_new_setup_does_not_relabel_the_baseline():
 
     labels = _labels(srv, sid)
     assert all(labels[i] == "" for i in baseline), \
-        f"baseline was relabelled: {labels}"
-    # And it has to say the laps are there, or "left alone" becomes "lost".
+        f"baseline was relabeled: {labels}"
+    # It must name the blank laps, or "left alone" reads as "lost".
     assert sorted(out["unlabelled_laps"]) == sorted(baseline), out
     assert "label_laps" in out["note"], out
 
@@ -208,13 +200,13 @@ def test_label_laps_fills_only_the_ids_it_is_given():
     assert labels[ids[0]] == "" and labels[ids[1]] == "", labels
     assert labels[ids[2]] == "claude_press_v1", labels
     assert labels[ids[3]] == "claude_press_v1", labels
-    print("  labelled exactly the two ids asked for")
+    print("  labeled exactly the two ids asked for")
 
 
 def test_label_laps_will_not_overwrite_a_lap_that_already_has_a_name():
     # A late correction applied to the wrong half of an A/B destroys the
-    # comparison it was meant to complete. That is what relabel_laps.py is
-    # for, and why it is a script someone has to type.
+    # comparison. Overwriting is relabel_laps.py's job, a script someone has
+    # to type.
     srv = _server()
     sid = make_session(srv._conn)
     db.set_session_setup(srv._conn, sid, "baseline")
@@ -234,7 +226,7 @@ def test_label_laps_will_not_overwrite_a_lap_that_already_has_a_name():
 
 
 def test_label_laps_reports_ids_that_are_not_in_this_session():
-    # Silently labelling nothing looks identical to succeeding.
+    # Silently labeling nothing looks identical to succeeding.
     srv = _server()
     sid = make_session(srv._conn)
     real = db.store_lap(srv._conn, sid, 1, 113000, True, [])
@@ -245,13 +237,7 @@ def test_label_laps_reports_ids_that_are_not_in_this_session():
 
 
 def test_space_separated_ids_are_read_as_separate_laps():
-    """"87 88 89" used to collapse into the single id 878889.
-
-    The old parser stripped spaces and then split on commas, so that read as
-    one lap that does not exist: nothing labelled, and "ok": true. A no-op
-    that reports success is the worst answer available here, and the README
-    invites exactly this phrasing ("laps 41 to 44 were on baseline").
-    """
+    """"87 88 89" is three laps, not the single id 878889."""
     srv = _server()
     sid = make_session(srv._conn)
     ids = [db.store_lap(srv._conn, sid, n, 113000 + n, True, [])
@@ -263,7 +249,7 @@ def test_space_separated_ids_are_read_as_separate_laps():
     assert all(v == "baseline" for v in _labels(srv, sid).values())
 
 
-def test_labelling_nothing_at_all_does_not_report_ok():
+def test_labeling_nothing_at_all_does_not_report_ok():
     srv = _server()
     sid = make_session(srv._conn)
     db.store_lap(srv._conn, sid, 1, 113000, True, [])
@@ -273,8 +259,8 @@ def test_labelling_nothing_at_all_does_not_report_ok():
     assert out["laps_labelled"] == 0, out
 
 
-def test_relabelling_a_lap_to_the_name_it_already_has_is_acknowledged():
-    # Neither filled nor left alone, so it used to vanish from the report.
+def test_relabeling_a_lap_to_the_name_it_already_has_is_acknowledged():
+    # Neither filled nor left alone, but it still belongs in the report.
     srv = _server()
     sid = make_session(srv._conn)
     db.set_session_setup(srv._conn, sid, "baseline")
@@ -301,11 +287,10 @@ def test_a_lap_older_than_any_window_is_not_called_missing():
 
 
 def test_neither_tool_reads_the_whole_session_to_answer():
-    """Both used to fetch every lap row through the sessions JOIN.
+    """Neither tool fetches whole lap rows through the sessions JOIN.
 
-    set_session_setup wanted a count and some ids; label_laps wanted the
-    setup names of the handful of ids it was given. On a long session that
-    is hundreds of wide rows read and discarded, on every call.
+    set_session_setup needs a count and some ids; label_laps needs the setup
+    names of the ids it was given.
     """
     srv = _server()
     sid = make_session(srv._conn)
@@ -343,12 +328,7 @@ def test_label_laps_rejects_ids_that_are_not_numbers():
 
 
 def test_a_range_of_laps_labels_every_lap_in_it():
-    """"87-90" is four laps, not two.
-
-    The id check rejected the hyphen outright, so the way a driver actually
-    describes a stint failed. Splitting on it instead would have been
-    worse: two ids from a run of four, half the stint labelled, "ok": true.
-    """
+    """"87-90" is four laps, not the two ids at either end."""
     srv = _server()
     sid = make_session(srv._conn)
     ids = [db.store_lap(srv._conn, sid, n, 113000 + n, True, [])
@@ -357,7 +337,7 @@ def test_a_range_of_laps_labels_every_lap_in_it():
                 setup_name="claude_v1", session_id=sid)
     assert out["laps_labelled"] == 4, out
     assert out["lap_ids_labelled"] == ids, out
-    print("  a 4-lap range labelled 4 laps")
+    print("  a 4-lap range labeled 4 laps")
 
 
 def test_a_backwards_or_absurd_range_is_refused_by_name():
@@ -376,9 +356,9 @@ def test_a_backwards_or_absurd_range_is_refused_by_name():
     assert "eighty-eight" in letters.get("error", ""), letters
 
 
-def test_labelling_an_empty_id_list_changes_nothing():
+def test_labeling_an_empty_id_list_changes_nothing():
     # db.label_unattributed_laps(lap_ids=[]) must not fall through to the
-    # unfiltered UPDATE, which is the whole bug wearing a different hat.
+    # unfiltered UPDATE, which would label every blank lap in the session.
     with tempfile.TemporaryDirectory() as d:
         conn = db.connect(Path(d) / "t.db")
         sid = make_session(conn)
@@ -388,18 +368,15 @@ def test_labelling_an_empty_id_list_changes_nothing():
         conn.close()
 
 
-def test_labelling_more_laps_than_sqlite_takes_parameters_for():
+def test_labeling_more_laps_than_sqlite_takes_parameters_for():
     """A long stint can outrun SQLITE_MAX_VARIABLE_NUMBER.
 
     One placeholder per id. The limit is 999 on older SQLite and much
     higher since 3.32, so whether an unchunked UPDATE raises `too many SQL
-    variables` depends on the build the user's Python happens to link --
-    which is the kind of bug that passes CI and fails in a garage. The read
-    side already chunked; the write side did not.
+    variables` depends on the SQLite the user's Python links.
 
-    Asserting on the statements rather than on the outcome, because on a
-    build with a high limit the unchunked version returns the right answer
-    and proves nothing.
+    This asserts on the statements rather than the outcome: on a build with
+    a high limit an unchunked statement returns the right answer too.
     """
     with tempfile.TemporaryDirectory() as d:
         conn = db.connect(Path(d) / "t.db")
@@ -432,7 +409,7 @@ def test_labelling_more_laps_than_sqlite_takes_parameters_for():
         # And a second pass fills nothing, because none of them are blank.
         assert db.label_unattributed_laps(conn, sid, "claude_v2", ids) == 0
         conn.close()
-        print(f"  1200 laps labelled, longest id list was {widest}")
+        print(f"  1200 laps labeled, longest id list was {widest}")
 
 
 if __name__ == "__main__":

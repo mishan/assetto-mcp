@@ -2,10 +2,9 @@
 
 The game places everything by `normalizedCarPosition`, a fraction of the
 lap from 0 at the start/finish line to 1, and every analysis keeps that
-because it is what lines laps up. A driver cannot use it. Told "6.8 g at
-0.065", the driver at Interlagos had no idea where that was; told "T1, 70 m
-after turn-in", they did. Drivers navigate by corners and by the 50 m and
-100 m boards before them, so that is what a position is turned into here.
+because it is what lines laps up. A driver cannot use it: "0.065" means
+nothing, "T1, 70 m after turn-in" does. Drivers navigate by corners and by
+the 50 m and 100 m boards before them, so that is what a position becomes.
 
 This runs over a finished payload rather than inside every analysis, so
 each tool gets the same wording and the analyses keep speaking in the
@@ -61,12 +60,11 @@ ESTIMATE_LAPS = 3
 
 
 def lap_distance_m(samples: list[dict]) -> float | None:
-    """How far the car travelled over a lap, from speed and the clock.
+    """How far the car traveled over a lap, from speed and the clock.
 
-    Checked against sessions whose length the game reported: within 0.4%
-    on clean laps at Sebring, Kyalami and Interlagos, a few meters long
-    because the car takes a wider line than the spline. A spin makes it
-    meaningless, which is why only clean laps are fed to it.
+    Within about 0.4% of the game's reported length on clean laps, a few
+    meters long because the car takes a wider line than the spline. A spin
+    makes it meaningless, so only clean laps should be fed to it.
     """
     total, last = 0.0, None
     for s in samples:
@@ -82,10 +80,8 @@ def lap_distance_m(samples: list[dict]) -> float | None:
 def session_length(conn, session_id: int) -> tuple[float | None, str | None]:
     """The session's track length in meters, and where it came from.
 
-    `game` is the length AC reports, stored for every session since the
-    collector started recording it and for earlier ones where the in-game
-    app sent it. `estimated` is integrated from the newest clean laps'
-    speed, for the sessions that have neither.
+    `game` is the length AC reports, when the session has it stored.
+    `estimated` is integrated from the newest clean laps' speed otherwise.
     """
     session = db.get_session(conn, session_id)
     if not session:
@@ -216,7 +212,7 @@ def _place_dict(d: dict, length_m: float, turns: list[dict],
                 and not isinstance(value, bool) and abs(value) <= 0.5):
             out[d_key] = round(value * length_m)
 
-    # A labelled turn already says where it is. What a driver also wants of
+    # A labeled turn already says where it is. What a driver also wants of
     # one is how far before turn-in the braking starts -- the board to brake
     # at. Negative when the braking starts after turn-in, which a short
     # braking zone into a second apex does.
@@ -252,7 +248,7 @@ def place(payload, length_m: float | None, turns: list[dict] | None):
     `turns` is the numbering the payload's own labels came from, so a
     `where` never names a turn the rest of the payload calls something else.
     Turns carrying a circuit `name` (circuit.name_turns) are called by it,
-    and every dict labelled with one of their numbers gets the name beside
+    and every dict labeled with one of their numbers gets the name beside
     the number.
     """
     if not length_m:

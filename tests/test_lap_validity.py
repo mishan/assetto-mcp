@@ -1,10 +1,10 @@
 """Which laps count toward the session best, and which are set aside.
 
 An invalid lap is still stored and still readable -- validity only decides
-whether it pollutes best-lap maths. Getting this wrong is expensive in both
-directions: a 10:22 pit lap counted as your best makes every subsequent
-comparison meaningless, and discarding a merely scrappy lap throws away the
-evidence a setup change was meant to produce.
+whether it enters best-lap math. Both mistakes are expensive: a 10:22 pit
+lap counted as the best makes every later comparison meaningless, and
+discarding a merely scrappy lap throws away the evidence a setup change was
+meant to produce.
 """
 
 import sys
@@ -30,17 +30,17 @@ def test_gross_outliers_are_set_aside():
     assert _is_outlier(129000, 114054) is False     # scrappy, +15s
     assert _is_outlier(274832, 114054) is True      # the 4:34 lap
     assert _is_outlier(622162, 114054) is True      # the 10:22 lap
-    # +56s is not a scrappy lap, it is a stop or a tow. The old rule (1.5x
-    # the reference) put the cut at +57s, so it caught essentially nothing
-    # the pit-lane check hadn't already caught.
+    # +56s is not a scrappy lap, it is a stop or a tow. A 1.5x ratio would
+    # put the cut at +57s and catch almost nothing the pit-lane check
+    # doesn't.
     assert _is_outlier(170000, 114054) is True
     print("  outlier thresholds behave")
 
 
 def test_outlier_allowance_scales_with_lap_length():
     """A ratio is the wrong shape for a lap time; an allowance is not."""
-    # Nordschleife tourist lap, 8:00. A 1.5x ratio allowed a four-minute
-    # margin -- a car could stop for tea and still count.
+    # Nordschleife tourist lap, 8:00. A 1.5x ratio would allow a
+    # four-minute margin.
     ring = 480_000
     assert _is_outlier(ring + 100_000, ring) is False   # +100s, still under
     assert _is_outlier(ring + 200_000, ring) is True    # +200s, a stop
@@ -54,7 +54,7 @@ def test_outlier_allowance_scales_with_lap_length():
 def test_reference_lap_does_not_depend_on_lap_validity():
     """A session where every lap is dirty must still get a reference.
 
-    Deriving it from valid laps only made the outlier rule a dependent of
+    Deriving it from valid laps only would make the outlier rule depend on
     the dirty-lap rule: at a track with tight limits nothing is ever valid,
     the reference stays None, and outlier detection silently never runs.
     """
@@ -69,9 +69,7 @@ def test_a_lap_containing_a_pit_visit_is_kept_but_is_not_a_lap_time():
 
     A pit lap's time is wall-clock nonsense, so nothing may rank or average
     it -- but the driving either side of the stop is real telemetry and it
-    is kept. This used to set `valid = 0`, one flag meaning "off track OR
-    pitted OR grossly slow", and everything downstream threw all three away
-    together without saying which it was.
+    is kept. Pitted, off track and grossly slow are separate flags.
     """
     with temp_db() as path:
         script = [
@@ -101,7 +99,7 @@ def test_a_lap_containing_a_pit_visit_is_kept_but_is_not_a_lap_time():
             assert db.get_samples(conn, pit["id"]), \
                 "the telemetry either side of the stop is still real"
             # Not marked as having run wide, because it didn't. That is a
-            # different question and now has its own field.
+            # different question with its own field.
             assert pit["invalid"] == 0, pit
             assert db.lap_usability(dict(laps[114000]))[0] is True
             print("  pit lap kept and flagged, not confused with a cut")
@@ -110,7 +108,7 @@ def test_a_lap_containing_a_pit_visit_is_kept_but_is_not_a_lap_time():
 
 
 def test_a_quick_pit_stop_is_caught_by_the_pit_flag_not_the_outlier_rule():
-    """Isolated from the outlier rule, which used to mask it.
+    """Isolated from the outlier rule, which would otherwise mask it.
 
     The pit lap in the test above is also a 5.4x outlier, so either
     mechanism could be deleted and the assertion would still hold. A quick
@@ -158,10 +156,9 @@ def test_invalid_laps_are_excluded_from_best_but_still_listed():
 def test_an_abandoned_lap_is_kept_marked_incomplete():
     """A crash teleports the car back without the lap counter advancing.
 
-    Those samples used to be dropped, so the lap a driver most wants to see
-    -- the one that ended in the barrier -- was the only one guaranteed not
-    to be recorded. It is now stored with complete=0 so it can never be
-    mistaken for a real lap time.
+    The lap a driver most wants to see is the one that ended in the
+    barrier, so it is stored, with complete=0 so it can never be mistaken
+    for a real lap time.
     """
     with temp_db() as path:
 
@@ -198,9 +195,8 @@ def test_an_abandoned_lap_is_kept_marked_incomplete():
 def test_crossing_the_line_is_not_mistaken_for_a_teleport():
     """norm_pos goes ~1.0 -> ~0.0 every lap; that must not look abandoned.
 
-    The lap counter and the position wrap do not land on the same tick, so
-    an early version produced a phantom 400ms 'abandoned lap' at the start
-    of every single lap.
+    The lap counter and the position wrap do not land on the same tick,
+    which can look like a 400ms 'abandoned lap' at the start of every lap.
     """
     with temp_db() as path:
 
@@ -219,11 +215,11 @@ def test_crossing_the_line_is_not_mistaken_for_a_teleport():
 
 
 def test_a_slow_first_lap_is_re_flagged_once_a_quick_one_follows():
-    """The flag was set against a reference that did not exist yet.
+    """Outlier status is judged against the fastest lap seen so far.
 
-    Outlier status is judged against the fastest lap seen SO FAR. A first
-    lap of 3:10 followed by a 1:53 was stored clean and nothing ever went
-    back for it, so a warm-up lap sat in the session looking representative.
+    A first lap of 3:10 is stored clean, so a 1:53 that follows must go back
+    and flag it, or a warm-up lap sits in the session looking
+    representative.
     """
     with temp_db() as path:
         script = [

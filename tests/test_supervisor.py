@@ -5,7 +5,7 @@ restart_server works by having a parent process keep the client's pipes
 and swap the server behind them. Everything the client would notice about
 the swap is tested here against a fake server -- a few lines of Python
 that answer JSON-RPC and exit when told -- so the supervisor's own
-behaviour is checked without the cost or the timing of the real one. Two
+behavior is checked without the cost or the timing of the real one. Two
 tests at the end run the real server, for the parts only it can show.
 """
 
@@ -15,7 +15,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))

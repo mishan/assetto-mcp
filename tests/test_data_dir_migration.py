@@ -1,15 +1,12 @@
 """Finding the data directory across the ac-race-engineer rename.
 
-The database holds laps that cannot be re-driven, so the rename had exactly
-one hard requirement: nobody opens the tool afterwards and finds an empty
-history. The old directory is therefore moved rather than abandoned -- and,
-more importantly, a move that *cannot* happen has to leave the old directory
-in use rather than silently start fresh beside it.
+The database holds laps that cannot be re-driven, so the old directory is
+moved rather than abandoned, and a move that *cannot* happen leaves the old
+directory in use rather than silently starting fresh beside it.
 
-Two things make the move racy in real use. Several server instances start at
-once, so two can attempt it simultaneously; and one instance may already hold
-the database open, in which case Windows refuses to rename the directory at
-all. Both are covered below, because both end in lost laps if handled wrong.
+The move is racy: several server instances start at once, so two can attempt
+it together, and one may already hold the database open, in which case
+Windows refuses to rename the directory at all.
 """
 
 import os
@@ -25,7 +22,7 @@ from assetto_mcp import config  # noqa: E402
 
 
 class _Home:
-    """Point config at a scratch home, and put the env back afterwards."""
+    """Point config at a scratch home, and put the env back afterward."""
 
     _VARS = ("ASSETTO_MCP_DATA", "AC_ENGINEER_DATA",
              "ASSETTO_MCP_BRIDGE_PORT", "AC_ENGINEER_BRIDGE_PORT")
@@ -127,8 +124,8 @@ def test_a_file_where_the_data_directory_goes_is_named_not_stumbled_over():
 
 def test_a_file_at_the_destination_is_never_renamed_over():
     # Path.rename replaces an existing *file* destination silently on POSIX,
-    # so a check for mere existence would have deleted it and moved the
-    # database on top. Refuse instead, and leave both where they are.
+    # so a check for mere existence would delete it and move the database
+    # on top. Refuse instead, and leave both where they are.
     with _Home() as h:
         h.seed_legacy()
         h.new.write_text("someone's file")

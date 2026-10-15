@@ -1,11 +1,9 @@
 """Rival laps timed off their own trace, and what each corner is worth.
 
-At the Glen the server's lap time for a remote car lagged its lap counter,
-so the time stored for a lap was often the lap before's: one rival read
-1:45.97 on eleven laps running while his trace showed 1:44.5 to 1:45.3,
-and the handoff ranked the driver ahead of two cars that were quicker.
-These pin the trace timing, the ranking built on it, and the per-turn
-time split that compare_to_rival and field_benchmark report.
+The server's lap time for a remote car can lag its lap counter, so the
+time it reports for a lap is often the previous lap's. These pin the timing
+taken from the trace instead, the ranking built on it, and the per-turn time
+split that compare_to_rival and field_benchmark report.
 """
 
 import atexit
@@ -228,7 +226,7 @@ def test_a_lap_whose_counter_ticked_early_is_still_timed_turn_by_turn():
         lap = _counted(_drive(125.0, 0.39, hz=10, laps=3, start_pos=0.5),
                        tick)
         if tick == "early":
-            # The case that lost the lap: it opens just short of the line.
+            # The hard case: the lap opens just short of the line.
             first = min(lap, key=lambda s: s["t_ms"])
             assert first["spline"] > 0.99, first
         got = analysis.turn_metrics(lap, "spline", turns)
@@ -384,8 +382,8 @@ def test_field_benchmark_says_why_when_there_is_nothing_to_measure():
     out = json.loads(srv.field_benchmark(session_id=sid, lap_ids=str(lap)))
     assert "lap time" in out.get("error", ""), out
 
-    # Rivals recorded before samples carried a clock: no trace timing, which
-    # is not the same as nobody being quicker.
+        # Rival samples without a clock: no trace timing, which is not the
+    # same as nobody being quicker.
     sid = _bench_session(srv)
     lap = _store_my_lap(srv._conn, sid, 2)
     trace = _drive(125.0, 0.39, hz=10, laps=3, start_pos=0.99)

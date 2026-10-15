@@ -1,10 +1,9 @@
 """Opening a database that was created by an older version.
 
-This is the case that never shows up in a test suite by accident: every
-other test starts from an empty file, where CREATE TABLE IF NOT EXISTS
-happens to produce the current schema. On a database that already exists it
-does nothing at all, which is how a column addition ships green and no-ops
-on the only database anyone cares about.
+Every other test starts from an empty file, where CREATE TABLE IF NOT EXISTS
+produces the current schema. On a database that already exists it does
+nothing, so a column added without a _migrate step passes those tests and
+is never applied to a real database.
 """
 
 import re
@@ -33,10 +32,9 @@ CREATE TABLE laps (
     lap_number INTEGER NOT NULL, lap_time_ms INTEGER NOT NULL,
     valid INTEGER NOT NULL DEFAULT 1, completed_at REAL NOT NULL
 );
--- tyres_out is here on purpose: it has existed since the first schema, and
--- the v11 track-limits backfill short-circuits without it. A fixture that
--- omitted it made every migration test pass with the backfill never
--- running -- which is exactly the path a real database does take.
+-- tyres_out has existed since the first schema, and the v11 track-limits
+-- backfill short-circuits without it, so a fixture without it would never
+-- exercise the backfill a real database goes through.
 CREATE TABLE samples (lap_id INTEGER NOT NULL, t_ms INTEGER NOT NULL,
                       tyres_out INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE notes (
@@ -50,12 +48,10 @@ CREATE TABLE notes (
 def _v0_database(path: Path, laps, tyres_out=None) -> None:
     """A pre-setup_name database, with samples.
 
-    The samples matter: the v11 backfill re-derives track limits from them,
-    so a fixture without any exercises a path no real database takes.
-    `tyres_out` maps lap number -> the list of per-sample wheels-off
-    counts for that lap. Laps absent from it get 40 clean samples. Keyed by
-    lap number rather than positional because a fixture usually cares about
-    one dirty lap in a run of clean ones.
+    The v11 backfill re-derives track limits from the samples, so they have
+    to be there. `tyres_out` maps lap number -> the list of per-sample
+    wheels-off counts for that lap; laps absent from it get 40 clean
+    samples.
     """
     raw = sqlite3.connect(path)
     raw.executescript(V0_SCHEMA)
@@ -94,14 +90,11 @@ def test_an_existing_database_gains_the_new_columns():
 
 
 def test_laps_stored_before_v4_are_marked_complete():
-    """v4 adds laps.complete, and nothing pinned either half of that.
+    """v4 adds laps.complete, and every existing lap is complete.
 
-    Before v4 a lap only reached the database by crossing the line, so every
-    row already there is complete by definition. Two ways that goes wrong on
-    a real user's database and on no test: the ALTER never runs, so every
-    query mentioning complete fails outright; or the column arrives
-    defaulting to 0 and a season of finished laps reads back as abandoned.
-    The column is asserted here as well as the value it backfills.
+    Before v4 a lap only reached the database by crossing the line. If the
+    ALTER never runs, every query mentioning complete fails; if the column
+    defaults to 0, every finished lap reads back as abandoned.
     """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "old.db"
@@ -120,11 +113,10 @@ def test_laps_stored_before_v4_are_marked_complete():
 
 
 def test_laps_stored_before_the_outlier_rule_are_flagged_on_upgrade():
-    """The 10:22 lap is still in the user's database.
+    """A grossly slow lap recorded before the rule existed gets `outlier`.
 
-    The rule was only ever applied at write time, so shipping it fixed
-    nothing for data already recorded. Since v11 it sets `outlier` rather
-    than hiding the lap: the lap stays stored, stays readable and stays
+    The rule applies at write time, so laps already stored need the
+    migration. It flags rather than hides: the lap stays readable and
     comparable, and anything ranking lap times can see why it stands out.
     """
     with tempfile.TemporaryDirectory() as tmp:
@@ -146,12 +138,9 @@ def test_laps_stored_before_the_outlier_rule_are_flagged_on_upgrade():
 def test_an_old_exclusion_is_never_silently_undone():
     """Pre-v11 `valid = 0` meant off-track OR pitted OR grossly slow.
 
-    v11 recomputes the first two from evidence that is still there. The
-    third -- a pit visit -- was never recorded anywhere else, so a lap
-    excluded only for that would come out of the migration looking like a
-    clean flying lap and start polluting every comparison. That is the
-    exact failure this schema change exists to stop, so it must not be the
-    thing the change causes.
+    v11 recomputes off-track and slow from evidence that is still there. A
+    pit visit was never recorded anywhere else, so a lap with no other
+    explanation must come out as `pitted`, not as a clean flying lap.
     """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "old.db"
@@ -172,13 +161,10 @@ def test_an_old_exclusion_is_never_silently_undone():
 
 
 def test_the_upgrade_gives_back_a_lap_the_old_rule_wrongly_excluded():
-    """Sebring 129, in migration form.
+    """A lap stored `valid = 0` for three wheels on a kerb becomes usable.
 
-    A clean lap stored `valid = 0` because three wheels touched a flat kerb.
-    The samples proving it never left the track were there the whole time,
-    and v11 reads them: the lap comes back readable and comparable without
-    anyone re-driving it. This is the case that justifies the whole schema
-    change, so it is pinned rather than assumed.
+    The samples show it never left the track, and v11 reads them, so the
+    lap comes back readable and comparable.
     """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "old.db"
@@ -219,15 +205,13 @@ def test_a_lap_that_really_did_cut_stays_flagged_after_the_upgrade():
 
 
 def test_a_database_missing_a_column_it_should_have_still_upgrades():
-    """A file stamped past v4 without `complete`, which does exist.
+    """A file stamped past v4 without `complete`, which does occur.
 
-    The v11 pass reasons about why old laps were excluded and wants
-    `complete` for it. Guarding one query and then naming the column
-    directly in the next raised OperationalError mid-migration -- and a
-    raise inside _migrate aborts every later step AND leaves user_version
-    un-bumped, so the database is stuck below the current schema forever
-    and the server will not start at all. Nothing here may assume a column
-    it has not checked for.
+    The v11 pass wants `complete` to reason about old exclusions. A raise
+    inside _migrate aborts every later step and leaves user_version
+    un-bumped, so the database is stuck below the current schema and the
+    server will not start. Nothing there may assume a column it has not
+    checked for.
     """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "odd.db"
@@ -263,12 +247,10 @@ def test_a_database_missing_a_column_it_should_have_still_upgrades():
 
 
 def test_a_pit_lap_that_is_also_an_outlier_stays_excluded():
-    """The 10:22 lap, which is both, and the reasons are not exclusive.
+    """Being an outlier does not explain away an old exclusion.
 
-    Being a gross outlier used to count as explaining an old exclusion --
-    so the lap was left unpitted, and since outliers are usable under the
-    new model, a wall-clock pit time walked into lap-time comparisons. The
-    exact lap that motivated the outlier rule in the first place.
+    Outliers are usable, so treating slowness as the reason would let a
+    wall-clock pit time into lap-time comparisons.
     """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "old.db"
@@ -286,15 +268,14 @@ def test_a_pit_lap_that_is_also_an_outlier_stays_excluded():
             usable, why = db.lap_usability(lap)
             assert usable is False, why
             assert db.list_sessions(conn)[0]["best_ms"] == 114054
-            print("  a slow old exclusion stays out of lap-time maths")
+            print("  a slow old exclusion stays out of lap-time math")
         finally:
             conn.close()
 
 
 def test_a_slow_lap_that_ran_wide_is_still_given_back():
     # Explained by the old track-limits rule, so it is re-admitted even
-    # though it is also slow -- the conservative rule must not swallow the
-    # case the whole migration exists for.
+    # though it is also slow.
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "old.db"
         _v0_database(path, [(114054, 1), (126769, 0)],
@@ -312,14 +293,10 @@ def test_a_slow_lap_that_ran_wide_is_still_given_back():
 def test_a_v11_step_does_not_depend_on_a_v12_column():
     """Migration steps run in order, and v11 calls backfill_excursions.
 
-    That function filters out laps whose traces retention has thinned --
-    `sample_stride`, which arrives in v12. On a database upgrading from
-    v10 the column does not exist when v11 runs, and the raise left
-    user_version un-bumped, stranding the database below the schema
-    permanently with the server unable to open it at all.
-
-    Its absence is an answer rather than an obstacle: a database that
-    predates retention has nothing thinned.
+    That function skips laps retention has thinned, using `sample_stride`,
+    which arrives in v12. Upgrading from v10 the column does not exist yet
+    when v11 runs; a database that predates retention has nothing thinned,
+    so its absence must be treated as stride 1, not raise.
     """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "v10.db"
@@ -334,7 +311,8 @@ def test_a_v11_step_does_not_depend_on_a_v12_column():
             except sqlite3.OperationalError:
                 pass
         raw.execute("PRAGMA user_version = 10")
-        raw.commit(); raw.close()
+        raw.commit()
+        raw.close()
 
         conn = db.connect(path)
         try:
@@ -355,10 +333,8 @@ def test_a_v11_step_does_not_depend_on_a_v12_column():
 def test_v13_adds_its_tables_to_a_real_v12_database():
     """v13 is new tables only, so it has no ALTER step at all.
 
-    That is only correct because connect() runs _migrate and *then*
-    executescript(SCHEMA), where CREATE TABLE IF NOT EXISTS creates them. A
-    version bump with no migration block is the shape of a change that
-    silently does nothing, so the ordering is pinned rather than assumed.
+    That relies on connect() running _migrate and *then*
+    executescript(SCHEMA), where CREATE TABLE IF NOT EXISTS creates them.
     """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "v12.db"
@@ -464,7 +440,7 @@ def test_v15_leaves_old_laps_unmeasured_rather_than_guessing():
 
 def test_display_readings_survive_a_retention_pass():
     # They are keyed on the car, not the session, so pruning a session's
-    # samples must not take a car's hard-won screen readings with it.
+    # samples must not take the car's screen readings with it.
     from assetto_mcp import retention
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "t.db"
@@ -541,10 +517,8 @@ def test_existing_rows_and_queries_survive_the_upgrade():
 
 # --- v8 and v9: position, attitude, electronics, wear, damage ----------
 #
-# The one thing every analysis was blind to: norm_pos says where the car is
-# ALONG the lap, nothing said where it was across it. carCoordinates was
-# being read 25 times a second and discarded, so no lap before this
-# migration has a driving line and none ever can.
+# norm_pos says where the car is along the lap; v8's world position says
+# where it is across it. Laps recorded before v8 have no driving line.
 
 V8_COLUMNS = ("pos_x", "pos_y", "pos_z", "heading", "pitch", "roll",
               "tc_active", "abs_active")
@@ -552,14 +526,7 @@ V9_COLUMNS = ("wear_fl", "wear_fr", "wear_rl", "wear_rr", "damage")
 
 
 def test_the_new_sample_columns_arrive_on_an_upgraded_database():
-    """The failure this whole module exists for: ALTER, not CREATE.
-
-    Both migrations, not just v8. CREATE TABLE IF NOT EXISTS silently does
-    nothing on a database that already has the table, so a step that is
-    missing from _migrate looks exactly like one that worked -- on a fresh
-    database, which is the only kind the rest of the suite builds. The
-    driver's database is not fresh, and it is the only one that matters.
-    """
+    """v8 and v9 reach an existing samples table by ALTER, not CREATE."""
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "old.db"
         _v0_database(path, [(114054, 1)])
@@ -572,12 +539,10 @@ def test_the_new_sample_columns_arrive_on_an_upgraded_database():
         conn.close()
 
 
-# The samples table exactly as it stood at v7 -- the last schema before
-# columns started being added to it. A historical snapshot on purpose: it is
-# the shape of the database the driver has actually been recording into, and
-# the only fixture that can tell a migration that ran from one that was
-# forgotten. The V0_SCHEMA stub above cannot, because its samples table is
-# two columns and never had these.
+# The samples table exactly as it stood at v7, the last schema before
+# columns were added to it. Unlike the V0_SCHEMA stub, this is the shape of
+# a real database, so it can tell a migration that ran from one that was
+# forgotten.
 V7_SAMPLES = """
 CREATE TABLE samples (
     lap_id INTEGER NOT NULL, t_ms INTEGER NOT NULL, norm_pos REAL NOT NULL,
@@ -596,13 +561,11 @@ CREATE TABLE samples (
 
 
 def test_every_sample_column_the_collector_writes_survives_an_upgrade():
-    """The generalisation, so the next migration cannot be forgotten.
+    """Every column in SAMPLE_COLUMNS has a _migrate step.
 
-    SAMPLE_COLUMNS is what store_lap writes against. A column that reaches
-    it without reaching _migrate works on every fresh database -- which is
-    the only kind the rest of the suite builds -- and takes an
-    OperationalError on the first lap of the next session on the only
-    database that matters.
+    SAMPLE_COLUMNS is what store_lap writes against. A column missing from
+    _migrate works on a fresh database and raises OperationalError on the
+    first lap stored into an existing one.
     """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "v7.db"
@@ -631,17 +594,10 @@ def test_every_sample_column_the_collector_writes_survives_an_upgrade():
 def test_a_migration_survives_a_database_with_no_samples_table():
     """A half-built database must not abort the whole migration.
 
-    ALTER TABLE on a table that does not exist raises, and one raise takes
-    every later step with it AND leaves user_version un-bumped -- so the
-    database is stuck below the current schema permanently, not just this
-    once. This is the real shape: sessions and laps present, samples never
-    created, which is what a database that only ever held imported rows
-    looks like.
-
-    Every ALTER site goes through _add_column, which no-ops on a missing
-    table, so there is no longer an unguarded one to find -- including the
-    v1 step on `laps`, which an earlier draft of this docstring called out
-    as still latent.
+    ALTER TABLE on a missing table raises, which aborts every later step
+    and leaves user_version un-bumped. A database that only ever held
+    imported rows has sessions and laps but no samples table; every ALTER
+    goes through _add_column, which no-ops on a missing table.
     """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "partial.db"
@@ -669,8 +625,8 @@ def test_a_migration_survives_a_database_with_no_samples_table():
 def test_old_samples_read_as_not_recorded_rather_than_as_the_origin():
     """NULL, not 0. A coordinate of zero is a place on the track map.
 
-    Backfilling is impossible -- the data was never captured -- so the only
-    honest value is one a reader can recognise as absent.
+    The data was never captured, so the only honest value is one a reader
+    can recognize as absent.
     """
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "old.db"
@@ -719,14 +675,11 @@ def test_a_short_sample_tuple_is_padded_and_a_long_one_is_refused():
 
 
 def test_a_field_dropped_in_the_middle_is_refused_not_padded():
-    """Padding was applied to any short tuple, so a tuple short for the
-    wrong reason stored silently against shifted columns.
+    """Only widths a real layout had are padded.
 
-    Measured before the fix, on a full-width tuple missing `steer`: gear
-    7000, rpm 1, tyres_out 297.63 (a world coordinate), damage NULL, and no
-    error anywhere. Every value after the gap was one column out.
-
-    Only the widths a real layout actually had are padded now.
+    Padding any short tuple would store one with a field missing mid-tuple
+    against shifted columns: every value after the gap one column out, and
+    no error.
     """
     with tempfile.TemporaryDirectory() as tmp:
         conn = db.connect(Path(tmp) / "new.db")
@@ -767,13 +720,11 @@ def test_every_historical_width_is_still_accepted():
 def test_a_failed_sample_write_leaves_no_half_stored_lap():
     """A lap and its samples are one write, or neither.
 
-    The lap row goes in first and the samples follow, so anything that
-    raises in between left the lap inserted and the transaction open. Two
-    things then go wrong at once: whoever commits next adopts a lap with no
-    telemetry -- which reads as a lap driven and reported as having no
-    samples -- and until then the open transaction holds a write lock every
-    other connection blocks on. The collector catches exceptions from this
-    and carries on, which is precisely the caller that would do it.
+    The lap row goes in before the samples. A raise in between must not
+    leave the lap inserted and the transaction open: whoever commits next
+    would adopt a lap with no telemetry, and until then every other
+    connection blocks on the write lock. The collector catches exceptions
+    from this and carries on, so it would hit exactly that.
     """
     with temp_db() as path:
         conn = db.connect(path)

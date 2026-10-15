@@ -24,7 +24,7 @@ from assetto_mcp.collector import Collector  # noqa: E402
 def test_restart_from_the_menu_starts_a_new_session():
     """Restarting in-game never passes through AC_OFF.
 
-    Watching only for that transition left the new run appended to the old
+    Watching only for that transition would append the new run to the old
     session: same session_id, lap numbers starting over, and two different
     track states averaged together.
     """
@@ -107,16 +107,12 @@ def test_stopping_clears_the_current_session():
 
 
 def test_a_recorded_lap_carries_a_driving_line():
-    """The point of schema v8, asserted end to end.
+    """Samples record where the car was across the track, end to end.
 
-    norm_pos has always said where the car is ALONG the lap. Nothing said
-    where it was across it, which is the whole of what a line is -- so
-    "I took a wider entry" was a claim the telemetry could not check.
-
-    carCoordinates was in the shared-memory struct the whole time, read 25
-    times a second and dropped on the floor. This test fails if it goes back
-    on the floor, and it fails if the collector stores one position over and
-    over, which a test against a stationary stub would not catch.
+    norm_pos says where the car is ALONG the lap, not across it, and across
+    is the whole of what a line is. This fails if carCoordinates is not
+    stored, and if the collector stores one position over and over, which a
+    test against a stationary stub would not catch.
     """
     with temp_db() as path:
         script = [
@@ -189,7 +185,7 @@ def test_a_short_array_is_not_recorded_as_a_partial_reading():
     getattr answers "does this field exist", which is not the same claim as
     "does it have four entries". Indexing straight into it raises IndexError
     from inside the sampling loop -- which surfaces as an exception out of
-    _loop, ending the session and retrying, so one element short would have
+    _loop, ending the session and retrying, so one element short would
     cost the driver a whole run rather than one nullable column.
 
     Recorded as absent rather than padded: three wheels of wear is not a
@@ -228,13 +224,11 @@ def test_a_short_array_is_not_recorded_as_a_partial_reading():
 
 
 def test_start_does_not_return_the_status_it_had_before_starting():
-    """start_recording answered "stopped" on every first call, for months.
+    """start() must not return before the thread has published a status.
 
-    start() returned the instant the thread was spawned, so the tool read
-    `status` before the thread had touched it and reported the
-    constructor's default. Calling it a second time "worked" only because
-    the second call arrived late enough to see the truth -- which taught
-    both of us to distrust a tool that was working.
+    Returning the instant the thread is spawned lets start_recording read
+    `status` before the thread has touched it and report the constructor's
+    default, "stopped", for a collector that is working.
     """
     with tempfile.TemporaryDirectory() as d:
         sim = FakeSim()
@@ -260,12 +254,11 @@ def test_start_waits_longer_than_the_database_may_block_it():
     taken the claim. Every one of those can sit on the write lock for
     db.BUSY_TIMEOUT_MS.
 
-    Chosen independently the two were 2s over 10s, so the deadline could
-    expire while SQLite was still doing exactly what it was told. That is
-    how a loaded Windows runner got "starting" back from a collector that
-    was working, and it is the same answer start_recording gives a driver.
-    The relationship is asserted rather than the value, so tuning either
-    number cannot quietly reopen it.
+    A deadline shorter than the lock wait can expire while SQLite is still
+    doing exactly what it was told, and start_recording then answers
+    "starting" for a collector that is working. The relationship is
+    asserted rather than the value, so tuning either number cannot quietly
+    break it.
     """
     lock_wait = db.BUSY_TIMEOUT_MS / 1000
     assert Collector.START_STATUS_TIMEOUT > lock_wait, (
@@ -276,13 +269,13 @@ def test_start_waits_longer_than_the_database_may_block_it():
 
 
 def test_a_fresh_collector_is_distinguishable_from_a_stopped_one():
-    """The ambiguity that cost sixteen laps and that I misread twice.
+    """Never started and stopped look alike but mean opposite things.
 
     Both report running=False, status="stopped", error=None and
     laps_recorded=0 -- the constructor's defaults are also what stop()
-    leaves behind. But they mean opposite things: one is "the process was
-    replaced underneath a driving session and nothing resumed", the other
-    is "you asked me to stop".
+    leaves behind. But one is "the process was replaced underneath a
+    driving session and nothing resumed", the other is "you asked me to
+    stop".
     """
     with tempfile.TemporaryDirectory() as d:
         sim = FakeSim()
@@ -307,7 +300,8 @@ def test_a_fresh_collector_is_distinguishable_from_a_stopped_one():
 
 
 def test_restarting_clears_the_previous_runs_error():
-    """A stale error made a healthy restarted collector look broken."""
+    """A stale error must not make a healthy restarted collector look broken.
+    """
     with tempfile.TemporaryDirectory() as d:
         sim = FakeSim()
         col = Collector(Path(d) / "t.db", lambda: sim)
@@ -321,11 +315,10 @@ def test_restarting_clears_the_previous_runs_error():
 
 # --- surviving an absent game ------------------------------------------
 #
-# The collector used to try the sim exactly once and retire if it wasn't
-# there. Combined with a host that restarts this process whenever it likes,
-# that is how sixteen laps were lost across three evenings -- each one
-# driven past a collector that had already given up, reporting a status
-# indistinguishable from one nobody had ever started.
+# The host restarts this process whenever it likes, so a collector that
+# tried the sim once and retired if it wasn't there would miss every lap
+# driven later, reporting a status indistinguishable from one nobody had
+# ever started.
 
 
 def test_a_missing_game_is_waited_for_rather_than_fatal():
@@ -382,7 +375,7 @@ def test_stop_is_immediate_while_waiting_for_the_game():
 
 
 def test_a_crash_in_the_recording_loop_is_not_the_end_of_recording():
-    """One bad read used to retire the collector for the whole process."""
+    """One bad read must not retire the collector for the whole process."""
     with temp_db() as path:
         good = FakeSim()
         made = {"n": 0}
@@ -412,11 +405,9 @@ def test_a_crash_in_the_recording_loop_is_not_the_end_of_recording():
 #
 # Claude Desktop runs one server per client surface, so several of these
 # processes are alive at once, reading the same shared memory and writing
-# the same database file. That was harmless only while a human had to call
-# start_recording to begin. Autostart removed the accident, and the
-# duplicates it produced survive into compare_runs as a sample with zero
-# deviation from itself -- which is exactly what makes a t-test certain
-# about a change that never happened.
+# the same database file. With autostart, duplicate laps would survive
+# into compare_runs as a sample with zero deviation from itself -- which is
+# exactly what makes a t-test certain about a change that never happened.
 
 
 def test_only_one_of_two_collectors_records():
@@ -449,7 +440,7 @@ def test_only_one_of_two_collectors_records():
             try:
                 sessions = conn.execute(
                     "SELECT COUNT(*) c FROM sessions").fetchone()["c"]
-                # Out-laps are stored now, so count the timed ones: the
+                # Out-laps are stored too, so count the timed ones: the
                 # point of this test is that the lap was not written twice.
                 timed = timed_laps(conn)
                 out = [l for l in db.list_laps(conn, limit=None)
@@ -470,8 +461,7 @@ def test_a_standby_takes_over_when_the_holder_stops():
     """The whole reason the standby stays alive.
 
     The holder is a server process the host can recycle at any moment. If
-    nothing picks the claim up, that is the sixteen-laps failure again with
-    an extra step.
+    nothing picks the claim up, every lap after that goes unrecorded.
     """
     with temp_db() as path:
         sim = FakeSim()
@@ -510,10 +500,8 @@ def test_a_forced_takeover_beats_a_holder_that_is_beating_fast():
     Expressed as a staleness cutoff that becomes `heartbeat_at <= now`,
     which a holder renewing faster than the round trip always defeats: the
     caller reads the clock, does a SELECT, then queues behind the holder's
-    write. Measured at 6.7ms of drift, which a 10ms heartbeat wins about
-    half the time -- so the refusal was silent and intermittent, and the
-    test that relies on forcing a takeover timed out instead of failing,
-    which reads like the collector never noticing.
+    write. That drift measures around 7ms, which a 10ms heartbeat wins
+    about half the time, so the refusal is silent and intermittent.
     """
     with temp_db() as path:
         holder = db.connect(path)
@@ -606,9 +594,9 @@ def test_a_shared_stop_reaches_the_instance_actually_recording():
     stop_recording is normally typed into whichever chat the driver has
     open, and that is normally NOT the process holding the recorder. The
     holder is inside _loop, which does not return to the outer loop while a
-    session is live -- and the outer loop was the only place the flag was
-    read. So the driver could switch recording off, be told it had stopped,
-    and have the holder keep writing laps until the game closed.
+    session is live. If only the outer loop read the flag, the driver could
+    switch recording off, be told it had stopped, and have the holder keep
+    writing laps until the game closed.
     """
     with temp_db() as path:
         sim = FakeSim()
@@ -663,11 +651,11 @@ def test_a_shared_stop_reaches_the_instance_actually_recording():
 
 
 def test_stopping_recording_is_shared_and_survives_a_restart():
-    """stop_recording used to stop one process until the next restart.
+    """stop_recording reaches every instance and outlasts a restart.
 
-    With every instance autostarting a collector, that stopped whichever
-    chat the driver was typing into and left the others recording -- and
-    the host undid it the moment it recycled the server.
+    With every instance autostarting a collector, a per-process stop would
+    stop whichever chat the driver was typing into and leave the others
+    recording -- and the host would undo it on recycling the server.
     """
     with temp_db() as path:
         sim = FakeSim()
@@ -679,23 +667,22 @@ def test_stopping_recording_is_shared_and_survives_a_restart():
         try:
             col.start()
             wait_for(lambda: "switched off" in col.status,
-                     "the collector to honour the shared setting")
+                     "the collector to honor the shared setting")
             go_live_attempted = col.sessions_started
             assert go_live_attempted == 0, col.sessions_started
 
             db.set_recorder_enabled(conn, True)
             wait_for(lambda: col.holds_recorder,
                      "recording to resume once it is switched back on")
-            print("  a fresh collector honours a stop from a previous run")
+            print("  a fresh collector honors a stop from a previous run")
         finally:
             col.stop()
             conn.close()
 
 
 def test_a_database_that_cannot_be_opened_says_so():
-    """This used to kill the thread before it published anything, leaving
-    status at "starting" and last_error at None -- reported as "died", with
-    no reason, by the very function written to end that ambiguity."""
+    """The failure is published, not left as status "starting" with
+    last_error None, which reads as "died" with no reason."""
     with tempfile.TemporaryDirectory() as d:
         # A directory where the database file should be.
         path = Path(d) / "t.db"
@@ -713,9 +700,9 @@ def test_standing_aside_does_not_keep_reporting_an_old_error():
 
     Both standby branches are states, not failures: another instance holds
     the recorder, or recording is switched off. A transient problem before
-    either -- shared memory briefly unavailable, say -- left last_error set,
-    and recording_status then showed a collector doing exactly the right
-    thing next to an error explaining nothing about it.
+    either -- shared memory briefly unavailable, say -- must not leave
+    last_error set, or recording_status shows a collector doing exactly the
+    right thing next to an error explaining nothing about it.
     """
     with temp_db() as path:
         sim = FakeSim()
@@ -737,7 +724,7 @@ def test_standing_aside_does_not_keep_reporting_an_old_error():
                      "standby to drop the stale error", timeout=10)
             assert "another instance" in standby.status, standby.status
 
-            # And the switched-off branch, which had this already.
+            # And the switched-off branch.
             conn = db.connect(path)
             try:
                 db.set_recorder_enabled(conn, False)
@@ -754,13 +741,13 @@ def test_standing_aside_does_not_keep_reporting_an_old_error():
 
 
 def test_a_retention_pass_that_loses_the_claim_stops_the_collector():
-    """The forced heartbeat's answer was computed and thrown away.
+    """The forced heartbeat after a pass is acted on, not thrown away.
 
     A VACUUM over a large database can outlast RECORDER_STALE_SECONDS, and
     the beat after the pass exists to notice that another instance took
-    over. Discarding it left this collector carrying on into sampling while
-    a second one recorded the same laps -- the one failure the claim exists
-    to prevent.
+    over. Discarding it lets this collector carry on into sampling while a
+    second one records the same laps -- the one failure the claim exists to
+    prevent.
     """
     with temp_db() as path:
         sim = FakeSim()
@@ -793,11 +780,10 @@ def test_a_retention_pass_that_loses_the_claim_stops_the_collector():
 
 
 def test_a_retention_report_does_not_outlive_its_pass():
-    """One thinning event made every later status say it had just happened.
+    """A pass that did nothing clears the previous pass's report.
 
-    last_retention was only ever assigned, never cleared, so a pass that did
-    nothing left the previous pass's report standing -- for the rest of the
-    process's life.
+    Otherwise one thinning event makes every later status say it has just
+    happened, for the rest of the process's life.
     """
     with temp_db() as path:
         sim = FakeSim()

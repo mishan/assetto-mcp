@@ -26,11 +26,10 @@ APP = Path(__file__).resolve().parent.parent / "lua_app" / "assetto_mcp"
 
 # CSP runs the in-game app on LuaJIT 2.1, which is Lua 5.1 with extensions.
 # lupa ships several interpreters in one wheel and bare lupa.LuaRuntime()
-# picks the newest -- 5.5 at the time of writing. That is a two-way false
-# signal, and both directions have teeth: `7 // 2` and `3 & 1` are ordinary
-# arithmetic under 5.5 and syntax errors in the game, while
-# string.format('%d', 1.5) works in the game and raises under 5.5. So the
-# harness asks for LuaJIT by name.
+# picks the newest, currently 5.5. That is a two-way false signal, and both
+# directions have teeth: `7 // 2` and `3 & 1` are ordinary arithmetic under
+# 5.5 and syntax errors in the game, while string.format('%d', 1.5) works in
+# the game and raises under 5.5. So the harness asks for LuaJIT by name.
 LUAJIT_MODULE = "lupa.luajit21"
 
 STRICT_ENV = "AC_TESTS_STRICT"
@@ -223,9 +222,9 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
     def _json_stringify(tbl):
         """The real thing, not a placeholder.
 
-        A stub that returned a constant made every POST body identical, so
-        no test could tell a worker batch from an app one -- which is the
-        single most important thing about a suspension post.
+        A constant would make every POST body identical, so no test could
+        tell a worker batch from an app one -- which is the single most
+        important thing about a suspension post.
         """
         return json.dumps(_to_py(tbl))
 
@@ -236,11 +235,9 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
     def get_car(i=0):
         if not rec.car_available:
             return None
-        # Only fields CSP's car state really has. This stub once carried
-        # carId, bestLapTimeMs and previousLapTimeMs -- names that exist
-        # nowhere in CSP -- so the app's reads of them passed every test and
-        # returned nil in every real session, and no opponent ever had a car
-        # model or a lap time.
+        # Only fields CSP's car state really has: a field CSP lacks would
+        # let the app's reads of it pass every test and return nil in every
+        # real session.
         fields = {"splinePosition": 0.5, "lapCount": 1, "speedKmh": 180.0,
                   "brake": 0.0, "gas": 1.0, "gear": 4, "isConnected": True,
                   "isInPitlane": False, "timestamp": 1000.0,
@@ -276,7 +273,7 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
     def _json_parse(text):
         """JSON.parse, for real: the app's response handling depends on it.
 
-        A fixed reply here would have meant every callback taking the same
+        A fixed reply here would send every callback down the same
         branch, which is the opposite of the point -- the branches are
         "stored fewer than I sent", "ok=false", and "a 200 I cannot read".
         Raising on bad JSON is the honest answer too: the app wraps this in
@@ -321,7 +318,7 @@ def load(rec: Recorder = None, patch_version="0.2.11"):
 
       -- CSP's sim proxy RAISES on an unknown field rather than returning
       -- nil. Reproducing that is the whole point: an unguarded read of a
-      -- field that did not exist once took down the worker probe entirely.
+      -- field that does not exist takes down the worker probe entirely.
       local function proxy(fields)
         return setmetatable({}, {__index = function(_, k)
           local v = fields[k]

@@ -30,8 +30,8 @@ AC_LIVE = 2
 def _open_handles(directory: Path) -> list[str]:
     """Files still open inside `directory`, on platforms that will say.
 
-    Linux exposes this through /proc/self/fd. Nothing else here does, and
-    that asymmetry is the whole point of this function -- see temp_db.
+    Only Linux exposes this, through /proc/self/fd; elsewhere it returns
+    an empty list.
     """
     fds = Path("/proc/self/fd")
     if not fds.is_dir():
@@ -52,38 +52,18 @@ def _open_handles(directory: Path) -> list[str]:
 def temp_db(name: str = "t.db"):
     """A temp directory for a database, with leaked handles reported.
 
-    Yields the path the database should live at. On the way out it checks
-    that nothing is still holding a file inside the directory, and names
-    what is.
+    Yields the path the database should live at. On the way out it fails
+    if anything still holds a file inside the directory, naming it.
 
-    This exists because the platforms disagree about whether forgetting
-    `conn.close()` is an error. Windows refuses to delete an open file, so
-    the TemporaryDirectory teardown raises WinError 32 -- from inside
-    shutil, pointing at a temp path, with the test that leaked it named
-    nowhere obvious. POSIX deletes it happily and says nothing at all.
+    Windows refuses to delete an open file, so a missing `conn.close()`
+    fails teardown there with WinError 32 and no hint of which test leaked
+    it; POSIX deletes the file silently. Checking open handles here makes
+    the leak fail on Linux too, at the test that caused it.
 
-    So a missing close is invisible to everyone developing on Linux and to
-    the Linux CI leg, and red only on the Windows one. That is a slow and
-    confusing way to find out, and it is how one reached a review stack:
-    test_a_recorded_lap_carries_a_driving_line opened a connection to read
-    its samples back and never closed it, passed everywhere it was run, and
-    failed on a Windows runner four branches later.
-
-    Reporting the leak here makes it fail on the machine the author is
-    actually using, at the test that caused it, with the handle named.
-
-    It also does its own removal rather than letting TemporaryDirectory do
-    it, and that is the half that works on Windows. A background thread
-    finishing is not a leak -- Collector.stop() joins for ten seconds and
-    then RETURNS whether or not the thread went, by design, saying so in
-    last_error -- so on a slow runner the directory is deleted out from
-    under a thread that is still closing its connection. That is the
-    NotADirectoryError this whole helper keeps being asked about, and no
-    amount of handle-checking catches it on Windows, where /proc does not
-    exist and _open_handles can only answer "no idea".
-
-    So: wait for the thing to be deletable, and only call it a failure once
-    it has had longer than stop() itself waits.
+    Removal is retried rather than left to TemporaryDirectory, because
+    Collector.stop() gives up joining its thread after ten seconds by
+    design, and on a slow runner that thread may still be closing its
+    connection when the directory goes.
     """
     directory = Path(tempfile.mkdtemp(prefix="ac-test-"))
     try:
@@ -93,24 +73,19 @@ def temp_db(name: str = "t.db"):
 
 
 # Longer than Collector.stop()'s ten-second join, so a thread that took the
-# full join and a moment more still finishes inside it. Nothing waits this
-# long in the normal case -- the first attempt succeeds.
+# full join and a moment more still finishes inside it.
 RELEASE_TIMEOUT = 20.0
 
 
 def _release(directory: Path) -> None:
     """Remove `directory`, reporting anything still holding it open.
 
-    Two different failures, in the order they can be diagnosed:
+    First a leaked handle, which only Linux can name. It gets a short grace
+    period because the bridge is a threading HTTP server: a handler already
+    inside a request keeps its connection until it returns, after
+    shutdown().
 
-    First a leaked handle, which only Linux can name. A short grace before
-    reporting, because the bridge is a threading HTTP server: shutdown()
-    stops it accepting, but a handler already inside a request keeps its own
-    connection until it returns. That is a drain, not a leak, and calling it
-    one would make the guard as flaky as the failure it replaces.
-
-    Then the removal itself, retried, which is what Windows needs and what
-    POSIX never notices.
+    Then the removal itself, retried for Windows.
     """
     deadline = time.monotonic() + 2.0
     leaked = _open_handles(directory)
@@ -165,8 +140,8 @@ class _Phys:
         self.numberOfTyresOut = 0
         self.airTemp = 25.0
         self.roadTemp = 36.0
-        # Attitude and electronics activity, added with schema v8. Distinct
-        # non-zero values so a test can tell a stored reading from a default.
+        # Distinct non-zero values so a test can tell a stored reading from
+        # a default.
         self.heading = 0.5
         self.pitch = 0.01
         self.roll = -0.02
@@ -186,10 +161,8 @@ class _Graph:
         self.normalizedCarPosition = 0.0
         self.isInPitLane = 0
         self.tyreCompound = "F200 (S)"
-        # World position: the only source of lateral placement, and so the
-        # only source of a driving line. Advanced by tick() alongside
-        # normalizedCarPosition so a stored lap traces a path rather than
-        # repeating one point.
+        # World position, the only source of a driving line. tick() advances
+        # it so a stored lap traces a path rather than repeating one point.
         self.carCoordinates = [100.0, 5.0, -200.0]
 
 
@@ -213,8 +186,8 @@ class FakeCollector:
     """Stands in for Collector where only its reported state matters.
 
     running and session_id are separate on purpose: the real collector
-    leaves session_id set after stop(), and several tests exist because
-    trusting it unconditionally files data against a dead session.
+    leaves session_id set after stop(), and trusting it alone files data
+    against a dead session.
     """
 
     def __init__(self, session_id=None, running=False, status="idle"):
@@ -235,11 +208,8 @@ class TimedOut(AssertionError):
 def wait_for(predicate, what, timeout=15.0, interval=0.002):
     """Block until `predicate()` is true, or fail saying what we wanted.
 
-    Every wait in this harness goes through here rather than sleeping for a
-    plausible-looking interval. A fixed sleep encodes an assumption about
-    how fast the machine is, and the CI runners are not that machine: the
-    sleep-based version of this file passed thousands of times locally and
-    failed on GitHub's Windows and Ubuntu runners within a day.
+    Every wait in this harness goes through here rather than a fixed
+    sleep, which would assume the CI runners are as fast as a dev machine.
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -253,9 +223,7 @@ def run_collector(script, db_path, sim=None):
     """Drive a Collector through `script`, a list of fn(sim, col) steps.
 
     The collector is fully stopped before returning, so callers can delete
-    the database afterwards. Leaving its thread alive with the connection
-    open is how a temp-directory cleanup turned into a NotADirectoryError
-    from a thread nobody was watching.
+    the database afterwards.
 
     Pass `sim` to supply a modified stub -- an older shared-memory layout
     with fields removed, say.
@@ -283,13 +251,10 @@ def tick(sim, col, n=6):
         before = col.samples_taken
         sim.graphics.normalizedCarPosition = (
             sim.graphics.normalizedCarPosition + 0.1) % 1.0
-        # Move in the world too, so a recorded lap is a path. A stationary
-        # coordinate would let a collector that stored the same sample every
-        # tick pass a test about storing position. Guarded on both presence
-        # and length, because tests stand in for two different broken
-        # layouts: one with the field removed, and one where it is there but
-        # too short. The harness has to survive the same inputs the
-        # collector does, or a test of the collector fails in here instead.
+        # Move in the world too, so a collector that stored the same sample
+        # every tick fails the position tests. Tests also feed layouts with
+        # this field missing or too short, which the harness must survive
+        # just as the collector does.
         coords = getattr(sim.graphics, "carCoordinates", None)
         if coords is not None and len(coords) >= 3:
             coords[0] += 12.0
@@ -301,10 +266,8 @@ def tick(sim, col, n=6):
 def complete_lap(sim, col, lap_time_ms, stored=True):
     """Cross the line, and wait for the lap to land in the database.
 
-    Since v11 every lap is stored, out-laps included -- they are flagged
-    rather than discarded. So `stored` now only says whether to wait for
-    the write, which a caller crossing the line with no recording collector
-    must not do.
+    Every lap is stored, out-laps included. `stored` says whether to wait
+    for the write, which a caller with no recording collector must not do.
     """
     before = col.laps_recorded
     sim.graphics.iLastTime = lap_time_ms
@@ -314,11 +277,10 @@ def complete_lap(sim, col, lap_time_ms, stored=True):
 
 
 def timed_laps(conn, session_id=None):
-    """Laps whose time is a lap time -- what "how many laps" used to mean.
+    """Laps whose time is a lap time.
 
-    Out-laps, pit laps and abandoned laps are all stored now rather than
-    dropped, so a bare COUNT(*) over `laps` stopped answering the question
-    most of these tests are actually asking.
+    Out-laps, pit laps and abandoned laps are stored too, so a bare
+    COUNT(*) over `laps` is not the lap count most tests mean.
     """
     from assetto_mcp import db
     return [l for l in db.list_laps(conn, session_id, limit=None)
@@ -350,8 +312,8 @@ def go_live(sim, col):
 
 
 def restart_from_menu(sim, col):
-    """Restart in-game: the lap counter goes backwards, status never
-    leaves AC_LIVE, which is why watching for AC_OFF alone missed it."""
+    """Restart in-game: the lap counter goes backwards and status never
+    leaves AC_LIVE, so watching for AC_OFF alone misses it."""
     before = col.sessions_started
     sim.graphics.iLastTime = 0
     sim.graphics.completedLaps = 0
@@ -370,10 +332,9 @@ def make_session(conn, track="mugello", car="ks_mazda_mx5_cup"):
 def age_session(conn, session_id, seconds):
     """Backdate a whole session so staleness logic can be exercised.
 
-    The heartbeat moves with it. Ageing started_at alone would describe a
-    session that began an hour ago and is still being recorded right now,
-    which is a real state -- see heartbeat_session -- but not the one any
-    caller of this function means.
+    The heartbeat moves with it. Aging started_at alone would describe a
+    session that began long ago and is still live, which is what
+    heartbeat_session is for.
     """
     then = time.time() - seconds
     conn.execute("UPDATE sessions SET started_at = ?, last_seen_at = ?"
@@ -384,9 +345,8 @@ def age_session(conn, session_id, seconds):
 def heartbeat_session(conn, session_id, seconds_ago=0.0):
     """Set only the heartbeat: a session that started long ago and is live.
 
-    This is the case the lap-based staleness rules could not express. A
-    driver on the out-lap of a Nordschleife session has produced no laps
-    and will not for ten minutes, and is unambiguously recording.
+    A driver on a long out-lap has produced no laps yet and may not for
+    minutes, but is recording.
     """
     conn.execute("UPDATE sessions SET last_seen_at = ? WHERE id = ?",
                  (time.time() - seconds_ago, session_id))
@@ -432,9 +392,8 @@ def get(port, path):
 def run_module(namespace) -> int:
     """Run a module's test_* functions without pytest.
 
-    The gaming PC has Python but not necessarily pytest, and being able to
-    run a single file there is the difference between diagnosing something
-    on the spot and not.
+    The gaming PC has Python but not necessarily pytest, and this lets a
+    single file be run there.
     """
     failures = 0
     for name, fn in sorted(namespace.items()):

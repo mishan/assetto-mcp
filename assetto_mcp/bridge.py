@@ -10,10 +10,11 @@ on 127.0.0.1 that it polls and posts to:
     POST /suspension -> suspension travel, wheel loads and ride height,
                      none of which stock shared memory exposes
     POST /setup   -> the setup menu as the game reports it: every entry's
-                     legal min/max/step and current value. Retires unpacking
-                     data.acd for ranges, and identifies which saved setup is
-                     loaded -- shared memory shows only brake bias and fuel,
-                     which cannot separate setups differing in ARB or camber
+                     legal min/max/step and current value. Gives ranges
+                     without unpacking data.acd, and identifies which saved
+                     setup is loaded -- shared memory shows only brake bias
+                     and fuel, which cannot separate setups differing in ARB
+                     or camber
     POST /ack     -> dismiss the currently displayed message
 
 Messages flow the other way via the send_driver_message MCP tool: Claude sets
@@ -40,22 +41,19 @@ class _ExclusiveHTTPServer(ThreadingHTTPServer):
     process is *actively listening* on. Both binds succeed, neither reports
     an error, and which socket receives a given connection is arbitrary.
 
-    That is a real failure mode here. If a previous server process outlives
-    its parent -- Claude Desktop leaving an orphan behind, say -- the stale
-    process keeps answering the in-game app's /status polls with its own
-    idle collector, while the live process serves MCP. The overlay then
-    reports "connected, not recording" even though recording is fine.
+    If a previous server process outlives its parent (an orphan left by
+    the MCP host), the stale process keeps answering the in-game app's
+    /status polls with its own idle collector while the live process serves
+    MCP, and the overlay reports "connected, not recording".
 
     Fail loudly on a port clash instead, so bridge_status surfaces it.
     """
 
     allow_reuse_address = False
 
-    # socketserver defaults to a listen backlog of 5. The app posts on five
-    # channels now and CSP lets two be in flight, so five is enough in
-    # practice -- but a burst that overruns it is refused by the OS with a
-    # connection reset, which looks to the client exactly like the server
-    # dropping data. Cheap to make that not happen.
+    # socketserver defaults to a listen backlog of 5. A burst that overruns
+    # it is refused by the OS with a connection reset, which looks to the
+    # client exactly like the server dropping data.
     request_queue_size = 64
 
     def server_bind(self):
@@ -91,11 +89,10 @@ MAX_SETUP_SPINNERS = 300
 # cannot bind, which would otherwise fail the whole snapshot.
 SETUP_LIMIT = 1e9
 
-# Must stay above the Lua app's own RIVAL_BUFFER_MAX (1400): the client caps
-# its buffer, so anything above that ceiling is a bug on one side or the
-# other. tests/test_rivals.py asserts the relationship rather than the value,
-# because bracketing the constant loosely is how it got sized for a single
-# grid snapshot the first time.
+# The Lua app's own RIVAL_BUFFER_MAX. MAX_RIVAL_BATCH must stay above it:
+# the client caps its buffer, so anything above that ceiling is a bug on one
+# side or the other. tests/test_request_validation.py asserts the
+# relationship.
 RIVAL_BUFFER_MAX_CLIENT = 1400
 
 # Suspension arrives from two tiers: the app at render rate (~60-144Hz) and
@@ -122,7 +119,7 @@ MAX_BODY_BYTES = 4 * 1024 * 1024
 DRAIN_LIMIT_BYTES = 64 * 1024 * 1024
 
 # Windows holds a closed listening socket in TIME_WAIT for up to four
-# minutes. Since we now refuse to share the port, our own restart can be what
+# minutes. Since we refuse to share the port, our own restart can be what
 # blocks us, so keep retrying for longer than that before giving up.
 BIND_RETRY_INTERVAL = 5.0
 BIND_RETRY_SECONDS = 300.0
@@ -130,24 +127,10 @@ BIND_RETRY_SECONDS = 300.0
 # How long a session in the shared DB counts as "another instance is still
 # recording this", when that session predates the collector heartbeat.
 # Generous: a driver can sit in the garage between runs, and for these rows
-# the only evidence is the last stored lap -- or, for a session that never
-# stored one, the moment it started. Both are ages of something that
-# happened once and cannot happen again, which is why the window has to be
-# this loose and why it is a fallback rather than the rule.
-#
-# Live sessions do not use this. A running collector touches
-# sessions.last_seen_at every few seconds, so db.SESSION_STALE_SECONDS
-# decides, and liveness is read rather than inferred.
-#
-# The inference this replaced was wrong in both directions, and no single
-# number could have fixed it. Judged from started_at, an empty session
-# asserted itself for fifteen minutes -- which is how seven laps at Suzuka
-# went unrecorded behind a green indicator. Tightening that to a
-# three-minute grace then declared a real session dead for the length of a
-# garage sit plus an out-lap plus a flying lap, because the first lap a
-# session STORES is its first flying one: over five minutes at Sebring,
-# during which every complaint tag the driver pressed was filed against
-# nothing. Laps were never the question.
+# the only evidence is the last stored lap or, for a session that never
+# stored one, the moment it started. A fallback, not the rule: a running
+# collector touches sessions.last_seen_at every few seconds, so for live
+# sessions db.SESSION_STALE_SECONDS decides.
 OTHER_INSTANCE_STALE_SECONDS = 900.0
 
 
@@ -159,11 +142,9 @@ def _opt_float(raw, lo: float, hi: float) -> float | None:
     """Best-effort float within [lo, hi], or None.
 
     Never raises: a remote car whose inputs the server doesn't transmit is
-    an expected condition, not a client error. But the bounds are not
-    optional. Unbounded, a client sending 1e30 produced an int SQLite
-    cannot bind, which surfaced as a 500 *and* rolled back the whole batch
-    of 1400 samples -- defeating the per-item skip whose entire purpose is
-    that one bad car must not cost the rest.
+    an expected condition, not a client error. The bounds are not optional:
+    a value SQLite cannot bind (1e30 as an int) would fail and roll back the
+    whole batch, when one bad car must not cost the rest.
     """
     if raw is None or isinstance(raw, bool):
         return None
@@ -269,10 +250,7 @@ class Bridge:
 
         Both what the overlay shows and where inbound data is filed come
         from here, because the two disagreeing is worse than either being
-        wrong. They used to: status applied a staleness window and the write
-        path did not, so the overlay could report the Mugello session while
-        the same request filed the driver's note into a Monza session from
-        three days earlier.
+        wrong.
 
         Two rules, in order:
 
@@ -309,20 +287,15 @@ class Bridge:
         # Ask the collector recording it, not the laps it has produced. The
         # heartbeat moves every few seconds from the moment the session
         # exists, so a driver on the out-lap is as clearly alive as one
-        # setting a personal best -- which the lap-based rules could not
-        # tell apart from a session that ended on Tuesday.
+        # setting a personal best.
         beat = latest.get("last_seen_at")
         if beat is not None:
             age = time.time() - beat
             limit = db.SESSION_STALE_SECONDS
         else:
-            # Recorded before v10. No heartbeat was ever written for this
-            # session and none can be invented, so fall back to the lap
-            # evidence and its generous window.
-            #
-            # `is not None` rather than `or`: these are timestamps, and the
-            # question is whether a lap exists, not whether its timestamp is
-            # truthy.
+            # Recorded before schema v10, with no heartbeat: fall back to
+            # the lap evidence and its generous window. `is None`, not `or`:
+            # the question is whether a lap exists.
             last_lap = latest["last_lap_at"]
             age = time.time() - (latest["started_at"] if last_lap is None
                                  else last_lap)
@@ -349,9 +322,8 @@ class Bridge:
     def status_snapshot(self) -> dict:
         """What to show the driver, across however many instances exist.
 
-        The overlay saying "connected, not recording" while laps are being
-        stored by another instance is the single most misleading thing this
-        tool has done, so a session found in the shared database counts.
+        A session another instance is recording counts, so the overlay
+        does not say "connected, not recording" while laps are being stored.
         """
         r = self._resolve()
         # Never let another instance's recording mask this one being broken.
@@ -443,7 +415,24 @@ class Bridge:
                     remaining -= len(got)
                 self.close_connection = True
 
+            def _from_web_page(self) -> bool:
+                # A browser tab can reach 127.0.0.1 too. Without a JSON
+                # Content-Type a cross-site POST needs no CORS preflight, and
+                # a DNS-rebound page arrives under its own Host name. Either
+                # could plant fake setup ranges or rival names that the model
+                # later reads.
+                host = self.headers.get("Host", "")
+                port = self.server.server_address[1]
+                if host not in (f"127.0.0.1:{port}",
+                                f"localhost:{port}"):
+                    return True
+                ctype = self.headers.get("Content-Type", "")
+                return (self.command == "POST"
+                        and ctype.split(";")[0].strip() != "application/json")
+
             def do_GET(self):
+                if self._from_web_page():
+                    return self._send(403, {"error": "forbidden"})
                 if self.path != "/status":
                     return self._send(404, {"error": "unknown path"})
                 self._send(200, {**bridge.status_snapshot(),
@@ -458,6 +447,8 @@ class Bridge:
                     return self._send(500, {"error": f"{type(e).__name__}: {e}"})
 
             def _do_post(self):
+                if self._from_web_page():
+                    return self._send(403, {"error": "forbidden"})
                 body = self._body()
                 if body is None:
                     return self._send(400, {"error": "bad JSON"})
@@ -487,31 +478,26 @@ class Bridge:
                     finally:
                         conn.close()
                     # sid is None when nothing is recording. Store the note
-                    # anyway, against a NULL session -- the driver pressed
-                    # the button and that input is real. What must not happen
-                    # is guessing a session for it: attaching it to whatever
-                    # ran most recently is silent misattribution, and far
-                    # harder to notice than an orphan. get_driver_notes
-                    # surfaces these; the app toasts them differently.
+                    # anyway, against a NULL session: the input is real, and
+                    # guessing a session for it is silent misattribution.
+                    # get_driver_notes surfaces these; the app toasts them
+                    # differently.
                     return self._send(200, {"ok": True, "id": note_id,
                                             "session_id": sid,
                                             "orphaned": sid is None})
 
                 if self.path == "/rivals":
                     # Batched opponent telemetry from the Lua app. Rejecting
-                    # the whole batch for one bad car would lose the other 19,
+                    # the whole batch for one bad car would lose the others,
                     # so malformed entries are counted and skipped instead.
                     sid = bridge.active_session_id()
                     if sid is None:
                         return self._send(200, {"ok": False,
                                                 "reason": "not recording"})
                     # Which session the app believed it was sampling. Its
-                    # view lags ours by a poll and by the round trip this
-                    # request is making, so a batch can arrive after the
-                    # session it belongs to has ended -- and filing it here
-                    # would put one session's opponents, names and lap
-                    # counts in another. Absent from an older app, which is
-                    # read as "no claim" rather than as a mismatch.
+                    # view lags ours by a poll and a round trip, so a batch
+                    # can arrive after its session has ended. Absent from an
+                    # older app, which is read as "no claim".
                     claimed = _opt_int(body.get("session_id"), 1, 2**31 - 1)
                     if claimed is not None and claimed != sid:
                         return self._send(200, {"ok": False,
@@ -586,7 +572,7 @@ class Bridge:
                     if source not in ("app", "worker"):
                         return self._send(400, {
                             "error": "'source' must be 'app' or 'worker' -- "
-                                     "the tier decides which analyzes are "
+                                     "the tier decides which analyses are "
                                      "honest to run on the data"})
                     raw = body.get("samples")
                     if not isinstance(raw, list):
@@ -599,11 +585,9 @@ class Bridge:
 
                     samples, skipped = [], 0
                     # Out-of-range optional fields become NULL, which is
-                    # correct but invisible: if the client sent millimeters
-                    # where meters were expected, every travel field would
-                    # silently vanish and the report would come back empty
-                    # with no explanation. Count them so it reads as a units
-                    # problem rather than a mystery.
+                    # correct but invisible. Count them, so millimeters sent
+                    # where meters were expected read as a units problem
+                    # rather than an empty report.
                     rejected: dict[str, int] = {}
 
                     def opt(src, key, lo, hi, integral=False):
@@ -650,14 +634,8 @@ class Bridge:
                                                       samples)
                         # Highest-volume table in the database by an order
                         # of magnitude; sweep occasionally rather than never.
-                        #
-                        # This server is threaded, so two batches can land
-                        # at once -- the app posts one tier while the worker
-                        # posts the other. `+= 1` is a read and a write, and
-                        # a lost increment means the sweep drifts or, if
-                        # every collision lands on the same residue, never
-                        # fires at all. Decide under the lock, prune outside
-                        # it: a DELETE is not something to hold a lock for.
+                        # Two batches can land at once (app and worker), so
+                        # count under the lock; prune outside it.
                         due = False
                         if n:
                             with bridge._lock:
@@ -680,8 +658,7 @@ class Bridge:
 
                 if self.path == "/setup":
                     # What ac.getSetupSpinners() reports. Ranges are the
-                    # car's own legal limits, so this retires the hand
-                    # -installed ranges file; values identify which saved
+                    # car's own legal limits; values identify which saved
                     # setup is actually loaded.
                     sid = bridge.active_session_id()
                     if sid is None:
@@ -702,10 +679,7 @@ class Bridge:
                         if not isinstance(s, dict) or not s.get("name"):
                             skipped += 1
                             continue
-                        # Bounds are wide but real: ARB rates run to ~200k
-                        # N/m, so this cannot be tight -- it exists to stop
-                        # a value SQLite cannot bind from turning one bad
-                        # entry into a 500 that discards the whole snapshot.
+                        # Wide bounds; see SETUP_LIMIT.
                         spinners.append({
                             "name": str(s["name"])[:64],
                             "label": str(s.get("label", ""))[:64],
@@ -730,14 +704,11 @@ class Bridge:
                     conn = db.connect(bridge._db_path)
                     try:
                         # `car` is the persistence key for setup_ranges, and
-                        # ranges decide how later writes are clamped and
-                        # which saved setup is identified as loaded. Taking
-                        # it from the request means one confused client --
-                        # an app left running from the previous car, a stale
-                        # carId after a session change -- can file one car's
-                        # limits under another's name, where they stay,
-                        # wrong, for every session afterwards. The session
-                        # knows its own car from shared memory, so check.
+                        # ranges decide how later writes are clamped. A
+                        # confused client (a stale carId after a session
+                        # change) could file one car's limits under another's
+                        # name for good. The session knows its own car from
+                        # shared memory, so check.
                         session = db.get_session(conn, sid) or {}
                         session_car = str(session.get("car") or "").strip()
                         if session_car and \
@@ -748,12 +719,9 @@ class Bridge:
                                          f"{car!r}. Setup ranges are stored "
                                          f"per car, so this is refused rather "
                                          f"than filed under the wrong one."})
-                        # An unknown session car is not evidence against the
-                        # client: sessions created before the car was known
-                        # (or by a test) leave it empty, and refusing there
-                        # would lose real setup data to a blank field. The
-                        # client's value is the only one available, so take
-                        # it.
+                        # A session can be created before the car is known
+                        # (or by a test), so a blank car is not evidence
+                        # against the client: take the client's value.
                         car = session_car or car
                         n = db.store_setup_snapshot(
                             conn, sid, car, spinners,
@@ -787,11 +755,9 @@ class Bridge:
         self._handler_cls = Handler
         if self._try_bind():
             return
-        # Binding failed. Refusing to share the port is deliberate, but it
-        # means a socket left in TIME_WAIT by the previous server process
-        # blocks us too -- and that clears on its own within a few minutes.
-        # Retry in the background so an ordinary restart self-heals instead
-        # of leaving the in-game app dead until the user notices.
+        # Binding failed. A socket left in TIME_WAIT by the previous server
+        # process blocks us too, and clears on its own within a few minutes,
+        # so retry in the background and let an ordinary restart self-heal.
         threading.Thread(target=self._retry_bind, daemon=True).start()
 
     def _try_bind(self) -> bool:
@@ -837,8 +803,7 @@ class Bridge:
             server, self._server = self._server, None
         if server:
             server.shutdown()      # stop the accept loop
-            # And actually close the listening socket. shutdown() alone
-            # leaves it open until refcounting gets around to it, which on
-            # Windows stretches the TIME_WAIT window that -- now that we
-            # refuse to share the port -- our own restart has to wait out.
+            # shutdown() alone leaves the listening socket open until
+            # refcounting closes it, which on Windows stretches the TIME_WAIT
+            # window our own restart has to wait out.
             server.server_close()

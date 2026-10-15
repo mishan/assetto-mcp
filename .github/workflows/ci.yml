@@ -1,30 +1,35 @@
 name: CI
 
 on:
-  # Only main on push. A branch with an open PR would otherwise run the
-  # whole matrix twice for every commit -- once for `push`, once for
-  # `pull_request` -- which is eight identical jobs saying the same thing.
+  # Branches with an open PR are covered by pull_request; pushing them too
+  # would run every job twice.
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
 
-# A push that lands while an earlier run is still going supersedes it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: python -m pip install ruff==0.16.8
+      - run: ruff check --output-format=github .
+
   tests:
     name: tests (${{ matrix.os }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # Windows is the deployment target -- the server runs on the gaming
-        # PC next to Assetto Corsa -- so it is not an afterthought here.
-        # Ubuntu is the fast feedback loop. 3.10 is the floor declared in
-        # pyproject; 3.13 catches what is coming.
+        # Windows is where the server runs; 3.10 is the floor in pyproject.
         os: [ubuntu-latest, windows-latest]
         python: ["3.10", "3.13"]
     steps:
@@ -41,59 +46,31 @@ jobs:
           python -m pip install -e ".[test]"
 
       - name: Refuse to run with the Lua app tests silently skipped
-        # These skip when lupa is absent, which is right on the gaming PC
-        # and wrong in CI: a skipped suite reports green while the in-game
-        # app goes untested, and the app is where the last three bugs were.
-        # lupa is in the [test] extra, so reaching here without it means the
-        # install did not do what it claims.
+        # Skipping without lupa is right on the gaming PC and wrong here.
         run: |
           python -c "import sys; sys.path.insert(0, 'tests'); import lua_harness; sys.exit(0) if lua_harness.available() else sys.exit('lupa missing: the Lua app tests would skip, which CI must not allow')"
 
       - name: Run tests
-        # The suite binds ephemeral localhost ports and drives a fake
-        # SimInfo, so it needs neither Assetto Corsa nor Windows-specific
-        # anything -- but it does exercise the real bridge over real HTTP,
-        # and a real Lua runtime for the in-game app.
-        #
-        # AC_TESTS_STRICT is what stops a missing optional dependency from
-        # passing quietly: lupa and luaparser are declared in the [test]
-        # extra, so here their absence is a broken install, and the modules
-        # raise at import instead of skipping. Off by default, because on
-        # the gaming PC neither is installed and skipping is correct.
+        # AC_TESTS_STRICT makes a missing optional dependency fail at import
+        # instead of skipping.
         env:
           AC_TESTS_STRICT: "1"
         run: python -m pytest tests/ -v --durations=10
 
       - name: Refuse to pass if nothing exercised the Lua app
-        # The guard above proves lupa imports; strict mode proves the module
-        # did not skip. This proves the tests themselves still exist and ran:
-        # --min-tests fails if fewer than that many executed, so deleting,
-        # renaming or marking them out reads as a failure rather than as a
-        # shorter green run. It was `pytest tests/test_lua_app.py`, which
-        # reported "9 skipped" and exit 0 with lupa removed.
-        #
-        # Level with the count rather than comfortably under it: a floor with
-        # slack in it is one that lets the next few tests be dropped without
-        # saying so. Raise it when tests are added -- the same figure is used
-        # by the lua job below.
+        # A floor equal to the current count, so dropping a test fails CI.
+        # Raise it when tests are added; the lua job uses the same figure.
         env:
           AC_TESTS_STRICT: "1"
         run: python run_tests.py -k "^test_lua_app\." --no-skip --min-tests 29
 
       - name: Check each module also runs standalone
-        # The gaming PC has Python (the server needs it) but no reason to
-        # have pytest, so every test module has a __main__ runner. This
-        # keeps that path from rotting, and run_tests.py --isolate is the
-        # same check the developer runs locally rather than a shell loop
-        # that only exists in CI.
-        #
-        # --no-skip because a module that skips exits with SKIP_EXIT and
-        # would otherwise be counted as passing standalone, which is exactly
-        # how a run with no lupa reported "all 13 modules pass".
+        # The gaming PC may not have pytest, so every test module has a
+        # __main__ runner. --no-skip so a skipping module doesn't count.
         run: python run_tests.py --isolate --no-skip
 
   lua:
-    name: lua (syntax + app behaviour)
+    name: lua (syntax + app behavior)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -102,20 +79,11 @@ jobs:
           python-version: "3.12"
 
       - name: Install the Lua tooling
-        # luaparser parses the app; lupa runs it. Pinned as a floor rather
-        # than exactly, so a new CSP-era Lua feature is not blocked by an
-        # old parser, but a missing wheel fails here rather than silently
-        # turning the behaviour tests into skips.
         run: python -m pip install "luaparser>=3.2" "lupa>=2.0" pytest
 
       - name: Verify the runtime is the Lua the game runs
-        # Not just "some Lua". CSP runs LuaJIT 2.1, which is Lua 5.1, and
-        # lupa ships 5.1 through 5.5 in the same wheel with the newest as
-        # its default. Testing on 5.5 is a false signal in both directions:
-        # `7 // 2` runs there and is a syntax error in the game, and
-        # string.format('%d', 1.5) raises there and works in the game. The
-        # harness asks for LuaJIT by name; this prints what it got, so a
-        # wheel change shows up in the log as well as in the failure.
+        # CSP runs LuaJIT 2.1 (Lua 5.1); lupa defaults to the newest Lua,
+        # where `7 // 2` parses and string.format('%d', 1.5) raises.
         run: |
           python - <<'PY'
           import sys
@@ -133,23 +101,12 @@ jobs:
           PY
 
       - name: Parse the in-game app
-        # CSP loads this at runtime and reports failures in a debug window
-        # nobody has open, so a syntax error costs a session to notice.
-        # Same check the developer runs locally, rather than a copy of it
-        # that only exists in YAML and can drift.
+        # CSP reports load errors only in a debug window.
         env:
           AC_TESTS_STRICT: "1"
         run: python run_tests.py --lua-only
 
       - name: Run the in-game app against a stubbed CSP API
-        # Syntax checking caught none of the bugs this app has shipped --
-        # they were a scheduler that disagreed with its own comment, a
-        # diagnostic that threw and disabled what it inspected, and an
-        # expression whose operator precedence made it a constant. All
-        # three needed the app to actually run.
-        #
-        # Strict mode plus --min-tests: with lupa absent this used to report
-        # "9 skipped" and exit 0, which is the same green as having run.
         env:
           AC_TESTS_STRICT: "1"
         run: python -m pytest tests/test_lua_app.py -v --no-header
@@ -160,9 +117,6 @@ jobs:
         run: python run_tests.py -k "^test_lua_app\." --no-skip --min-tests 29
 
       - name: Check the implicit-globals check itself ran
-        # luaparser had no guard at all: tests/test_suspension.py caught
-        # ImportError, printed "skipped" and returned, which pytest counts
-        # as a pass -- for the only test covering that bug class.
         env:
           AC_TESTS_STRICT: "1"
         run: python run_tests.py -k "implicit_globals" --no-skip --min-tests 1
@@ -174,14 +128,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Parse and lint the installer scripts
-        # Deliberately `shell: powershell` (5.1, the one built into
-        # Windows) rather than pwsh (7). These scripts run by double-click
-        # on a machine that has only 5.1, so PS7-only syntax parsing
-        # cleanly under pwsh would be a false pass.
+        # Windows PowerShell 5.1, not pwsh 7: the scripts run by double-click
+        # on machines that have only 5.1.
         shell: powershell
         run: |
           $failed = $false
-          Get-ChildItem -Path . -Filter *.ps1 | ForEach-Object {
+          Get-ChildItem -Path . -Filter *.ps1 -Recurse | ForEach-Object {
             $errors = $null; $tokens = $null
             [System.Management.Automation.Language.Parser]::ParseFile(
               $_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
@@ -199,11 +151,10 @@ jobs:
 
       - name: Guard against writing a UTF-8 BOM into the Claude config
         # Claude Desktop's JSON parser rejects a BOM, and
-        # Set-Content -Encoding UTF8 adds one in PowerShell 5.1. Every
-        # config write must go through .NET WriteAllText instead.
+        # Set-Content -Encoding UTF8 writes one in PowerShell 5.1.
         shell: powershell
         run: |
-          $bad = Get-ChildItem -Filter *.ps1 | ForEach-Object {
+          $bad = Get-ChildItem -Filter *.ps1 -Recurse | ForEach-Object {
             $code = (Get-Content $_.FullName) | Where-Object { $_ -notmatch '^\s*#' }
             if ($code -match 'Set-Content[^\n]*-Encoding\s+UTF8') { $_.Name }
           }
@@ -223,7 +174,7 @@ jobs:
             'Get-Error'                 = '\bGet-Error\b'
           }
           $failed = $false
-          Get-ChildItem -Filter *.ps1 | ForEach-Object {
+          Get-ChildItem -Filter *.ps1 -Recurse | ForEach-Object {
             $name = $_.Name
             $code = ((Get-Content $_.FullName) |
                      Where-Object { $_ -notmatch '^\s*#' }) -join "`n"

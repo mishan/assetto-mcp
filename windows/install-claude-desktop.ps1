@@ -56,12 +56,9 @@ function Get-ClaudeConfigCandidates {
     $packages = Join-Path $env:LOCALAPPDATA 'Packages'
     if (Test-Path -LiteralPath $packages) {
         foreach ($pkg in @(Get-ChildItem -LiteralPath $packages -Directory -ErrorAction SilentlyContinue)) {
-            # The redirect directory actually existing - not the folder name -
-            # is what proves this package is a Claude Desktop build. The old
-            # 'Claude*' -or '*Anthropic*' name filter was loose enough to catch
-            # unrelated packages, so name matching is now only used to *rank*
-            # candidates, never to exclude them: a differently named package
-            # that has the redirect dir still works, it just ranks lower.
+            # The redirect directory existing is what proves this package is
+            # a Claude Desktop build; a name filter catches unrelated packages.
+            # The name only ranks candidates, never excludes them.
             $d = Join-Path $pkg.FullName 'LocalCache\Roaming\Claude'
             if (-not (Test-Path -LiteralPath $d)) { continue }
 
@@ -233,9 +230,8 @@ function Remove-OldBackups ($configPath) {
 
 # A single run writes the owner config more than once - the main write, then
 # the sweep that removes the pre-rename entry - and a second-resolution stamp
-# gives both the same filename. Copy-Item overwrites without complaint, so the
-# second backup used to clobber the first and the user's actual pre-install
-# state was the thing that got lost. Never overwrite an existing backup.
+# gives both the same filename. Never overwrite an existing backup: the first
+# one holds the user's pre-install state.
 function Backup-ConfigFile ($path) {
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $bak   = "$path.$stamp.bak"
@@ -253,10 +249,8 @@ function Backup-ConfigFile ($path) {
 # MCP server and every other top-level setting. Only rewrites the file if the
 # entry was actually there. Returns 'removed', 'absent' or 'error'.
 #
-# The name is a parameter because this server used to be called
-# ac-race-engineer, and an install that predates the rename leaves that entry
-# behind pointing at a module that no longer exists. Claude Desktop would keep
-# launching it and keep showing a dead server.
+# The name is a parameter so the legacy ac-race-engineer entry, which points
+# at a module that no longer exists, can be removed too.
 function Remove-ServerEntry ($path, $name = $ServerName) {
     if (-not (Test-Path -LiteralPath $path)) { return 'absent' }
 

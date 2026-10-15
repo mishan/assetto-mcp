@@ -98,7 +98,7 @@ def test_bridge_accepts_and_stores_batch():
 
 
 def test_an_opponent_sample_keeps_its_clock_and_position():
-    """Schema v14: the app sends both now, and neither may be lost or invented."""
+    """Neither the app's clock nor its position may be lost or invented."""
     with temp_db() as path:
         db.connect(path).close()
         b = Bridge(path, _recording(1), port=0)
@@ -146,13 +146,10 @@ def test_malformed_cars_skipped_not_fatal():
 
 
 def test_batch_refused_when_nothing_is_recording():
-    """With a stale session present, not merely an empty database.
+    """Even with a stale session present to file against.
 
-    The original version of this test set session_id = None against an
-    empty database, so it passed because there was nothing to file against
-    at all -- it was really testing "no sessions exist". A three-day-old
-    session is the case that matters: there is somewhere to put the data,
-    and it is the wrong place.
+    An empty database would pass for the wrong reason. A three-day-old
+    session is somewhere to put the data, and it is the wrong place.
     """
     with temp_db() as path:
         conn = db.connect(path)
@@ -243,9 +240,8 @@ def test_a_rivals_lap_time_is_tied_to_the_lap_it_belongs_to():
     """last_lap_ms is overwritten every batch, so the moment the lap
     counter advances is the only chance to record which lap it described.
 
-    Without this, "their best lap" cannot be identified at all, and the
-    comparison silently defaulted to the lap with the most samples -- the
-    longest-observed, which if anything correlates with the slowest.
+    Without it "their best lap" cannot be identified, and the lap with the
+    most samples is the longest-observed, which tends to be the slowest.
     """
     with tempfile.TemporaryDirectory() as d:
         conn = db.connect(Path(d) / "t.db")
@@ -330,17 +326,13 @@ def test_partial_coverage_is_surfaced():
 
 
 def test_metadata_on_the_first_sample_is_not_erased_by_later_ones():
-    """A whole race produced rival rows with no names and no lap times.
+    """Later samples' blanks must not overwrite a car's name or lap times.
 
-    The Lua app stamps driver name, car model and lap times onto the FIRST
-    sample of each car in a batch -- carrying them on all ten samples a
-    second doubled the JSON it serialises on the render thread. The server
-    collapsed the batch to one row per car with last-write-wins, so every
-    later entry's blanks overwrote the real values.
-
-    Merging per field keeps freshest-wins for lap_count, which really does
-    ride on every sample, without letting an absent field erase a present
-    one.
+    The Lua app stamps driver name, car model and lap times onto only the
+    first sample of each car in a batch, to keep the JSON it serializes on
+    the render thread small. Merging per field keeps freshest-wins for
+    lap_count, which rides on every sample, without letting an absent field
+    erase a present one.
     """
     with tempfile.TemporaryDirectory() as d:
         conn = db.connect(Path(d) / "t.db")
@@ -409,8 +401,8 @@ def test_a_batch_from_a_session_that_has_ended_is_refused_not_refiled():
 def test_a_lap_of_teleports_is_not_a_lap_we_saw():
     """Samples at the speed clamp are not evidence the lap was driven.
 
-    Counting them let a lap that was almost entirely a car being moved about
-    meet the coverage rule, and then be drawn from the few real samples left.
+    Counting them would let a lap that was almost entirely a car being moved
+    about meet the coverage rule, then be drawn from the few real samples.
     """
     with tempfile.TemporaryDirectory() as d:
         conn = db.connect(Path(d) / "t.db")

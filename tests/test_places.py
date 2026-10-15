@@ -1,7 +1,7 @@
 """Positions in meters and turns, not lap fractions.
 
-A driver told "6.8 g at 0.065" had no idea where that was. Told "T1, 70 m
-after turn-in", they did. These pin the wording a position is turned into,
+"6.8 g at 0.065" tells a driver nothing; "T1, 70 m after turn-in" tells
+them where. These pin the wording a position is turned into,
 the arithmetic across the start/finish line, and where the track length
 comes from when the session never stored one.
 """
@@ -66,8 +66,8 @@ def test_positions_either_side_of_the_line_are_one_turn():
 def test_a_brake_point_after_turn_in_is_not_a_braking_zone_all_lap():
     """Interlagos T2, the Senna S: braked 6 m after turning in.
 
-    Measured forward from the brake point, turn-in was 99.8% of a lap away,
-    so every place on the circuit read as T2's braking zone.
+    Measured forward from the brake point, turn-in is 99.8% of a lap away,
+    which would put every place on the circuit in T2's braking zone.
     """
     turns = [{"turn": "T2", "brake_point_pos": 0.0824, "entry_pos": 0.0809,
               "apex_pos": 0.0876, "exit_pos": 0.1017}]
@@ -105,7 +105,7 @@ def test_place_adds_meters_beside_every_fraction_and_keeps_the_fraction():
     assert corner["brake_point_m"] == 80, corner
     assert corner["brake_before_turn_in_m"] == 120, corner
     assert corner["brake_point_delta_m"] == -40, corner
-    # A labelled turn already says where it is.
+    # A labeled turn already says where it is.
     assert "where" not in corner, corner
     assert corner["entry_phase"]["where"] == (
         "T1 braking zone, 120 m before turn-in"), corner
@@ -155,9 +155,11 @@ def test_a_stored_length_is_the_games():
 
 
 def test_a_missing_length_is_estimated_from_clean_laps_only():
-    """Half the sessions recorded before the collector stored the length
-    have none. Speed over the clock gives it back to within half a percent
-    on real laps; an out-lap from the pit exit would not."""
+    """Older sessions have no stored length.
+
+    Speed over the clock gives it back to within half a percent on real
+    laps; an out-lap from the pit exit would not.
+    """
     with temp_db() as path:
         conn = db.connect(path)
         try:

@@ -3,14 +3,13 @@
 The game reports a display_multiplier and it is not enough. A stored 20 can
 read as 20 clicks, as 2.0 degrees, or as -2.0; the NSX stores 10 for 0.00
 degrees of toe, so the zero is wrong as well as the scale; the F4 negates
-the front axle. Five driver corrections in one evening, every one of them
-this tool stating a display it had inferred and got wrong.
+the front axle. A display inferred from the multiplier alone gets each of
+these wrong.
 
 So the mapping is fitted from what the driver reads off the screen, and
 where there is nothing to fit from, the answer is "unknown" rather than a
-number. The five corrections are all here as cases -- they are the reason
-the registry exists, and a regression in any of them is a regression in the
-thing itself.
+number. Each of those cases is here, and a regression in any of them is a
+regression in the thing itself.
 """
 
 import json
@@ -31,8 +30,8 @@ from assetto_mcp import db, setups  # noqa: E402
 def test_two_readings_pin_a_negated_axis():
     """F4 front toe: the screen shows the negative of the stored value.
 
-    No multiplier can express a sign flip, and the tool reported rear
-    toe-out for a front toe-in setting until the driver corrected it.
+    No multiplier can express a sign flip, so a multiplier alone reports
+    toe-in as toe-out.
     """
     m = setups.fit_display([(-20, 0.20), (20, -0.20)], multiplier=0.01)
     assert m["basis"] == "two observations", m
@@ -57,7 +56,7 @@ def test_one_reading_fixes_a_zero_that_is_not_at_zero():
 
 
 def test_two_readings_pin_a_scale_the_game_understated():
-    # F4 rod length: reported as roughly a millimetre a click, actually a
+    # F4 rod length: reported as roughly a millimeter a click, actually a
     # fraction of one.
     m = setups.fit_display([(0, 0.0), (100, 2.5)])
     assert m["slope"] == 0.025, m
@@ -91,10 +90,10 @@ def test_the_widest_pair_anchors_the_fit():
 
 
 def test_a_reading_that_contradicts_the_others_is_named():
-    """`points` was published as confirmation without anything checking it.
+    """`points` is published as confirmation, so something has to check it.
 
-    Three observations, one of them wild, fitted cleanly from the outer two
-    and reported "observations: 3" -- the contradiction silently discarded
+    Three observations, one of them wild, fit cleanly from the outer two;
+    reporting "observations: 3" would discard the contradiction silently
     while inflating the apparent evidence.
     """
     m = setups.fit_display([(0, 0.0), (10, 99.0), (100, 2.5)])
@@ -108,8 +107,8 @@ def test_a_reading_that_contradicts_the_others_is_named():
 def test_two_readings_of_the_same_number_do_not_make_a_flat_line():
     """A screen that rounds, or the same number written down twice.
 
-    A slope of 0 reported every value of the entry as one number with
-    "observed" beside it -- the original failure with a badge on.
+    A slope of 0 would report every value of the entry as one number with
+    "observed" beside it -- a guess with a badge on.
     """
     m = setups.fit_display([(-40, 0.5), (40, 0.5)], multiplier=0.01)
     assert m["slope"] == 0.01, "falls back to the game's scale, not zero"
@@ -119,9 +118,9 @@ def test_two_readings_of_the_same_number_do_not_make_a_flat_line():
 
 
 def test_stored_values_that_differ_only_by_float_noise_are_one_reading():
-    # Exact inequality gave a slope of 2e14 and a screen value of 1.5e15,
-    # reported as observed. Continuous entries (step 0) are supported, so
-    # this is reachable rather than theoretical.
+    # Exact inequality would give a slope of 2e14 and a screen value of
+    # 1.5e15, reported as observed. Continuous entries (step 0) are
+    # supported, so this is reachable rather than theoretical.
     m = setups.fit_display([(3.4, 0.5), (3.4000000000000004, 0.6)],
                            multiplier=0.01)
     assert m["slope"] == 0.01, m
@@ -150,11 +149,10 @@ def test_non_numeric_observations_are_skipped_rather_than_raising():
 # --- what gets reported -------------------------------------------------
 
 def test_a_click_index_is_reported_as_unknown_not_guessed_at():
-    """The exact spot where the guessing happened.
+    """A click index has no multiplier and no units to convert with.
 
-    It used to answer "20 (click index, mode 2)" -- an admission of
-    ignorance shaped like an answer, which got repeated to the driver as
-    one. There is no multiplier and no units for a click index; nothing
+    An answer like "20 (click index, mode 2)" is an admission of ignorance
+    shaped like an answer, and gets repeated to the driver as one. Nothing
     here can turn it into what the screen shows.
     """
     got = setups._displays_as(20, {"units": "", "display_multiplier": None,
@@ -164,7 +162,7 @@ def test_a_click_index_is_reported_as_unknown_not_guessed_at():
     assert "record_display_value" in got["how_to_fix"], got
 
 
-def test_the_games_multiplier_is_used_but_labelled_as_the_games():
+def test_the_games_multiplier_is_used_but_labeled_as_the_games():
     got = setups._displays_as(-32, {"units": "deg", "display_multiplier": 0.1,
                                     "show_clicks_mode": 0})
     assert got["source"] == "game" and got["value"] == -3.2, got
@@ -181,7 +179,7 @@ def test_an_observation_beats_the_games_multiplier():
 
 def test_a_note_rides_along_with_whatever_else_is_known():
     # Traction control: "1 = MOST intervention" is not a number mapping and
-    # was re-derived wrongly more than once.
+    # is easy to re-derive wrongly.
     conv = {"units": "", "display_multiplier": 1,
             "note": "1 = MOST intervention, 11 = least"}
     got = setups._displays_as(3, conv)
@@ -402,12 +400,12 @@ def test_recording_against_a_field_with_no_range_is_refused_not_invented():
 
 
 def test_one_reading_on_a_click_index_entry_admits_it_fitted_nothing():
-    """The case the whole branch exists for, and it was a silent no-op.
+    """The case the whole branch exists for must not be a silent no-op.
 
     A click-index entry has no multiplier, so one reading has nothing to
-    anchor against and `fit_display` returns None. The tool still answered
-    `ok: true` with "the zero is fitted" -- nothing was -- while the entry
-    stayed `unknown` and the advice was to do what had just been done.
+    anchor against and `fit_display` returns None. Answering `ok: true`
+    with "the zero is fitted" would claim a fit that never happened, while
+    the entry stays `unknown` and the advice is to do what was just done.
     """
     srv = _server()
     sid = _car_with_spinners(srv._conn, car="clicks_car")
@@ -426,11 +424,11 @@ def test_one_reading_on_a_click_index_entry_admits_it_fitted_nothing():
 
 
 def test_a_reading_is_never_filed_against_the_wrong_car():
-    """`car` and the live `stored` value were resolved independently.
+    """`car` and the live `stored` value have to come from the same car.
 
-    Naming one car while a session for another is live took that session's
-    spinner position and filed it under the named car -- a wrong reading,
-    recorded confidently.
+    Naming one car while a session for another is live must not take that
+    session's spinner position and file it under the named car -- a wrong
+    reading, recorded confidently.
     """
     srv = _server()
     sid = _car_with_spinners(srv._conn, car="session_car")
@@ -443,8 +441,8 @@ def test_a_reading_is_never_filed_against_the_wrong_car():
 
 
 def test_a_note_can_be_left_without_inventing_a_reading():
-    # The TC case: "1 is the most intervention" needs no number, and used to
-    # require one to be made up to carry it.
+    # The TC case: "1 is the most intervention" needs no number, and must
+    # not need one made up to carry it.
     srv = _server()
     _car_with_spinners(srv._conn, car="note_only_car")
     out = _call(srv.record_display_note, car="note_only_car",
@@ -475,7 +473,7 @@ def test_an_entry_known_only_from_a_note_is_not_reported_as_shown_as_stored():
 
 def test_setup_ranges_lists_entries_known_only_from_a_reading():
     # db.setup_display keeps them deliberately; listing only the spinner
-    # rows threw them away again.
+    # rows would throw them away again.
     srv = _server()
     _car_with_spinners(srv._conn, car="extra_car")
     _call(srv.record_display_note, car="extra_car", field="GHOST",
@@ -491,10 +489,10 @@ def test_setup_ranges_lists_entries_known_only_from_a_reading():
 def test_every_row_in_setup_ranges_has_the_same_shape():
     """A list whose entries have different keys makes every reader guess.
 
-    Rows synthesised from a note or a reading were appended with three keys
-    while real rows had twelve, and the tool's own docstring promises each
-    entry carries min, max and step. None says "not known" in a field that
-    exists; a missing key says nothing at all, twice.
+    Rows synthesized from a note or a reading carry the same keys as real
+    rows, and the tool's own docstring promises each entry carries min, max
+    and step. None says "not known" in a field that exists; a missing key
+    says nothing at all.
     """
     srv = _server()
     _car_with_spinners(srv._conn, car="shape_car")
@@ -519,8 +517,8 @@ def test_every_row_in_setup_ranges_has_the_same_shape():
 
 
 def test_the_display_docstring_names_the_keys_it_returns():
-    # It claimed a `confidence` field that was never set, which is the kind
-    # of thing a caller reaches for and finds missing at runtime.
+    # A documented key that is never set is one a caller reaches for and
+    # finds missing at runtime.
     doc = setups._displays_as.__doc__
     assert "confidence" not in doc, "still promising a field it never sets"
     for conv in ({"units": "deg", "display_multiplier": 0.01},

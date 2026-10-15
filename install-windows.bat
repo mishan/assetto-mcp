@@ -9,11 +9,11 @@ REM Just double-click this file. Any arguments are passed through, e.g.:
 REM     install-windows.bat -AcPath "D:\Games\steamapps\common\assettocorsa"
 
 setlocal
-set "SCRIPT=%~dp0install-windows.ps1"
+set "SCRIPT=%~dp0windows\install-windows.ps1"
 
 if not exist "%SCRIPT%" (
-    echo Could not find install-windows.ps1 next to this file.
-    echo Keep both files together in the repo folder.
+    echo Could not find windows\install-windows.ps1.
+    echo Run this from the repo folder, with the windows folder beside it.
     pause
     exit /b 1
 )

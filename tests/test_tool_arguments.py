@@ -1,10 +1,9 @@
 """List arguments in every shape a client sends them.
 
-At Fuji field_benchmark refused car_indexes="14" (the client sent the
-integer 14 to a parameter typed str), car_indexes="14,5" (sent as the list
-[14, 5]) and lap_ids="433,434" (read as one number with a thousands
-separator). Only "14, 14" and "433, 434" got through. These pin that a
-number, a list and the text all work, for ids and for positions.
+A client may send "14" as the integer 14, "14,5" as the list [14, 5], and
+"433,434" as text that looks like one number with a thousands separator.
+These pin that a number, a list and the text all work, for ids and for
+positions.
 """
 
 import asyncio
@@ -67,8 +66,22 @@ def test_id_text_for_the_lap_id_parsers():
 
 
 def _call(name, arguments):
-    """The tool's reply, by way of the SDK's argument validation."""
-    r = asyncio.run(_server().mcp.call_tool(name, arguments))
+    """The tool's reply, by way of the SDK's argument validation.
+
+    A refusal comes back as the error result's text, so arguments that
+    pass validation but name no lap still read as a reply.
+    """
+    s = _server()
+    try:
+        r = asyncio.run(s.mcp.call_tool(name, arguments))
+    except s.ToolError as e:
+        if not str(e).startswith("{"):
+            raise
+        return str(e)
+    return _text(r)
+
+
+def _text(r):
     content = getattr(r, "content", r)  # 2.x result, 1.x content list
     if isinstance(content, tuple):  # 1.x with structured output
         content = content[0]
@@ -92,6 +105,22 @@ def test_the_tools_take_a_number_or_a_list_through_mcp():
         except Exception as e:
             raise AssertionError(f"{name}({arguments}): {e}") from None
         assert isinstance(reply, dict), (name, arguments, reply)
+
+
+def test_a_reply_with_a_null_error_field_is_not_an_error_result():
+    reply = json.loads(_text(asyncio.run(
+        _server().mcp.call_tool("recording_status", {}))))
+    assert "error" in reply and reply["error"] is None, reply
+
+
+def test_a_refusal_is_an_error_result_with_the_payload_as_its_text():
+    s = _server()
+    try:
+        asyncio.run(s.mcp.call_tool("lap_summary", {"lap_id": -1}))
+    except s.ToolError as e:
+        assert json.loads(str(e))["error"], e
+    else:
+        raise AssertionError("lap_summary of a missing lap did not fail")
 
 
 if __name__ == "__main__":

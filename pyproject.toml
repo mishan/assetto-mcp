@@ -9,13 +9,9 @@ requires-python = ">=3.10"
 dependencies = ["mcp>=1.0.0"]
 
 [project.optional-dependencies]
-# The suite runs without pytest too (each file has a __main__ runner), so
-# that a single test can be run on the gaming PC with nothing installed.
-# lupa embeds a Lua runtime so the in-game app can be executed against a
-# stubbed CSP API. Without it those tests skip, and every bug the app has
-# shipped -- a scheduler whose comment disagreed with its code, a probe that
-# threw, an expression whose precedence made it a constant -- was invisible
-# to syntax checking and would have been caught by running it.
+# Every test module also runs without pytest, so a single file can be run on
+# the gaming PC. lupa runs the in-game app against a stubbed CSP API and
+# luaparser checks it; without them those tests skip.
 test = ["pytest>=7", "lupa>=2.0", "luaparser>=3.2"]
 
 [project.scripts]
@@ -35,18 +31,21 @@ assetto_mcp = ["line_map.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# --strict-markers so a typo in a skipif marker is an error rather than a
-# marker that never matches; --strict-config likewise for this table. The
-# skip that mattered most was not a marker at all -- a test that caught
-# ImportError and returned -- so see AC_TESTS_STRICT in tests/lua_harness.py
-# for the guard that catches those.
+# A typo in a marker or in this table is an error, not a silent no-op.
+# AC_TESTS_STRICT (tests/lua_harness.py) turns optional-dependency skips into
+# failures.
 addopts = ["--strict-markers", "--strict-config"]
-# Tests import their shared harness as `support`, so tests/ must be on the
-# path. rootdir-relative imports alone don't achieve that under pytest's
-# default importmode.
+# Tests import their shared harness as `support`.
 pythonpath = [".", "tests"]
 filterwarnings = [
-    # ctypes layout is load-bearing in sim_info; a deprecation there should
-    # fail the build rather than scroll past.
+    # ctypes layout is load-bearing in sim_info.
     "error::DeprecationWarning:assetto_mcp.*",
 ]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+# Single-letter names like `l` for a lap are the domain's own shorthand.
+ignore = ["E741"]

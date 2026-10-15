@@ -2,7 +2,7 @@
 #
 # Read-only with respect to your installation: it changes no config, installs
 # nothing, and does not touch the live bridge port. It writes one file,
-# diagnose-report.txt, next to itself.
+# diagnose-report.txt, in the repo folder.
 #
 # PRIVACY: the report contains local paths and your Windows username, and it
 # lists the *names* of every MCP server and environment variable in your Claude
@@ -12,8 +12,8 @@
 # Targets Windows PowerShell 5.1 as well as PowerShell 7.
 
 $ErrorActionPreference = 'Continue'
-$root = if ($PSScriptRoot) { $PSScriptRoot }
-        else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
+$root = Split-Path -Parent $(if ($PSScriptRoot) { $PSScriptRoot }
+        else { Split-Path -Parent $MyInvocation.MyCommand.Definition })
 $report = Join-Path $root 'diagnose-report.txt'
 $lines = New-Object System.Collections.ArrayList
 

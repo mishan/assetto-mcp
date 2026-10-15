@@ -6,7 +6,7 @@ car it says so; the rest is general.
 
 ## Positions into meters
 
-The tools do this now. Beside every lap fraction a payload carries the
+The tools do this. Beside every lap fraction a payload carries the
 same place in meters past the start line (`at_m` for `pos`, `apex_m` for
 `apex_pos`, `brake_point_m`, `from_m`/`to_m` and so on), and a `where`
 that says it the way a driver would: "T1, 70 m after turn-in", "T4

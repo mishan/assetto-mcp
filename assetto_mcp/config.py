@@ -1,11 +1,9 @@
 """Where the data lives, and what the environment may say about it.
 
-This project used to be called ac-race-engineer, so an install that predates
-the rename has its laps in ``~/.ac-race-engineer`` and spells the environment
-variables ``AC_ENGINEER_*``. The old directory is migrated on first start and
-the old variable names are still read. A lap database outlives the name of the
-thing that wrote it, and a rename that silently starts an empty one beside the
-full one is indistinguishable from losing a season.
+Installs from when the project was named ac-race-engineer keep their laps in
+``~/.ac-race-engineer`` and may set ``AC_ENGINEER_*`` variables. That
+directory is migrated on first start and those names are still read, so an
+upgrade never starts an empty database beside the full one.
 """
 
 import os
@@ -29,9 +27,8 @@ def env(name: str, default: str | None = None) -> str | None:
 def _must_be_a_directory(path: Path) -> Path:
     """Fail early and by name if the data path exists as something else.
 
-    Without this the caller gets an oblique NotADirectoryError several lines
-    later from ``mkdir(ranges)``, which reads like a bug in the server rather
-    than a file in the way.
+    Otherwise ``mkdir(ranges)`` raises an oblique NotADirectoryError later
+    that reads like a server bug rather than a file in the way.
     """
     if path.exists() and not path.is_dir():
         raise NotADirectoryError(
@@ -44,20 +41,15 @@ def _must_be_a_directory(path: Path) -> Path:
 def data_dir() -> Path:
     """The DB + ranges directory, migrating a pre-rename install if it finds one.
 
-    An explicit ``ASSETTO_MCP_DATA`` always wins. Otherwise, if the only
-    directory present is the pre-rename one, it is renamed -- once, in place,
-    keeping every lap -- so nobody has to be told to move their own database.
+    An explicit ``ASSETTO_MCP_DATA`` always wins. Otherwise, if only the
+    pre-rename directory exists, it is renamed in place.
 
-    The rename has to be safe against three things. Several server instances
-    start at once, so two can attempt it simultaneously: the loser gets an
-    OSError with the source already gone, sees the destination now exists, and
-    uses it. One instance may already be running with the database open, in
-    which case Windows refuses to rename the directory at all; that failure is
-    caught and the old path is used exactly as before, so the worst case is
-    that nothing changes until the next clean start. And the destination may
-    exist as a *file*, which is checked for before the rename rather than
-    after: ``Path.rename`` silently replaces an existing file on POSIX, so
-    testing only for existence would have quietly deleted it.
+    The rename must survive three things. Several server instances start at
+    once, so two can race: the loser's OSError leaves the destination
+    present, and it uses that. A running instance holding the database open
+    makes Windows refuse the rename; the old path is then used until the next
+    clean start. And the destination may exist as a *file*, checked before
+    the rename because ``Path.rename`` silently replaces a file on POSIX.
     """
     explicit = env("DATA")
     if explicit:

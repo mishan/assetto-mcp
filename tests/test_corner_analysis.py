@@ -226,7 +226,54 @@ def test_a_lap_without_heading_still_reports_the_rest_of_the_entry():
     e = analysis._corner_stats(_entry(with_heading=False), 30, 38)
     e = e["entry_phase"]
     assert e["rotation_deg"] is None and e["yaw_rate_peak_deg_s"] is None, e
+    assert e["body_slip_peak_deg"] is None, e
     assert e["slip_balance"] is not None and e["steer_norm"] is not None, e
+
+
+def _arc(*segments, dt=40, speed_ms=30.0):
+    """A car on steady arcs, each (samples, turn deg/s, slip deg inside).
+
+    Travel direction follows AC's heading convention, atan2(-dx, dz).
+    """
+    out, x, z, path, i = [], 0.0, 0.0, 0.3, 0
+    for n, turn_deg_s, slip_deg in segments:
+        for _ in range(n):
+            step = math.radians(turn_deg_s) * dt / 1000.0
+            # Along the chord, so the positions lie on a true circle.
+            x -= math.sin(path + step / 2) * speed_ms * dt / 1000.0
+            z += math.cos(path + step / 2) * speed_ms * dt / 1000.0
+            path += step
+            h = path + math.radians(slip_deg) * (1 if turn_deg_s > 0 else -1)
+            out.append({"t_ms": i * dt, "pos_x": x, "pos_z": z,
+                        "speed_kmh": speed_ms * 3.6,
+                        "heading": (h + math.pi) % (2 * math.pi) - math.pi})
+            i += 1
+    return out
+
+
+def test_body_slip_is_signed_into_the_turn_whichever_way_it_turns():
+    for turn in (25.0, -25.0):
+        for slip in (3.0, -2.0, 40.0):
+            got = analysis._body_slips(_arc((30, turn, slip)))
+            assert got and all(abs(g - slip) < 0.05 for g in got), \
+                (turn, slip, got[:3])
+    print("  3, -2 and 40 degree slip read back in both directions")
+
+
+def test_a_slide_in_the_second_half_of_an_s_bend_is_not_negated():
+    got = analysis._body_slips(_arc((10, 40.0, 3.0), (8, -40.0, 15.0)))
+    assert abs(max(got) - 15.0) < 0.5 and min(got) > -1.0, got
+
+
+def test_body_slip_skips_gaps_and_resets_rather_than_reading_them():
+    clean = _arc((30, 25.0, 3.0))
+    gap = clean[:12] + clean[20:]          # 360 ms missing
+    reset = [dict(s) for s in clean]
+    for s in reset[15:]:
+        s["pos_x"] += 200.0                 # moved, not driven
+    for samples in (gap, reset):
+        got = analysis._body_slips(samples)
+        assert got and all(abs(g - 3.0) < 0.05 for g in got), got
 
 
 # --- contacts -----------------------------------------------------------

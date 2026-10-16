@@ -492,10 +492,10 @@ def detect_corners(samples: list[dict],
         seg_lat = [lat[j] for j in r]
         signed_peak = max(seg_lat, key=abs)
         stats["peak_lat_g"] = round(abs(signed_peak), 2)
-        # Absolute left/right needs a convention AC does not document, so
-        # report the sign instead: corners sharing a turn_sign turn the same
-        # way, which is what correlating tyre temperatures actually needs.
+        # Lateral g is positive in a left-hander: checked against the order
+        # of Interlagos' turns in recorded laps.
         stats["turn_sign"] = 1 if signed_peak > 0 else -1
+        stats["direction"] = _DIRECTION[stats["turn_sign"]]
         stats["entry_pos"] = round(samples[entry]["norm_pos"], 4)
         stats["exit_pos"] = round(samples[exit_]["norm_pos"], 4)
         corners.append(stats)
@@ -610,6 +610,7 @@ def corner_map(lap_corners: list[list[dict]],
             "laps_seen": seen,
             "laps_total": total,
         }
+        entry["direction"] = _DIRECTION[entry["turn_sign"]]
         if total < CORNER_MAP_MIN_LAPS or seen >= CORNER_MAP_MIN_LAPS_SEEN:
             kept.append(entry)
         else:
@@ -739,8 +740,8 @@ def _heading_steps(samples: list[dict]) -> list[tuple[float, float]]:
     0.08 rad and not of 6.2. Each step is unwrapped on its own for that
     reason, rather than differencing the raw column.
 
-    Signed as AC reports it. Which sign is left is unverified, so everything
-    built from this reports magnitudes, which do not need the convention.
+    Signed as AC reports it: heading falls through a left-hander and rises
+    through a right one.
     A step implying more than YAW_RATE_SANE_MAX_DEG_S is dropped rather
     than clamped: it is a reset, and clamping would report a spin that
     never happened.
@@ -761,6 +762,63 @@ def _heading_steps(samples: list[dict]) -> list[tuple[float, float]]:
             continue
         steps.append((d, dt))
     return steps
+
+
+# Longest gap between neighboring samples that body slip is measured
+# across. Ticks are 40 ms; over a longer gap the chord cuts the corner and
+# reads as slip.
+BODY_SLIP_MAX_GAP_MS = 100
+
+
+def _body_slips(samples: list[dict]) -> list[float]:
+    """Body slip angle in degrees at each sample, signed into the turn.
+
+    The angle between where the car points and where it is going. AC's
+    heading is atan2(-dx, dz) of the direction the car faces, measured on
+    straights against the direction of travel to within 0.1 degree, so the
+    travel direction is taken the same way from the positions either side.
+    Positive is the nose pointing inside the path, which is how a car
+    corners: about 1-5 degrees at the apex and up to 7 on entry for a GT3
+    car. Tens of degrees is a slide; a car that spun points outside its
+    path, and reads large and negative.
+
+    Each sample is signed by which way the path is curving there, so a
+    slide in the second half of an S-bend is not negated by the first.
+    Samples across a gap, an uneven tick or a position jump (a reset) are
+    skipped: each makes the chord point somewhere the car was not going.
+    Empty on laps recorded without position or heading.
+    """
+    out = []
+    for a, b, c in zip(samples, samples[1:], samples[2:]):
+        vals = (a.get("pos_x"), a.get("pos_z"), b.get("pos_x"),
+                b.get("pos_z"), c.get("pos_x"), c.get("pos_z"),
+                b.get("heading"), a.get("t_ms"), b.get("t_ms"),
+                c.get("t_ms"), b.get("speed_kmh"))
+        if not all(isinstance(v, (int, float)) and math.isfinite(v)
+                   for v in vals):
+            continue
+        ax, az, bx, bz, cx, cz, heading, ta, tb, tc, speed = vals
+        first, second = tb - ta, tc - tb
+        if not (0 < first <= BODY_SLIP_MAX_GAP_MS
+                and 0 < second <= BODY_SLIP_MAX_GAP_MS
+                and max(first, second) <= 1.5 * min(first, second)):
+            continue
+        dx, dz = cx - ax, cz - az
+        chord = math.hypot(dx, dz)
+        # Under a meter the direction is position noise; far beyond what
+        # the speed covers, the car was moved, not driven.
+        if chord < 1.0 or chord > 1.5 * speed / 3.6 * (tc - ta) / 1000 + 1.0:
+            continue
+        curve = (bx - ax) * (cz - bz) - (bz - az) * (cx - bx)
+        if curve == 0:
+            continue
+        slip = (heading - math.atan2(-dx, dz) + math.pi) % (2.0 * math.pi) \
+            - math.pi
+        # The travel direction, like heading, grows where the cross product
+        # of successive chords is positive, so slip of that sign points the
+        # nose inside the path.
+        out.append(math.degrees(slip) * (1.0 if curve > 0 else -1.0))
+    return out
 
 
 def _entry_phase(samples, brake_idx, entry_idx, apex_idx) -> dict | None:
@@ -784,6 +842,9 @@ def _entry_phase(samples, brake_idx, entry_idx, apex_idx) -> dict | None:
     - `rotation_deg` is how far the car turned by the apex, and
       `yaw_rate_peak_deg_s` how fast it did at its quickest. Both from
       heading, so both null on laps recorded without it.
+    - `body_slip_peak_deg` is the body slip angle furthest from zero on
+      the way in, sign kept (see _body_slips); null without position and
+      heading.
     """
     if brake_idx is not None and brake_idx < apex_idx:
         start, source = brake_idx, "brake point"
@@ -816,6 +877,7 @@ def _entry_phase(samples, brake_idx, entry_idx, apex_idx) -> dict | None:
     # is taken, so a jitter back and forth averages out instead of adding
     # up.
     smoothed = [mean(rates[max(0, i - 1):i + 2]) for i in range(len(rates))]
+    slips = _body_slips(phase)
     return {
         "from": source,
         "from_pos": round(phase[0]["norm_pos"], 4),
@@ -825,7 +887,11 @@ def _entry_phase(samples, brake_idx, entry_idx, apex_idx) -> dict | None:
                                 if smoothed else None),
         "rotation_deg": (round(abs(math.degrees(sum(d for d, _ in steps))), 1)
                          if steps else None),
+        "body_slip_peak_deg": round(max(slips, key=abs), 1) if slips else None,
     }
+
+
+_DIRECTION = {1: "left", -1: "right", None: None}
 
 
 def _corner_stats(samples, apex_idx, exit_idx, brake_floor_idx=0,
@@ -892,6 +958,9 @@ def _corner_stats(samples, apex_idx, exit_idx, brake_floor_idx=0,
         "front_slip": round(front_slip, 3) if front_slip is not None else None,
         "rear_slip": round(rear_slip, 3) if rear_slip is not None else None,
     }
+    slips = _body_slips(seg)
+    out["body_slip_peak_deg"] = (round(max(slips, key=abs), 1)
+                                 if slips else None)
     # Null when there is no phase to measure: no braking and no turn-in
     # before the apex, which a caller that did not pass entry_idx gets on
     # every unbraked corner.
@@ -2524,9 +2593,40 @@ def _fuel_input_error(name, value, low, high, integer=False) -> str | None:
     return None
 
 
+# Spare fuel, in laps, below which a fuel call is not comfortable: what a
+# plan carries for the slow-down lap and a lap's variation in burn.
+FUEL_MARGIN_LAPS = 0.6
+
+
+def fuel_to_finish(fuel_l: float, laps_remaining: int,
+                   lap_done: float, liters_per_lap: float) -> dict | None:
+    """Whether the fuel on board reaches the flag.
+
+    laps_remaining counts the lap being driven, of which lap_done (0-1) is
+    already behind the car. None when any input is missing or unusable.
+    """
+    vals = (fuel_l, laps_remaining, lap_done, liters_per_lap)
+    if not all(isinstance(v, (int, float)) and math.isfinite(v)
+               for v in vals) or liters_per_lap < 0:
+        return None
+    if liters_per_lap == 0:
+        return {"verdict": "fuel use is off in this session"}
+    to_go = max(laps_remaining - min(max(lap_done, 0.0), 1.0), 0.0)
+    margin = fuel_l / liters_per_lap - to_go
+    return {
+        "laps_to_go": round(to_go, 2),
+        "liters_needed": round(to_go * liters_per_lap, 1),
+        "laps_of_fuel": round(fuel_l / liters_per_lap, 2),
+        "margin_laps": round(margin, 2),
+        "verdict": ("enough to the flag" if margin >= FUEL_MARGIN_LAPS else
+                    f"tight: {margin:.1f} laps spare" if margin >= 0 else
+                    f"short by {-margin:.1f} laps"),
+    }
+
+
 def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
               tank_liters: float | None = None, stops: int = 1,
-              margin_laps: float = 0.6,
+              margin_laps: float = FUEL_MARGIN_LAPS,
               fuel_rate: float | None = None) -> dict:
     """Fuel for a race distance, and whether a stop is forced.
 
@@ -2700,6 +2800,38 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
     return out
 
 
+# A lap this much slower than its side's median is not representative of
+# the setup's pace: a lap with a moment in it, or a slow first lap. In
+# recorded NSX GT3 runs clean laps reach 1.45% over the median and laps
+# with a moment start at 2.05%.
+REPRESENTATIVE_FRACTION = 0.0175
+
+
+def _representative(laps: list[dict], side: str) -> tuple[list, list]:
+    """(laps whose time is representative, the ones set aside, described).
+
+    Against the side's own median, so a setup that is genuinely slower is
+    not mistaken for scrappy driving. Not below three laps: the median of
+    two is their midpoint, and setting one aside leaves too few to test.
+    """
+    times = [l["lap_time_ms"] for l in laps
+             if isinstance(l.get("lap_time_ms"), (int, float))]
+    if len(times) < 3:
+        return laps, []
+    limit = median(times) * (1 + REPRESENTATIVE_FRACTION)
+    kept, aside = [], []
+    for l in laps:
+        t = l.get("lap_time_ms")
+        if isinstance(t, (int, float)) and t > limit:
+            aside.append({"side": side, "lap_id": l.get("lap_id"),
+                          "lap_time": l.get("lap_time"),
+                          "over_median_pct": round(
+                              100 * (t / median(times) - 1), 1)})
+        else:
+            kept.append(l)
+    return kept, aside
+
+
 def compare_runs(baseline: list[dict], candidate: list[dict],
                  corner_tolerance: float = CORNER_TOLERANCE) -> dict:
     """Did a setup change do anything, given how repeatable the driver is?
@@ -2743,10 +2875,16 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
     if not baseline or not candidate:
         return {"error": "need laps on both sides of the comparison"}
 
+    base_kept, base_aside = _representative(baseline, "baseline")
+    cand_kept, cand_aside = _representative(candidate, "candidate")
+    set_aside = base_aside + cand_aside
+
     metrics = {}
     for key, label, path, floor, units in RUN_METRICS:
-        b = [v for v in (_dig(l, path) for l in baseline) if v is not None]
-        c = [v for v in (_dig(l, path) for l in candidate) if v is not None]
+        b_laps, c_laps = ((base_kept, cand_kept) if key == "lap_time_ms"
+                          else (baseline, candidate))
+        b = [v for v in (_dig(l, path) for l in b_laps) if v is not None]
+        c = [v for v in (_dig(l, path) for l in c_laps) if v is not None]
         r = _measure(b, c, floor)
         r["label"] = label
         if units:
@@ -2922,6 +3060,15 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
                            "floor for a physically meaningful change rather "
                            "than a statistic.",
         "summary": summary,
+        **({"lap_time_set_aside": set_aside,
+            "lap_time_set_aside_note": (
+                f"laps more than {REPRESENTATIVE_FRACTION:.2%} slower than "
+                f"their side's median were left out of the lap-time mean: "
+                f"one lap with a moment in it, or a slow first lap, would "
+                f"otherwise set the spread every other lap is judged "
+                f"against. They are still in lap_time_consistency and in "
+                f"the corners.")}
+           if set_aside else {}),
     }
 
 
@@ -2933,6 +3080,9 @@ CORNER_CHANNELS = [
     ("slip_balance", ("slip_balance",), 0.05),
     ("min_speed_kmh", ("min_speed_kmh",), 0.5),
     ("entry_slip_balance", ("entry_phase", "slip_balance"), 0.05),
+    # In recorded laps a braked entry peaks at 25-45 deg/s, and the same
+    # turn varies lap to lap by about 2.5 deg/s, so this is about one lap's
+    # worth of variation.
     ("entry_yaw_rate_deg_s", ("entry_phase", "yaw_rate_peak_deg_s"), 2.0),
     ("entry_steer_norm", ("entry_phase", "steer_norm"), 0.02),
 ]

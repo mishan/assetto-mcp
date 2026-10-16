@@ -689,7 +689,8 @@ def test_a_database_that_cannot_be_opened_says_so():
         path.mkdir()
         col = Collector(path, FakeSim)
         col.start()
-        assert not col.running
+        # The thread announces the error, then returns.
+        wait_for(lambda: not col.running, "the collector thread to exit")
         assert col.status.startswith("error"), col.status
         assert col.last_error, "no reason given"
         print(f"  {col.status!r}: {col.last_error!r}")

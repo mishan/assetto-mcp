@@ -455,7 +455,9 @@ def live_snapshot() -> str:
     lap being driven) and `session_time_left_s`; null unless the game is
     live or paused. `race_laps` and `laps_remaining` are null in a timed
     session. A lapped car may have a lap fewer than `laps_remaining` until
-    `checkered_flag`."""
+    `checkered_flag`. `fuel_to_finish`, in a race of laps: fuel on board
+    against the laps to go at the car's nominal consumption, with
+    `margin_laps` and a `verdict` ("tight" under 0.6 laps spare)."""
     from .sim_info import SimInfo
     sim = SimInfo()
     try:
@@ -477,6 +479,7 @@ def live_snapshot() -> str:
             "last_lap": g.lastTime,
             "best_lap": g.bestTime,
             "completed_laps": g.completedLaps,
+            "lap_done": round(g.normalizedCarPosition, 3),
             **_race_state(g),
             "tyre_pressures_psi": {
                 w: round(p.wheelsPressure[i], 1)
@@ -489,7 +492,44 @@ def live_snapshot() -> str:
         # Release the ctypes views before closing the mapping.
         p = g = s = None
         sim.close()
+    try:
+        fuel = _fuel_to_finish(payload)
+    except Exception:  # noqa: BLE001
+        # This call is how anyone finds out whether shared memory reads at
+        # all; a fuel estimate is not worth failing it over.
+        fuel = None
+    if fuel:
+        payload["fuel_to_finish"] = fuel
     return _j(payload)
+
+
+def _fuel_to_finish(snap: dict) -> dict | None:
+    """Fuel on board against the laps still to run, at nominal consumption.
+
+    Only from the session being driven: another session's track length
+    would give a confident wrong answer. Reads, never writes, since a
+    snapshot is polled every lap.
+    """
+    if snap.get("laps_remaining") is None:
+        return None
+    sid = _active_session()
+    session = db.get_session(_conn, sid) if sid else None
+    if not session or any(session.get(k) != snap.get(k)
+                          for k in ("car", "track", "track_config")):
+        return None
+    rate = session.get("fuel_rate")
+    plan = analysis.fuel_plan(1, session.get("km_per_liter"),
+                              session.get("track_length_m"), stops=0,
+                              fuel_rate=rate)
+    out = analysis.fuel_to_finish(snap["fuel_l"], snap["laps_remaining"],
+                                  snap.get("lap_done"),
+                                  plan.get("liters_per_lap"))
+    if out and "laps_to_go" in out:
+        out["liters_per_lap"] = plan["liters_per_lap"]
+        if rate is None:
+            out["note"] = ("the game's fuel-usage multiplier was not read, "
+                           "so this assumes normal consumption")
+    return out
 
 
 # --- stored telemetry --------------------------------------------------
@@ -1365,9 +1405,12 @@ def lap_summary(lap_id: int) -> str:
     points, peak_lat_g, peak_steer_norm (fraction of full lock, not
     degrees), slip balance (front minus rear: positive = understeer), and
     `entry_phase` (brake point or turn-in to apex: slip balance, steer, yaw
-    peak, rotation). Quote `turn` (T1, T2... pooled across the session; see
-    track_corners), not `corner` (this lap's ordinal, shifts between laps).
-    turn_sign groups corners by direction; it is NOT left/right.
+    peak, rotation, body slip). `body_slip_peak_deg`: degrees the nose
+    points inside the car's path; 1-5 normal, tens a slide, large and
+    negative a spin. Quote `turn` (T1, T2... pooled across the session;
+    see track_corners), not `corner` (this lap's ordinal, shifts between
+    laps).
+    `direction` is "left" or "right" (`turn_sign` +1 or -1).
 
     Positions also come in meters (`apex_m`, `at_m`...) and as `where` ("T4
     braking zone, 90 m before turn-in"); quote those, not fractions.
@@ -2061,7 +2104,10 @@ def compare_runs(baseline_laps: str | int | list[int],
     Laps that ran wide or had an inferred contact are counted, and listed in
     `ran_wide` and `contacts`. clean_laps_only=True drops the ran-wide laps;
     include_invalid is its deprecated reverse. Laps whose time is not a lap
-    time (abandoned, out-lap, pit stop) are in `excluded_laps`."""
+    time (abandoned, out-lap, pit stop) are in `excluded_laps`. With three
+    or more laps a side, laps over 1.75% slower than their side's median
+    are left out of the lap-time mean only, listed in
+    `lap_time_set_aside`."""
     deprecated_note = None
     if include_invalid is not None:
         if clean_laps_only and include_invalid:

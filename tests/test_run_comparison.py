@@ -699,6 +699,33 @@ def test_missing_channels_are_reported_not_invented():
     print("  absent channel reported as not measured")
 
 
+def test_a_lap_with_a_moment_in_it_does_not_set_the_lap_time_spread():
+    base = [_lap(t, 0.10, 52.0) for t in (114000, 114200, 113900, 114100)]
+    cand = [_lap(t, 0.10, 52.0) for t in (113500, 113700, 113600, 122000)]
+    out = analysis.compare_runs(base, cand)
+    lt = out["metrics"]["lap_time_ms"]
+    assert lt["candidate_n"] == 3 and lt["candidate"] == 113600, lt
+    assert [a["side"] for a in out["lap_time_set_aside"]] == ["candidate"]
+    assert out["metrics"]["lap_time_consistency"]["candidate_n"] == 4, out
+    print(f"  122.0s set aside; candidate mean {lt['candidate']}ms")
+
+
+def test_a_slower_setup_is_not_mistaken_for_scrappy_laps():
+    base = [_lap(t, 0.10, 52.0) for t in (114000, 114200, 113900, 114100)]
+    cand = [_lap(t + 4000, 0.10, 52.0) for t in (114000, 114200, 113900)]
+    out = analysis.compare_runs(base, cand)
+    assert "lap_time_set_aside" not in out, out.get("lap_time_set_aside")
+    assert out["metrics"]["lap_time_ms"]["candidate_n"] == 3
+
+
+def test_two_laps_a_side_are_never_trimmed_to_one():
+    base = [_lap(t, 0.10, 52.0) for t in (114000, 114200)]
+    cand = [_lap(t, 0.10, 52.0) for t in (113500, 119000)]
+    out = analysis.compare_runs(base, cand)
+    assert "lap_time_set_aside" not in out, out["lap_time_set_aside"]
+    assert out["metrics"]["lap_time_ms"]["candidate_n"] == 2
+
+
 def test_empty_input_is_refused():
     assert "error" in analysis.compare_runs([], [_lap(113000, 1.0, 58.0)])
 

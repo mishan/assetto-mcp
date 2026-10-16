@@ -42,7 +42,11 @@ temperature, `fuel_l`, tyre pressures and core temperatures right now, last
 and best lap. Poll it at each lap boundary for fuel, and whenever you want
 the tyre state between laps. `status: "off"` means the game is not in a
 session. The `tyre_compound` reads garbage when the car is not live.
-Judge fuel against `laps_remaining`, not against the next lap or two.
+Judge fuel against `laps_remaining`, not against the next lap or two:
+`fuel_to_finish` does that sum at the car's nominal consumption (not the
+measured burn), and its `margin_laps` is the number to call ("enough to
+the flag, 1.5 laps spare"; "short by half a lap"). "tight" is under 0.6
+laps spare: check the real burn before saying the car makes it.
 
 **`list_sessions()`** -- id, car, track, lap count, best time. Every tool
 that reports a position adds meters and a `where` beside it, and says
@@ -113,9 +117,12 @@ not a tool.
   `exit_pos`, `brake_point_pos`, `throttle_on_pos`, `min_speed_kmh`, `gear`,
   `peak_steer_norm` (fraction of full lock, not degrees), `peak_lat_g`,
   `slip_balance` (positive front slides more), `front_slip`, `rear_slip`,
-  `turn_sign` (groups corners by direction; not left/right, AC does not
-  document which sign is which), and `entry_phase` (from brake point or
-  turn-in to apex: slip balance, mean steer, yaw peak, rotation). Entry
+  `direction` ("left" or "right"; `turn_sign` +1 or -1), and `entry_phase` (from brake point or
+  turn-in to apex: slip balance, mean steer, yaw peak, rotation, body
+  slip), and `body_slip_peak_deg`: how far the nose points inside the
+  car's path. A GT3 car corners at 1-5 degrees at the apex, up to 7 on
+  entry; tens of degrees is a slide caught, large and negative a spin, and a slip balance that reads understeer next to a
+  large body slip is a car that rotated. Entry
   phase is where trail braking, entry rotation and most spins live; a
   change aimed at entry stability shows here when the apex figures do
   not move. Yaw and rotation are null on laps recorded before heading.
@@ -229,6 +236,10 @@ single id, or a list. Read:
   up, and with up to five channels a corner most runs with nothing changed
   carry at least one (`corner_leads_note` gives the figure). Where to look
   when a metric moved; never a finding.
+- `lap_time_set_aside`: with three or more laps a side, laps more than
+  1.75% slower than their side's median (a moment, or a slow first lap),
+  left out of the lap-time mean so one such lap does not set the spread. They stay in `lap_time_consistency` and the corners. A side
+  with many set aside was not driven consistently enough to judge pace.
 - `excluded_laps` with reasons: laps left out. `ran_wide` and `contacts`:
   laps counted but flagged (with `clean_laps_only`, ran-wide laps move to
   `excluded_laps`). A result resting on a contact lap may be measuring

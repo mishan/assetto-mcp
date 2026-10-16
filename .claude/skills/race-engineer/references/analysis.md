@@ -46,9 +46,8 @@ high slip balance at 0.3 lock are the car: at Watkins Glen the long right
 after the Bus Stop, the fast left before the last corner and the last
 corner itself read +0.23 to +0.45 at 0.31 to 0.37 lock on every clean lap.
 
-`turn_sign` groups corners by direction and nothing more. Tyre
-temperatures correlate with it: the side that runs hotter is the side
-loaded in the corners that share a sign.
+`direction` says left or right. Tyre temperatures correlate with it: a
+left-hander loads the right-hand tyres.
 
 ## Entry phase and spins
 

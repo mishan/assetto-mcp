@@ -9,13 +9,15 @@ and its status. Written against the database schema at v15.
 
 ## 1. Check entry-phase corner metrics against real laps
 
-**Status:** built; verified on synthetic laps only.
+**Status:** partly checked against real laps (NSX GT3, Sebring, Kyalami,
+Interlagos).
 
-Every figure in `entry_phase` (`analysis.py`) comes from tests on synthetic
-laps. Whether a real entry snap is visible in 25 Hz `heading`, and what yaw
-rate a normal entry runs at, are unmeasured; the 2°/s floor on the yaw
-channel is a guess. Until someone checks a real session, treat a
-`compare_runs` lead from these channels with suspicion.
+Measured: braked entries peak at 25-45°/s, and the same turn's peak varies
+lap to lap by about 2.5°/s, so the 2°/s floor on the yaw channel is about
+one lap's variation (sensor noise on a straight is under 1°/s). Caught
+slides show as body slip of 10-15° and spins as 35-180°. Still unchecked:
+whether a small entry snap stands out in `entry_phase` from an ordinary
+entry.
 
 ---
 
@@ -55,18 +57,7 @@ than inferring it from slip.
 
 ---
 
-## 3. Scrappy laps pass as representative
-
-**Status:** open.
-
-A lap 7% off the pace is under `OUTLIER_FRACTION` (`analysis.py`), so it
-stays in a comparison, and one such lap can inflate a run's lap-time
-`resolution` to many seconds. Validity and representativeness are
-different questions; consider a separate "representative lap" notion.
-
----
-
-## 4. Corner detection leftovers
+## 3. Corner detection leftovers
 
 **Status:** open.
 
@@ -88,7 +79,7 @@ different questions; consider a separate "representative lap" notion.
 
 ---
 
-## 5. Turn numbers for tracks without `sections.ini`
+## 4. Turn numbers for tracks without `sections.ini`
 
 **Status:** partly done. Session-local numbering is built
 (`analysis.corner_map`, `label_corners`, `track_corners`). Where the track
@@ -134,7 +125,7 @@ for a 50 m tolerance.
 
 ---
 
-## 6. Compare incident rates, not just spread
+## 5. Compare incident rates, not just spread
 
 **Status:** open.
 
@@ -147,19 +138,12 @@ the payload should say so.
 
 ---
 
-## 7. Put the rival data to more use
+## 6. Put the rival data to more use
 
 **Status:** open. Built: rival lap times from each car's own trace
 (`analysis.trace_lap_times`), `time_by_turn` on `compare_to_rival`, and
 `field_benchmark`. In rough order of payoff:
 
-- **Fix the lap time at the source.** `store_rival_batch` (`db.py`) files
-  the server's `last_lap_ms` under a lap the moment the lap counter ticks,
-  usually before the server has updated it, so `rival_laps` holds the
-  previous lap's time. Reads prefer the trace (`rival_trace_lap_times`),
-  but anything reading the table directly is wrong. Either file the time
-  on the next batch whose `last_lap_ms` changed, or stop writing the table
-  and time from the trace at write time.
 - **Cost of trace timing.** `list_rivals` reads every rival sample of the
   session to time laps: about 150k rows for a 12-lap race with ten cars,
   slow for a two-hour practice with twenty. Cache per (session, car, newest
@@ -169,12 +153,13 @@ the payload should say so.
   receive time and too coarse under a few seconds; use the cars' own
   `t_ms` at a shared spline, with each car's clock offset fixed from a line
   crossing.
-- **Fuel against laps remaining.** `live_snapshot` reports position, lap N
-  of M and `laps_remaining`. Compute fuel laps left against that, from the
-  session's own burn, so a fuel call can say "enough to the flag" or "short
-  by half a lap". Unverified: that the game shows the checkered flag to a
+- **Check fuel to the flag in a real race.** `live_snapshot`'s
+  `fuel_to_finish` relies on the game showing the checkered flag to a
   lapped car from the moment the leader finishes, which is what caps
-  `laps_remaining` at one for a car off the lead lap.
+  `laps_remaining` at one for a car off the lead lap. On the grid, behind
+  the line with no lap completed, `lap_done` may read near 1 and make the
+  laps to go one short. Both unverified. It also uses nominal consumption;
+  a measured burn per lap would be better.
 - **Where to attack and defend.** From `field_benchmark` per rival: the
   driver's strong corners are where a pass is set up; a rival's strong exit
   onto a straight is where the driver is vulnerable.
@@ -195,21 +180,10 @@ the payload should say so.
 
 ---
 
-## 8. Body slip angle
+## 7. Check `restart_server` and the updater on Windows
 
-**Status:** open.
-
-Heading against the direction of travel from position gives yaw relative to
-the car's own path rather than a rate. This needs AC's heading convention
-pinned against position on a real straight first. Which sign of `roll`
-means "leaning out of the corner" is likewise unverified and could be
-pinned in the same check.
-
----
-
-## 9. Check `restart_server` and the updater on Windows
-
-**Status:** built; tested against a fake client only.
+**Status:** `restart_server` works in Claude Desktop; the rest below is
+unverified.
 
 `python -m assetto_mcp.server` starts `assetto_mcp/supervisor.py`, which
 runs the real server as a child and replaces it when `restart_server` exits
@@ -234,7 +208,7 @@ the server running fails on a locked file and says so, and whether
 
 ---
 
-## 10. Fill the display-mapping registry automatically
+## 8. Fill the display-mapping registry automatically
 
 **Status:** waiting on CSP.
 

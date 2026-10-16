@@ -569,5 +569,58 @@ def test_the_fuel_basis_survives_a_partial_update():
         conn.close()
 
 
+_LIVE_FUEL_PROBE = """
+import json
+from assetto_mcp import db, server
+
+conn = server._conn
+server._live_fuel_facts = lambda: ({}, "AC is not running")
+sid = db.create_session(conn, car="nsx", track="mugello", track_config="",
+                        tyre_compound="S", air_temp=25.0, road_temp=30.0)
+conn.execute("UPDATE sessions SET km_per_liter = 2.5, track_length_m = 5000,"
+             " fuel_rate = 1.0 WHERE id = ?", (sid,))
+conn.commit()
+server._active_session = lambda explicit=None: sid
+snap = {"car": "nsx", "track": "mugello", "track_config": "",
+        "fuel_l": 9.0, "laps_remaining": 3, "lap_done": 0.5}
+print(json.dumps({
+    "race": server._fuel_to_finish(snap),
+    "other_car": server._fuel_to_finish({**snap, "car": "f4"}),
+    "other_track": server._fuel_to_finish({**snap, "track": "monza"}),
+    "timed": server._fuel_to_finish({**snap, "laps_remaining": None}),
+}))
+"""
+
+
+def test_live_snapshot_fuel_uses_the_driven_sessions_consumption():
+    got = _run_probe(_LIVE_FUEL_PROBE)
+    race = got["race"]
+    assert race["liters_per_lap"] == 2.0, race
+    assert race["laps_to_go"] == 2.5 and race["margin_laps"] == 2.0, race
+    assert got["other_car"] is None and got["other_track"] is None, got
+    assert got["timed"] is None, got
+    print(f"  {race['verdict']}, {race['margin_laps']} laps spare")
+
+
+def test_fuel_to_finish_counts_only_the_part_of_this_lap_still_to_drive():
+    cases = [
+        # fuel, laps remaining, lap done, l/lap -> laps to go, margin, verdict
+        (10.0, 3, 0.5, 4.0, 2.5, 0.0, "tight"),
+        (9.0, 3, 0.5, 4.0, 2.5, -0.25, "short by"),
+        (20.0, 1, 0.9, 4.0, 0.1, 4.9, "enough"),
+        (5.0, 0, 0.3, 4.0, 0.0, 1.25, "enough"),
+    ]
+    for fuel, left, done, rate, to_go, margin, verdict in cases:
+        out = analysis.fuel_to_finish(fuel, left, done, rate)
+        assert out["laps_to_go"] == to_go and out["margin_laps"] == margin, \
+            (fuel, left, done, out)
+        assert out["verdict"].startswith(verdict), out
+    assert "off" in analysis.fuel_to_finish(10.0, 3, 0.5, 0.0)["verdict"]
+    for bad in ((None, 3, 0.5, 4.0), (10.0, 3, 0.5, -1.0),
+                (10.0, None, 0.5, 4.0)):
+        assert analysis.fuel_to_finish(*bad) is None, bad
+    print("  margins from the part of the lap still to drive")
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

@@ -169,6 +169,10 @@ def test_a_restart_replays_the_handshake_and_hides_its_reply():
             c.handshake()
             c.request(2, "restart_after")
             assert c.reply_to(2)["result"] == {"gen": 1}
+            # Gen 1 exits just after replying; a request sent before it has
+            # gone reaches it and is answered "restarted; retry".
+            wait_for(lambda: (Path(d) / "gen").read_text() == "2",
+                     "the second generation to start")
             c.request(3, "echo", {"x": 1})
             assert c.reply_to(3)["result"] == {"gen": 2, "echo": {"x": 1}}
 

@@ -296,11 +296,11 @@ answer is usually the contact list and the tyre wear, not the setup:
 ## Closing a session
 
 1. Write the handoff to `exports/session-<first>-<last>-<track>-<car>.md`
-   following `references/handoff-template.md` (`save_notes` with
-   `kind: "handoff"` when the client has no filesystem tool; it never
-   replaces a file). Setup lineage with verdicts, what the week
-   established, open items in priority order, display mappings observed,
-   fuel and tyre numbers, rivals. In debrief mode this is also the driver's report, so it opens
+   following `references/handoff-template.md` (`save_handoff` when the
+   client has no filesystem tool; it never replaces a file). Setup
+   lineage with verdicts, what the week established, open items in
+   priority order, display mappings observed, fuel and tyre numbers,
+   rivals. In debrief mode this is also the driver's report, so it opens
    with the lap-by-lap story and the incidents before the engineering
    sections.
 2. `export_line_map` for the session so the driver has the picture.

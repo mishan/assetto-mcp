@@ -3265,33 +3265,20 @@ def read_notes(car: str | None = None) -> str:
                "other_cars": others})
 
 
-# The hints are the cautious one of each kind's: the notes replace a file
-# and prune its backups past five, so an old version is gone in the end
-# (destructive), and a handoff never replaces one, so saving it twice
-# leaves two files (not idempotent).
-@_tool("Save notes or the handoff", writes=True, destructive=True,
-       idempotent=False)
-def save_notes(kind: Literal["driver", "car", "handoff"], markdown: str,
-               car: str | None = None, name: str | None = None) -> str:
-    """Save the engineer's files in the data folder, never the repository.
-
-    kind "driver" (what the driver prefers and has corrected) or "car"
-    (setup lineage, verdicts, measured rates; car defaults to the
-    session's) replaces driver.md or <car>.md in notes: send the whole
-    file, read_notes first and edit it. The old file is kept as
-    <name>.md.bak-<time>, the newest 5. kind "handoff" writes the closing
-    document to exports as <name>.md (default
-    session-<id>-<track>-<car>) and never replaces a file: an existing
-    name gets -2, -3... Returns the path to hand to the driver. Marked
-    destructive, as a notes save replaces a file, and not idempotent, as
-    each handoff save is a new one."""
+# Replaces the file, but keeps the old one beside it.
+@_tool("Save the engineer's notes", writes=True)
+def save_notes(kind: Literal["driver", "car"], markdown: str,
+               car: str | None = None) -> str:
+    """Replace driver.md (kind "driver": what the driver prefers and has
+    corrected) or <car>.md (kind "car": setup lineage, verdicts, measured
+    rates; car defaults to the session's) in the data folder's notes.
+    Send the whole file: read_notes first and edit it. The old file is kept
+    as <name>.md.bak-<time>, the newest 5."""
     if not isinstance(markdown, str) or not markdown.strip():
         return _j({"error": "markdown is empty"})
     if len(markdown) > NOTES_MAX_CHARS:
-        return _j({"error": f"{kind} files are capped at {NOTES_MAX_CHARS} "
+        return _j({"error": f"notes are capped at {NOTES_MAX_CHARS} "
                             f"characters, got {len(markdown)}"})
-    if kind == "handoff":
-        return _save_handoff(markdown, name)
     if kind == "driver":
         stem = "driver"
     else:
@@ -3328,7 +3315,17 @@ def _name_part(text) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(text or "")).strip("._")
 
 
-def _save_handoff(markdown: str, name: str | None) -> str:
+@_tool("Save the session handoff", writes=True, idempotent=False)
+def save_handoff(markdown: str, name: str | None = None) -> str:
+    """Write the closing handoff document to the data folder's exports as
+    <name>.md; name defaults to session-<id>-<track>-<car>. Never replaces
+    a file: an existing name gets -2, -3... Returns the path to hand to
+    the driver."""
+    if not isinstance(markdown, str) or not markdown.strip():
+        return _j({"error": "markdown is empty"})
+    if len(markdown) > NOTES_MAX_CHARS:
+        return _j({"error": f"a handoff is capped at {NOTES_MAX_CHARS} "
+                            f"characters, got {len(markdown)}"})
     if name is None:
         sid = _active_session()
         session = db.get_session(_conn, sid) if sid else None

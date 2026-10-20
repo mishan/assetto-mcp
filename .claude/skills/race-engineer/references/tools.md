@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Thirty-seven tools. They fall into nine groups. For each: what to pass,
+Thirty-eight tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the traps.
 Every optional parameter takes null as "the default", so passing one
 explicitly is always safe; a call refused for a missing parameter is fixed
@@ -513,16 +513,16 @@ when the bridge port is held by an orphaned server; not worth chasing
 during a session. Without the app (`session_check`'s `app`): no
 opponents, no suspension, no setup-screen values, no messages.
 
-**`read_notes(car)`**, **`save_notes(kind, markdown, car, name)`** -- the
-notes and the handoff for a client with no filesystem tool; with one, edit
-the files directly. Both stay in the data folder. `read_notes` returns
-`driver.md`, the car's file (default: the session's car) and the newest
-handoff in `exports/`. `save_notes` with `kind` "driver" or "car" replaces
-a whole file, so read, edit and send it all back; the old file is kept as
-`.md.bak-<time>`, the newest five. With `kind` "handoff" it writes
-`exports/<name>.md` (default `session-<id>-<track>-<car>`) and never
-replaces one: a name in use gets `-2`. Hand the driver the `path`. It is
-marked destructive, for the notes: a client may ask before each save.
+**`read_notes(car)`**, **`save_notes(kind, markdown, car)`**,
+**`save_handoff(markdown, name)`** -- the notes and the handoff for a
+client with no filesystem tool; with one, edit the files directly. All
+three stay in the data folder. `read_notes` returns `driver.md`, the car's
+file (default: the session's car) and the newest handoff in `exports/`.
+`save_notes` replaces a whole file (`kind` "driver" or "car"), so read,
+edit and send it all back; the old file is kept as `.md.bak-<time>`.
+`save_handoff` writes `exports/<name>.md` (default
+`session-<id>-<track>-<car>`) and never replaces one: a name in use gets
+`-2`. Hand the driver the `path`.
 
 ## 9. The server itself
 

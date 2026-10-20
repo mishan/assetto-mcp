@@ -204,7 +204,7 @@ def test_every_tool_says_what_it_does_to_the_world():
     destructive = {t["name"] for t in tools
                    if t["annotations"]["destructiveHint"]}
     assert {"write_setup", "restart_server", "apply_update",
-            "forget_display_value", "save_notes"} <= destructive, destructive
+            "forget_display_value"} <= destructive, destructive
 
 
 def test_initialize_carries_instructions_version_and_list_changed():

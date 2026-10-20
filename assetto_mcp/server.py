@@ -3243,8 +3243,9 @@ def _read_md(path: Path) -> dict | None:
 
 @_tool("Read the engineer's notes")
 def read_notes(car: str | None = None) -> str:
-    """The driver's notes (driver.md), the car's (<car>.md; default the
-    session's car) and the newest handoff in exports, from the data folder.
+    """What earlier sessions taught about this driver and car: the driver's
+    notes (driver.md), the car's (<car>.md; default the session's car) and
+    the newest handoff in exports, from the data folder.
     Read them at session start; the newest handoff wins where they differ.
     null means none yet. `other_cars`: cars with notes of their own."""
     car = _resolve_car(car)

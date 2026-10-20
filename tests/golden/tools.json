@@ -1058,7 +1058,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "The driver's notes (driver.md), the car's (<car>.md; default the\nsession's car) and the newest handoff in exports, from the data folder.\nRead them at session start; the newest handoff wins where they differ.\nnull means none yet. `other_cars`: cars with notes of their own.",
+  "description": "What earlier sessions taught about this driver and car: the driver's\nnotes (driver.md), the car's (<car>.md; default the session's car) and\nthe newest handoff in exports, from the data folder.\nRead them at session start; the newest handoff wins where they differ.\nnull means none yet. `other_cars`: cars with notes of their own.",
   "inputSchema": {
    "properties": {
     "car": {

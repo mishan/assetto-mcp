@@ -428,56 +428,69 @@ def test_restart_server_refuses_when_it_cannot_or_should_not():
 
 
 def test_the_real_server_restarts_behind_one_connection():
-    """End to end: restart_server, then the same pipes keep working."""
+    """End to end, as a client runs it: the SDK's stdio client on
+    `-m assetto_mcp.server`, through a restart_server on the same pipes."""
     if _mcp_missing():
         from lua_harness import skip
         skip("mcp is not installed")
         return
+    import anyio
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    def wire(model) -> dict:
+        # The spec's field names: 2.x renamed the attributes, not the wire.
+        return model.model_dump(by_alias=True, exclude_none=True)
+
+    def result(reply) -> dict:
+        reply = wire(reply)
+        assert not reply.get("isError"), reply
+        return json.loads(reply["content"][0]["text"])
+
+    async def tool_names(session) -> set:
+        return {t["name"] for t in wire(await session.list_tools())["tools"]}
+
+    async def run(data):
+        params = StdioServerParameters(
+            command=sys.executable, args=["-m", "assetto_mcp.server"],
+            env=_server_env(data), cwd=str(ROOT))
+        changed = anyio.Event()
+
+        async def on_message(message):
+            # 1.x wraps a notification in ServerNotification; 2.x does not.
+            method = getattr(getattr(message, "root", message), "method", "")
+            if method == "notifications/tools/list_changed":
+                changed.set()
+
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write,
+                                     message_handler=on_message) as session:
+                with anyio.fail_after(120):
+                    init = wire(await session.initialize())
+                assert init["instructions"], init
+                assert init["serverInfo"]["version"], init["serverInfo"]
+                assert init["capabilities"]["tools"]["listChanged"] is True
+                with anyio.fail_after(60):
+                    names = await tool_names(session)
+                    assert {"list_sessions", "restart_server"} <= names
+                    before = result(await session.call_tool(
+                        "list_sessions", {}))
+                    restart = result(await session.call_tool(
+                        "restart_server", {}))
+                assert restart["restarting"] is True, restart
+                with anyio.fail_after(120):
+                    await changed.wait()
+                with anyio.fail_after(120):
+                    after = result(await session.call_tool(
+                        "list_sessions", {}))
+                    again = await tool_names(session)
+                assert after == before, (before, after)
+                assert again == names, sorted(again ^ names)
+                return len(names)
+
     with _tmp() as d:
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "assetto_mcp.server"], cwd=ROOT,
-            env=_server_env(str(Path(d) / "data")),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-        got: list[dict] = []
-        threading.Thread(target=lambda: [got.append(json.loads(line))
-                                         for line in proc.stdout],
-                         daemon=True).start()
-
-        def send(obj):
-            proc.stdin.write((json.dumps(obj) + "\n").encode())
-            proc.stdin.flush()
-
-        def reply(rid):
-            wait_for(lambda: any(m.get("id") == rid for m in got),
-                     f"reply {rid}", timeout=60)
-            return next(m for m in got if m.get("id") == rid)
-
-        try:
-            send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-                  "params": {"protocolVersion": "2025-06-18",
-                             "capabilities": {},
-                             "clientInfo": {"name": "test", "version": "0"}}})
-            assert "result" in reply(1), reply(1)
-            send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-            send({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                  "params": {"name": "restart_server", "arguments": {}}})
-            text = json.loads(reply(2)["result"]["content"][0]["text"])
-            assert text["restarting"] is True, text
-            wait_for(lambda: any(m.get("method") ==
-                                 "notifications/tools/list_changed"
-                                 for m in got), "list_changed", timeout=60)
-            send({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
-            names = {t["name"] for t in reply(3)["result"]["tools"]}
-            assert "restart_server" in names, sorted(names)
-            proc.stdin.close()
-            assert proc.wait(timeout=30) == 0
-            print(f"  restarted; {len(names)} tools listed on the same pipes")
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
-            proc.stdin.close()
-            proc.stdout.close()
+        n = anyio.run(run, str(Path(d) / "data"))
+        print(f"  restarted; {n} tools and a call on the same connection")
 
 
 if __name__ == "__main__":

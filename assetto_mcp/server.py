@@ -276,9 +276,9 @@ CORE_TOOLS = (
     # needs fixing.
     "session_check", "wait_for_lap", "recording_status", "start_recording",
     "restart_server", "setup_ranges", "record_setup_display",
-    "forget_display_value", "live_snapshot",
-    "list_laps", "lap_summary", "compare_laps", "compare_runs", "setup_book", "set_session_setup", "label_laps",
-    "fuel_plan", "list_setups", "read_setup", "write_setup",
+    "forget_display_value", "live_snapshot", "list_laps", "lap_summary",
+    "compare_laps", "compare_runs", "setup_book", "set_session_setup",
+    "label_laps", "fuel_plan", "list_setups", "read_setup", "write_setup",
 )
 _TOOLSET = config.env("TOOLSET", "full")
 if _TOOLSET not in ("full", "core"):
@@ -952,6 +952,7 @@ def compare_to_rival(car_index: int | None = None, lap_id: int | None = None,
                      laps_per_rival: Annotated[int, Field(ge=1, le=10)] = 3
                      ) -> str:
     """Where an opponent, or the quicker field, finds time against you.
+    The driver's own laps against each other: compare_laps.
 
     With car_index (from list_rivals): your lap_id against that rival's
     lap (rival_lap_number, default their quickest captured), by track
@@ -1774,7 +1775,8 @@ def list_laps(session_id: int | None = None,
 # fractions, the entry phase and the per-axle slip.
 _SUMMARY_CORNER = ("turn", "name", "direction", "gear", "min_speed_kmh",
                    "where", "apex_m", "brake_before_turn_in_m",
-                   "throttle_on_m", "slip_balance", "peak_lat_g", "body_slip_peak_deg")
+                   "throttle_on_m", "slip_balance", "peak_lat_g",
+                   "body_slip_peak_deg")
 
 
 @_tool("Lap summary")
@@ -3006,8 +3008,8 @@ def annotate_experiment(
         experiment_id: Annotated[int, Field(ge=1)],
         note: Annotated[str, Field(max_length=500)] | None = None,
         conclusion: Literal[db.EXPERIMENT_CONCLUSIONS] | None = None) -> str:
-    """Record what the driver felt about an A/B and whether the change
-    stays. experiment_id: from compare_runs. note: the driver's words,
+    """Add a note to an A/B already run: what the driver felt and whether
+    the change stays. experiment_id: from compare_runs ("A/B number 7"). note: the driver's words,
     briefly. Either one alone leaves the other as it was."""
     try:
         found = db.annotate_experiment(_conn, experiment_id, note,
@@ -3025,8 +3027,9 @@ def setup_book(car: str | None = None, entry: str | None = None,
                effect: float | None = None,
                metric: Literal[tuple(analysis.BOOK_METRICS)]
                = "lap_time_ms") -> str:
-    """What every stored A/B says each setup entry does to this car, and
-    how many laps a side the next A/B needs.
+    """What earlier A/Bs say each setup entry does to this car, and how
+    many laps a side the next A/B needs. Judging a run just driven:
+    compare_runs; noting what the driver felt about one: annotate_experiment.
 
     Read it before proposing a change. Per entry: the latest experiments
     that changed it alone, and per metric the effect per unit of the stored

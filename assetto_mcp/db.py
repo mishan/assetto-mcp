@@ -18,7 +18,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 # How many wheels have to be off the valid surface before a lap counts as
 # having exceeded track limits. Four is the count AC itself treats as
@@ -419,6 +419,13 @@ CREATE TABLE IF NOT EXISTS pit_wall_asks (
     created_at REAL NOT NULL,
     taken INTEGER NOT NULL DEFAULT 0  -- handed to Claude in a reply
 );
+-- The message on the driver's in-game overlay, for the same reason: the
+-- game polls whichever process holds the bridge port.
+CREATE TABLE IF NOT EXISTS driver_message (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    seq INTEGER NOT NULL,           -- what the app acks
+    text TEXT                       -- NULL once dismissed
+);
 
 -- Which process is allowed to record, and whether recording is wanted at
 -- all. One row, forever.
@@ -686,7 +693,8 @@ def _migrate(conn) -> list[str]:
                        "have no measured fuel burn")
 
     # v18 adds pit_wall_focus and pit_wall_asks, new tables that SCHEMA
-    # creates; there was no pit wall before them.
+    # creates; there was no pit wall before them. v19 adds driver_message
+    # the same way; the message used to live in the bridge's memory.
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
@@ -1855,6 +1863,29 @@ def pit_wall_focus(conn) -> dict:
         return {"id": 0, "lap_ids": [], "turn": None, "caption": None}
     return {"id": r["seq"], "lap_ids": json.loads(r["lap_ids"]),
             "turn": r["turn"], "caption": r["caption"]}
+
+
+def set_driver_message(conn, text: str) -> int:
+    with conn:
+        conn.execute(
+            "INSERT INTO driver_message (id, seq, text) VALUES (1, 1, ?)"
+            " ON CONFLICT (id) DO UPDATE SET seq = seq + 1,"
+            " text = excluded.text", (text,))
+    return conn.execute("SELECT seq FROM driver_message").fetchone()[0]
+
+
+def driver_message(conn) -> dict | None:
+    r = conn.execute("SELECT seq, text FROM driver_message"
+                     " WHERE text IS NOT NULL").fetchone()
+    return {"id": r["seq"], "text": r["text"]} if r else None
+
+
+def ack_driver_message(conn, msg_id: int) -> bool:
+    """False when that message was already replaced or dismissed."""
+    with conn:
+        return conn.execute(
+            "UPDATE driver_message SET text = NULL"
+            " WHERE seq = ? AND text IS NOT NULL", (msg_id,)).rowcount == 1
 
 
 def add_pit_wall_ask(conn, text: str, place: str | None) -> int:

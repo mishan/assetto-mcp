@@ -109,13 +109,20 @@ the line map. When the assistant points at something, it puts those laps,
 zoomed to the turn, and a caption there. Click the map and type a question,
 and the assistant gets it with the next thing it reads.
 
+- **Without a chat:** run `assetto-mcp-pit-wall` and leave it open. It
+  records and serves the pit wall on its own, for a stream or a tablet; a
+  chat started later still puts laps on it and reads your questions.
 - **On a phone or tablet:** set `ASSETTO_MCP_DASH_LAN=1` and the pit wall is
-  also served on your network, on port 9667, at a secret link the assistant
-  gives you (`lan_url`). Anyone with the link can see it and ask questions.
+  also served on your network, on port 9667, at a secret link: click **Open
+  on a phone** on the pit wall for a QR code. Anyone with the link can see it
+  and ask questions; for a new one, delete `~/.assetto-mcp/dash-token` and
+  restart.
 - **On a stream:** <http://127.0.0.1:9666/dash/overlay> is a strip of cards
-  (position, lap clock and gap, fuel and tyres, a track map with every car)
-  on a transparent background. Add it in OBS as a Browser source at the size
-  of the space it fills; it scales to any size.
+  (position, lap clock and gap, fuel and tyres, a track map with every car,
+  dimmed in the pit lane) on a transparent background. In OBS, add a
+  Browser source with that URL at the size of the space it fills (it scales
+  to any size), and leave its custom CSS empty so the background stays
+  transparent.
 
 Without the skill you still get every tool; you just ask for each step
 yourself, as below.

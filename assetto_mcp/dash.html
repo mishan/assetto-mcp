@@ -37,13 +37,23 @@ body{margin:0;background:var(--ground);color:var(--ink);font:14px/1.4 var(--font
 .state{padding:4px 16px 0;color:var(--muted);font:12px var(--font-mono)}
 .ask{display:flex;gap:8px;padding:8px 16px 0}
 .ask input{flex:1;min-width:0;font:14px var(--font-body);color:var(--ink);background:var(--surface);border:1px solid var(--line);padding:8px 10px}
-.ask button{font:600 12px var(--font-body);letter-spacing:.06em;text-transform:uppercase;color:var(--ground);background:var(--ink);border:0;padding:8px 14px;cursor:pointer}
-.ask input:focus-visible,.ask button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.ask button,dialog button{font:600 12px var(--font-body);letter-spacing:.06em;text-transform:uppercase;color:var(--ground);background:var(--ink);border:0;padding:8px 14px;cursor:pointer}
+.ask input:focus-visible,.ask button:focus-visible,dialog button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.phone{float:right;font:inherit;color:var(--accent);background:none;border:0;padding:0;cursor:pointer;text-decoration:underline}
+.phone[hidden]{display:none}
+dialog{background:var(--surface);color:var(--ink);border:1px solid var(--line);padding:16px;text-align:center}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+/* Dark on light whatever the theme: phone cameras read that most reliably. */
+#qr{background:#fff;padding:12px;line-height:0}
+#qr:empty{display:none}
+#qr svg{width:240px;height:240px}
+dialog p{max-width:264px;margin:10px 0;font:12px var(--font-mono);color:var(--muted);word-break:break-all}
 iframe{flex:1;min-height:420px;width:100%;border:0;margin-top:8px;background:var(--ground)}
 </style>
 <div class="live" id="live"></div>
 <div class="focus" id="focus" aria-live="polite"></div>
-<div class="state" id="state">connecting…</div>
+<div class="state"><button class="phone" id="phone" hidden>Open on a phone</button><span id="state">connecting…</span></div>
+<dialog id="lan"><div id="qr"></div><p id="lanurl"></p><form method="dialog"><button>Close</button></form></dialog>
 <form class="ask" id="ask">
   <input id="q" maxlength="300" placeholder="Ask the engineer. Click the map to point at a place." aria-label="Question for the engineer">
   <button>Ask</button>
@@ -83,6 +93,7 @@ async function poll(){
     const d = await (await fetch("dash/live", {cache: "no-store"})).json();
     $("live").innerHTML = liveTiles(d.live);
     $("focus").textContent = d.focus.caption || "";
+    $("phone").hidden = !d.lan;
     const r = d.recording;
     $("state").textContent = (r.running ? r.status + " · " + r.laps_recorded + " laps" : "not recording") +
       (d.focus.lap_ids.length ? " · showing laps " + d.focus.lap_ids.join(", ") : "");
@@ -100,6 +111,26 @@ async function poll(){
   setTimeout(poll, 1000);
 }
 poll();
+
+// Only on click: the link carries the secret, so it stays off the page, and
+// off a stream that happens to show it, until asked for.
+$("phone").addEventListener("click", async () => {
+  $("qr").textContent = $("lanurl").textContent = "";
+  $("lan").showModal();
+  try {
+    const lanUrl = (await (await fetch("dash/lan", {cache: "no-store"})).json()).url;
+    $("lanurl").textContent = lanUrl;
+    if (!window.qrcode) await new Promise((ok, fail) => document.head.appendChild(Object.assign(
+      document.createElement("script"), {onload: ok, onerror: fail, crossOrigin: "anonymous",
+        src: "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js",
+        integrity: "sha384-mZT2gIty7ZDdOGkxfP6joZcYdMW1Jvj9dRlfpTmaJAKKXTqzygtB22k7FLe+KZC1"})));
+    const qr = qrcode(0, "M");
+    qr.addData(lanUrl); qr.make();
+    $("qr").innerHTML = qr.createSvgTag({scalable: true, margin: 0});
+  } catch (e) {
+    $("qr").textContent = "";
+  }
+});
 
 // The map in the frame posts the place clicked; it goes with the question.
 let place = "";

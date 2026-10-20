@@ -19,6 +19,7 @@ eval = ["anthropic"]
 [project.scripts]
 assetto-mcp = "assetto_mcp.supervisor:main"
 assetto-mcp-update = "assetto_mcp.update:main"
+assetto-mcp-pit-wall = "assetto_mcp.pit_wall:main"
 
 [build-system]
 requires = ["setuptools>=68"]

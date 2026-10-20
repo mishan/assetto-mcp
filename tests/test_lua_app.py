@@ -75,6 +75,36 @@ def test_an_opponent_carries_its_name_car_clock_position_and_lap_time():
     print(f"  lap timed at {first['best_lap_ms']:.0f} ms from the car's clock")
 
 
+def test_a_car_in_the_pit_lane_is_placed_but_kept_off_the_traces():
+    rec = lua_harness.Recorder()
+    rec.sim_fields = {"raceSessionType": 1, "carsCount": 3}
+    lua, api, rec = lua_harness.load(rec)
+    api.setRunning(True)
+    rec.cars[1] = {"isInPitlane": True, "position": (1.0, 0.0, 2.0)}
+    rec.cars[2] = {"isInPitlane": True, "position": (7.0, 0.0, -3.0)}
+    api.sampleRivals()
+    api.postRivals()
+    batch = _rival_batches(rec)[-1]
+    assert not batch["cars"] and len(batch["pit"]) == 2, batch
+
+    rec.deliver(200, {"ok": True, "stored": 0})
+    rec.cars[1] = {"splinePosition": 0.3, "position": (1.0, 0.0, 2.0)}
+    api.sampleRivals()
+    api.postRivals()
+    batch = _rival_batches(rec)[-1]
+    assert [c["car_index"] for c in batch["cars"]] == [1], batch
+    assert batch["pit"] == [{"car_index": 2, "pos_x": 7.0, "pos_z": -3.0}]
+
+    rec.deliver(200, {"ok": True, "stored": 1})
+    rec.cars[2] = {"isInPitlane": False, "position": (8.0, 0.0, -3.0)}
+    api.sampleRivals()
+    api.postRivals()
+    batch = _rival_batches(rec)[-1]
+    assert not batch["pit"] and len(batch["cars"]) == 2, batch
+    print("  both in the pits posted; then car 2 placed from the pit lane,"
+          " traced once out of it")
+
+
 def _rival_batches(rec):
     return [body for url, body in rec.posts if url.endswith("/rivals")]
 

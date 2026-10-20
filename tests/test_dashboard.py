@@ -2,7 +2,10 @@
 
 import http.client
 import json
+import os
+import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -169,6 +172,24 @@ def test_show_on_dashboard_checks_what_it_points_at():
         s._active_session = active
 
 
+def test_a_message_from_any_chat_reaches_the_game():
+    """The game polls whichever process holds the port; the chat sending
+    the message is often another one, such as beside assetto-mcp-pit-wall."""
+    with temp_db() as path:
+        holder = _bridge(path)
+        chat = B.Bridge(path, FakeCollector(), 0)
+        try:
+            mid = chat.set_message("box this lap")
+            shown = json.loads(_get(holder.port, "/status")[2])["message"]
+            assert shown == {"id": mid, "text": "box this lap"}, shown
+            assert post(holder.port, "/ack", {"id": mid})[1]["ok"] is True
+            assert chat.get_message() is None
+            print("  sent from one instance, shown and dismissed via another")
+        finally:
+            holder.stop()
+            chat.stop()
+
+
 def test_the_lan_dashboard_needs_its_secret_and_serves_nothing_else():
     with temp_db() as path:
         B_port, B.DASH_LAN_PORT = B.DASH_LAN_PORT, 0
@@ -181,6 +202,9 @@ def test_the_lan_dashboard_needs_its_secret_and_serves_nothing_else():
             token = br.lan_url.split("/")[3]
             assert _get(port, f"/{token}/dash/live")[0] == 200
             assert _get(port, f"/{token}/dash")[0] == 200
+            assert token not in _get(br.port, "/dash/live")[2]
+            assert json.loads(_get(br.port, "/dash/lan")[2]) == {
+                "url": br.lan_url}
             assert _get(port, "/dash/live")[0] == 403
             assert _get(port, f"/{token[:-1]}x/dash/live")[0] == 403
             assert _get(port, f"/{token}/status")[0] == 403
@@ -209,13 +233,49 @@ def test_opponents_show_where_their_latest_sample_put_them():
                     for s in (1, 2, 3)]
             cars.append({"car_index": 2, "lap_count": 2, "spline": 0.5,
                          "speed_kmh": 150})
+            pit = [{"car_index": 3, "pos_x": 4.0, "pos_z": 2.0},
+                   {"car_index": "x"}, "junk"]
+            assert post(br.port, "/rivals", {"cars": {}, "pit": pit})[0] == 200
             assert post(br.port, "/rivals", {"cars": cars})[0] == 200
             live = json.loads(_get(br.port, "/dash/live")[2])
-            assert live["cars"] == [{"name": "Ann", "x": 30.0, "z": -5.0}]
-            print("  each opponent at its last placed sample, named")
+            assert sorted(live["cars"], key=lambda c: c["pit"]) == [
+                {"name": "Ann", "x": 30.0, "z": -5.0, "pit": False},
+                {"name": None, "x": 4.0, "z": 2.0, "pit": True}], live["cars"]
+            print("  each opponent at its last placed sample, named;"
+                  " the pit lane marked")
         finally:
             br.stop()
             conn.close()
+
+
+def test_the_pit_wall_runs_without_a_chat():
+    from test_supervisor import _server_env
+    with temp_db() as path:
+        env = _server_env(str(Path(path).parent))
+        env.pop("ASSETTO_MCP_DASH_LAN", None)
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "assetto_mcp.pit_wall"],
+            cwd=Path(__file__).resolve().parent.parent, text=True,
+            env=env, stdout=subprocess.PIPE)
+        # A child that never prints would leave readline blocked forever.
+        stuck = threading.Timer(60, proc.kill)
+        stuck.start()
+        try:
+            lines = [proc.stdout.readline() for _ in range(3)]
+            assert lines[-1].startswith("Ctrl+C"), lines
+            port = int(lines[0].split(":")[3].split("/")[0])
+            code, _, body = _get(port, "/dash/live")
+            assert code == 200 and "recording" in json.loads(body)
+            print(f"  serving the pit wall on its own, port {port}")
+            proc.terminate()
+            # Windows has no SIGTERM to catch; terminate() is a hard kill.
+            code = proc.wait(10)
+            assert os.name == "nt" or code == 0, "SIGTERM skipped the shutdown"
+        finally:
+            stuck.cancel()
+            proc.kill()
+            proc.wait(10)
+            proc.stdout.close()
 
 
 def test_delta_is_against_the_sessions_best_clean_lap_at_that_point():

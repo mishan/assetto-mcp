@@ -3257,8 +3257,6 @@ def send_driver_message(
     """Show a sentence or two on the driver's in-game overlay, e.g.
     'claude_v2 saved: softer front ARB - pit and load it'. It stays up until
     dismissed or replaced by a newer message."""
-    if not _bridge or _bridge.error:
-        return _j({"error": _bridge.error if _bridge else "bridge not running"})
     return _j({"ok": True, "message_id": _bridge.set_message(text),
                "note": "displayed until driver dismisses it"})
 

@@ -144,6 +144,11 @@ given the commit that check named, does the following:
    not while `acs.exe` is running;
 5. leaves the running server on the old code until `restart_server`.
 
+It refuses while the driver is in a live session, and while another apply is
+running in any server instance (`update_apply.lock` in the data directory; a
+lock left by a crashed apply is taken over). An apply still running after 25
+seconds answers `in_progress`, and calling again collects the result.
+
 The same from a terminal:
 
 ```powershell

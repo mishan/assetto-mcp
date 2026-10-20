@@ -64,25 +64,104 @@ from mcp.server.lowlevel import NotificationOptions  # noqa: E402
 _STATUS_TOOLS: set[str] = set()
 
 
+# Refusals the driver can lift by answering a question the client puts to
+# them, where it can: refusal -> the flag that lifts it, the question.
+_CONFIRMABLE = {
+    "write_setup": {
+        "setup_exists": ("overwrite", "Replace your setup \"{name}\" for "
+                         "{car} at {track}? The old file is backed up "
+                         "first."),
+        "no_ranges": ("allow_unclamped", "Write \"{name}\" for {car} "
+                      "without its legal ranges? The game silently "
+                      "ignores a value out of range."),
+    },
+    "restart_server": {
+        "recording": ("force", "Restart the server now, mid-session? The "
+                      "lap in progress is lost."),
+    },
+}
+
+
+def _payload(result) -> dict | None:
+    content = getattr(result, "content", result)  # 2.x result, 1.x list
+    if isinstance(content, tuple):  # 1.x with structured output
+        content = content[0]
+    text = getattr(content[0], "text", "") if content else ""
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            return None
+        return payload if isinstance(payload, dict) else None
+    return None
+
+
+def _can_elicit(ctx) -> bool:
+    try:
+        from mcp.types import ClientCapabilities, ElicitationCapability
+        return ctx.session.check_client_capability(
+            ClientCapabilities(elicitation=ElicitationCapability()))
+    except Exception:  # noqa: BLE001 - outside a request, or an old SDK
+        return False
+
+
+async def _ask(ctx, question: str) -> bool | None:
+    """The driver's yes or no, or None when the client could not ask."""
+    from pydantic import BaseModel, Field
+
+    class Confirm(BaseModel):
+        confirm: bool = Field(description="Yes, go ahead")
+
+    try:
+        answer = await ctx.elicit(question, Confirm)
+    except Exception:  # noqa: BLE001 - no back channel, or a bad reply
+        return None
+    return answer.action == "accept" and answer.data.confirm
+
+
 class _Server(FastMCP):
     async def call_tool(self, name, arguments, *args, **kwargs):
+        ctx = args[0] if args else kwargs.get("context")
+        if ctx is None and hasattr(self, "get_context"):  # 1.x
+            ctx = self.get_context()
+        asks = dict(_CONFIRMABLE.get(name, {})) if _can_elicit(ctx) else {}
+        given = arguments
+        if asks:
+            # The driver answers in place of the flags, so a model cannot
+            # set one on its own.
+            arguments = {**arguments,
+                         **{flag: False for flag, _ in asks.values()}}
+        elif name == "apply_update" and _can_elicit(ctx):
+            if await _ask_to_update(ctx, arguments) is False:
+                raise ToolError(_j({
+                    "error": "the driver declined the update",
+                    "refused": "declined",
+                    "do_this": "leave the checkout as it is"}))
+        result = await super().call_tool(name, arguments, *args, **kwargs)
+        payload = _payload(result)
+        while payload and payload.get("refused") in asks:
+            flag, question = asks.pop(payload["refused"])
+            ok = await _ask(ctx, question.format_map(
+                {k: str(v) for k, v in arguments.items()}))
+            if ok is None:
+                if arguments != given:
+                    result = await super().call_tool(name, given, *args,
+                                                     **kwargs)
+                    payload = _payload(result)
+                break
+            if not ok:
+                payload.pop("ask_the_driver", None)
+                payload["declined"] = "the driver was asked and said no"
+                break
+            arguments = {**arguments, flag: True}
+            result = await super().call_tool(name, arguments, *args,
+                                             **kwargs)
+            payload = _payload(result)
         # Tools answer a refusal with an {"error": ...} payload. Raising it
         # instead marks the result isError, so the client sees a failed call,
         # and the payload stays the message.
-        result = await super().call_tool(name, arguments, *args, **kwargs)
-        if name in _STATUS_TOOLS:
-            return result
-        content = getattr(result, "content", result)  # 2.x result, 1.x list
-        if isinstance(content, tuple):  # 1.x with structured output
-            content = content[0]
-        text = getattr(content[0], "text", "") if content else ""
-        if text.startswith("{"):
-            try:
-                payload = json.loads(text)
-            except ValueError:
-                payload = None
-            if isinstance(payload, dict) and payload.get("error"):
-                raise ToolError(text)
+        if name not in _STATUS_TOOLS and payload and payload.get("error"):
+            raise ToolError(_j(payload))
         return result
 
 
@@ -2632,12 +2711,29 @@ def apply_update(to_commit: str) -> str:
     running (`lua.note`). `in_progress: true` means still running: call
     again with the same to_commit for the result. The old code runs until
     restart_server. Pass any `warning` on as it is."""
+    return _j(update.apply_in_background(
+        to_commit, live_session=_live_session(), data_dir=DATA_DIR))
+
+
+def _live_session() -> int | None:
+    """The session the driver is on track in, in any instance."""
     snap = _bridge.status_snapshot()
-    live = (_collector.session_id
+    return (_collector.session_id
             if _collector.holds_recorder and _collector.live
             else snap["session_id"] if snap["by_other"] else None)
-    return _j(update.apply_in_background(to_commit, live_session=live,
-                                         data_dir=DATA_DIR))
+
+
+async def _ask_to_update(ctx, arguments) -> bool | None:
+    """Ask before an apply starts; not while one runs, and not on track."""
+    to_commit = arguments.get("to_commit")
+    if (not isinstance(to_commit, str) or update.job_started(to_commit)
+            or update.apply_running(DATA_DIR)
+            or _live_session() is not None):
+        return None
+    return await _ask(ctx, f"Update the assetto-mcp server to "
+                           f"{to_commit.strip()[:7]}? It reinstalls on "
+                           "disk; the running server is replaced only by "
+                           "a restart.")
 
 
 def _restart_soon() -> None:

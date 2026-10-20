@@ -39,7 +39,7 @@ def _server():
 
 
 @contextlib.asynccontextmanager
-async def _client():
+async def _client(**session_options):
     """A client session on the server, and its initialize result."""
     import anyio
     from mcp import ClientSession
@@ -51,7 +51,8 @@ async def _client():
         async with anyio.create_task_group() as tg:
             tg.start_soon(lambda: low.run(
                 server[0], server[1], low.create_initialization_options()))
-            async with ClientSession(client[0], client[1]) as session:
+            async with ClientSession(client[0], client[1],
+                                     **session_options) as session:
                 yield session, _wire(await session.initialize())
             tg.cancel_scope.cancel()
 
@@ -235,6 +236,85 @@ def test_prompts_and_resources_serve_the_skill_and_the_data():
     assert skill == (guide.SKILL_DIR / "SKILL.md").read_text(
         encoding="utf-8")
     assert {lap["id"] for lap in json.loads(laps)} == set(ids), laps
+
+
+def test_the_driver_confirms_where_the_client_can_ask():
+    """With elicitation the driver's answer replaces the override flags, so
+    a model that set one itself still has to get a yes. A client that
+    cannot ask gets today's refusal, and the flag still works."""
+    from mcp import types
+    from assetto_mcp import supervisor, update
+    s = _server()
+    docs = Path(tempfile.mkdtemp(prefix="ac-confirm-"))
+    write = {"car": "c", "track": "t", "name": "v1",
+             "values_json": '{"PRESSURE_LF": 25}', "allow_unclamped": True}
+    (docs / "setups" / "c" / "t").mkdir(parents=True)
+    existing = docs / "setups" / "c" / "t" / "v1.ini"
+    applied, restarted = [], []
+
+    def answering(yes):
+        async def callback(context, params):
+            asked.append(params.message)
+            return types.ElicitResult(action="accept",
+                                      content={"confirm": yes})
+        return None if yes is None else callback
+
+    # (driver's answer, or None when the client cannot ask; tool, arguments;
+    #  whether it went ahead)
+    cases = [
+        (None, "write_setup", write, False),
+        (None, "write_setup", {**write, "overwrite": True}, True),
+        (True, "write_setup", write, True),
+        (False, "write_setup", {**write, "overwrite": True}, False),
+        (None, "restart_server", {}, False),
+        (True, "restart_server", {}, True),
+        (False, "restart_server", {"force": True}, False),
+        (True, "apply_update", {"to_commit": "abc1234"}, True),
+        (False, "apply_update", {"to_commit": "abc1234"}, False),
+    ]
+
+    async def call(yes, name, arguments):
+        async with _client(elicitation_callback=answering(yes)) as (c, _):
+            return _wire(await c.call_tool(name, arguments))
+
+    saved = (s.AC_DOCS_DIR, s._restart_soon, update.apply_in_background,
+             s._live_session, s._collector.holds_recorder, s._collector.session_id,
+             s._collector.live)
+    s.AC_DOCS_DIR = docs
+    s._restart_soon = lambda: restarted.append(True)
+    update.apply_in_background = (
+        lambda *a, **kw: applied.append(True) or {"applied": True})
+    os.environ[supervisor.CHILD_ENV] = "1"
+    s._collector.holds_recorder, s._collector.session_id = True, 42
+    s._collector.live = True
+    # Earlier tests leave sessions open, which reads as another instance on
+    # track, and an update is never offered then.
+    s._live_session = lambda: None
+    try:
+        for yes, name, arguments, went_ahead in cases:
+            existing.write_text("[PRESSURE_LF]\nVALUE=30\n")
+            asked, applied[:], restarted[:] = [], [], []
+            r = asyncio.run(call(yes, name, arguments))
+            out = json.loads(r["content"][0]["text"])
+            case = (yes, name, arguments, out)
+            did = {"write_setup": "VALUE=25" in existing.read_text(),
+                   "restart_server": bool(restarted),
+                   "apply_update": bool(applied)}[name]
+            assert did == went_ahead, case
+            assert bool(r.get("isError")) != went_ahead, case
+            assert bool(asked) == (yes is not None), case
+            if yes is False:
+                assert out.get("declined") or out["refused"] == "declined", \
+                    case
+                assert "ask_the_driver" not in out, case
+            if not went_ahead:
+                assert not [k for k in out if "overwrite" in k
+                            or "force" in k or "unclamped" in k], case
+    finally:
+        (s.AC_DOCS_DIR, s._restart_soon, update.apply_in_background,
+         s._live_session, s._collector.holds_recorder, s._collector.session_id,
+         s._collector.live) = saved
+        del os.environ[supervisor.CHILD_ENV]
 
 
 def test_the_core_toolset_serves_only_its_tools():

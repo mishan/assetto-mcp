@@ -62,7 +62,8 @@ def _wire(model) -> dict:
     return model.model_dump(by_alias=True, exclude_none=True)
 
 
-def _session_with_laps(n: int = 4) -> tuple[int, list[int]]:
+def _session_with_laps(n: int = 4, samples: int = 600,
+                       corners=None) -> tuple[int, list[int]]:
     from assetto_mcp import db
     s = _server()
     sid = db.create_session(s._conn, car="ks_mazda_mx5_cup", track="mugello",
@@ -78,7 +79,8 @@ def _session_with_laps(n: int = 4) -> tuple[int, list[int]]:
                  r["slip_rr"], r["press_fl"], r["press_fr"], r["press_rl"],
                  r["press_rr"], r["core_fl"], r["core_fr"], r["core_rl"],
                  r["core_rr"], r["ride_f"], r["ride_r"], 0)
-                for r in _lap(n=600, lap_ms=113000 + 150 * lap)]
+                for r in _lap(n=samples, lap_ms=113000 + 150 * lap,
+                              **({"corners": corners} if corners else {}))]
         ids.append(db.store_lap(s._conn, sid, lap, 113000 + 150 * lap, True,
                                 rows))
     s._conn.commit()
@@ -135,13 +137,24 @@ def test_a_status_report_is_not_a_failed_call_but_a_refusal_is():
     """A status tool asked "is it working?" answers, even when the answer
     is no: AC not open yet, GitHub unreachable. A refusal is a failed call
     whose text is the JSON payload."""
+    from assetto_mcp import update
     s = _server()
     status = [("recording_status", {}), ("bridge_status", {}),
-              ("suspension_capture_status", {}), ("check_for_updates", {})]
+              ("suspension_capture_status", {}), ("check_for_updates", {}),
+              ("session_check", {})]
+    # Starting the real collector here would leave it polling for the game.
+    assert {n for n, _ in status} == s._STATUS_TOOLS - {"start_recording"}
     refusals = [("lap_summary", {"lap_id": -1}),
                 ("compare_lap_corners", {"lap_id_a": -1, "lap_id_b": -2}),
+                ("track_corners", {"session_id": 999999}),
+                ("label_laps", {"lap_ids": "abc", "setup_name": "a"}),
                 ("read_setup", {"car": "nope", "track": "nope",
-                                "name": "nope"})]
+                                "name": "nope"}),
+                ("write_setup", {"car": "../x", "track": "t", "name": "n",
+                                 "values_json": {"PRESSURE_LF": 25}}),
+                ("annotate_experiment", {"experiment_id": 999999}),
+                ("restart_server", {}),
+                ("apply_update", {"to_commit": "abc1234"})]
 
     async def run():
         async with _client() as (session, _):
@@ -149,14 +162,18 @@ def test_a_status_report_is_not_a_failed_call_but_a_refusal_is():
                     [_wire(await session.call_tool(n, a))
                      for n, a in refusals])
 
-    saved = s._collector.last_error, s._bridge.error
+    saved = (s._collector.last_error, s._bridge.error,
+             update.apply_in_background)
     os.environ["ASSETTO_MCP_UPDATE_API"] = "http://127.0.0.1:9"
     s._collector.last_error = "shared memory not found: AC is not running"
     s._bridge.error = "port 9666 in use"
+    update.apply_in_background = lambda *a, **kw: update._refuse(
+        "not_on_main", "the checkout is on another branch")
     try:
         answered, refused = asyncio.run(run())
     finally:
-        s._collector.last_error, s._bridge.error = saved
+        (s._collector.last_error, s._bridge.error,
+         update.apply_in_background) = saved
         del os.environ["ASSETTO_MCP_UPDATE_API"]
     for (name, _), r in zip(status, answered):
         assert not r.get("isError"), (name, r)
@@ -165,7 +182,8 @@ def test_a_status_report_is_not_a_failed_call_but_a_refusal_is():
         assert json.loads(r["content"][0]["text"])["error"], (name, r)
     for (name, _), r in zip(refusals, refused):
         assert r.get("isError"), (name, r)
-        assert json.loads(r["content"][0]["text"])["error"], (name, r)
+        reply = json.loads(r["content"][0]["text"])
+        assert reply.get("error") or reply.get("refused"), (name, r)
 
 
 def test_every_tool_says_what_it_does_to_the_world():

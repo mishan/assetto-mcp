@@ -556,6 +556,7 @@ assetto_mcp/
   retention.py  database size budget, trace thinning
   bridge.py     localhost HTTP bridge for the in-game app
   config.py     data dir + environment, including pre-rename fallbacks
+  text.py       outside text (rival names, mod files) made safe to quote
   server.py     MCP tools
   supervisor.py keeps the client connection open across restarts
   update.py     update check and fast-forward from GitHub

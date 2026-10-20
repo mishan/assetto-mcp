@@ -5,6 +5,9 @@ nothing looks exactly like one the car declined: "I loaded it and nothing
 changed". Anything this module cannot honor has to say so loudly.
 """
 
+import asyncio
+import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -621,6 +624,97 @@ def test_step_of_zero_does_not_become_a_divide_trap():
         rng = _ranges(Path(tmp), "carx", "[ARB_FRONT]\nMIN=1\nMAX=10\nSTEP=0\n")
         assert setups.load_ranges(rng, "carx")["ARB_FRONT"][2] == 1.0
         print("  STEP=0 falls back to 1")
+
+
+def _tool(docs: Path, name: str, arguments: dict) -> dict:
+    """A setup tool's reply through MCP, with the setups under `docs`."""
+    os.environ.setdefault("ASSETTO_MCP_NO_AUTOSTART", "1")
+    os.environ.setdefault("ASSETTO_MCP_BRIDGE_PORT", "0")
+    from assetto_mcp import server
+    old, server.AC_DOCS_DIR = server.AC_DOCS_DIR, docs
+    try:
+        r = asyncio.run(server.mcp.call_tool(name, arguments))
+    except server.ToolError as e:
+        return json.loads(str(e))
+    finally:
+        server.AC_DOCS_DIR = old
+    content = getattr(r, "content", r)  # 2.x result, 1.x content list
+    if isinstance(content, tuple):  # 1.x with structured output
+        content = content[0]
+    return json.loads(content[0].text)
+
+
+def _every_setup_tool(car, track, name="v1", base_setup=None):
+    return [("write_setup", {"car": car, "track": track, "name": name,
+                             "values_json": '{"PRESSURE_LF": 25}',
+                             "base_setup": base_setup,
+                             "allow_unclamped": True}),
+            ("read_setup", {"car": car, "track": track, "name": name}),
+            ("list_setups", {"car": car, "track": track})]
+
+
+def test_no_setup_tool_reaches_outside_the_setups_folder():
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        docs = d / "docs"
+        (docs / "setups" / "carx" / "spa").mkdir(parents=True)
+        (d / "outside").mkdir()
+        (d / "outside" / "creds.ini").write_text("[SECRET]\nVALUE=1\n")
+        before = sorted(d.rglob("*"))
+
+        calls = []
+        for bad in ("..", "../outside", "..\\outside", ". .", "/etc",
+                    "C:", "C:\\Windows", "a\x00b"):
+            calls += _every_setup_tool(bad, "spa")
+            calls += _every_setup_tool("carx", bad)
+        calls += _every_setup_tool("carx", "spa",
+                                   name="../../../outside/x")[:2]
+        calls += _every_setup_tool("carx", "spa",
+                                   base_setup="../../../outside/creds")[:1]
+        try:
+            (docs / "setups" / "carx" / "out").symlink_to(d / "outside")
+            calls += _every_setup_tool("carx", "out", name="creds")
+        except OSError:
+            pass  # no symlinks without privileges on Windows
+
+        for name, arguments in calls:
+            reply = _tool(docs, name, arguments)
+            assert isinstance(reply, dict) and reply.get("error"), \
+                (name, arguments, reply)
+            assert "SECRET" not in json.dumps(reply), (name, arguments)
+        after = sorted(p for p in d.rglob("*") if p.name != "out")
+        assert after == before, set(after) ^ set(before)
+        print(f"  {len(calls)} calls refused, nothing written")
+
+
+def test_real_ids_with_dots_hyphens_and_spaces_still_work():
+    with tempfile.TemporaryDirectory() as tmp:
+        docs = Path(tmp) / "docs"
+        for car, track in (("ks_mazda_mx5_cup", "ks_nordschleife"),
+                           ("rss_gt-m_2021 v1.2", "my track v.2")):
+            for name, arguments in _every_setup_tool(car, track,
+                                                     name="race 1.v2"):
+                reply = _tool(docs, name, arguments)
+                assert not (isinstance(reply, dict) and reply.get("error")), \
+                    (name, arguments, reply)
+            assert _tool(docs, "list_setups", {"car": car, "track": track}) \
+                == ["race 1.v2"]
+        print("  listed, read and wrote under each")
+
+
+def test_a_downloaded_setup_reads_as_short_printable_text():
+    with tempfile.TemporaryDirectory() as tmp:
+        docs = Path(tmp) / "docs"
+        d = docs / "setups" / "carx" / "spa"
+        d.mkdir(parents=True)
+        (d / "dl.ini").write_text(
+            "[CAR]\nMODEL=carx\u202e\x07 `rm -rf` <b>\n"
+            "[TYRES]\nVALUE=" + "x" * 100 + "\n[ARB_FRONT]\nVALUE=5\n",
+            encoding="utf-8")
+        got = _tool(docs, "read_setup",
+                    {"car": "carx", "track": "spa", "name": "dl"})
+        assert got["CAR"]["MODEL"] == "carx 'rm -rf' (b)", got
+        assert got["TYRES"] == "x" * 64 and got["ARB_FRONT"] == 5, got
 
 
 if __name__ == "__main__":

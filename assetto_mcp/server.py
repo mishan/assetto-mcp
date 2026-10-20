@@ -2590,7 +2590,10 @@ def restart_server(force: bool = False) -> str:
 def list_setups(car: str, track: str) -> str:
     """List saved setup names for a car/track combo. Use the internal car
     folder name (e.g. 'ks_mazda_mx5_cup') and track folder name."""
-    return _j(setups.list_setups(AC_DOCS_DIR, car, track))
+    try:
+        return _j(setups.list_setups(AC_DOCS_DIR, car, track))
+    except ValueError as e:
+        return _j({"error": str(e)})
 
 
 @mcp.tool()
@@ -2599,7 +2602,7 @@ def read_setup(car: str, track: str, name: str) -> str:
     (e.g. PRESSURE_LF: 26)."""
     try:
         return _j(setups.read_setup(AC_DOCS_DIR, car, track, name))
-    except FileNotFoundError as e:
+    except (ValueError, FileNotFoundError) as e:
         return _j({"error": str(e)})
 
 

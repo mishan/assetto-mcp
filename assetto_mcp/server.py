@@ -949,7 +949,8 @@ def field_benchmark(session_id: int | None = None,
                     car_indexes: str | int | list[int] | None = None,
                     laps_per_rival: Annotated[int, Field(ge=1, le=10)] = 3
                     ) -> str:
-    """Where the quicker cars find their time, turn by turn, against you.
+    """Where the quicker opponents find their time, turn by turn, against
+    you. The driver's own laps against each other: compare_laps.
 
     Per turn, yours and the field's medians: time through it (turn-in to
     exit) and on the road after to the next turn-in, minimum and exit
@@ -2398,8 +2399,9 @@ def compare_laps(lap_id_a: int, lap_id_b: int | None = None,
                  detail: Literal["summary", "full"] = "summary",
                  segments: Annotated[int, Field(ge=1, le=200)] = 20,
                  points: Annotated[int, Field(ge=10, le=200)] = 100) -> str:
-    """Two of the driver's own laps on the same track (the best clean one
-    is `best_clean_lap_id` in session_check), one view at a time:
+    """Where the driver lost or gained time between two of their own laps
+    on the same track (the best clean one is `best_clean_lap_id` in
+    session_check), one view at a time:
 
     - "corners": what each corner did differently -- min speed, brake
       point and slip balance, all lap a minus lap b (`a_slower_by_ms` too).

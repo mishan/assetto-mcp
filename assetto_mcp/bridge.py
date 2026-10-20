@@ -16,11 +16,15 @@ on 127.0.0.1 that it polls and posts to:
                      and fuel, which cannot separate setups differing in ARB
                      or camber
     POST /ack     -> dismiss the currently displayed message
+    GET  /dash    -> the pit wall: a page for a browser on this PC, polling
+    GET  /dash/live  -> shared memory now, and what Claude put on screen
+    GET  /dash/map   -> the line map of those laps, or the latest session
 
 Messages flow the other way via the send_driver_message MCP tool: Claude sets
 a message, the app shows it on the next poll, the driver dismisses it.
 """
 
+import html
 import json
 import math
 import socket
@@ -28,8 +32,9 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
-from . import db
+from . import db, line_map
 from .text import untrusted
 
 
@@ -133,6 +138,8 @@ BIND_RETRY_SECONDS = 300.0
 # collector touches sessions.last_seen_at every few seconds, so for live
 # sessions db.SESSION_STALE_SECONDS decides.
 OTHER_INSTANCE_STALE_SECONDS = 900.0
+
+DASH_PAGE = Path(__file__).with_name("dash.html")
 
 
 class FieldError(ValueError):
@@ -241,6 +248,9 @@ class Bridge:
         # time.monotonic() of the in-game app's latest request. The app polls
         # /status every couple of seconds, so a stale one means it is gone.
         self.app_seen_at: float | None = None
+        # The server's live_snapshot reader, set once it is defined.
+        self.live = None
+        self._focus = {"id": 0, "lap_ids": [], "caption": None}
 
     # -- session resolution ---------------------------------------------
 
@@ -350,6 +360,38 @@ class Bridge:
                 return True
             return False
 
+    # -- the pit wall's focus (Claude -> dashboard) ----------------------
+
+    def set_focus(self, lap_ids: list[int], caption: str | None) -> int:
+        with self._lock:
+            self._focus = {"id": self._focus["id"] + 1,
+                           "lap_ids": list(lap_ids), "caption": caption}
+            return self._focus["id"]
+
+    def get_focus(self) -> dict:
+        with self._lock:
+            return dict(self._focus)
+
+    def _dash_live(self) -> dict:
+        try:
+            live = self.live() if self.live else {"error": "starting"}
+        except Exception as e:  # noqa: BLE001 - the game closed is normal
+            live = {"error": str(e)}
+        return {"live": live, "focus": self.get_focus(),
+                "recording": self.status_snapshot()}
+
+    def _dash_map(self) -> str:
+        conn = db.connect(self._db_path)
+        try:
+            return line_map.render(line_map.build(
+                conn, None, self.get_focus()["lap_ids"] or None))
+        except ValueError as e:
+            return ('<!doctype html><meta name="color-scheme" '
+                    'content="dark light"><body style="font:14px system-ui;'
+                    f'padding:16px">{html.escape(str(e))}')
+        finally:
+            conn.close()
+
     # -- HTTP -----------------------------------------------------------
 
     def start(self):
@@ -361,16 +403,17 @@ class Bridge:
 
             _responded = False
 
-            def _send(self, code: int, obj: dict):
+            def _send(self, code: int, obj, ctype="application/json"):
                 # Guard against a second response on the same connection: if
                 # the client vanished mid-write, the error handler must not
                 # try to write another status line onto a half-sent reply.
                 if self._responded:
                     return
                 self._responded = True
-                body = json.dumps(obj).encode()
+                body = (obj if isinstance(obj, str)
+                        else json.dumps(obj)).encode()
                 self.send_response(code)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -432,6 +475,14 @@ class Bridge:
             def do_GET(self):
                 if self._from_web_page():
                     return self._send(403, {"error": "forbidden"})
+                page = "text/html; charset=utf-8"
+                if self.path == "/dash":
+                    return self._send(200, DASH_PAGE.read_text(
+                        encoding="utf-8"), page)
+                if self.path == "/dash/live":
+                    return self._send(200, bridge._dash_live())
+                if self.path.split("?")[0] == "/dash/map":
+                    return self._send(200, bridge._dash_map(), page)
                 bridge.app_seen_at = time.monotonic()
                 if self.path != "/status":
                     return self._send(404, {"error": "unknown path"})

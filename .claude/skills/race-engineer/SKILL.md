@@ -61,6 +61,11 @@ this lap or next: a pit call, a fuel warning, a car close behind, a
 change confirmed. The lap read stays in text. If the bridge is up,
 `send_driver_message` puts the same sentence on the in-game overlay.
 
+When a lap read points at a place on the track, `show_on_dashboard` with
+the laps and a one-line caption puts them on the pit wall, a page the
+driver keeps open on a second screen; give them its `url` the first time.
+Show it, then talk.
+
 Whichever mode, the recording, tagging and watching are identical, so a
 driver who starts in debrief can ask a question mid-session and get the
 live answer.

@@ -102,6 +102,11 @@ say:
   `wait_for_lap` tool where it can't. Speaking needs a shell on the gaming
   PC: `scripts/say.py` uses the voices Windows already has.
 
+Either way, **the pit wall** at <http://127.0.0.1:9666/dash> shows the
+session live in a browser on the gaming PC: lap times, position, fuel to
+the flag, tyre pressures and temperatures, and the line map. When the
+assistant points at something, it puts those laps and a caption there.
+
 Without the skill you still get every tool; you just ask for each step
 yourself, as below.
 

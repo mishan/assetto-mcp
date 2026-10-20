@@ -29,7 +29,7 @@ packages = ["assetto_mcp"]
 
 [tool.setuptools.package-data]
 # The line map's page, read at runtime by line_map.render.
-assetto_mcp = ["line_map.html"]
+assetto_mcp = ["line_map.html", "dash.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

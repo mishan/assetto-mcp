@@ -669,6 +669,11 @@ def live_snapshot() -> str:
     against the laps to go, with `margin_laps` and a `verdict` ("tight"
     under 0.6 laps spare); `basis` "measured" is this session's median burn,
     "nominal" the car's rated consumption."""
+    return _j(_live())
+
+
+def _live() -> dict:
+    """live_snapshot's payload; the dashboard polls it from bridge threads."""
     from .sim_info import SimInfo
     sim = SimInfo()
     try:
@@ -687,6 +692,7 @@ def live_snapshot() -> str:
             "road_temp": round(p.roadTemp, 1),
             "fuel_l": round(p.fuel, 1),
             "speed_kmh": round(p.speedKmh, 1),
+            "lap_time": g.currentTime,
             "last_lap": g.lastTime,
             "best_lap": g.bestTime,
             "completed_laps": g.completedLaps,
@@ -704,14 +710,18 @@ def live_snapshot() -> str:
         p = g = s = None
         sim.close()
     try:
-        fuel = _fuel_to_finish(payload)
+        with _conn_lock:
+            fuel = _fuel_to_finish(payload)
     except Exception:  # noqa: BLE001
         # This call is how anyone finds out whether shared memory reads at
         # all; a fuel estimate is not worth failing it over.
         fuel = None
     if fuel:
         payload["fuel_to_finish"] = fuel
-    return _j(payload)
+    return payload
+
+
+_bridge.live = _live
 
 
 # Usable laps of measured burn before it replaces the nominal figure: one
@@ -3208,6 +3218,29 @@ def send_driver_message(
         return _j({"error": _bridge.error if _bridge else "bridge not running"})
     return _j({"ok": True, "message_id": _bridge.set_message(text),
                "note": "displayed until driver dismisses it"})
+
+
+@_tool("Show on the dashboard", writes=True)
+def show_on_dashboard(lap_ids: str | int | list[int] | None = None,
+                      caption: Annotated[str | None,
+                                         Field(max_length=200)] = None) -> str:
+    """Put laps in front of the driver on the pit wall, the live dashboard
+    page, with a caption saying what to look at ("lap 12 vs 9: T4 entry,
+    you brake 8 m early"). Returns its `url` for the driver to open in a
+    browser on this PC. Show it, then talk.
+
+    lap_ids: "87,88", "87-90", one id or a list, drawn on the line map;
+    null shows the current session."""
+    if _bridge.error:
+        return _j({"error": _bridge.error})
+    try:
+        lap_ids = _lap_ids(lap_ids)
+        if lap_ids:
+            line_map.build(_conn, None, lap_ids)
+    except ValueError as e:
+        return _j({"error": str(e)})
+    return _j({"url": f"http://127.0.0.1:{_bridge.port}/dash",
+               "focus_id": _bridge.set_focus(lap_ids, caption)})
 
 
 # --- notes and the handoff -----------------------------------------------

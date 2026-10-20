@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Pit Wall</title>
+<style>
+:root{
+  --ground:#eeeff0; --surface:#ffffff; --ink:#1b1e23; --muted:#646a74; --line:#d6d9dd;
+  --good:#2a9a5c; --warn:#b26b00; --bad:#cf3b2f; --accent:#6a37e8;
+  --font-body:system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#14171b; --surface:#1c2026; --ink:#e7e9e6; --muted:#98a0a9; --line:#2b3138;
+    --good:#4fd48a; --warn:#f0b44c; --bad:#ff6a5c; --accent:#a88cff;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#14171b; --surface:#1c2026; --ink:#e7e9e6; --muted:#98a0a9; --line:#2b3138;
+  --good:#4fd48a; --warn:#f0b44c; --bad:#ff6a5c; --accent:#a88cff;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--ground);color:var(--ink);font:14px/1.4 var(--font-body);display:flex;flex-direction:column}
+.live{display:flex;flex-wrap:wrap;gap:8px;padding:12px 16px 0}
+.tile{background:var(--surface);border:1px solid var(--line);padding:8px 12px;min-width:96px}
+.tile h2{margin:0 0 2px;font:600 11px var(--font-body);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.tile .v{font:600 22px/1.15 var(--font-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.tile .s{font:12px var(--font-mono);color:var(--muted);white-space:nowrap}
+.tyres{display:grid;grid-template-columns:auto auto;gap:0 14px;font:13px var(--font-mono);font-variant-numeric:tabular-nums}
+.ok{color:var(--good)} .tight{color:var(--warn)} .short{color:var(--bad)}
+.focus{margin:8px 16px 0;padding:10px 14px;background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--accent);font-size:16px}
+.focus:empty{display:none}
+.state{padding:4px 16px 0;color:var(--muted);font:12px var(--font-mono)}
+iframe{flex:1;min-height:420px;width:100%;border:0;margin-top:8px;background:var(--ground)}
+</style>
+<div class="live" id="live"></div>
+<div class="focus" id="focus" aria-live="polite"></div>
+<div class="state" id="state">connecting…</div>
+<iframe id="map" title="Line map"></iframe>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const tile = (name, value, sub) =>
+  `<div class="tile"><h2>${name}</h2><div class="v">${value}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div>`;
+const WHEELS = ["fl","fr","rl","rr"];
+
+function liveTiles(l){
+  if (l.error) return tile("Game", "—", esc(l.error));
+  const t = [tile("Session", esc(l.session_type || l.status), esc(l.status))];
+  if (l.position) t.push(tile("Position", "P" + l.position));
+  if (l.current_lap) t.push(tile("Lap", l.current_lap + (l.race_laps ? " / " + l.race_laps : ""),
+    l.session_time_left_s != null ? Math.floor(l.session_time_left_s/60) + " min left" : ""));
+  t.push(tile("Lap time", esc(l.lap_time || "—"), "last " + esc(l.last_lap || "—")));
+  t.push(tile("Best", esc(l.best_lap || "—")));
+  const f = l.fuel_to_finish;
+  const cls = !f || f.margin_laps == null ? "" : f.margin_laps < 0 ? "short" : f.margin_laps < 0.6 ? "tight" : "ok";
+  t.push(tile("Fuel", l.fuel_l + " L", f ? `<span class="${cls}">${esc(f.verdict)}</span>` +
+    (f.margin_laps != null ? ` · ${f.margin_laps > 0 ? "+" : ""}${f.margin_laps} laps` : "") : ""));
+  const p = l.tyre_pressures_psi, c = l.tyre_core_temps_c;
+  t.push(tile("Tyres psi / °C", `<div class="tyres">${WHEELS.map(w =>
+    `<span>${w.toUpperCase()} ${p[w].toFixed(1)} / ${c[w].toFixed(1)}</span>`).join("")}</div>`));
+  t.push(tile("Air / road", l.air_temp + "° / " + l.road_temp + "°", esc(l.tyre_compound || "")));
+  return t.join("");
+}
+
+let mapKey = null;
+async function poll(){
+  try {
+    const d = await (await fetch("/dash/live", {cache: "no-store"})).json();
+    $("live").innerHTML = liveTiles(d.live);
+    $("focus").textContent = d.focus.caption || "";
+    const r = d.recording;
+    $("state").textContent = (r.running ? r.status + " · " + r.laps_recorded + " laps" : "not recording") +
+      (d.focus.lap_ids.length ? " · showing laps " + d.focus.lap_ids.join(", ") : "");
+    // Reload the map only when what it should draw changes, so a driver
+    // reading it is not reset every second.
+    const key = [d.focus.id, r.session_id, r.laps_recorded].join("-");
+    if (key !== mapKey){ mapKey = key; $("map").src = "/dash/map?k=" + key; }
+  } catch (e) {
+    $("state").textContent = "server not answering: " + e.message;
+  }
+  setTimeout(poll, 1000);
+}
+poll();
+</script>
+</html>

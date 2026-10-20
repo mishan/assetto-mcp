@@ -1564,6 +1564,57 @@
    "openWorldHint": false,
    "readOnlyHint": false
   },
+  "description": "Put laps in front of the driver on the pit wall, the live dashboard\npage, with a caption saying what to look at (\"lap 12 vs 9: T4 entry,\nyou brake 8 m early\"). Returns its `url` for the driver to open in a\nbrowser on this PC. Show it, then talk.\n\nlap_ids: \"87,88\", \"87-90\", one id or a list, drawn on the line map;\nnull shows the current session.",
+  "inputSchema": {
+   "properties": {
+    "caption": {
+     "anyOf": [
+      {
+       "maxLength": 200,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Caption"
+    },
+    "lap_ids": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "integer"
+      },
+      {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Ids"
+    }
+   },
+   "title": "show_on_dashboardArguments",
+   "type": "object"
+  },
+  "name": "show_on_dashboard",
+  "title": "Show on the dashboard"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
   "description": "Start recording telemetry; laps are stored as they complete.\nIdempotent, and recording starts with the server, so this mostly undoes\nstop_recording. Stands by, and says so, if another server instance\nholds the recorder.",
   "inputSchema": {
    "properties": {},

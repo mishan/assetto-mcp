@@ -408,6 +408,29 @@ def test_the_line_view_reads_one_lap_and_the_others_need_two():
     assert "lap_id_b" in corners["error"], corners
 
 
+def test_a_chassis_aspect_that_cannot_be_read_leaves_the_others():
+    """A lap whose trace has no straight-line braking or attitude still
+    has its suspension read, and a lap never stored has only that."""
+    from assetto_mcp import db
+    from test_suspension import _lap as suspension_lap
+    s = _server()
+    sid, (lap,) = _session_with_laps(1)
+    db.store_suspension_batch(s._conn, sid, "worker", suspension_lap(n=900))
+    default, every, unstored = _results([
+        ("chassis_report", {"lap_id": lap}),
+        ("chassis_report", {"lap_id": lap,
+                            "aspects": ["braking", "attitude",
+                                        "suspension"]}),
+        ("chassis_report", {"lap_number": 1, "session_id": sid,
+                            "aspects": ["suspension", "braking"]})])
+    assert default["error"] and set(default) == {
+        "lap_id", "braking", "attitude", "error"}, default
+    assert "error" not in every and every["braking"]["error"], every
+    assert every["suspension"]["lap_number"] == 1, every["suspension"]
+    assert "error" not in unstored, unstored
+    assert "lap_id" in unstored["braking"]["error"], unstored["braking"]
+
+
 def test_list_laps_says_which_laps_have_a_lap_time():
     from assetto_mcp import db
     s = _server()

@@ -77,7 +77,7 @@ the clean lap from 100 m before the brake point.
 
 ## Braking and brake bias
 
-`braking_report` gives slip per axle under straight-line braking.
+`chassis_report`'s braking gives slip per axle under straight-line braking.
 Front-to-rear ratio above 1 means the front is nearer its limit, which is
 where a GT3 at 60% front bias usually sits (1.06 to 1.11 on the NSX).
 Moving bias rearward two points brought it to 0.91 to 0.98, shortened the
@@ -156,8 +156,8 @@ say so rather than dropping it.
 Render-rate capture is fine for ride height and front load transfer, which
 is the quietest channel there is: a rear bar change moves it by a point
 against 0.3 of noise. Damper histograms need the 333 Hz worker, which is
-single-player only. `attitude_report` carries banking and grade and was
-useless at the circuits driven so far.
+single-player only. `chassis_report`'s attitude carries banking and grade
+and was useless at the circuits driven so far.
 
 ## Contacts, in one paragraph
 

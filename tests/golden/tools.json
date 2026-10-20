@@ -85,36 +85,60 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Body roll and pitch for one lap, and how much per g.\n\nThe roll gradient includes banking and grade, so compare it only\nbetween laps at one track. Check `fit_r2` first; `gradient_caveats` and\n`dive_caveats` say why a fit is weak. `dive_deg_per_g` is braking and\ncoasting only. The sign of `fitted_slope_deg_per_g` is unverified: use\nit only to check that laps of one car agree. Laps before schema v8 have\nno attitude.",
+  "description": "How the car behaved on one lap, by aspect (default braking and\nattitude, which every lap has):\n\n- \"braking\": tyre slip under straight-line braking -- slip per axle,\n  which axle is nearer its limit (what brake bias moves), and runs\n  where a front wheel ran away. The ABS/TC fields hold one value all\n  lap: a setting, not a measure of intervention. The lockup threshold\n  is uncalibrated, so the raw distribution comes with it. points:\n  track slices for `hardest_braking_slices`.\n- \"attitude\": body roll and pitch, and how much per g. The roll\n  gradient includes banking and grade, so compare it only between\n  laps at one track. Check `fit_r2` first; `gradient_caveats` and\n  `dive_caveats` say why a fit is weak. `dive_deg_per_g` is braking\n  and coasting only. The sign of `fitted_slope_deg_per_g` is\n  unverified: use it only to check that laps of one car agree. Laps\n  before schema v8 have no attitude.\n- \"suspension\": damper histograms, ride height and roll balance;\n  needs the in-game app. `source` is the capture tier: \"app\" (render\n  rate) is fine for ride height and load transfer, but its damper\n  histograms are body motion, not valving; \"worker\" (the CSP physics\n  worker, 333 Hz) gives real damper numbers. lap_number reads a lap\n  not stored (an out-lap, say); lap_id wins if both are given.\n\nAn aspect that cannot be read carries its own `error`.",
   "inputSchema": {
    "properties": {
+    "aspects": {
+     "anyOf": [
+      {
+       "enum": [
+        "braking",
+        "attitude",
+        "suspension"
+       ],
+       "type": "string"
+      },
+      {
+       "items": {
+        "enum": [
+         "braking",
+         "attitude",
+         "suspension"
+        ],
+        "type": "string"
+       },
+       "type": "array"
+      }
+     ],
+     "default": [
+      "braking",
+      "attitude"
+     ],
+     "title": "Aspects"
+    },
     "lap_id": {
-     "title": "Lap Id",
-     "type": "integer"
-    }
-   },
-   "required": [
-    "lap_id"
-   ],
-   "title": "attitude_reportArguments",
-   "type": "object"
-  },
-  "name": "attitude_report",
-  "title": "Attitude report"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Tyre slip under straight-line braking: slip per axle, which axle is\nnearer its limit (what brake bias moves), and runs where a front wheel\nran away.\n\nThe ABS/TC fields hold one value all lap: a setting, not a measure of\nintervention. The lockup threshold is uncalibrated, so the raw\ndistribution comes with it. points: track slices for\n`hardest_braking_slices`.",
-  "inputSchema": {
-   "properties": {
-    "lap_id": {
-     "title": "Lap Id",
-     "type": "integer"
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Id"
+    },
+    "lap_number": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Number"
     },
     "points": {
      "default": 20,
@@ -122,16 +146,25 @@
      "minimum": 1,
      "title": "Points",
      "type": "integer"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
     }
    },
-   "required": [
-    "lap_id"
-   ],
-   "title": "braking_reportArguments",
+   "title": "chassis_reportArguments",
    "type": "object"
   },
-  "name": "braking_report",
-  "title": "Braking report"
+  "name": "chassis_report",
+  "title": "Chassis report"
  },
  {
   "annotations": {
@@ -1771,71 +1804,6 @@
   },
   "name": "storage_report",
   "title": "Storage report"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Damper histograms, ride height and roll balance for one lap. Needs the\nin-game app.\n\n`source` is the capture tier: \"app\" (render rate) is fine for ride\nheight and load transfer, but its damper histograms are body motion,\nnot valving; \"worker\" (the CSP physics worker, 333 Hz) gives real\ndamper numbers. Pass lap_id from list_laps, or lap_number for a lap not\nstored (an out-lap, say); lap_id wins if both are given. lap_count (lap\nnumber minus one) is deprecated.",
-  "inputSchema": {
-   "properties": {
-    "lap_count": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Lap Count"
-    },
-    "lap_id": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Lap Id"
-    },
-    "lap_number": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Lap Number"
-    },
-    "session_id": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Session Id"
-    }
-   },
-   "title": "suspension_reportArguments",
-   "type": "object"
-  },
-  "name": "suspension_report",
-  "title": "Suspension report"
  },
  {
   "annotations": {

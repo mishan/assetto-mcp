@@ -52,7 +52,7 @@ with extended physics.
 **ABS and TC intervention.** The stored `abs_active` and `tc_active` are a
 setting or threshold, constant across a lap. The real flags are
 `ac.CarState.absInAction` and `tractionControlInAction`, which are
-physics-only. With them, `braking_report` could say when ABS acted rather
+physics-only. With them, `chassis_report` could say when ABS acted rather
 than inferring it from slip.
 
 ---

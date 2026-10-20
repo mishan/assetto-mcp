@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Forty-five tools. They fall into nine groups. For each: what to pass,
+Forty-three tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the traps.
 Every optional parameter takes null as "the default", so passing one
 explicitly is always safe; a call refused for a missing parameter is fixed
@@ -173,7 +173,7 @@ points, the fractions, `corner_detection`). Read in this order:
 - `corner_detection` (full): which bar the corners were found against.
   With one lap in the reference it is that lap's own peak, and every other
   lap is judged against it; the numbering settles after a few laps.
-- `suspension` headlines when the app captured them; `suspension_report`
+- `suspension` headlines when the app captured them; `chassis_report`
   for the rest.
 
 Quote `where` and the `_m` fields, never the fraction beside them.
@@ -213,14 +213,36 @@ Hand the path to the driver; the file opens from disk and fetches nothing,
 and exporting the same session again replaces it.
 `scripts/driving_line_map.py` does the same from a shell.
 
-**`suspension_report(lap_id, lap_number, session_id)`** -- damper
-histograms, ride height, roll balance. `lap_number` is for a lap that was
-not stored (an out-lap); `lap_count` is its deprecated minus-one form.
-Read `source`: "app" is render-rate and the
-damper histograms are body motion, not valving; "worker" is 333 Hz and
-real. `session_check`'s `suspension.tier` says which tier is arriving.
-The worker is single-player only: CSP runs no scripts on the physics
-thread online.
+**`chassis_report(lap_id, aspects, points, lap_number, session_id)`** --
+how the car behaved on one lap, by `aspects`: any of "braking",
+"attitude" and "suspension", default the first two. An aspect that cannot
+be read carries its own `error` and leaves the others.
+
+- "braking": slip per axle under straight-line braking (`points`
+  slices), which axle is nearer its limit (what brake bias moves),
+  lockup runs. The ABS and TC fields hold one value all lap and measure
+  nothing, so "is ABS aggressive enough" cannot be answered from them or
+  from the setup value; the axle slip is what the driver feels. The
+  straight-line filter matters: slip under combined braking and
+  cornering is high by construction, and every trail-braked entry would
+  read as a lockup. The lockup threshold is uncalibrated; read the
+  distribution.
+- "attitude": roll and pitch per g. The roll gradient measures total
+  roll stiffness: a bar or spring change should move it, and one that
+  does not did not do what it was meant to. A car-and-track number: AC
+  reports attitude against the world, and the fit's free intercept moves
+  the constant part of banking, camber and rake into
+  `static_offset_deg`, but banking that rises with cornering load stays
+  in the slope. It was useless at Kyalami and Interlagos and is only
+  comparable between laps at the same circuit. Check `fit_r2` before
+  quoting a gradient. Squat under power is left out of `dive_deg_per_g`;
+  it is a rear-suspension question.
+- "suspension": damper histograms, ride height, roll balance.
+  `lap_number` is for a lap that was not stored (an out-lap). Read
+  `source`: "app" is render-rate and the damper histograms are body
+  motion, not valving; "worker" is 333 Hz and real. `session_check`'s
+  `suspension.tier` says which tier is arriving. The worker is
+  single-player only: CSP runs no scripts on the physics thread online.
 
 **`lap_trace(lap_id, channels, from_m, to_m, step_m)`** -- the raw trace
 for what no report answers: shift rpm by gear, time in 6th, the slip
@@ -235,26 +257,6 @@ speed, pedals and gear. `from_m`/`to_m` are meters past the start line
 Each row has `m` and `t_s` since the lap started. `from_where` and
 `to_where` place the window; any other `m` goes through `describe_positions` before it
 goes to the driver.
-
-**`attitude_report(lap_id)`** -- roll and pitch per g. The roll gradient
-measures total roll stiffness: a bar or spring change should move it, and
-one that does not did not do what it was meant to. A car-and-track
-number: AC reports attitude against the world, and the fit's free
-intercept moves the constant part of banking, camber and rake into
-`static_offset_deg`, but banking that rises with cornering load stays in
-the slope. It was useless at Kyalami and Interlagos and is only
-comparable between laps at the same circuit. Check `fit_r2` before
-quoting a gradient. Squat under power is left out of `dive_deg_per_g`; it
-is a rear-suspension question.
-
-**`braking_report(lap_id, points)`** -- slip per axle under straight-line
-braking, which axle is nearer its limit (what brake bias moves), lockup
-runs. The ABS and TC fields hold one value all lap and measure nothing,
-so "is ABS aggressive enough" cannot be answered from them or from the
-setup value; the axle slip is what the driver feels. The straight-line
-filter matters: slip under combined braking and cornering is high by
-construction, and every trail-braked entry would read as a lockup.
-The lockup threshold is uncalibrated; read the distribution.
 
 ## 4. Comparing laps and runs
 

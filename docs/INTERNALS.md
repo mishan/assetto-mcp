@@ -413,7 +413,7 @@ four lines in one chart can't be told apart.
 Marks can be toggled on top of any view:
 - **Off track:** the track-limits rule, all counted wheels out for long
   enough to count.
-- **Lockups:** `braking_report`'s front lockup runs. Its slip threshold has
+- **Lockups:** `chassis_report`'s front lockup runs. Its slip threshold has
   never been calibrated, and a spin reads as a lockup.
 - **Complaint presses:** each press sits on the lap it was pressed on. A
   press made with no session running can't be placed, and the page says
@@ -464,8 +464,8 @@ cars or layouts are refused: their coordinates don't share an origin.
 
 Stock shared memory exposes no suspension travel, no wheel load and no ride
 height, so all of this comes from the in-game Lua app. Ask for
-`suspension_report` after a lap, or look at the `suspension` block in
-`lap_summary`.
+`chassis_report` with the suspension aspect after a lap, or look at the
+`suspension` block in `lap_summary`.
 
 Three questions, in the order you'd ask them:
 

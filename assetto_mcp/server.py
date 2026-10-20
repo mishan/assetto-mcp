@@ -2206,53 +2206,96 @@ def describe_positions(meters: str | float | list[float] | None = None,
     return _j(_placed({"session_id": sid, "places": positions}, sid))
 
 
-@_tool("Suspension report")
-def suspension_report(lap_id: int | None = None,
-                      lap_number: int | None = None,
-                      session_id: int | None = None,
-                      lap_count: int | None = None) -> str:
-    """Damper histograms, ride height and roll balance for one lap. Needs the
-    in-game app.
+_ASPECTS = ("braking", "attitude", "suspension")
 
-    `source` is the capture tier: "app" (render rate) is fine for ride
-    height and load transfer, but its damper histograms are body motion,
-    not valving; "worker" (the CSP physics worker, 333 Hz) gives real
-    damper numbers. Pass lap_id from list_laps, or lap_number for a lap not
-    stored (an out-lap, say); lap_id wins if both are given. lap_count (lap
-    number minus one) is deprecated."""
-    if lap_number is not None:
-        lap_count = lap_number - 1
-    sid = _active_session(session_id)
+
+def _suspension(sid: int | None, lap_count: int | None) -> dict:
+    if sid is None:
+        return {"error": "no active session; pass session_id explicitly"}
+    if lap_count is None:
+        return {"error": "pass either lap_id or lap_number"}
+    samples = db.get_suspension_samples(_conn, sid, lap_count)
+    if not samples:
+        captured = db.suspension_lap_counts(_conn, sid)
+        return {"error": f"no suspension data for lap {lap_count + 1} "
+                         f"in session {sid}",
+                "captured_laps": [
+                    {"lap_number": r["lap_count"] + 1,
+                     "source": r["source"],
+                     "samples": r["n"]} for r in captured[-10:]],
+                "note": ("If this list is empty the in-game app either "
+                         "isn't running or predates suspension capture.")}
+    out = suspension.summarize(samples)
+    out["session_id"] = sid
+    out["lap_number"] = lap_count + 1
+    return out
+
+
+@_tool("Chassis report")
+def chassis_report(
+        lap_id: int | None = None,
+        aspects: Literal[_ASPECTS] | list[Literal[_ASPECTS]]
+        = ("braking", "attitude"),
+        points: Annotated[int, Field(ge=1, le=200)] = 20,
+        lap_number: int | None = None,
+        session_id: int | None = None) -> str:
+    """How the car behaved on one lap, by aspect (default braking and
+    attitude, which every lap has):
+
+    - "braking": tyre slip under straight-line braking -- slip per axle,
+      which axle is nearer its limit (what brake bias moves), and runs
+      where a front wheel ran away. The ABS/TC fields hold one value all
+      lap: a setting, not a measure of intervention. The lockup threshold
+      is uncalibrated, so the raw distribution comes with it. points:
+      track slices for `hardest_braking_slices`.
+    - "attitude": body roll and pitch, and how much per g. The roll
+      gradient includes banking and grade, so compare it only between
+      laps at one track. Check `fit_r2` first; `gradient_caveats` and
+      `dive_caveats` say why a fit is weak. `dive_deg_per_g` is braking
+      and coasting only. The sign of `fitted_slope_deg_per_g` is
+      unverified: use it only to check that laps of one car agree. Laps
+      before schema v8 have no attitude.
+    - "suspension": damper histograms, ride height and roll balance;
+      needs the in-game app. `source` is the capture tier: "app" (render
+      rate) is fine for ride height and load transfer, but its damper
+      histograms are body motion, not valving; "worker" (the CSP physics
+      worker, 333 Hz) gives real damper numbers. lap_number reads a lap
+      not stored (an out-lap, say); lap_id wins if both are given.
+
+    An aspect that cannot be read carries its own `error`."""
+    wanted = [aspects] if isinstance(aspects, str) else list(aspects)
+    if not wanted:
+        return _j({"error": f"pass one or more aspects: {list(_ASPECTS)}"})
+    lap = None
     if lap_id is not None:
         lap = db.get_lap(_conn, lap_id)
         if not lap:
             return _j({"error": f"no lap with id {lap_id}"})
-        sid = lap["session_id"]
-        # laps.lap_number counts from 1; suspension rows are stamped with
-        # AC's completed-lap count, which is one behind during the lap.
-        lap_count = lap["lap_number"] - 1
-    if sid is None:
-        return _j({"error": "no active session; pass session_id explicitly"})
-    if lap_count is None:
-        return _j({"error": "pass either lap_id or lap_number"})
-
-    samples = db.get_suspension_samples(_conn, sid, lap_count)
-    if not samples:
-        captured = db.suspension_lap_counts(_conn, sid)
-        return _j({"error": f"no suspension data for lap {lap_count + 1} "
-                            f"in session {sid}",
-                   "captured_laps": [
-                       {"lap_number": r["lap_count"] + 1,
-                        "source": r["source"],
-                        "samples": r["n"]} for r in captured[-10:]],
-                   "note": ("If this list is empty the in-game app either "
-                            "isn't running or predates suspension capture.")})
-
-    out = suspension.summarize(samples)
-    out["session_id"] = sid
-    out["lap_number"] = lap_count + 1
-    if lap_id is not None:
-        out["lap_id"] = lap_id
+    out = {"lap_id": lap_id}
+    for aspect in dict.fromkeys(wanted):
+        if aspect == "suspension":
+            if lap:
+                # laps.lap_number counts from 1; suspension rows are
+                # stamped with AC's completed-lap count, one behind.
+                part = _suspension(lap["session_id"], lap["lap_number"] - 1)
+            else:
+                part = _suspension(
+                    _active_session(session_id),
+                    None if lap_number is None else lap_number - 1)
+        elif not lap:
+            part = {"error": f"{aspect} reads a stored lap; pass lap_id"}
+        elif aspect == "braking":
+            part = _placed(analysis.braking_report(
+                lap, db.get_samples(_conn, lap_id), points),
+                lap["session_id"])
+        else:
+            part = _placed(analysis.attitude_report(
+                lap, db.get_samples(_conn, lap_id)), lap["session_id"])
+        out[aspect] = part
+    failed = [k for k in out if isinstance(out[k], dict)
+              and "error" in out[k]]
+    if failed and len(failed) == len(out) - 1:
+        out["error"] = "no aspect could be read; each says why"
     return _j(out)
 
 
@@ -2379,42 +2422,6 @@ def stint_wear(session_id: int | None = None,
                         f"changed part-way through -- so there is no stint "
                         f"to report. See `boundary_laps` for which and why.")
     return _j(out)
-
-
-@_tool("Braking report")
-def braking_report(lap_id: int,
-                   points: Annotated[int, Field(ge=1, le=200)] = 20) -> str:
-    """Tyre slip under straight-line braking: slip per axle, which axle is
-    nearer its limit (what brake bias moves), and runs where a front wheel
-    ran away.
-
-    The ABS/TC fields hold one value all lap: a setting, not a measure of
-    intervention. The lockup threshold is uncalibrated, so the raw
-    distribution comes with it. points: track slices for
-    `hardest_braking_slices`."""
-    lap = db.get_lap(_conn, lap_id)
-    if not lap:
-        return _j({"error": f"no lap with id {lap_id}"})
-    return _j(_placed(analysis.braking_report(
-        lap, db.get_samples(_conn, lap_id), points), lap["session_id"]))
-
-
-@_tool("Attitude report")
-def attitude_report(lap_id: int) -> str:
-    """Body roll and pitch for one lap, and how much per g.
-
-    The roll gradient includes banking and grade, so compare it only
-    between laps at one track. Check `fit_r2` first; `gradient_caveats` and
-    `dive_caveats` say why a fit is weak. `dive_deg_per_g` is braking and
-    coasting only. The sign of `fitted_slope_deg_per_g` is unverified: use
-    it only to check that laps of one car agree. Laps before schema v8 have
-    no attitude."""
-    lap = db.get_lap(_conn, lap_id)
-    if not lap:
-        return _j({"error": f"no lap with id {lap_id}"})
-    return _j(_placed(
-        analysis.attitude_report(lap, db.get_samples(_conn, lap_id)),
-        lap["session_id"]))
 
 
 @_tool("Compare two laps")

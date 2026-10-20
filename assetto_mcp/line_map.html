@@ -151,9 +151,10 @@ const MARKS = [
   {key:"off", label:"off track"},
   {key:"lockups", label:"lockups"},
   {key:"notes", label:"complaint presses"},
+  {key:"contacts", label:"impacts"},
 ];
 const state = { mode:"lap", sel: ref.id, show: new Set(laps.filter(l=>l.usable).map(l=>l.id)), turns: TURNS.length>0,
-                panels: new Set(["lat","speed"]), marks: new Set(["off","lockups","notes"]) };
+                panels: new Set(["lat","speed"]), marks: new Set(["off","lockups","notes","contacts"]) };
 if (!state.show.size) laps.forEach(l=>state.show.add(l.id));
 
 // Why a lap has no time worth showing, in a word. The full reason is the row's tooltip.
@@ -401,6 +402,25 @@ function pin(x, y, tag, elsewhere){
   ctx.fillStyle=css("--ink"); ctx.font="700 10px "+css("--font-display"); ctx.textAlign="center"; ctx.textBaseline="middle";
   ctx.fillText((tag||"?")[0].toUpperCase(), x, y+0.5); ctx.textAlign="start"; ctx.textBaseline="alphabetic";
 }
+// An impact: the first letter of its verdict on a red disc. Every lap's impacts
+// show, drawn or not, because a lap is often put on the map for its impact and
+// a hit is seldom on a lap clean enough to be drawn by default.
+const impacts = () => laps.flatMap(l => l.contacts.map(c => ({l, c, k: at(l, c.pos)})));
+const IMPACT = {contact:"Contact", wall:"Wall", snap:"Snap: a spin or a slide caught"};
+function impact(x, y, c, faded){
+  ctx.globalAlpha = faded ? .55 : 1;
+  ctx.beginPath(); ctx.arc(x,y,9,0,7); ctx.fillStyle=css("--brake"); ctx.fill();
+  ctx.strokeStyle=css("--surface"); ctx.lineWidth=2; ctx.stroke();
+  ctx.fillStyle=css("--surface"); ctx.font="700 11px "+css("--font-display"); ctx.textAlign="center"; ctx.textBaseline="middle";
+  ctx.fillText((c.alone||c.verdict)[0].toUpperCase(), x, y+0.5); ctx.textAlign="start"; ctx.textBaseline="alphabetic";
+  ctx.globalAlpha = 1;
+}
+function impactTip({l, c}){
+  const t=turnAt(c.pos);
+  return "<b>"+esc(IMPACT[c.alone||c.verdict])+"</b><br>lap "+l.n+(t?" · "+t:"")+" · "+c.g.toFixed(1)+" g · lost "+c.lost+" km/h · "+esc(c.input)+
+    (c.verdict==="contact" ? "<br>"+esc(c.who||"an unnamed car")+", "+c.m+" m away"
+     : c.alone ? "<br>no opponent data, so a car can't be ruled out" : "");
+}
 const notesFor = sel => DATA.notes.filter(nt => nt.lap_id==null || nt.lap_id===sel.id || state.show.has(nt.lap_id));
 function drawMarks(sel){
   if (!sel) return;
@@ -412,6 +432,7 @@ function drawMarks(sel){
     const l = nt.lap_id!=null ? byId.get(nt.lap_id) : null, on = l || ref, k=at(on, nt.pos);
     pin(px(on.x[k]), py(on.z[k]), nt.tag, !l);
   });
+  if (state.marks.has("contacts")) impacts().forEach(({l,c,k})=>impact(px(l.x[k]), py(l.z[k]), c, !state.show.has(l.id)));
 }
 let hov=null;
 function draw(){
@@ -481,7 +502,7 @@ function draw(){
   if (state.mode==="gears" && sel) sel.shifts.forEach(s=>{ const k=at(sel,s.pos); shiftDot(px(sel.x[k]), py(sel.z[k]), s.to>s.from); });
   if (state.mode==="surface") ROUGHEST.forEach(r=>label(ref, r.pos, r.v.toFixed(1), css("--bump1")));
   startFinish();
-  if (hov){
+  if (hov && !hov.mark){
     ctx.fillStyle=css("--ink"); ctx.beginPath(); ctx.arc(px(hov.l.x[hov.i]),py(hov.l.z[hov.i]),4,0,7); ctx.fill();
     ctx.strokeStyle=css("--surface"); ctx.lineWidth=1.5; ctx.stroke();
   }
@@ -703,6 +724,7 @@ function drawStrip(){
   ONE_LAP.forEach(u=>shade(u.entry_pos,u.exit_pos,css("--set2"),.18));
   if (state.marks.has("off")) sel.off.forEach(r=>shade(r.from, r.to, css("--muted"), .35, 3));
   if (state.marks.has("lockups")) sel.lockups.forEach(r=>shade(r.from, r.to, css("--brake"), .5, 2));
+  if (state.marks.has("contacts")) sel.contacts.forEach(c=>shade(c.pos, c.pos, css("--brake"), 1, 3));
   // Turn names above the charts. Turns close together would print over each other,
   // so a name that would touch the last one drops to a second line.
   sctx.fillStyle=css("--muted"); sctx.textAlign="center"; sctx.font="600 10px "+css("--font-display");
@@ -737,6 +759,8 @@ const pct = v => v==null ? "-" : Math.round(v*100)+"%";
 const tyreLine = (l,i,pre,d) => ["fl","fr","rl","rr"].map(w=>w.toUpperCase()+" "+(l[pre+w][i]==null?"-":l[pre+w][i].toFixed(d))).join(" · ");
 cv.addEventListener("mousemove", e=>{
   const r=cv.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+  const hit = state.marks.has("contacts") && impacts().find(({l,k})=>(px(l.x[k])-mx)**2+(py(l.z[k])-my)**2 < 100);
+  if (hit){ hov={l:hit.l, i:hit.k, mark:true}; draw(); tip.innerHTML=impactTip(hit); placeTip(tip, mx, my, W, H); return; }
   let bestD=144, found=null;
   const pool = (state.mode==="lap"||state.mode==="setup") ? laps.filter(l=>state.show.has(l.id)) : state.mode==="surface" ? [ref] : laps.filter(l=>l.id===state.sel);
   pool.forEach(l=>{ for(let i=0;i<l.x.length;i++){ const dx=px(l.x[i])-mx, dy=py(l.z[i])-my, d=dx*dx+dy*dy; if(d<bestD){bestD=d;found={l,i};} } });
@@ -928,6 +952,7 @@ document.getElementById("marknote").textContent = [
   "Off track is "+"the track-limits rule: every counted wheel out, long enough to count.",
   "Lockups are front slip over "+DATA.lockup_slip+" under hard, straight braking -- a threshold never checked against a lockup felt in the car.",
   DATA.notes.length ? "" : "No complaint presses on these laps.",
+  "Impacts are spikes over "+DATA.contact_g+" g, kerbs left out: C a car within "+DATA.contact_near_m+" m, W a wall, S a spin or a slide caught.",
   DATA.orphan_notes ? DATA.orphan_notes+" press"+(DATA.orphan_notes>1?"es were":" was")+" recorded with no session running and can't be placed." : "",
 ].filter(Boolean).join(" ");
 const turnsBox=document.getElementById("turns");

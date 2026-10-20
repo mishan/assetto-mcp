@@ -2224,6 +2224,27 @@ def rival_names(conn, session_id: int) -> dict[int, str]:
             if r["driver_name"]}
 
 
+def contacts_inferred(conn, lap: dict, samples: list[dict],
+                      names: dict[int, str] | None = None
+                      ) -> list[dict] | None:
+    """Impacts on the lap, placed against whoever was alongside.
+
+    The opponent rows are fetched for the lap's own wall-clock span plus
+    the matching window either side, so a hit on the first tick of the lap
+    can still be placed against a row stored just before it. `names` is the
+    session's rival_names, for a caller reading many laps of one session.
+    """
+    clock = analysis._ego_clock(lap)
+    if clock is None or not samples:
+        return analysis.infer_contacts(lap, samples)
+    t0 = clock(samples[0]["t_ms"]) - analysis.CONTACT_WINDOW_S
+    t1 = clock(samples[-1]["t_ms"]) + analysis.CONTACT_WINDOW_S
+    rivals = rival_samples_between(conn, lap["session_id"], t0, t1)
+    if names is None:
+        names = rival_names(conn, lap["session_id"])
+    return analysis.infer_contacts(lap, samples, rivals, names)
+
+
 def get_rival_lap_samples(conn, session_id: int, car_index: int,
                           lap_count: int) -> list[dict]:
     first, _ = rival_occupant_since(conn, session_id, car_index)

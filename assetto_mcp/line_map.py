@@ -522,6 +522,7 @@ def build(conn, session_id: int | None = None,
 
     drawn, skipped, loaded_all = [], [], []
     shift_lists, full_throttle_rpm = [], []
+    names = {sid: db.rival_names(conn, sid) for sid in asked}
     for lap in laps:
         samples = db.get_samples(conn, lap["id"])
         ct = bal = derived = None
@@ -575,6 +576,8 @@ def build(conn, session_id: int | None = None,
             src, surf = "ride", bump_profile(samples, RIDE_KEYS)
         lockups = analysis.braking_report(lap, samples).get(
             "front_lockup_runs", [])
+        contacts = db.contacts_inferred(conn, lap, samples,
+                                        names[lap["session_id"]]) or []
         if usable:
             shift_lists.append(lap_shifts)
             full_throttle_rpm.extend(
@@ -601,6 +604,15 @@ def build(conn, session_id: int | None = None,
             "off": off_track(samples),
             "lockups": [{"from": r["from_pos"], "to": r["to_pos"]}
                         for r in lockups],
+            # Kerb strikes are on every lap; marked, they would bury the one
+            # impact worth talking about.
+            "contacts": [{"pos": c["pos"], "verdict": c["verdict"],
+                          "alone": c.get("if_alone"), "g": c["peak_g"],
+                          "lost": c["speed_lost_kmh"], "input": c["input"],
+                          "who": (c["nearest"] or {}).get("driver_name"),
+                          "m": (c["nearest"] or {}).get("distance_m")}
+                         for c in contacts
+                         if (c.get("if_alone") or c["verdict"]) != "kerb"],
             "corners": [{"turn": c.get("turn"), "entry": c["entry_pos"],
                          "apex": c["apex_pos"], "exit": c["exit_pos"],
                          "brake": c["brake_point_pos"],
@@ -725,6 +737,8 @@ def build(conn, session_id: int | None = None,
         "notes": notes,
         "orphan_notes": db.count_orphan_notes(conn),
         "lockup_slip": analysis.LOCKUP_SLIP,
+        "contact_g": analysis.CONTACT_G,
+        "contact_near_m": analysis.CONTACT_NEAR_M,
         "rivals": rival_data,
         "rival_grid": RIVAL_GRID,
         "track_length_m": session.get("track_length_m"),

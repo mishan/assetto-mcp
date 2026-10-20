@@ -401,27 +401,6 @@ CORNER_MAP_PAGE = turns.CORNER_MAP_PAGE
 _corner_maps: dict[int, tuple[tuple[int, ...], dict]] = {}
 
 
-def _contacts_inferred(lap: dict, samples: list[dict],
-                       names: dict[int, str] | None = None
-                       ) -> list[dict] | None:
-    """Impacts on the lap, placed against whoever was alongside.
-
-    The opponent rows are fetched for the lap's own wall-clock span plus
-    the matching window either side, so a hit on the first tick of the lap
-    can still be placed against a row stored just before it. `names` is the
-    session's rival_names, for a caller reading many laps of one session.
-    """
-    clock = analysis._ego_clock(lap)
-    if clock is None or not samples:
-        return analysis.infer_contacts(lap, samples)
-    t0 = clock(samples[0]["t_ms"]) - analysis.CONTACT_WINDOW_S
-    t1 = clock(samples[-1]["t_ms"]) + analysis.CONTACT_WINDOW_S
-    rivals = db.rival_samples_between(_conn, lap["session_id"], t0, t1)
-    if names is None:
-        names = db.rival_names(_conn, lap["session_id"])
-    return analysis.infer_contacts(lap, samples, rivals, names)
-
-
 def _session_corner_map(session_id: int, lap_id: int | None = None) -> dict:
     """This session's turn numbering, from its most recent usable laps.
 
@@ -1884,7 +1863,7 @@ def lap_summary(lap_id: int,
                         "were built from")
     if "error" not in out:
         out["contacts_inferred"] = analysis.compact_contacts(
-            _contacts_inferred(lap, samples))
+            db.contacts_inferred(_conn, lap, samples))
 
     # A pointer, not a replacement: the full suspension report is bigger
     # than the rest of this lap together.
@@ -1910,7 +1889,7 @@ def _lap_card(lap_id: int) -> dict:
     """One stored lap, compact enough to read after every lap."""
     lap = db.get_lap(_conn, lap_id)
     usable, why = db.lap_usability(lap)
-    contacts = _contacts_inferred(lap, db.get_samples(_conn, lap_id))
+    contacts = db.contacts_inferred(_conn, lap, db.get_samples(_conn, lap_id))
     if contacts is not None:
         verdicts = [c["verdict"] for c in contacts]
         contacts = {v: verdicts.count(v) for v in dict.fromkeys(verdicts)}
@@ -2853,8 +2832,8 @@ def compare_runs(baseline_laps: str | int | list[int] | None = None,
         sid = lap["session_id"]
         if sid not in names_by_session:
             names_by_session[sid] = db.rival_names(_conn, sid)
-        hits = [c for c in _contacts_inferred(lap, samples,
-                                              names_by_session[sid]) or []
+        hits = [c for c in db.contacts_inferred(
+                    _conn, lap, samples, names_by_session[sid]) or []
                 if c["verdict"] == "contact"]
         if not hits:
             return

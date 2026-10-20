@@ -259,6 +259,13 @@ after a race, the driver's own telemetry around an incident (inferred
 contacts, positions, inputs) as evidence for stewards; and comparing laps
 with league mates who also run assetto-mcp.
 
+Most drivers have no champctl, and some race on an ACSM server. An AC
+server writes each session's collisions (with a car or the environment,
+impact speed, world position) to its results JSON, and ACSM serves those
+files. An optional results URL would let the engineer check the inferred
+contacts against it after a race: who hit whom, and the ones the
+inference missed. Nothing should depend on it.
+
 ---
 
 ## 12. Driver development over time

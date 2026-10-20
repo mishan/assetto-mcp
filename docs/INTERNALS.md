@@ -418,6 +418,10 @@ Marks can be toggled on top of any view:
 - **Complaint presses:** each press sits on the lap it was pressed on. A
   press made with no session running can't be placed, and the page says
   how many there are.
+- **Impacts:** each lap's inferred contacts except kerb strikes, lettered
+  by verdict (contact, wall, snap). They show on every lap in the map,
+  ticked or not, because the lap with the impact is rarely clean enough
+  to be ticked by default.
 
 ### Opponents on the map
 

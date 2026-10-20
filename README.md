@@ -97,10 +97,10 @@ say:
   `exports/`.
 - **Live.** A short read in the chat after every lap, and anything you have
   to act on — box, fuel at two laps, a car close behind — **spoken aloud**
-  over the game audio. This needs a client that can run background shell
-  commands on the gaming PC: it wakes on each lap with
-  `scripts/watch_laps.py` and speaks through `scripts/say.py` using the
-  voices Windows already has.
+  over the game audio. It wakes on each lap with `scripts/watch_laps.py`
+  where the client can run background shell commands, and with the
+  `wait_for_lap` tool where it can't. Speaking needs a shell on the gaming
+  PC: `scripts/say.py` uses the voices Windows already has.
 
 Without the skill you still get every tool; you just ask for each step
 yourself, as below.
@@ -219,7 +219,8 @@ While recording, at 25 Hz:
 
 Per session it also stores the car, track, tyre compound, temperatures, fuel
 figures, and a copy of every setup value on the car, which is how it works
-out later which setup a lap was driven on.
+out later which setup a lap was driven on. Per lap it stores the fuel burned
+from line to line, so race fuel is planned on what your car actually uses.
 
 Worth knowing:
 
@@ -229,7 +230,9 @@ Worth knowing:
   database.
 - **Notes about you and your cars** — setup history, fuel rates, how you
   like to be told things — are kept by the race-engineer skill in `notes/`
-  in the data folder, never in the repository.
+  in the data folder, never in the repository. A client with no file
+  access of its own writes them, and the session handoff in `exports/`,
+  through the server's notes tools, which can write nowhere else.
 - **Setup files** are written only under names you ask for. Overwriting an
   existing setup needs you to say so, and keeps the old file as
   `<name>.ini.bak-<timestamp>`.

@@ -21,8 +21,9 @@ Read the reference files when you need them, not all at once:
   entry phase, spins and contacts, brake bias, tyres, fuel, wear, gearing.
 - The driver's notes -- what previous sessions established about this
   driver and their car -- live in `<data_dir>/notes/`, never in this
-  repository: `driver.md`, and one `<car id>.md` per car. `data_dir` comes
-  from `storage_report`. Read both at the start of a session. They are the
+  repository: `driver.md`, and one `<car id>.md` per car. `session_check`
+  gives the folder as `notes.dir`. Read both at the start of a session,
+  with `read_notes` when the client has no filesystem tool. They are the
   driver's own; if there are none yet, create them from
   `references/driver-notes.example.md` when there is something to record.
   Dated facts, not laws; the newest handoff in `exports/` wins.
@@ -80,8 +81,8 @@ turn-in", "Turn 7, 40 m after the apex". Never meters past the start line
 and never spline fractions: the driver navigates by corners and the 50 m and
 100 m braking boards, and does not know how far into the lap they are.
 Every position in a tool reply comes with a `where`; quote it. A position
-you found yourself, in a script over the samples, goes through `locate`
-before it goes to the driver.
+you found yourself, in a script over the samples, goes through
+`describe_positions` before it goes to the driver.
 
 Do not call a spin a driving error until you have checked for a contact.
 Damage is usually off on race servers, so `contacts` is null on every lap;
@@ -94,37 +95,40 @@ mitigation, not a habit. A spin that looks like a driving error can be a
 Do these in the first minute, before the first flying lap lands. Several can
 go in one round of calls.
 
-1. `start_recording` and `recording_status`. Read `state`; "standby" means
-   another server instance holds the recorder and that is fine.
-2. `live_snapshot` for car, track, layout, air and road temperature, fuel.
-3. `identify_setup` with the session id. If the driver has told you what they
-   loaded, `set_session_setup` with that name now; it applies forward only,
-   and every lap before it stays unlabeled. If laps were already driven on
-   it, `label_laps` with the ids the driver names, never inferred -- the
-   reply's `unlabelled_laps_on_the_setup_measured_now` is the list to
-   confirm with them.
+1. `session_check`: recording `state` ("standby" means another server
+   instance holds the recorder, and that is fine), the session, its setup
+   tag, which saved setup is on the car (`setup_on_car`), whether the
+   in-game app is connected, the suspension tier, and whether a restart is
+   owed. Work through its `to_do`. Render-rate suspension is fine for ride
+   height and load transfer; damper histograms need the physics worker
+   ("worker"), which is single-player only.
+2. `live_snapshot` for air and road temperature, fuel and tyres.
+3. If the driver has told you what they loaded, `set_session_setup` with
+   that name now; it applies forward only, and every lap before it stays
+   unlabeled. If laps were already driven on it, `label_laps` with the ids
+   the driver names, never inferred -- the reply's
+   `unlabelled_laps_on_the_setup_measured_now` is the list to confirm with
+   them. `identify_setup` has the detail when `setup_on_car` is unclear.
 4. If the setup is new to you, `read_setup` and `setup_ranges`, and note
    every display entry whose `source` is "unknown" -- you will want the
    driver to read those off the screen at some quiet moment.
-5. `suspension_capture_status` once, so you know which suspension tier is
-   arriving. Render-rate is fine for ride height and load transfer; damper
-   histograms need the physics worker, which is single-player only.
-6. Arm the lap watcher so each lap wakes you:
+5. Arm the lap watcher so each lap wakes you:
    `python scripts/watch_laps.py --session <id> --interval 3` under a Monitor
    with the maximum timeout. It prints one line per stored lap, for this
    session and any later one. Monitors expire after 30 minutes: re-arm on
    every expiry notice, and the moment a race weekend moves to a new session
    id (server rejoin, qualifying, race) tag it with `set_session_setup`
-   again because the tag does not carry over.
-7. Say what you found in three lines: what is on the car, what is different
+   again because the tag does not carry over. A client with no background
+   commands calls `wait_for_lap` instead, in live mode, again after every
+   reply: it returns the next lap's card, or `new_lap: false` after at most
+   45 s, and then you call it again with the same `after_lap_id`.
+6. Say what you found in three lines: what is on the car, what is different
    from last time, and what the first laps should establish.
 
-The MCP tool schemas drift between code updates. Parameters that were
-optional last week can be required this week (`session_id`, `points`,
-`from_lap`/`to_lap`, `rival_lap_count`, `clean_laps_only`, `allow_unclamped`,
-`lap_ids` as a JSON list). Pass every parameter explicitly, including the
-null ones, and when a call is refused for a missing parameter, add it rather
-than dropping the call.
+Every optional parameter takes null as "the default", so passing one
+explicitly is safe. When a call is refused for a missing parameter, add it
+rather than dropping the call. A tool renamed in an update still answers
+under its old name with a `deprecated` field naming the new one: use that.
 
 When the running server is older than the code on disk -- a field the
 references describe is missing, or the code was just updated -- call
@@ -139,8 +143,11 @@ and only between sessions; then `restart_server`.
 
 A lap lands. In one round of calls: `lap_summary` for it, `live_snapshot`
 for fuel and the current tyre state, and, from the second flying lap on,
-`compare_laps` against the best clean lap so far. In debrief mode, note
-the four things below and say nothing. In live mode, say them, briefly:
+`compare_lap_corners` against the best clean lap so far
+(`best_clean_lap_id` on the `wait_for_lap` card and in `session_check`).
+Their default, `detail="summary"`, is the lap read; `detail="full"` is for
+explaining a lap. In debrief mode, note the four things below and say
+nothing. In live mode, say them, briefly:
 
 - **The time, and where it came from.** Corner min-speed deltas and brake
   points against the previous best, in meters. "Brake points within 5 m
@@ -163,10 +170,11 @@ Rules that hold on every lap:
   samples if something happened in it; never compare its time.
 - A practice start lap (car stopped on the line with others alongside)
   reads as a contact at the grid. Say so and move on.
-- Fuel: read `fuel_l` from `live_snapshot` at each lap boundary and
-  difference consecutive readings taken at the same point in the lap. A
-  reading mid-lap against one at the boundary gives nonsense; the first
-  pair you take is often exactly that, so wait for the second.
+- Fuel: every lap from line to line carries its measured `fuel_used_l`
+  (on the `wait_for_lap` card), and from three usable laps `fuel_plan` and
+  `live_snapshot`'s `fuel_to_finish` run on the session's median burn
+  (`basis: "measured"`). Before that they use the car's nominal figure;
+  say which you quoted.
 - Track the session id. Laps in a new session id are invisible to a watcher
   bound to the old one; the shipped watcher follows later ids, but the setup
   tag does not.
@@ -182,9 +190,10 @@ each step changes how the next one reads:
 2. The excursion: `track_limits` says how many wheels and for how long; the
    samples say where, at what speed, on what inputs, against the same
    stretch of the previous clean lap.
-3. The corner's `entry_phase`: brake point against turn-in, rear slip
-   against front, yaw peak and rotation. A brake input after turn-in on a
-   loaded corner is the shape of most of this driver's spins.
+3. The corner's `entry_phase` (`lap_summary` with `detail="full"`):
+   brake point against turn-in, rear slip against front, yaw peak and
+   rotation. A brake input after turn-in on a loaded corner is the shape
+   of most of this driver's spins.
 4. Only then setup. Most bad laps are traffic, a kerb, or an input, and a
    setup change proposed for one of those is a change proposed for nothing.
 
@@ -201,10 +210,10 @@ One variable at a time, three clean laps a side as the floor, four when the
 question is lap time. `compare_runs` judges against the driver's own spread;
 read `p_value_adjusted`, `resolution` and `power`, and treat "within noise"
 on a short run as "too short", not "no effect". A metric that moved is a
-finding; a corner lead is a place to look. The mechanism is often visible
-before the statistics are: braking distance at the same entry speed, the
-front-to-rear slip ratio under straight-line braking, entry yaw, tyre
-temperature spread. Report the mechanism and say what the statistics could
+finding; a corner lead (`detail="full"`) is a place to look. The mechanism
+is often visible before the statistics are: braking distance at the same
+entry speed, the front-to-rear slip ratio under straight-line braking,
+entry yaw, tyre temperature spread. Report the mechanism and say what the statistics could
 and could not see.
 
 Changes on the wheel (brake bias, TC, ABS) do not change the setup file.
@@ -219,7 +228,7 @@ overwrite on your own initiative; a refusal carries `do_this` and
 `ask_the_driver` and one of them is the answer. Tell the driver what each
 value reads as on the screen, and only if `displays_as.source` is
 "observed" or "game"; for "unknown", ask them to read the screen and record
-it with `record_display_value` or `record_display_range`. When a change is
+it with `record_setup_display`. When a change is
 ready and the bridge is up, `send_driver_message` with one sentence; if the
 bridge port is held by an orphaned server it fails, and that is not worth
 fixing mid-session.
@@ -246,12 +255,14 @@ What to change, in the order it has paid off with this driver:
 
 ## Preparing for the race
 
-- **Fuel.** The session almost never has `km_per_liter`, so `fuel_plan`
-  cannot run. Use the measured per-lap rate from lap-boundary readings, or
-  better, the in-game estimator's "laps at N liters" figure the driver can
-  read off the fuel screen. Plan the race laps plus one lap of margin and no
+- **Fuel.** `fuel_plan` runs on the session's measured burn once three
+  usable laps have one, which practice in the race car gives you. Without
+  it, pass `liters_per_lap`: the in-game estimator's figure the driver can
+  read off the fuel screen. `liters_per_lap_source` says which it used;
+  say it with the number. Plan the race laps plus one lap of margin and no
   more; the driver trims anything beyond that. Say what margin the number
-  carries. A race lap count is a thing to ask for; the tool cannot read it.
+  carries. `live_snapshot` reads `race_laps` in a race of laps; in a timed
+  race, ask.
 - **Tyres over a race distance.** `stint_wear` with the lap range. This car's
   rear wear rate has more than doubled from lap 10 of every stint measured;
   budget for it in anything longer than 12 laps, and check the loaded rear
@@ -285,16 +296,20 @@ answer is usually the contact list and the tyre wear, not the setup:
 ## Closing a session
 
 1. Write the handoff to `exports/session-<first>-<last>-<track>-<car>.md`
-   following `references/handoff-template.md`. Setup lineage with verdicts,
-   what the week established, open items in priority order, display
-   mappings observed, fuel and tyre numbers, rivals. In debrief mode this
-   is also the driver's report, so it opens with the lap-by-lap story and
-   the incidents before the engineering sections.
+   following `references/handoff-template.md` (`save_handoff` when the
+   client has no filesystem tool; it never replaces a file). Setup
+   lineage with verdicts, what the week established, open items in
+   priority order, display mappings observed, fuel and tyre numbers,
+   rivals. In debrief mode this is also the driver's report, so it opens
+   with the lap-by-lap story and the incidents before the engineering
+   sections.
 2. `export_line_map` for the session so the driver has the picture.
 3. Update the notes in `<data_dir>/notes/`: anything the driver corrected
    you on or said they prefer goes in `driver.md`; setup lineage and
    verdicts, car behavior confirmed a second time, open items and measured
    rates go in the car's file. Never write them anywhere in the repository.
+   Without a filesystem tool, `save_notes` replaces a whole file, keeping
+   the old one: `read_notes`, edit, and send it all back.
 4. Leave repo changes uncommitted unless asked; this repository forbids any
    attribution to an assistant in commits and files.
 
@@ -311,9 +326,9 @@ answer is usually the contact list and the tyre wear, not the setup:
 - Corners by the circuit's `name` (from the track's sections.ini, on every
   turn in `track_corners` and on corners labeled with its T-numbers) or
   what the driver calls it when you know it (the 90, the Bus Stop, the long
-  left). `compare_laps` and `compare_runs` name a corner by its apex alone,
-  so there a name can be missing, or differ from `track_corners`, near a
-  section boundary. The session's T-number only when there is no name.
+  left). `compare_lap_corners` and `compare_runs` name a corner by its apex
+  alone, so there a name can be missing, or differ from `track_corners`,
+  near a section boundary. The session's T-number only when there is no name.
   Distances from the corner, never from the start line.
 - Two changes at once only when they act on different phases and you can
   say how you will separate them. Otherwise one.

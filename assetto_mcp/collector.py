@@ -414,6 +414,9 @@ class Collector:
         session_best = None      # fastest valid lap so far, for outlier check
         last_completed = None
         lap_start_wall = None
+        # Fuel on board when the current lap started at the line; None when
+        # it started anywhere else, which a lap's burn cannot be read from.
+        lap_start_fuel = None
         last_packet = -1
         last_pos = None
 
@@ -503,6 +506,7 @@ class Collector:
                 wide_since = None
                 lap_pitted = False
                 lap_start_wall = time.monotonic()
+                lap_start_fuel = None
                 self.sessions_started += 1
                 self.current_lap_dirty = False
                 self.current_lap_pitted = False
@@ -515,6 +519,7 @@ class Collector:
             # Lap boundary?
             if g.completedLaps != last_completed:
                 lap_time = g.iLastTime
+                fuel_now = getattr(p, "fuel", None)
                 # First crossing of the line after leaving the pits produces
                 # an out-lap with no meaningful time; iLastTime is 0 then.
                 # The driving after pit exit is real telemetry; only its lap
@@ -533,7 +538,11 @@ class Collector:
                         lap_time, True, lap_samples,
                         out_lap=out_lap, pitted=lap_pitted,
                         outlier=(not out_lap and not lap_pitted
-                                 and _is_outlier(lap_time, session_best)))
+                                 and _is_outlier(lap_time, session_best)),
+                        fuel_used_l=(
+                            round(lap_start_fuel - fuel_now, 3)
+                            if lap_start_fuel is not None
+                            and fuel_now is not None else None))
                     self.laps_recorded += 1
                     if out_lap:
                         self.out_laps_recorded += 1
@@ -553,6 +562,7 @@ class Collector:
                 wide_since = None
                 lap_pitted = False
                 lap_start_wall = time.monotonic()
+                lap_start_fuel = fuel_now
                 # Forget the previous position too. The lap counter and the
                 # position wrap do not land on the same tick, so ~0.98 then
                 # ~0.01 would look like a teleport.
@@ -583,6 +593,7 @@ class Collector:
                 wide_since = None
                 lap_pitted = False
                 lap_start_wall = time.monotonic()
+                lap_start_fuel = None
                 self.current_lap_dirty = False
                 self.current_lap_pitted = False
             last_pos = pos

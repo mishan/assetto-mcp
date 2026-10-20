@@ -1290,7 +1290,7 @@ def lap_summary(lap: dict, samples: list[dict],
                 reference_spread_g: float | None = None,
                 turns: list[dict] | None = None,
                 reference_basis: str | None = None) -> dict:
-    """Everything an engineer needs to know about one lap, in ~1KB.
+    """Everything an engineer needs to know about one lap.
 
     reference_peak_g comes from lat_g_reference over every lap being looked
     at together. Omit it for a lap read on its own; pass it whenever two
@@ -1902,8 +1902,9 @@ def delta_by_position(lap_a: dict, samples_a: list[dict],
     in that table covers the ground where it went.
 
     This is the standard delta trace: cumulative time at each point on
-    track, differenced. Positive means lap_b is behind lap_a there. The
-    per-segment `gain_ms` is what to read -- the cumulative figure only
+    track, differenced. Positive means lap_b is behind lap_a there; the
+    keys say so, because compare_laps subtracts the other way round. The
+    per-segment `b_lost_ms` is what to read -- the cumulative figure only
     says the gap exists, the segment figure says where it opened.
     """
     fine = 200
@@ -1950,16 +1951,16 @@ def delta_by_position(lap_a: dict, samples_a: list[dict],
             rows.append({
                 "from": round(start / fine, 3),
                 "to": round(end / fine, 3),
-                "gain_ms": None,
-                "cumulative_ms": None,
+                "b_lost_ms": None,
+                "b_lost_so_far_ms": None,
                 "covered": False,
             })
             continue
         row = {
             "from": round(start / fine, 3),
             "to": round(end / fine, 3),
-            "gain_ms": round(delta[i1] - delta[i0], 1),
-            "cumulative_ms": round(delta[i1], 1),
+            "b_lost_ms": round(delta[i1] - delta[i0], 1),
+            "b_lost_so_far_ms": round(delta[i1], 1),
         }
         if i0 != start or i1 != end:
             # Report the span actually measured rather than implying the
@@ -1968,17 +1969,17 @@ def delta_by_position(lap_a: dict, samples_a: list[dict],
             row["measured_to"] = round(i1 / fine, 3)
         rows.append(row)
 
-    timed = [r for r in rows if r["gain_ms"] is not None]
-    losses = sorted(timed, key=lambda r: -r["gain_ms"])[:3]
+    timed = [r for r in rows if r["b_lost_ms"] is not None]
+    losses = sorted(timed, key=lambda r: -r["b_lost_ms"])[:3]
     # Only rows that actually gained: a lap slower everywhere has no gains,
     # not three smallest losses.
-    gains = [r for r in sorted(timed, key=lambda r: r["gain_ms"])
-             if r["gain_ms"] < 0][:3]
+    gains = [r for r in sorted(timed, key=lambda r: r["b_lost_ms"])
+             if r["b_lost_ms"] < 0][:3]
 
     # The rows should account for the whole gap. When they don't -- a
     # telemetry dropout, or a span neither lap covered -- say so rather
     # than let the reader assume the segments add up.
-    accounted = round(sum(r["gain_ms"] for r in timed), 1)
+    accounted = round(sum(r["b_lost_ms"] for r in timed), 1)
     total = lap_b["lap_time_ms"] - lap_a["lap_time_ms"]
     unaccounted = round(total - accounted, 1)
 
@@ -1987,10 +1988,7 @@ def delta_by_position(lap_a: dict, samples_a: list[dict],
                   "setup": lap_a.get("setup_name", "")},
         "lap_b": {"id": lap_b["id"], "time": _fmt_time(lap_b["lap_time_ms"]),
                   "setup": lap_b.get("setup_name", "")},
-        "total_delta_ms": total,
-        "note": "positive = lap_b is slower there. gain_ms is time lost in "
-                "that segment alone; cumulative_ms is the running total. "
-                "A segment with gain_ms null was not sampled on both laps.",
+        "b_slower_by_ms": total,
         "track_covered_pct": round(100 * covered / (fine + 1), 1),
         "accounted_ms": accounted,
         "unaccounted_ms": unaccounted,
@@ -2627,7 +2625,8 @@ def fuel_to_finish(fuel_l: float, laps_remaining: int,
 def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
               tank_liters: float | None = None, stops: int = 1,
               margin_laps: float = FUEL_MARGIN_LAPS,
-              fuel_rate: float | None = None) -> dict:
+              fuel_rate: float | None = None,
+              liters_per_lap: float | None = None) -> dict:
     """Fuel for a race distance, and whether a stop is forced.
 
     margin_laps is deliberately fractional: arriving at the flag with two
@@ -2644,23 +2643,31 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
     fuel_rate is AC's fuel-usage multiplier. None means it was not reported,
     which is said in the payload rather than assumed away: at 200% every
     figure here is half what the car needs.
+
+    liters_per_lap is a burn measured or given rather than computed: it
+    replaces the track length, km_per_liter and fuel_rate, all of which it
+    already includes.
     """
     bad = (_fuel_input_error("race_laps", race_laps, 1, 100_000, integer=True)
            or _fuel_input_error("stops", stops, 0, 1000, integer=True)
            or _fuel_input_error("margin_laps", margin_laps, 0, 100))
     if bad:
         return {"error": bad}
-    if not km_per_liter or not track_length_m:
+    if liters_per_lap is not None:
+        bad = _fuel_input_error("liters_per_lap", liters_per_lap, 0, 1000)
+    elif not km_per_liter or not track_length_m:
         return {"error": "no fuel basis recorded for this session; the "
                          "in-game app supplies track length and the car's "
                          "km_per_liter"}
-    # The floors are the module constants above, which is what
-    # db.set_fuel_basis writes against: a basis the database accepted cannot
-    # then be refused here.
-    bad = (_fuel_input_error("km_per_liter", km_per_liter,
-                             MIN_KM_PER_LITER, 1000)
-           or _fuel_input_error("track_length_m", track_length_m,
-                                MIN_TRACK_LENGTH_M, 1e6)
+    else:
+        # The floors are the module constants above, which is what
+        # db.set_fuel_basis writes against: a basis the database accepted
+        # cannot then be refused here.
+        bad = (_fuel_input_error("km_per_liter", km_per_liter,
+                                 MIN_KM_PER_LITER, 1000)
+               or _fuel_input_error("track_length_m", track_length_m,
+                                    MIN_TRACK_LENGTH_M, 1e6))
+    bad = (bad
            or (tank_liters is not None
                and _fuel_input_error("tank_liters", tank_liters,
                                      MIN_TANK_LITERS, 100_000))
@@ -2678,7 +2685,8 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
     # otherwise carry into a range() call and a lap count of 11.0.
     race_laps, stops = int(race_laps), int(stops)
     rate = 1.0 if fuel_rate is None else float(fuel_rate)
-    per_lap = (track_length_m / 1000.0) / km_per_liter * rate
+    per_lap = (float(liters_per_lap) if liters_per_lap is not None else
+               (track_length_m / 1000.0) / km_per_liter * rate)
     out = {
         "liters_per_lap": round(per_lap, 3),
         "race_laps": race_laps,
@@ -2694,11 +2702,15 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
             f"alone. The margin covers a burn rate above the nominal figure "
             f"-- traffic, a restart -- and not a formation lap, which is a "
             f"whole lap more."),
-        "track_length_km": round(track_length_m / 1000.0, 3),
-        "km_per_liter": km_per_liter,
-        "fuel_rate_pct": None if fuel_rate is None else round(rate * 100, 1),
     }
-    if fuel_rate is None:
+    if liters_per_lap is None:
+        out.update({
+            "track_length_km": round(track_length_m / 1000.0, 3),
+            "km_per_liter": km_per_liter,
+            "fuel_rate_pct": (None if fuel_rate is None
+                              else round(rate * 100, 1)),
+        })
+    if liters_per_lap is None and fuel_rate is None:
         out["fuel_rate_unknown"] = (
             "AC's fuel-usage multiplier was not reported, so every figure "
             "here assumes 100%. A 50% session needs half of this and a 200% "
@@ -3132,7 +3144,10 @@ def _layout(e: dict) -> str:
     return f"{e['track']}/{cfg}" if cfg else e["track"]
 
 
-# Most recent experiments listed per entry; all of them are pooled.
+# Most recent experiments listed per entry, and of those that changed
+# several entries at once; every one is still pooled or counted, but the
+# book is read before every change and must not grow with the car's
+# history.
 BOOK_EXPERIMENTS_LISTED = 8
 
 
@@ -3213,8 +3228,12 @@ def setup_book(experiments: list[dict], steps: dict | None = None,
             entries[name]["experiments_not_listed"] = len(exps) - len(listed)
         if step:
             entries[name]["step"] = step
-    return {"entries": entries, "changed_together": together,
-            "experiments_total": len(experiments),
+    out = {"entries": entries,
+           "changed_together": together[-BOOK_EXPERIMENTS_LISTED:]}
+    if len(together) > BOOK_EXPERIMENTS_LISTED:
+        out["changed_together_not_listed"] = (len(together)
+                                              - BOOK_EXPERIMENTS_LISTED)
+    return {**out, "experiments_total": len(experiments),
             "experiments_unmeasured": unknown}
 
 
@@ -4418,7 +4437,7 @@ def compare_laps(lap_a: dict, samples_a: list[dict],
     return {
         "lap_a": {"id": lap_a["id"], "time": _fmt_time(lap_a["lap_time_ms"])},
         "lap_b": {"id": lap_b["id"], "time": _fmt_time(lap_b["lap_time_ms"])},
-        "time_delta_ms": lap_a["lap_time_ms"] - lap_b["lap_time_ms"],
+        "a_slower_by_ms": lap_a["lap_time_ms"] - lap_b["lap_time_ms"],
         "note": "deltas are lap_a minus lap_b; positive min_speed_delta means"
                 " lap_a carried more speed",
         # Which bar produced these corners, and how firm it is. Two laps is

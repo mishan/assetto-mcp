@@ -1,0 +1,2055 @@
+[
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Record what the driver felt about an A/B and whether the change\nstays. experiment_id: from compare_runs. note: the driver's words,\nbriefly. Either one alone leaves the other as it was.",
+  "inputSchema": {
+   "properties": {
+    "conclusion": {
+     "anyOf": [
+      {
+       "enum": [
+        "kept",
+        "reverted",
+        "undecided"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Conclusion"
+    },
+    "experiment_id": {
+     "minimum": 1,
+     "title": "Experiment Id",
+     "type": "integer"
+    },
+    "note": {
+     "anyOf": [
+      {
+       "maxLength": 500,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Note"
+    }
+   },
+   "required": [
+    "experiment_id"
+   ],
+   "title": "annotate_experimentArguments",
+   "type": "object"
+  },
+  "name": "annotate_experiment",
+  "title": "Annotate an A/B"
+ },
+ {
+  "annotations": {
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": true,
+   "readOnlyHint": false
+  },
+  "description": "Fast-forward this server's checkout to `to_commit`, the `latest` sha\nfrom check_for_updates.\n\nOnly with the driver's explicit OK after they have seen the commit list.\nRefuses a live session (\"recording\"), another apply (\"in_progress\"),\nlocal edits, another branch, a checkout ahead of or diverged from main,\nor a to_commit no longer main's tip (check again). Reinstalls when\npyproject.toml changed; copies the in-game app unless the game is\nrunning (`lua.note`). `in_progress: true` means still running: call\nagain with the same to_commit for the result. The old code runs until\nrestart_server. Pass any `warning` on as it is.",
+  "inputSchema": {
+   "properties": {
+    "to_commit": {
+     "title": "To Commit",
+     "type": "string"
+    }
+   },
+   "required": [
+    "to_commit"
+   ],
+   "title": "apply_updateArguments",
+   "type": "object"
+  },
+  "name": "apply_update",
+  "title": "Apply an update"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Body roll and pitch for one lap, and how much per g.\n\nThe roll gradient includes banking and grade, so compare it only\nbetween laps at one track. Check `fit_r2` first; `gradient_caveats` and\n`dive_caveats` say why a fit is weak. `dive_deg_per_g` is braking and\ncoasting only. The sign of `fitted_slope_deg_per_g` is unverified: use\nit only to check that laps of one car agree. Laps before schema v8 have\nno attitude.",
+  "inputSchema": {
+   "properties": {
+    "lap_id": {
+     "title": "Lap Id",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "lap_id"
+   ],
+   "title": "attitude_reportArguments",
+   "type": "object"
+  },
+  "name": "attitude_report",
+  "title": "Attitude report"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Tyre slip under straight-line braking: slip per axle, which axle is\nnearer its limit (what brake bias moves), and runs where a front wheel\nran away.\n\nThe ABS/TC fields hold one value all lap: a setting, not a measure of\nintervention. The lockup threshold is uncalibrated, so the raw\ndistribution comes with it. points: track slices for\n`hardest_braking_slices`.",
+  "inputSchema": {
+   "properties": {
+    "lap_id": {
+     "title": "Lap Id",
+     "type": "integer"
+    },
+    "points": {
+     "default": 20,
+     "maximum": 200,
+     "minimum": 1,
+     "title": "Points",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "lap_id"
+   ],
+   "title": "braking_reportArguments",
+   "type": "object"
+  },
+  "name": "braking_report",
+  "title": "Braking report"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Deprecated: session_check's `app` says whether the in-game app is\nconnected. Port, bind error and pending message of its HTTP bridge.",
+  "inputSchema": {
+   "properties": {},
+   "title": "bridge_statusArguments",
+   "type": "object"
+  },
+  "name": "bridge_status",
+  "title": "In-game app bridge status"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": true,
+   "readOnlyHint": true
+  },
+  "description": "Whether a newer version of this server is on GitHub. Read-only.\n\n`status`: \"identical\", \"behind\" (update waiting), \"ahead\", \"diverged\",\nor \"unknown\" with an `error`: \"local_commit_not_on_github\" (local\nchanges; leave them), \"offline\" or \"rate_limited\". `commits`: the\nupdate, newest first, to show the driver. `needs_pip`, `needs_lua_copy`,\n`installer_changed`: what applying involves. `restart_needed`: the disk\nis newer than the running code. Cached up to an hour; \"offline\" and\n\"rate_limited\" are not faults and may carry a `stale` answer.",
+  "inputSchema": {
+   "properties": {},
+   "title": "check_for_updatesArguments",
+   "type": "object"
+  },
+  "name": "check_for_updates",
+  "title": "Check for updates"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Corner-by-corner comparison of two laps on the same track: min speed,\nbrake point and slip balance deltas, all lap a minus lap b\n(`a_slower_by_ms` too).\n\n`turn` labels come from these two laps alone, so they can differ from\nlap_summary's; detail=\"full\" adds `turns` (each apex), lap fractions\nand `corner_detection`. Any two laps are compared, but read\n`lap_time_warning` before quoting `a_slower_by_ms`: it says when either\ntime is not a real lap time.",
+  "inputSchema": {
+   "properties": {
+    "detail": {
+     "default": "summary",
+     "enum": [
+      "summary",
+      "full"
+     ],
+     "title": "Detail",
+     "type": "string"
+    },
+    "lap_id_a": {
+     "title": "Lap Id A",
+     "type": "integer"
+    },
+    "lap_id_b": {
+     "title": "Lap Id B",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "lap_id_a",
+    "lap_id_b"
+   ],
+   "title": "compare_lap_cornersArguments",
+   "type": "object"
+  },
+  "name": "compare_lap_corners",
+  "title": "Compare two laps by corner"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Did a setup change do anything, given lap-to-lap noise?\n\nbaseline_laps / candidate_laps: lap ids before and after, \"87,88\",\n\"87-90\", one id, or a list. Or, for a side, baseline_setup /\ncandidate_setup: every lap in the session (session_id, default the\nactive one) labeled with that setup name (`laps_by_setup`). Same car,\ntrack and layout on both sides.\n\nMetrics are one corrected family: read `p_value_adjusted` against 0.05,\nnot `p_value`. \"suggestive\" cleared 95% only uncorrected: run more laps.\n\"within noise\" is not \"no effect\": read `resolution` (smallest change\nthese laps catch half the time) and `power` (the chance of catching the\nchange measured). `lap_time_consistency` needs six laps a side.\n`measured_setup_warning`: both sides ran identical measured values, so\nnothing here is the change. detail=\"full\" adds `corner_leads`,\nexploratory: where to look once a metric moved, never a finding.\n\nLaps that ran wide or had an inferred contact are counted, listed in\n`ran_wide` and `contacts`; clean_laps_only=True drops the ran-wide ones\n(include_invalid is its deprecated reverse). `excluded_laps`: laps\nwhose time is not a lap time. `lap_time_set_aside`: laps over 1.75%\nslower than their side's median, kept out of the lap-time mean only.\n`experiment_id`: the comparison as filed in the setup book.",
+  "inputSchema": {
+   "properties": {
+    "baseline_laps": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "integer"
+      },
+      {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Baseline Laps"
+    },
+    "baseline_setup": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Baseline Setup"
+    },
+    "candidate_laps": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "integer"
+      },
+      {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Candidate Laps"
+    },
+    "candidate_setup": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Candidate Setup"
+    },
+    "clean_laps_only": {
+     "default": false,
+     "title": "Clean Laps Only",
+     "type": "boolean"
+    },
+    "detail": {
+     "default": "summary",
+     "enum": [
+      "summary",
+      "full"
+     ],
+     "title": "Detail",
+     "type": "string"
+    },
+    "include_invalid": {
+     "anyOf": [
+      {
+       "type": "boolean"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Include Invalid"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    }
+   },
+   "title": "compare_runsArguments",
+   "type": "object"
+  },
+  "name": "compare_runs",
+  "title": "Compare setup runs"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Compare one of the driver's laps with an opponent's (car_index), by\ntrack position: where they carry more speed and, when the server sends\ntheir pedals, where they brake and get on power.\n\ncar_index and rival_lap_number: from list_rivals; default their\nquickest captured lap. rival_lap_count (lap number minus one) is\ndeprecated. `time_by_turn`: seconds through each turn (turn-in to exit)\nand on the road after it to the next turn-in, `delta_s` positive where\nthe rival is quicker, with `where_they_gain` / `where_you_gain`. Their\n10 Hz trace is good to a few hundredths per stretch.",
+  "inputSchema": {
+   "properties": {
+    "car_index": {
+     "title": "Car Index",
+     "type": "integer"
+    },
+    "lap_id": {
+     "title": "Lap Id",
+     "type": "integer"
+    },
+    "rival_lap_count": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Rival Lap Count"
+    },
+    "rival_lap_number": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Rival Lap Number"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    }
+   },
+   "required": [
+    "car_index",
+    "lap_id"
+   ],
+   "title": "compare_to_rivalArguments",
+   "type": "object"
+  },
+  "name": "compare_to_rival",
+  "title": "Compare to a rival lap"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Say positions from the nearest corner, the way the tools do (\"Turn 10A\nbraking zone, 60 m before turn-in\"), for positions found outside them.\n\nmeters: distances past the start line, as a list or as text separated\nby spaces or \", \"; no thousands separators (\"3,335\" is refused).\nfractions: lap fractions 0-1 (`norm_pos` / `spline`), the same shapes.\nEither or both.",
+  "inputSchema": {
+   "properties": {
+    "fractions": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "number"
+      },
+      {
+       "items": {
+        "type": "number"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Fractions"
+    },
+    "meters": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "number"
+      },
+      {
+       "items": {
+        "type": "number"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Meters"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    }
+   },
+   "title": "describe_positionsArguments",
+   "type": "object"
+  },
+  "name": "describe_positions",
+  "title": "Describe track positions"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Where the car went across the track: per slice of the lap, world\nposition, speed, mean front ride height and its movement within the\nslice (a bump map).\n\npoints: number of slices. compare_lap_id adds `separation_m`, the\ndistance between the two lines at each point. Laps from before position\nlogging report has_position: false.",
+  "inputSchema": {
+   "properties": {
+    "compare_lap_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Compare Lap Id"
+    },
+    "lap_id": {
+     "title": "Lap Id",
+     "type": "integer"
+    },
+    "points": {
+     "default": 100,
+     "maximum": 200,
+     "minimum": 10,
+     "title": "Points",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "lap_id"
+   ],
+   "title": "driving_lineArguments",
+   "type": "object"
+  },
+  "name": "driving_line",
+  "title": "Driving line"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Draw laps as a driving-line map in one HTML file in the data\ndirectory's exports folder; returns the path to hand to the driver.\n\nlap_ids: \"87,88\", \"87-90\", one id or a list; null for the whole\nsession. Laps from several sessions (same car and layout) are drawn\nwithout turn numbers. Laps without position data are listed in\n`skipped`. Exporting the same session again replaces its file.",
+  "inputSchema": {
+   "properties": {
+    "lap_ids": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "integer"
+      },
+      {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Ids"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    }
+   },
+   "title": "export_line_mapArguments",
+   "type": "object"
+  },
+  "name": "export_line_map",
+  "title": "Export a line map"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Where the quicker cars find their time, turn by turn, against you.\n\nPer turn, yours and the field's medians: time through it (turn-in to\nexit) and on the road after to the next turn-in, minimum and exit\nspeeds, brake point in meters before turn-in, and `available_s`\n(positive: the field is quicker). `total_available_s` sums the turns\ntimed on both sides. `priorities`: rows by time available, biggest\nfirst.\n\nlap_ids: your laps; default the newest clean ones. car_indexes: default\nevery rival whose trace-timed best beats yours. Both take \"433,434\", a\nnumber or a list; lap_ids also \"433-436\". laps_per_rival: each rival's\nquickest laps within 2% of their best. Rival brake points read up to\n~7 m early, slow-corner minimum speeds a little high.",
+  "inputSchema": {
+   "properties": {
+    "car_indexes": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "integer"
+      },
+      {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Car Indexes"
+    },
+    "lap_ids": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "integer"
+      },
+      {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Ids"
+    },
+    "laps_per_rival": {
+     "default": 3,
+     "maximum": 10,
+     "minimum": 1,
+     "title": "Laps Per Rival",
+     "type": "integer"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    }
+   },
+   "title": "field_benchmarkArguments",
+   "type": "object"
+  },
+  "name": "field_benchmark",
+  "title": "Benchmark against the field"
+ },
+ {
+  "annotations": {
+   "destructiveHint": true,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Forget everything recorded about one setup entry's display, after a\nmisreading. Clears the note too unless keep_note=True.",
+  "inputSchema": {
+   "properties": {
+    "car": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Car"
+    },
+    "field": {
+     "title": "Field",
+     "type": "string"
+    },
+    "keep_note": {
+     "default": false,
+     "title": "Keep Note",
+     "type": "boolean"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    }
+   },
+   "required": [
+    "field"
+   ],
+   "title": "forget_display_valueArguments",
+   "type": "object"
+  },
+  "name": "forget_display_value",
+  "title": "Forget a displayed setup value"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "How much fuel a race of race_laps needs, and the stint splits; tank\nsize from the setup ranges or shared memory.\n\nThe burn per lap is `liters_per_lap` when given (the in-game\nestimator's figure, say), else this session's measured median once 3\nusable laps measured it, else nominal from track length and the car's\nkm_per_liter (in-game app). `liters_per_lap_source` says which.\nstops is a floor: a distance needing more stops is planned with more,\nand says so. Reports whether a stop is forced by fuel.",
+  "inputSchema": {
+   "properties": {
+    "liters_per_lap": {
+     "anyOf": [
+      {
+       "exclusiveMinimum": 0,
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Liters Per Lap"
+    },
+    "race_laps": {
+     "maximum": 100000,
+     "minimum": 1,
+     "title": "Race Laps",
+     "type": "integer"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    },
+    "stops": {
+     "default": 1,
+     "maximum": 1000,
+     "minimum": 0,
+     "title": "Stops",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "race_laps"
+   ],
+   "title": "fuel_planArguments",
+   "type": "object"
+  },
+  "name": "fuel_plan",
+  "title": "Fuel plan"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Which saved setup is on the car: the live setup-menu values from the\nin-game app, matched across every adjustable entry against every saved\nsetup for this car and track.\n\nReturns one match, or the candidates when several are identical, plus\nthe car's setup legality (AC ignores out-of-range values).",
+  "inputSchema": {
+   "properties": {
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    }
+   },
+   "title": "identify_setupArguments",
+   "type": "object"
+  },
+  "name": "identify_setup",
+  "title": "Identify the setup"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Record which setup already-stored laps were driven on.\n\nlap_ids: \"87,88,89,90\", \"87-90\", one id, or a list. Ask the driver which\nlaps.\n\nOnly laps with no setup recorded change; others are reported back\nuntouched (scripts/relabel_laps.py fixes those). Where the app measured\nthe setup, ids spanning two measured setups are refused whole\n(`laps_by_measured_setup`), and laps measured on other values than the\nlaps already carrying this name are left alone\n(`measured_on_a_different_setup`).",
+  "inputSchema": {
+   "properties": {
+    "lap_ids": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "integer"
+      },
+      {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      }
+     ],
+     "title": "Lap Ids"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    },
+    "setup_name": {
+     "title": "Setup Name",
+     "type": "string"
+    }
+   },
+   "required": [
+    "lap_ids",
+    "setup_name"
+   ],
+   "title": "label_lapsArguments",
+   "type": "object"
+  },
+  "name": "label_laps",
+  "title": "Label laps with a setup"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "One lap: whether its time counts, throttle/brake/coast split, tyre\npressures and core temps, and each corner with its brake point.\n\nEach corner: `turn` (T1, T2... the session's; quote it or `name`),\ndirection, gear, min speed, `brake_before_turn_in_m` (the board),\nthrottle point, slip balance (positive = understeer), peak_lat_g,\n`body_slip_peak_deg` (1-5 normal, tens a slide, large and negative a\nspin). detail=\"full\", for explaining a bad lap, adds `entry_phase`,\nper-axle slip, steer, lap fractions, `corner` (an ordinal: never quote\nit) and `corner_detection`. Quote positions as `_m` or `where`, never\nfractions.\n\n`contacts` (damage) null is not a clean lap. `contacts_inferred`: each\nspike over 3 g, verdict \"contact\" (car within 10 m), \"wall\", \"snap\"\n(rotation, not impact), \"kerb\" or \"no_opponent_data\" (`if_alone`);\n[] = no spike, null = no data. Read it before calling a spin a\ndriving error.",
+  "inputSchema": {
+   "properties": {
+    "detail": {
+     "default": "summary",
+     "enum": [
+      "summary",
+      "full"
+     ],
+     "title": "Detail",
+     "type": "string"
+    },
+    "lap_id": {
+     "title": "Lap Id",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "lap_id"
+   ],
+   "title": "lap_summaryArguments",
+   "type": "object"
+  },
+  "name": "lap_summary",
+  "title": "Lap summary"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Raw telemetry along one stretch of one lap, a row every step_m\nmeters, for what no report answers: shift rpm by gear, time in 6th,\nslip through one braking zone, entry speed against the brake point.\nBrake points per corner are in lap_summary.\n\nchannels: sample columns (default speed_kmh, gas, brake, gear).\nfrom_m/to_m: meters past the start line, default the whole lap. At most\n300 rows: a longer window gets a coarser `step_m`. Rows carry `m` and\n`t_s` (since the lap started); `from_where`/`to_where` place the\nwindow, and describe_positions turns any other `m` into words for the\ndriver.",
+  "inputSchema": {
+   "properties": {
+    "channels": {
+     "anyOf": [
+      {
+       "items": {
+        "enum": [
+         "speed_kmh",
+         "gas",
+         "brake",
+         "steer",
+         "gear",
+         "rpm",
+         "acc_lat",
+         "acc_lon",
+         "slip_fl",
+         "slip_fr",
+         "slip_rl",
+         "slip_rr",
+         "press_fl",
+         "press_fr",
+         "press_rl",
+         "press_rr",
+         "core_fl",
+         "core_fr",
+         "core_rl",
+         "core_rr",
+         "ride_f",
+         "ride_r",
+         "tyres_out",
+         "pos_x",
+         "pos_y",
+         "pos_z",
+         "heading",
+         "pitch",
+         "roll",
+         "tc_active",
+         "abs_active",
+         "wear_fl",
+         "wear_fr",
+         "wear_rl",
+         "wear_rr",
+         "damage"
+        ],
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Channels"
+    },
+    "from_m": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "From M"
+    },
+    "lap_id": {
+     "title": "Lap Id",
+     "type": "integer"
+    },
+    "step_m": {
+     "default": 10,
+     "exclusiveMinimum": 0,
+     "title": "Step M",
+     "type": "number"
+    },
+    "to_m": {
+     "anyOf": [
+      {
+       "minimum": 0,
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "To M"
+    }
+   },
+   "required": [
+    "lap_id"
+   ],
+   "title": "lap_traceArguments",
+   "type": "object"
+  },
+  "name": "lap_trace",
+  "title": "Lap trace window"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Complaint tags the driver pressed in-game (understeer, oversteer,\nbraking, traction, note), each with its place on the lap and the\n`lap_number` it was pressed on. Defaults to the active session;\nall_sessions=True for everything.",
+  "inputSchema": {
+   "properties": {
+    "all_sessions": {
+     "default": false,
+     "title": "All Sessions",
+     "type": "boolean"
+    },
+    "limit": {
+     "default": 50,
+     "maximum": 200,
+     "minimum": 1,
+     "title": "Limit",
+     "type": "integer"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    }
+   },
+   "title": "list_driver_tagsArguments",
+   "type": "object"
+  },
+  "name": "list_driver_tags",
+  "title": "Driver's in-game tags"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "List recorded laps (most recent first), optionally for one session.\nReturns lap ids to use with lap_summary / compare_lap_corners.\n`outlier`: far slower than the session's pace, but still usable.",
+  "inputSchema": {
+   "properties": {
+    "limit": {
+     "default": 20,
+     "maximum": 200,
+     "minimum": 1,
+     "title": "Limit",
+     "type": "integer"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    }
+   },
+   "title": "list_lapsArguments",
+   "type": "object"
+  },
+  "name": "list_laps",
+  "title": "List laps"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Opponents seen in a session, in best-lap order, with how much of their\ntelemetry was captured.\n\nBest laps are timed off each car's own trace (`laps_timed_from_trace`);\n`server_best_lap_ms` lags and repeats -- do not quote it. Needs the\nin-game app; without it there is no opponent data.",
+  "inputSchema": {
+   "properties": {
+    "limit": {
+     "default": 20,
+     "maximum": 200,
+     "minimum": 1,
+     "title": "Limit",
+     "type": "integer"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    }
+   },
+   "title": "list_rivalsArguments",
+   "type": "object"
+  },
+  "name": "list_rivals",
+  "title": "List rivals"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "List recorded sessions with car, track, lap count and best time.",
+  "inputSchema": {
+   "properties": {},
+   "title": "list_sessionsArguments",
+   "type": "object"
+  },
+  "name": "list_sessions",
+  "title": "List sessions"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "List saved setup names for a car/track combo. Use the internal car\nfolder name (e.g. 'ks_mazda_mx5_cup') and track folder name.",
+  "inputSchema": {
+   "properties": {
+    "car": {
+     "title": "Car",
+     "type": "string"
+    },
+    "track": {
+     "title": "Track",
+     "type": "string"
+    }
+   },
+   "required": [
+    "car",
+    "track"
+   ],
+   "title": "list_setupsArguments",
+   "type": "object"
+  },
+  "name": "list_setups",
+  "title": "List setups"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Current state from shared memory: car, track, session status, tyre\npressures/temps, fuel, last/best lap.\n\nAlso `session_type`, `position` (race order in a race, best-lap rank\notherwise), `current_lap` of `race_laps`, `laps_remaining` (counts the\nlap being driven) and `session_time_left_s`; null unless the game is\nlive or paused. `race_laps` and `laps_remaining` are null in a timed\nsession. A lapped car may have a lap fewer than `laps_remaining` until\n`checkered_flag`. `fuel_to_finish`, in a race of laps: fuel on board\nagainst the laps to go, with `margin_laps` and a `verdict` (\"tight\"\nunder 0.6 laps spare); `basis` \"measured\" is this session's median burn,\n\"nominal\" the car's rated consumption.",
+  "inputSchema": {
+   "properties": {},
+   "title": "live_snapshotArguments",
+   "type": "object"
+  },
+  "name": "live_snapshot",
+  "title": "Live car state"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "How many laps a side an A/B needs to see a change, before running it.\n\nGive `effect` (in the metric's units, e.g. 300 for 0.3 s of lap time),\nor `entry` and `change` (stored units) to take the effect from the\nsetup book. The spread and the book's effect are this driver's own, from\nstored A/Bs on this car at this circuit (track: the track folder name,\ndefault the current session's layout), or at every circuit when there\nare none. Run the sides interleaved, A B A, so track temperature, fuel\nand tyres do not read as the change. metric: a compare_runs metric.",
+  "inputSchema": {
+   "properties": {
+    "car": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Car"
+    },
+    "change": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Change"
+    },
+    "effect": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Effect"
+    },
+    "entry": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Entry"
+    },
+    "metric": {
+     "default": "lap_time_ms",
+     "enum": [
+      "lap_time_ms",
+      "slip_balance",
+      "front_load_transfer_pct",
+      "fl_core_temp",
+      "fl_pressure_end",
+      "top_speed_kmh",
+      "peak_lat_g",
+      "coasting_pct"
+     ],
+     "title": "Metric",
+     "type": "string"
+    },
+    "track": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Track"
+    }
+   },
+   "title": "plan_experimentArguments",
+   "type": "object"
+  },
+  "name": "plan_experiment",
+  "title": "Plan an A/B"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "The driver's notes (driver.md), the car's (<car>.md; default the\nsession's car) and the newest handoff in exports, from the data folder.\nRead them at session start; the newest handoff wins where they differ.\nnull means none yet. `other_cars`: cars with notes of their own.",
+  "inputSchema": {
+   "properties": {
+    "car": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Car"
+    }
+   },
+   "title": "read_notesArguments",
+   "type": "object"
+  },
+  "name": "read_notes",
+  "title": "Read the engineer's notes"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Read a saved setup file. Returns each setting section and its value\n(e.g. PRESSURE_LF: 26).",
+  "inputSchema": {
+   "properties": {
+    "car": {
+     "title": "Car",
+     "type": "string"
+    },
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "track": {
+     "title": "Track",
+     "type": "string"
+    }
+   },
+   "required": [
+    "car",
+    "track",
+    "name"
+   ],
+   "title": "read_setupArguments",
+   "type": "object"
+  },
+  "name": "read_setup",
+  "title": "Read a setup"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Record what the setup screen shows for an entry whose display is\n\"unknown\" or where the game's display_multiplier is wrong.\n\nfield: setup section, e.g. \"TOE_OUT_LF\". Pass what you have: displayed,\nthe number on the screen now (stored: omit to use the live value from\nthe in-game app, the usual case; a second reading at another position\nconfirms the scale, `basis` says which you have); or displayed_at_min\nand displayed_at_max, the screen at both ends of the spinner, which pin\nscale, sign and zero at once; and/or note, for what is not a number\n(e.g. TC counts 1 as the MOST intervention).",
+  "inputSchema": {
+   "properties": {
+    "car": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Car"
+    },
+    "displayed": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Displayed"
+    },
+    "displayed_at_max": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Displayed At Max"
+    },
+    "displayed_at_min": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Displayed At Min"
+    },
+    "field": {
+     "title": "Field",
+     "type": "string"
+    },
+    "note": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Note"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    },
+    "stored": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Stored"
+    }
+   },
+   "required": [
+    "field"
+   ],
+   "title": "record_setup_displayArguments",
+   "type": "object"
+  },
+  "name": "record_setup_display",
+  "title": "Record what the setup screen shows"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Collector state: whether it is recording, which session, laps stored,\nany error.\n\nRead `state`, not `running`/`status`: \"never_started\" and\n\"stopped_by_request\" otherwise look alike. \"standby\" is healthy: another\nserver instance is recording.",
+  "inputSchema": {
+   "properties": {},
+   "title": "recording_statusArguments",
+   "type": "object"
+  },
+  "name": "recording_status",
+  "title": "Recording status"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Re-derive every stored lap's track-limits verdict from its wheels-off\nsamples, after changing TRACK_LIMITS_WHEELS. Never deletes a lap or\ntouches a verdict that came from the game.\n\nLaps with thinned traces are skipped (`laps_skipped_thinned`) and keep\ntheir old verdict: do not describe the pass as covering every lap.",
+  "inputSchema": {
+   "properties": {},
+   "title": "rescore_track_limitsArguments",
+   "type": "object"
+  },
+  "name": "rescore_track_limits",
+  "title": "Rescore track limits"
+ },
+ {
+  "annotations": {
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Restart this MCP server in place to load new code; the connection stays\nopen. Ask the driver first, and never mid-lap.\n\nRefuses \"updating\" (an apply_update is still reinstalling; collect it\nfirst), \"not_supervised\" (the driver must quit and reopen the client)\nand \"recording\" (a live lap would be lost; wait for the menus). force\noverrides \"recording\" only, and only when the driver says so. Afterwards an open\nsession has a new session id (tag it again), and on Windows the bridge\ncan take a minute or more to reconnect.",
+  "inputSchema": {
+   "properties": {
+    "force": {
+     "default": false,
+     "title": "Force",
+     "type": "boolean"
+    }
+   },
+   "title": "restart_serverArguments",
+   "type": "object"
+  },
+  "name": "restart_server",
+  "title": "Restart the server"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Write the closing handoff document to the data folder's exports as\n<name>.md; name defaults to session-<id>-<track>-<car>. Never replaces\na file: an existing name gets -2, -3... Returns the path to hand to\nthe driver.",
+  "inputSchema": {
+   "properties": {
+    "markdown": {
+     "title": "Markdown",
+     "type": "string"
+    },
+    "name": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Name"
+    }
+   },
+   "required": [
+    "markdown"
+   ],
+   "title": "save_handoffArguments",
+   "type": "object"
+  },
+  "name": "save_handoff",
+  "title": "Save the session handoff"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Replace driver.md (kind \"driver\": what the driver prefers and has\ncorrected) or <car>.md (kind \"car\": setup lineage, verdicts, measured\nrates; car defaults to the session's) in the data folder's notes.\nSend the whole file: read_notes first and edit it. The old file is kept\nas <name>.md.bak-<time>, the newest 5.",
+  "inputSchema": {
+   "properties": {
+    "car": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Car"
+    },
+    "kind": {
+     "enum": [
+      "driver",
+      "car"
+     ],
+     "title": "Kind",
+     "type": "string"
+    },
+    "markdown": {
+     "title": "Markdown",
+     "type": "string"
+    }
+   },
+   "required": [
+    "kind",
+    "markdown"
+   ],
+   "title": "save_notesArguments",
+   "type": "object"
+  },
+  "name": "save_notes",
+  "title": "Save the engineer's notes"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Show a sentence or two on the driver's in-game overlay, e.g.\n'claude_v2 saved: softer front ARB - pit and load it'. It stays up until\ndismissed or replaced by a newer message.",
+  "inputSchema": {
+   "properties": {
+    "text": {
+     "maxLength": 200,
+     "minLength": 1,
+     "title": "Text",
+     "type": "string"
+    }
+   },
+   "required": [
+    "text"
+   ],
+   "title": "send_driver_messageArguments",
+   "type": "object"
+  },
+  "name": "send_driver_message",
+  "title": "Message the driver in game"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Are we good to go? One call at session start: recorder state, the game\nnow, the session (setup tag, measured setup, best_clean_lap_id), which\nsaved setup is on the car, whether the in-game app is connected\n(`app.last_seen_s`), the suspension tier (\"worker\" 333 Hz, \"app\"\nrender-rate, null none), whether a restart or update is owed, and the\nnotes folder. `to_do`: what to fix before the first flying lap.",
+  "inputSchema": {
+   "properties": {},
+   "title": "session_checkArguments",
+   "type": "object"
+  },
+  "name": "session_check",
+  "title": "Session check"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Name the setup now on the car (shared memory cannot tell). Call it\nwhenever the driver loads a different setup, including after a pit stop.\n\nApplies to laps from now on only; stored laps, unlabeled ones included,\nare untouched (label_laps does those). With the in-game app running, the\nname binds to the measured values of the first lap after this call\n(`setup_fp`), and later laps on other values do not get it.\n`unlabelled_laps_on_the_setup_measured_now`: earlier laps on the current\nvalues, to offer to label_laps. `measured_setup_now: null`: the app is\nnot reporting; the name is unchecked.",
+  "inputSchema": {
+   "properties": {
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    },
+    "setup_name": {
+     "title": "Setup Name",
+     "type": "string"
+    }
+   },
+   "required": [
+    "setup_name"
+   ],
+   "title": "set_session_setupArguments",
+   "type": "object"
+  },
+  "name": "set_session_setup",
+  "title": "Tag the session's setup"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "What every stored A/B says each setup entry does to this car.\n\nRead it before proposing a change. Per entry: the latest experiments\nthat changed it alone, and per metric the effect per unit of the stored\nvalue (and `per_click`), pooled across all of them with its `se`.\n`within_noise`: the sign is not settled; say so, never quote it as an\neffect. `tracks_disagree`: the effect differs by layout; quote\n`by_track`. `changed_together`: the latest A/Bs that changed several\nentries, which cannot be split. car: default the current session's.\nentry: one setup entry, e.g. \"ARB_REAR\". track: one circuit's track\nfolder name, every layout.",
+  "inputSchema": {
+   "properties": {
+    "car": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Car"
+    },
+    "entry": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Entry"
+    },
+    "track": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Track"
+    }
+   },
+   "title": "setup_bookArguments",
+   "type": "object"
+  },
+  "name": "setup_book",
+  "title": "Setup book"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "The car's legal setup ranges as the game reports them (via the in-game\napp).\n\nEach entry: min, max and step in setup-file units, `display_multiplier`,\n`show_clicks_mode`, and `display`, what the setup screen shows. Its\n`source`: \"observed\" (from screen readings), \"observed_offset\" (one\nreading: zero corrected, scale still the game's), \"game\" (the game's\nmultiplier, can be wrong), \"stored\" (shows as stored), \"unknown\" (say\nso; do not derive it; record_setup_display fixes it).",
+  "inputSchema": {
+   "properties": {
+    "car": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Car"
+    }
+   },
+   "title": "setup_rangesArguments",
+   "type": "object"
+  },
+  "name": "setup_ranges",
+  "title": "Setup ranges"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Start recording telemetry; laps are stored as they complete.\nIdempotent, and recording starts with the server, so this mostly undoes\nstop_recording. Stands by, and says so, if another server instance\nholds the recorder.",
+  "inputSchema": {
+   "properties": {},
+   "title": "start_recordingArguments",
+   "type": "object"
+  },
+  "name": "start_recording",
+  "title": "Start recording"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Tyre wear per stint from the game's own figures: remaining and used per\ncorner per lap, rate per lap, and whether the rate is rising.\n\nStints are cut at out-laps, pit visits and tyre changes and reported\nseparately: never compare figures across stints. `boundary_laps` (the\npit and tyre-change laps) are in no stint. from_lap / to_lap:\ninclusive lap numbers for an explicit range. `used` counts up, so\nhigher is worse. Laps before schema v9 have no wear.",
+  "inputSchema": {
+   "properties": {
+    "from_lap": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "From Lap"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    },
+    "to_lap": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "To Lap"
+    }
+   },
+   "title": "stint_wearArguments",
+   "type": "object"
+  },
+  "name": "stint_wear",
+  "title": "Stint wear"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Stop the collector in every server instance. Durable across restarts\nuntil start_recording.",
+  "inputSchema": {
+   "properties": {},
+   "title": "stop_recordingArguments",
+   "type": "object"
+  },
+  "name": "stop_recording",
+  "title": "Stop recording"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "What the telemetry database holds and its disk cost (~0.4 MB per lap).\n\nPast the budget (ASSETTO_MCP_MAX_DB_BYTES, default 2 GB, 0 = no limit)\nthe oldest sessions' traces are decimated, down to every 32nd sample;\nlap times, setup labels and track-limits evidence are kept. `sample_stride`\non a lap says how thinned it is. `data_dir` is the data folder;\n`notes_dir` is where notes about the driver go, never the repository.",
+  "inputSchema": {
+   "properties": {},
+   "title": "storage_reportArguments",
+   "type": "object"
+  },
+  "name": "storage_report",
+  "title": "Storage report"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Deprecated: session_check gives the tier. Whether suspension data is\narriving, from which tier, and what to do about it, for when\nsuspension_report has no data or damper numbers look implausible.",
+  "inputSchema": {
+   "properties": {},
+   "title": "suspension_capture_statusArguments",
+   "type": "object"
+  },
+  "name": "suspension_capture_status",
+  "title": "Suspension capture status"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Damper histograms, ride height and roll balance for one lap. Needs the\nin-game app.\n\n`source` is the capture tier: \"app\" (render rate) is fine for ride\nheight and load transfer, but its damper histograms are body motion,\nnot valving; \"worker\" (the CSP physics worker, 333 Hz) gives real\ndamper numbers. Pass lap_id from list_laps, or lap_number for a lap not\nstored (an out-lap, say); lap_id wins if both are given. lap_count (lap\nnumber minus one) is deprecated.",
+  "inputSchema": {
+   "properties": {
+    "lap_count": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Count"
+    },
+    "lap_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Id"
+    },
+    "lap_number": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Number"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    }
+   },
+   "title": "suspension_reportArguments",
+   "type": "object"
+  },
+  "name": "suspension_report",
+  "title": "Suspension report"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Where lap b gained or lost time against lap a along the whole track,\nstraights and sweepers included.\n\nRead `b_lost_ms` per segment (positive = lap b slower there; null = not\nsampled on both laps); `b_lost_so_far_ms` and `b_slower_by_ms` only say\na gap exists. compare_lap_corners subtracts the other way, lap a minus\nlap b. segments: rows to split the track into.",
+  "inputSchema": {
+   "properties": {
+    "lap_id_a": {
+     "title": "Lap Id A",
+     "type": "integer"
+    },
+    "lap_id_b": {
+     "title": "Lap Id B",
+     "type": "integer"
+    },
+    "segments": {
+     "default": 20,
+     "maximum": 200,
+     "minimum": 1,
+     "title": "Segments",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "lap_id_a",
+    "lap_id_b"
+   ],
+   "title": "time_delta_along_lapArguments",
+   "type": "object"
+  },
+  "name": "time_delta_along_lap",
+  "title": "Time delta along the lap"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "The session's turns, T1, T2... in track order, pooled from every lap's\ndetected corners: the labels lap_summary uses.\n\nEach turn: start, apex, end, brake point (also in meters),\n`brake_before_turn_in_m` (negative = braking after turn-in),\n`direction` (left/right; `turn_sign` +1/-1), and laps cornered there.\nNot the circuit's numbering (flat kinks are skipped, a \"3A\" is numbered\nthrough) and not shared between sessions. With a track sections.ini\neach turn carries the circuit's `name`, to quote over the T-number, and\n`circuit_names` lists the named sections. `unnumbered`: road only one lap cornered on.",
+  "inputSchema": {
+   "properties": {
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
+    }
+   },
+   "title": "track_cornersArguments",
+   "type": "object"
+  },
+  "name": "track_corners",
+  "title": "Track corners"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": true
+  },
+  "description": "Wait until a lap after after_lap_id is stored (null: the newest one\nnow), up to timeout_s (at most 45), and return it as a card: time,\nusable, ran_wide, contact verdicts, setup, fuel used, and the session's\nbest_clean_lap_id. For live mode in a client with no background watcher.\n{\"new_lap\": false} is a timeout: call again with the same after_lap_id.\n`more_waiting`: later laps already stored; call again with this lap_id.",
+  "inputSchema": {
+   "properties": {
+    "after_lap_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "After Lap Id"
+    },
+    "timeout_s": {
+     "default": 40,
+     "minimum": 1,
+     "title": "Timeout S",
+     "type": "integer"
+    }
+   },
+   "title": "wait_for_lapArguments",
+   "type": "object"
+  },
+  "name": "wait_for_lap",
+  "title": "Wait for the next lap"
+ },
+ {
+  "annotations": {
+   "destructiveHint": true,
+   "idempotentHint": false,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
+  "description": "Write a setup file the driver can load from the in-game setup menu.\n\nvalues_json: {SECTION: number}, e.g. {\"PRESSURE_LF\": 25}, as an object\nor JSON text.\nbase_setup: setup to start from; unspecified sections carry over. Values\nare clamped and snapped to the legal min/max/step (`clamped` lists\nchanges). `displays_as`: what each value reads as on the setup screen;\nits `source` \"game\" can be wrong and \"unknown\" means say so.\n\nRefusals carry `do_this` and `ask_the_driver`; never set a flag on your\nown in answer to one. overwrite: the name exists and may be the driver's\nown; use `suggested_name` or ask (true backs the old file up first).\nallow_unclamped: no ranges known, and AC silently ignores out-of-range\nvalues; the fix is opening the setup screen once with the in-game app\nrunning.",
+  "inputSchema": {
+   "properties": {
+    "allow_unclamped": {
+     "default": false,
+     "title": "Allow Unclamped",
+     "type": "boolean"
+    },
+    "base_setup": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Base Setup"
+    },
+    "car": {
+     "title": "Car",
+     "type": "string"
+    },
+    "name": {
+     "title": "Name",
+     "type": "string"
+    },
+    "overwrite": {
+     "default": false,
+     "title": "Overwrite",
+     "type": "boolean"
+    },
+    "track": {
+     "title": "Track",
+     "type": "string"
+    },
+    "values_json": {
+     "anyOf": [
+      {
+       "additionalProperties": {
+        "type": "number"
+       },
+       "type": "object"
+      },
+      {
+       "type": "string"
+      }
+     ],
+     "title": "Values Json"
+    }
+   },
+   "required": [
+    "car",
+    "track",
+    "name",
+    "values_json"
+   ],
+   "title": "write_setupArguments",
+   "type": "object"
+  },
+  "name": "write_setup",
+  "title": "Write a setup"
+ }
+]

@@ -3,7 +3,7 @@
 Open work, roughly in the order it is worth doing: cheap checks first, then
 work that needs a real session, then larger builds, then what is waiting on
 CSP. Each item says what is wrong, why it matters, where the code lives,
-and its status. Written against the database schema at v16.
+and its status. Written against the database schema at v17.
 
 ---
 
@@ -84,8 +84,8 @@ than inferring it from slip.
 **Status:** partly done. Session-local numbering is built
 (`analysis.corner_map`, `label_corners`, `track_corners`). Where the track
 ships `data/sections.ini`, turns carry the circuit's own `name`
-(`circuit.py`), and `where` and `locate` use it. Still open: tracks with no
-`sections.ini`, and a hand-written override for them.
+(`circuit.py`), and `where` and `describe_positions` use it. Still open:
+tracks with no `sections.ini`, and a hand-written override for them.
 
 Without names, turn numbers are the session's, not the circuit's:
 

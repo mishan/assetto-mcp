@@ -945,11 +945,12 @@ def test_a_side_left_with_no_usable_laps_refuses():
 
 
 def test_lap_ids_survive_the_way_a_list_actually_arrives():
-    """Ids written by a model arrive wrapped and with trailing separators.
+    """Ids written by a model arrive wrapped, with trailing separators, or
+    separated by spaces alone.
 
-    A part holding only whitespace is skipped rather than handed to int(),
-    so a perfectly readable list is not refused for "a lap id" that is a
-    newline. Spaces inside a part still refuse: "1 2" is not lap 12.
+    A part holding only whitespace is skipped, so a perfectly readable list
+    is not refused for "a lap id" that is a newline, and "1 2" is two laps,
+    never lap 12.
     """
     srv = _server()
     sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
@@ -962,7 +963,10 @@ def test_lap_ids_survive_the_way_a_list_actually_arrives():
     for spelling in (f"{b0},\n{b1}",       # wrapped between the ids
                      f"{b0},{b1},",        # trailing separator
                      f"{b0},{b1},\n",      # trailing separator, then wrapped
-                     f"  {b0} , {b1}\n"):  # indented, and wrapped at the end
+                     f"  {b0} , {b1}\n",   # indented, and wrapped at the end
+                     f"{b0} {b1}",         # spaces only
+                     f"{b0};{b1}",
+                     f"{b0}-{b1}"):        # a run of consecutive ids
         got = json.loads(srv.compare_runs(spelling, cand))
         assert got == clean, (spelling, got.get("error"))
         print(f"  {spelling!r:22s} read as {b0},{b1}")
@@ -970,15 +974,42 @@ def test_lap_ids_survive_the_way_a_list_actually_arrives():
     # Whitespace alone is not a lap id list, and is answered as an empty
     # list rather than by blaming whichever character it tripped over.
     out = json.loads(srv.compare_runs(" \n ", cand))
-    assert out.get("error") == "need lap ids on both sides", out
+    assert out.get("error") == "need lap ids or a setup name on both sides", \
+        out
     print(" ", out["error"])
 
     # Genuinely unreadable input still refuses, and still quotes the part it
-    # could not read so the caller can see which one to fix. "12 13" must
-    # not be read as lap 1213.
-    for bad in (f"{b0};{b1}", "abc", f"{b0} {b1}"):
+    # could not read so the caller can see which one to fix.
+    for bad in ("abc", f"{b0}.5"):
         out = json.loads(srv.compare_runs(bad, cand))
-        assert out.get("error") == f"not a lap id: {bad!r}", (bad, out)
+        assert f'"{bad}"' in out.get("error", ""), (bad, out)
+        print(" ", out["error"])
+
+
+def test_a_side_can_be_named_by_its_setup_instead_of_its_laps():
+    srv = _server()
+    sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
+    base = [_store(srv, sid, n, 113400 + n) for n in (1, 2)]
+    cand = [_store(srv, sid, n, 112900 + n) for n in (3, 4)]
+    db.label_unattributed_laps(srv._conn, sid, "v1", base)
+    db.label_unattributed_laps(srv._conn, sid, "v2", cand)
+
+    by_ids = _run(srv, base, cand)
+    by_name = json.loads(srv.compare_runs(
+        baseline_setup="v1", candidate_setup="v2", session_id=sid))
+    assert by_name.pop("laps_by_setup") == {
+        "baseline": {"setup": "v1", "session_id": sid, "lap_ids": base},
+        "candidate": {"setup": "v2", "session_id": sid, "lap_ids": cand}}
+    assert by_name == by_ids, by_name.get("error")
+    mixed = json.loads(srv.compare_runs(
+        baseline_setup="v1", candidate_laps=cand, session_id=sid))
+    assert mixed["laps_by_setup"].keys() == {"baseline"}, mixed
+
+    for kw in ({"baseline_setup": "v9", "candidate_setup": "v2"},
+               {"baseline_setup": "v1", "baseline_laps": base,
+                "candidate_setup": "v2"}):
+        out = json.loads(srv.compare_runs(session_id=sid, **kw))
+        assert "error" in out, (kw, out)
         print(" ", out["error"])
 
 
@@ -999,7 +1030,7 @@ def test_a_run_with_no_cornering_does_not_claim_a_shared_reference():
     base = [_store(srv, sid, n, 113000 + n * 40) for n in (1, 2, 3)]
     cand = [_store(srv, sid, n, 113100 + n * 40) for n in (4, 5, 6)]
 
-    out = _run(srv, base, cand)
+    out = _run(srv, base, cand, detail="full")
     cd = out["corner_detection"]
     assert cd["basis"] == "this lap's own cornering load", cd
     assert "laps_in_reference" not in cd, cd
@@ -1255,7 +1286,7 @@ def test_the_tools_number_the_turns_and_label_every_laps_corners():
     assert turns["built_from_laps"], turns
     assert turns["turns"][2]["turn_sign"] == -1, turns["turns"][2]
 
-    lap = json.loads(_tool(srv, "lap_summary")(lap_id=thin))
+    lap = json.loads(_tool(srv, "lap_summary")(lap_id=thin, detail="full"))
     assert [c["turn"] for c in lap["corners"]] == ["T1", "T3"], lap["corners"]
     assert [c["corner"] for c in lap["corners"]] == [1, 2], lap["corners"]
     # Same numbering in both payloads, not two maps that happen to agree.
@@ -1279,7 +1310,7 @@ def test_a_lap_is_detected_against_the_bar_its_turn_numbers_came_from():
     ids = [db.store_lap(srv._conn, sid, n, 113000 + n, True, _cornering())
            for n in range(1, 4)]
 
-    lap = json.loads(_tool(srv, "lap_summary")(lap_id=ids[0]))
+    lap = json.loads(_tool(srv, "lap_summary")(lap_id=ids[0], detail="full"))
     detection = lap["corner_detection"]
     assert detection["basis"].startswith("shared across"), detection
     assert "turn numbers" in detection["basis"], detection
@@ -1434,6 +1465,29 @@ def test_a_side_with_unmeasured_laps_is_not_filed_as_a_known_change():
     assert book["entries"] == {} and book["experiments_unmeasured"] == 1, book
 
 
+def test_a_comparison_the_book_cannot_file_is_still_answered():
+    import asyncio
+    srv = _server()
+    sid = make_session(srv._conn, track="sebring", car="unfiled_car")
+    base = [_store(srv, sid, n, 113000 + n) for n in (1, 2, 3)]
+    cand = [_store(srv, sid, n, 112800 + n) for n in (4, 5, 6)]
+
+    def full(_conn, _rec):
+        raise db.sqlite3.OperationalError("database or disk is full")
+
+    real, db.record_experiment = db.record_experiment, full
+    try:
+        r = asyncio.run(srv.mcp.call_tool("compare_runs", {
+            "baseline_laps": base, "candidate_laps": cand}))
+    finally:
+        db.record_experiment = real
+    content = getattr(r, "content", r)
+    out = json.loads((content[0] if isinstance(content, tuple)
+                      else content)[0].text)
+    assert "metrics" in out and "experiment_id" not in out, out
+    assert "disk is full" in out["experiment_not_stored"], out
+
+
 def _exp(eid, track, entry, frm, to, change, se, extra=None):
     ch = [{"entry": entry, "baseline": frm, "candidate": to}]
     if extra:
@@ -1454,6 +1508,21 @@ def test_the_book_pools_single_changes_and_never_splits_joint_ones():
     assert lt["per_click"] == -200, lt
     assert [t["experiment_id"] for t in book["changed_together"]] == [3]
     assert book["experiments_unmeasured"] == 1
+
+
+def test_the_book_lists_only_the_latest_experiments_however_many_are_stored():
+    n = analysis.BOOK_EXPERIMENTS_LISTED + 4
+    exps = [_exp(i, "sebring", "ARB_REAR", 3, 4, -100, 50,
+                 extra="WING_1" if i % 2 else None) for i in range(2 * n)]
+    book = analysis.setup_book(exps)
+    arb = book["entries"]["ARB_REAR"]
+    for listed, rest, last in (
+            (arb["experiments"], arb["experiments_not_listed"], 2 * n - 2),
+            (book["changed_together"], book["changed_together_not_listed"],
+             2 * n - 1)):
+        assert len(listed) == analysis.BOOK_EXPERIMENTS_LISTED, listed
+        assert rest == 4 and listed[-1]["experiment_id"] == last, listed
+    assert arb["effects"]["lap_time_ms"]["experiments"] == n, arb
 
 
 def test_tracks_that_disagree_are_reported_apart():

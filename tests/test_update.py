@@ -443,17 +443,104 @@ def test_the_commit_is_read_without_git_too():
     _world(go)
 
 
+def test_a_long_apply_answers_in_progress_and_is_collected_later():
+    def go(w):
+        w.write("pyproject.toml", "[project]\nname = 'z'\n")
+        tip = w.push("Bump")
+        release = threading.Event()
+
+        def slow_pip(root):
+            release.wait(30)
+            return True, "ok"
+
+        kw = dict(root=w.install, data_dir=w.data, ac=w.tmp / "no-ac",
+                  is_game_running=lambda: False)
+        out = U.apply_in_background(tip, wait=0.2, pip=slow_pip, **kw)
+        assert out["in_progress"] is True, out
+        # The fetch comes first, and on a slow runner takes a while.
+        deadline = time.time() + 60
+        while "pip" not in out["stage"] and time.time() < deadline:
+            out = U.apply_in_background(tip, wait=0.2, **kw)
+        assert out["in_progress"] is True and "pip" in out["stage"], out
+        other = U.apply_in_background("0" * 40, wait=0.2, **kw)
+        assert other["refused"] == "in_progress", other
+        elsewhere = w.apply(tip)
+        assert elsewhere["refused"] == "in_progress", elsewhere
+        assert "check_for_updates" in elsewhere["do_this"], elsewhere
+
+        release.set()
+        done = U.apply_in_background(tip[:7], wait=30, **kw)
+        assert done["updated"] is True and w.head() == tip, done
+        assert not (w.data / U.LOCK_FILE).exists()
+        print("  in progress, a second apply refused, result collected")
+    _world(go)
+
+
+def test_a_lock_left_by_a_dead_apply_is_taken_over():
+    def go(w):
+        w.write("a.txt", "a\n")
+        tip = w.push("Change")
+        gone = subprocess.Popen([sys.executable, "-c", "pass"])
+        gone.wait()
+        lock = w.data / U.LOCK_FILE
+        cases = [
+            ({"pid": gone.pid, "started_at": time.time()}, False),
+            ({"pid": os.getpid(),
+              "started_at": time.time() - U.LOCK_STALE_SECONDS - 1}, False),
+            ({"pid": os.getpid(), "started_at": time.time()}, True),
+        ]
+        for record, held in cases:
+            lock.write_text(json.dumps(record), encoding="utf-8")
+            out = w.apply(tip)
+            assert (out.get("refused") == "in_progress") == held, \
+                (record, out)
+        assert w.head() == tip
+        print("  dead or expired locks taken over; a live one refused")
+    _world(go)
+
+
+def test_an_apply_is_refused_while_the_driver_is_on_track():
+    def go(w):
+        w.write("a.txt", "a\n")
+        tip = w.push("Change")
+        out = U.apply_in_background(tip, live_session=7, root=w.install,
+                                    data_dir=w.data)
+        assert out["refused"] == "recording", out
+        assert out["session_id"] == 7 and "menus" in out["do_this"], out
+        assert w.head() != tip
+        print("  live session: refused, checkout untouched")
+    _world(go)
+
+
 _SERVER = r"""
-import json
+import asyncio, json
 import assetto_mcp.server as s
-out = json.loads(s.check_for_updates())
+from assetto_mcp import db
+
+def apply_update():
+    try:
+        asyncio.run(s.mcp.call_tool("apply_update", {"to_commit": "abc1234"}))
+    except s.ToolError as e:
+        return json.loads(str(e))
+    raise AssertionError("a refused apply was not a failed call")
+
+out = {"check": json.loads(s.check_for_updates())}
+c = s._collector
+c.holds_recorder, c.session_id, c.live = True, 42, True
+out["here"] = apply_update()
+c.holds_recorder, c.session_id, c.live = False, None, False
+out["elsewhere_id"] = db.create_session(
+    s._conn, car="c", track="t", track_config="", tyre_compound="",
+    air_temp=20, road_temp=25)
+out["elsewhere"] = apply_update()
 s._shutdown()
 print(json.dumps(out))
 """
 
 
-def test_the_server_tool_answers_offline_without_raising():
-    """The tool as the model calls it, inside a real server process."""
+def test_the_server_tools_as_the_model_calls_them():
+    """Offline is an answer, and a live session here or in another
+    instance refuses an apply."""
     try:
         import mcp  # noqa: F401
     except ImportError:
@@ -470,11 +557,21 @@ def test_the_server_tool_answers_offline_without_raising():
                               timeout=120, stdin=subprocess.DEVNULL)
         assert proc.returncode == 0, proc.stderr
         out = json.loads(proc.stdout.strip().splitlines()[-1])
+        check = out["check"]
         # A CI checkout may not be a clone at all; either answer is fine,
         # as long as it is an answer.
-        assert out.get("error") in ("offline", "not_a_git_checkout"), out
-        print(f"  check_for_updates: {out['error']}")
+        assert check.get("error") in ("offline", "not_a_git_checkout"), out
+        for where, sid in (("here", 42), ("elsewhere", out["elsewhere_id"])):
+            assert out[where]["refused"] == "recording", out
+            assert out[where]["session_id"] == sid, out
+        print(f"  check_for_updates: {check['error']}; apply_update "
+              "refused in a live session")
 
+
+
+def test_an_empty_commit_is_refused_rather_than_matched():
+    out = U.apply_in_background("  ")
+    assert out["refused"] == "no_commit", out
 
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

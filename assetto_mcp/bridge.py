@@ -30,6 +30,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import db
+from .text import untrusted
 
 
 class _ExclusiveHTTPServer(ThreadingHTTPServer):
@@ -183,11 +184,6 @@ MAX_RIVAL_T_MS = 10**12
 MAX_WORLD_M = 100_000.0
 
 
-def _opt_str(raw, limit: int = 64) -> str:
-    """A string field, or empty. Non-strings are dropped, not repr'd."""
-    return raw[:limit] if isinstance(raw, str) else ""
-
-
 def _req_float(body: dict, key: str, lo: float, hi: float) -> float:
     """Coerce body[key] to a finite float within [lo, hi], or raise."""
     if key not in body:
@@ -242,6 +238,9 @@ class Bridge:
         self._bind_stop = threading.Event()
         self._susp_writes = 0
         self.error: str | None = None
+        # time.monotonic() of the in-game app's latest request. The app polls
+        # /status every couple of seconds, so a stale one means it is gone.
+        self.app_seen_at: float | None = None
 
     # -- session resolution ---------------------------------------------
 
@@ -433,6 +432,7 @@ class Bridge:
             def do_GET(self):
                 if self._from_web_page():
                     return self._send(403, {"error": "forbidden"})
+                bridge.app_seen_at = time.monotonic()
                 if self.path != "/status":
                     return self._send(404, {"error": "unknown path"})
                 self._send(200, {**bridge.status_snapshot(),
@@ -449,6 +449,7 @@ class Bridge:
             def _do_post(self):
                 if self._from_web_page():
                     return self._send(403, {"error": "forbidden"})
+                bridge.app_seen_at = time.monotonic()
                 body = self._body()
                 if body is None:
                     return self._send(400, {"error": "bad JSON"})
@@ -480,7 +481,7 @@ class Bridge:
                     # sid is None when nothing is recording. Store the note
                     # anyway, against a NULL session: the input is real, and
                     # guessing a session for it is silent misattribution.
-                    # get_driver_notes surfaces these; the app toasts them
+                    # list_driver_tags surfaces these; the app toasts them
                     # differently.
                     return self._send(200, {"ok": True, "id": note_id,
                                             "session_id": sid,
@@ -528,12 +529,13 @@ class Bridge:
                         # Spline can read slightly outside 0..1 at the
                         # start/finish line; clamp rather than discard.
                         spline = min(max(spline, 0.0), 1.0)
-                        # Names are stored as-is only if they really are
-                        # strings; str() on a dict would persist its repr.
+                        # Other players choose these names, and they reach
+                        # the model; see text.untrusted.
                         drivers.append({
                             "car_index": idx,
-                            "driver_name": _opt_str(car.get("driver_name")),
-                            "car_model": _opt_str(car.get("car_model")),
+                            "driver_name": untrusted(car.get("driver_name"),
+                                                     32),
+                            "car_model": untrusted(car.get("car_model"), 64),
                             "best_lap_ms": _opt_int(car.get("best_lap_ms"),
                                                     0, MAX_LAP_MS),
                             "last_lap_ms": _opt_int(car.get("last_lap_ms"),

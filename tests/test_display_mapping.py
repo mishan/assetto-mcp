@@ -159,7 +159,7 @@ def test_a_click_index_is_reported_as_unknown_not_guessed_at():
                                    "show_clicks_mode": 2})
     assert got["source"] == "unknown", got
     assert got["shown"] is None, "it must not state a displayed value"
-    assert "record_display_value" in got["how_to_fix"], got
+    assert "record_setup_display" in got["how_to_fix"], got
 
 
 def test_the_games_multiplier_is_used_but_labeled_as_the_games():
@@ -311,7 +311,7 @@ def test_the_range_shortcut_pins_a_mapping_in_one_exchange():
     """
     srv = _server()
     _car_with_spinners(srv._conn, car="range_car")
-    out = _call(srv.record_display_range, car="range_car",
+    out = _call(srv.record_setup_display, car="range_car",
                 field="TOE_OUT_LF", displayed_at_min=0.4,
                 displayed_at_max=-0.4)
     assert out["anchored_to"] == {"stored_min": -40.0, "stored_max": 40.0}
@@ -325,7 +325,7 @@ def test_the_live_value_supplies_the_stored_side():
     # already said what is stored.
     srv = _server()
     sid = _car_with_spinners(srv._conn, car="live_car")
-    out = _call(srv.record_display_value, car="live_car", session_id=sid,
+    out = _call(srv.record_setup_display, car="live_car", session_id=sid,
                 field="TOE_OUT_LF", displayed=-0.2)
     assert out["recorded"]["stored"] == -20.0, out
     # One spinner position: the zero is measured, the scale is still the
@@ -337,7 +337,7 @@ def test_the_live_value_supplies_the_stored_side():
 def test_a_field_with_no_live_value_says_so_instead_of_guessing_zero():
     srv = _server()
     _car_with_spinners(srv._conn, car="nolive_car")
-    out = _call(srv.record_display_value, car="nolive_car",
+    out = _call(srv.record_setup_display, car="nolive_car",
                 field="NOT_ON_THE_CAR", displayed=1.0)
     assert "error" in out and "cannot be inferred" in out["error"], out
 
@@ -347,9 +347,9 @@ def test_setup_ranges_names_the_entries_it_cannot_explain():
     _car_with_spinners(srv._conn, car="unknown_car")
     out = _call(srv.setup_ranges, car="unknown_car")
     assert out["display_unknown"] == ["ROD_LENGTH_LF"], out
-    assert "record_display_value" in out["display_note"], out
+    assert "record_setup_display" in out["display_note"], out
 
-    _call(srv.record_display_range, car="unknown_car", field="ROD_LENGTH_LF",
+    _call(srv.record_setup_display, car="unknown_car", field="ROD_LENGTH_LF",
           displayed_at_min=0.0, displayed_at_max=0.9)
     after = _call(srv.setup_ranges, car="unknown_car")
     assert "display_unknown" not in after, after
@@ -360,7 +360,7 @@ def test_setup_ranges_names_the_entries_it_cannot_explain():
 def test_write_setup_reports_the_observed_display_and_flags_the_unknown():
     srv = _server()
     _car_with_spinners(srv._conn, car="write_car")
-    _call(srv.record_display_range, car="write_car", field="TOE_OUT_LF",
+    _call(srv.record_setup_display, car="write_car", field="TOE_OUT_LF",
           displayed_at_min=0.4, displayed_at_max=-0.4)
 
     out = _call(srv.write_setup, car="write_car", track="mugello",
@@ -372,7 +372,7 @@ def test_write_setup_reports_the_observed_display_and_flags_the_unknown():
     assert shown["TOE_OUT_LF"]["value"] == 0.2, shown
     assert shown["ROD_LENGTH_LF"]["source"] == "unknown", shown
     assert out["display_unknown"] == ["ROD_LENGTH_LF"], out
-    assert "record_display_value" in out["display_note"], out
+    assert "record_setup_display" in out["display_note"], out
     # The stored values are untouched by any of this -- the file has to
     # hold what the game reads.
     assert out["written"]["TOE_OUT_LF"] == -20
@@ -382,7 +382,7 @@ def test_write_setup_reports_the_observed_display_and_flags_the_unknown():
 def test_a_note_reaches_the_write_report():
     srv = _server()
     sid = _car_with_spinners(srv._conn, car="note_car")
-    _call(srv.record_display_value, car="note_car", session_id=sid,
+    _call(srv.record_setup_display, car="note_car", session_id=sid,
           field="TOE_OUT_LF", displayed=-0.2,
           note="front axle reads negated")
     out = _call(srv.write_setup, car="note_car", track="mugello", name="v1",
@@ -394,7 +394,7 @@ def test_a_note_reaches_the_write_report():
 def test_recording_against_a_field_with_no_range_is_refused_not_invented():
     srv = _server()
     _car_with_spinners(srv._conn, car="norange_car")
-    out = _call(srv.record_display_range, car="norange_car",
+    out = _call(srv.record_setup_display, car="norange_car",
                 field="NOT_A_FIELD", displayed_at_min=0, displayed_at_max=1)
     assert "error" in out and "nothing to anchor" in out["error"], out
 
@@ -409,14 +409,14 @@ def test_one_reading_on_a_click_index_entry_admits_it_fitted_nothing():
     """
     srv = _server()
     sid = _car_with_spinners(srv._conn, car="clicks_car")
-    out = _call(srv.record_display_value, car="clicks_car", session_id=sid,
+    out = _call(srv.record_setup_display, car="clicks_car", session_id=sid,
                 field="ROD_LENGTH_LF", stored=20, displayed=0.5)
     assert out["ok"] is False, out
     assert "not enough" in out["still_unknown"], out
-    assert "record_display_range" in out["still_unknown"], out
+    assert "displayed_at_min" in out["still_unknown"], out
     assert out["display"]["source"] == "unknown", out
     # The reading is kept, though -- a second one completes it.
-    second = _call(srv.record_display_value, car="clicks_car", session_id=sid,
+    second = _call(srv.record_setup_display, car="clicks_car", session_id=sid,
                    field="ROD_LENGTH_LF", stored=0, displayed=0.0)
     assert second["ok"] is True, second
     assert second["display"]["source"] == "observed", second
@@ -432,7 +432,7 @@ def test_a_reading_is_never_filed_against_the_wrong_car():
     """
     srv = _server()
     sid = _car_with_spinners(srv._conn, car="session_car")
-    out = _call(srv.record_display_value, car="other_car", session_id=sid,
+    out = _call(srv.record_setup_display, car="other_car", session_id=sid,
                 field="TOE_OUT_LF", displayed=0.33)
     assert "error" in out, out
     assert "session_car" in out["error"], out
@@ -445,7 +445,7 @@ def test_a_note_can_be_left_without_inventing_a_reading():
     # not need one made up to carry it.
     srv = _server()
     _car_with_spinners(srv._conn, car="note_only_car")
-    out = _call(srv.record_display_note, car="note_only_car",
+    out = _call(srv.record_setup_display, car="note_only_car",
                 field="TRACTION_CONTROL",
                 note="1 = MOST intervention, 11 = least")
     assert out["ok"] is True and out["display"]["note"].startswith("1 = MOST")
@@ -462,7 +462,7 @@ def test_an_entry_known_only_from_a_note_is_not_reported_as_shown_as_stored():
     """
     srv = _server()
     _car_with_spinners(srv._conn, car="ghost_car")
-    _call(srv.record_display_note, car="ghost_car", field="GHOST",
+    _call(srv.record_setup_display, car="ghost_car", field="GHOST",
           note="only a note exists for this")
     conv = db.setup_display(srv._conn, "ghost_car")["GHOST"]
     assert conv["from_game"] is False, conv
@@ -476,7 +476,7 @@ def test_setup_ranges_lists_entries_known_only_from_a_reading():
     # rows would throw them away again.
     srv = _server()
     _car_with_spinners(srv._conn, car="extra_car")
-    _call(srv.record_display_note, car="extra_car", field="GHOST",
+    _call(srv.record_setup_display, car="extra_car", field="GHOST",
           note="recorded by hand")
     out = _call(srv.setup_ranges, car="extra_car")
     names = {r["name"] for r in out["ranges"]}
@@ -496,7 +496,7 @@ def test_every_row_in_setup_ranges_has_the_same_shape():
     """
     srv = _server()
     _car_with_spinners(srv._conn, car="shape_car")
-    _call(srv.record_display_note, car="shape_car", field="GHOST",
+    _call(srv.record_setup_display, car="shape_car", field="GHOST",
           note="recorded by hand")
     rows = _call(srv.setup_ranges, car="shape_car")["ranges"]
     assert len(rows) >= 2, rows
@@ -534,10 +534,10 @@ def test_the_display_docstring_names_the_keys_it_returns():
 def test_both_ends_reading_the_same_number_is_refused():
     srv = _server()
     _car_with_spinners(srv._conn, car="flat_car")
-    out = _call(srv.record_display_range, car="flat_car", field="TOE_OUT_LF",
+    out = _call(srv.record_setup_display, car="flat_car", field="TOE_OUT_LF",
                 displayed_at_min=0.5, displayed_at_max=0.5)
     assert "error" in out and "cannot define a scale" in out["error"], out
-    assert "record_display_note" in out["what_to_do"], out
+    assert "record_setup_display" in out["do_this"], out
     assert db.display_observations(srv._conn, "flat_car") == {}, out
 
 
@@ -545,14 +545,14 @@ def test_forgetting_an_entry_clears_the_note_too():
     # "Forget that entry and start again" has to leave nothing behind.
     srv = _server()
     sid = _car_with_spinners(srv._conn, car="forget_car")
-    _call(srv.record_display_value, car="forget_car", session_id=sid,
+    _call(srv.record_setup_display, car="forget_car", session_id=sid,
           field="TOE_OUT_LF", displayed=-0.2, note="reads negated")
     out = _call(srv.forget_display_value, car="forget_car",
                 field="TOE_OUT_LF")
     assert out["observations_removed"] == 1 and out["note_removed"], out
     assert "note" not in out["display"], out
 
-    _call(srv.record_display_value, car="forget_car", session_id=sid,
+    _call(srv.record_setup_display, car="forget_car", session_id=sid,
           field="TOE_OUT_LF", displayed=-0.2, note="reads negated")
     kept = _call(srv.forget_display_value, car="forget_car",
                  field="TOE_OUT_LF", keep_note=True)
@@ -565,7 +565,7 @@ def test_recording_an_unknown_field_name_warns_rather_than_vanishing():
     # surfaces against the car's actual setup.
     srv = _server()
     _car_with_spinners(srv._conn, car="typo_car")
-    out = _call(srv.record_display_value, car="typo_car",
+    out = _call(srv.record_setup_display, car="typo_car",
                 field="TOE_OUT_LFF", stored=10, displayed=0.1)
     assert "warning" in out and "never reported" in out["warning"], out
 

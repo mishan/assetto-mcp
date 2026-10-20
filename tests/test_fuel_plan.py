@@ -602,6 +602,24 @@ def test_live_snapshot_fuel_uses_the_driven_sessions_consumption():
     print(f"  {race['verdict']}, {race['margin_laps']} laps spare")
 
 
+_NO_BASIS_PROBE = """
+import json
+from assetto_mcp import db, server
+
+conn = server._conn
+server._live_fuel_facts = lambda: ({}, "AC is not running")
+sid = db.create_session(conn, car="bare", track="mugello", track_config="",
+                        tyre_compound="S", air_temp=25.0, road_temp=30.0)
+print(server.fuel_plan(20, session_id=sid))
+"""
+
+
+def test_a_plan_with_no_burn_and_no_tank_gives_both_fixes():
+    out = _run_probe(_NO_BASIS_PROBE)
+    assert "liters_per_lap" in out["do_this"], out
+    assert "Tank capacity" in out["do_this"], out
+
+
 def test_fuel_to_finish_counts_only_the_part_of_this_lap_still_to_drive():
     cases = [
         # fuel, laps remaining, lap done, l/lap -> laps to go, margin, verdict
@@ -620,6 +638,74 @@ def test_fuel_to_finish_counts_only_the_part_of_this_lap_still_to_drive():
                 (10.0, None, 0.5, 4.0)):
         assert analysis.fuel_to_finish(*bad) is None, bad
     print("  margins from the part of the lap still to drive")
+
+
+def test_each_lap_burn_is_measured_from_line_to_line():
+    """The first lap starts wherever recording did, so it has no burn."""
+    from support import FakeSim, complete_lap, run_collector, temp_db, tick
+
+    def lap(fuel_at_the_line, ms):
+        def step(sim, col):
+            tick(sim, col)
+            sim.physics.fuel = fuel_at_the_line
+            complete_lap(sim, col, ms)
+        return step
+
+    sim = FakeSim()
+    sim.physics.fuel = 40.0
+    with temp_db() as path:
+        run_collector([lap(38.2, 114900), lap(35.7, 114000),
+                       lap(33.3, 114500)], path, sim)
+        conn = db.connect(path)
+        burns = [r["fuel_used_l"] for r in db.list_laps(conn, limit=None)]
+        conn.close()
+    assert burns[::-1] == [None, 2.5, 2.4], burns
+    print(f"  burns {burns[::-1]}")
+
+
+_MEASURED_FUEL_PROBE = """
+import json
+from assetto_mcp import db, server
+
+conn = server._conn
+server._live_fuel_facts = lambda: ({}, "AC is not running")
+sid = db.create_session(conn, car="nsx", track="mugello", track_config="",
+                        tyre_compound="S", air_temp=25.0, road_temp=30.0)
+conn.execute("UPDATE sessions SET km_per_liter = 2.5, track_length_m = 5000,"
+             " fuel_rate = 1.0 WHERE id = ?", (sid,))
+conn.commit()
+server._active_session = lambda explicit=None: sid
+tool = getattr(server.fuel_plan, "fn", server.fuel_plan)
+snap = {"car": "nsx", "track": "mugello", "track_config": "",
+        "fuel_l": 9.0, "laps_remaining": 3, "lap_done": 0.5}
+
+
+def bases(**kw):
+    plan = json.loads(tool(race_laps=10, session_id=sid, **kw))
+    return [plan["liters_per_lap"], plan["liters_per_lap_source"].split(":")[0],
+            server._fuel_to_finish(snap)["basis"]]
+
+
+out = {}
+# An out-lap's burn and a lap nothing measured are not a lap's burn.
+for n, (used, out_lap) in enumerate(((2.6, False), (2.4, False),
+                                     (9.0, True), (None, False)), 1):
+    db.store_lap(conn, sid, n, 114000, True, [], out_lap=out_lap,
+                 fuel_used_l=used)
+out["two_measured"] = bases()
+db.store_lap(conn, sid, 5, 114000, True, [], fuel_used_l=2.5)
+out["three_measured"] = bases()
+out["given"] = bases(liters_per_lap=3.1)
+print(json.dumps(out))
+"""
+
+
+def test_the_burn_is_given_then_measured_then_nominal():
+    got = _run_probe(_MEASURED_FUEL_PROBE)
+    assert got == {"two_measured": [2.0, "nominal", "nominal"],
+                   "three_measured": [2.5, "measured", "measured"],
+                   "given": [3.1, "given", "measured"]}, got
+    print(f"  {got}")
 
 
 if __name__ == "__main__":

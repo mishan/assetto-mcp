@@ -13,6 +13,8 @@ dependencies = ["mcp>=1.0.0"]
 # the gaming PC. lupa runs the in-game app against a stubbed CSP API and
 # luaparser checks it; without them those tests skip.
 test = ["pytest>=7", "lupa>=2.0", "luaparser>=3.2"]
+# tests/eval/tool_choice.py against the Anthropic API.
+eval = ["anthropic"]
 
 [project.scripts]
 assetto-mcp = "assetto_mcp.supervisor:main"

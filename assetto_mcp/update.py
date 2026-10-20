@@ -27,6 +27,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -46,6 +47,15 @@ HTTP_TIMEOUT = 5.0
 FETCH_TIMEOUT = 120
 PIP_TIMEOUT = 900
 MAX_COMMITS = 25
+
+# Server instances share the checkout, so one apply at a time across all of
+# them. Every step of an apply has its own timeout, and a lock older than
+# all of them together belongs to an apply that died without removing it.
+LOCK_FILE = "update_apply.lock"
+LOCK_STALE_SECONDS = FETCH_TIMEOUT + PIP_TIMEOUT + 600
+# How long apply_update waits for the result before answering "in
+# progress": inside the minute an MCP client commonly allows a call.
+APPLY_WAIT = 25.0
 
 LUA_APP = Path("lua_app") / "assetto_mcp"
 INSTALLERS = ("install-windows.bat", "windows/install-windows.ps1",
@@ -277,13 +287,14 @@ def _compare(local: str) -> dict:
     return out
 
 
-def _cache_path(data_dir: Path | None) -> Path | None:
+def _cache_path(data_dir: Path | None,
+                name: str = CACHE_FILE) -> Path | None:
     if data_dir is None:
         try:
             data_dir = config.data_dir()
         except OSError:
             return None
-    return Path(data_dir) / CACHE_FILE
+    return Path(data_dir) / name
 
 
 def _read_cache(path: Path | None) -> dict | None:
@@ -305,6 +316,19 @@ def _write_cache(path: Path | None, local: str, result: dict) -> None:
                         encoding="utf-8")
     except OSError:
         pass
+
+
+def cached_status(local: str | None,
+                  data_dir: Path | None = None) -> str | None:
+    """The last check's `status` for commit `local`, without asking GitHub.
+
+    None when that commit was never checked.
+    """
+    cached = _read_cache(_cache_path(data_dir))
+    if (not local or not cached or cached.get("repo") != _repo()
+            or cached.get("local") != local):
+        return None
+    return (cached.get("result") or {}).get("status")
 
 
 def _when(epoch: float | None) -> str | None:
@@ -483,6 +507,79 @@ def _refuse(reason: str, detail: str, **extra) -> dict:
     return {"updated": False, "refused": reason, "detail": detail, **extra}
 
 
+def _pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        # Not os.kill(pid, 0): on Windows that terminates the process.
+        import ctypes
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = k32.OpenProcess(0x1000, False, pid)  # query limited info
+        if not handle:
+            return ctypes.get_last_error() == 5  # access denied: it exists
+        code = ctypes.c_ulong()
+        ok = k32.GetExitCodeProcess(handle, ctypes.byref(code))
+        k32.CloseHandle(handle)
+        return not ok or code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def _take_lock(path: Path | None, to_commit: str) -> dict | None:
+    """Take the apply lock: None when taken, else the holder's record.
+
+    A lock whose process has gone, or that has outlived every timeout, is
+    taken over, so a crashed apply cannot block updates for good.
+    """
+    if path is None:
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    held: dict = {}
+    for _ in range(2):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                # The file's own age stands in while the holder has created
+                # it and not yet written its record.
+                held = {"started_at": path.stat().st_mtime,
+                        **(_read_cache(path) or {})}
+            except OSError:
+                continue
+            pid = held.get("pid")
+            if (time.time() - held["started_at"] < LOCK_STALE_SECONDS
+                    and (pid is None or _pid_alive(pid))):
+                return held
+            try:
+                path.unlink()
+            except OSError:
+                pass
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"pid": os.getpid(), "started_at": time.time(),
+                       "to_commit": to_commit}, f)
+        return None
+    return held
+
+
+def apply_running(data_dir: Path | None = None) -> dict | None:
+    """The lock record of an apply running in any instance, or None."""
+    path = _cache_path(data_dir, LOCK_FILE)
+    try:
+        held = {"started_at": path.stat().st_mtime,
+                **(_read_cache(path) or {})}
+    except (AttributeError, OSError):
+        return None
+    pid = held.get("pid")
+    if (time.time() - held["started_at"] >= LOCK_STALE_SECONDS
+            or (pid is not None and not _pid_alive(pid))):
+        return None
+    return held
+
+
 def apply(to_commit: str, root: Path | None = None,
           data_dir: Path | None = None, ac: Path | None = None,
           pip=_pip_install, is_game_running=game_running) -> dict:
@@ -494,14 +591,124 @@ def apply(to_commit: str, root: Path | None = None,
     is no longer the one that would be applied.
     """
     root = root or repo_root()
+    to_commit = to_commit.strip()
+    lock = _cache_path(data_dir, LOCK_FILE)
     try:
-        return _apply(to_commit.strip(), root, data_dir, ac, pip,
-                      is_game_running)
+        held = _take_lock(lock, to_commit)
+    except OSError:
+        held, lock = None, None
+    if held is not None:
+        return _refuse(
+            "in_progress", "another apply is running" + (
+                f" (to {held['to_commit'][:7]}, started "
+                f"{_when(held['started_at'])})" if held.get("to_commit")
+                else ""),
+            do_this="wait a few minutes, then call check_for_updates")
+    try:
+        return _apply(to_commit, root, data_dir, ac, pip, is_game_running)
     except subprocess.TimeoutExpired as e:
         return _refuse("timeout", f"{' '.join(map(str, e.cmd[:4]))} took "
                                   f"longer than {e.timeout:.0f}s")
     except Exception as e:  # noqa: BLE001
         return _refuse("failed", f"{type(e).__name__}: {e}")
+    finally:
+        if lock is not None:
+            try:
+                lock.unlink()
+            except OSError:
+                pass
+
+
+# How long a finished apply's result waits for the poll that collects it.
+UNCOLLECTED_RESULT_SECONDS = 600
+
+_job_lock = threading.Lock()
+_job: dict | None = None
+
+
+def _same_commit(a: str, b: str) -> bool:
+    a, b = a.lower(), b.lower()
+    return a.startswith(b) or b.startswith(a)
+
+
+def apply_in_background(to_commit: str, live_session: int | None = None,
+                        wait: float = APPLY_WAIT, **kw) -> dict:
+    """apply() on a thread, answering within `wait` seconds.
+
+    A reinstall can take many minutes, far past what a client waits for a
+    reply, and a client that gave up would retry into a second apply. One
+    still running answers `in_progress`; calling again with the same commit
+    waits again, and collects the result once it is done. `live_session`,
+    the session the driver is on track in, refuses starting one.
+    """
+    global _job
+    to_commit = to_commit.strip()
+    if not to_commit:
+        return _refuse("no_commit", "to_commit is empty",
+                       do_this="pass `latest` from check_for_updates")
+    with _job_lock:
+        job = _job
+        if (job and not job["thread"].is_alive()
+                and time.time() - job.get("finished_at", 0)
+                > UNCOLLECTED_RESULT_SECONDS):
+            # Nobody came back for it; a call this much later is a new
+            # attempt, not the poll that result was waiting for.
+            job = _job = None
+        if job and not _same_commit(job["to_commit"], to_commit):
+            if job["thread"].is_alive():
+                return _refuse(
+                    "in_progress",
+                    f"an apply to {job['to_commit'][:7]} is running",
+                    do_this="wait a few minutes, then call "
+                            "check_for_updates")
+            job = None
+        if job is None:
+            if live_session is not None:
+                return _refuse(
+                    "recording",
+                    f"session {live_session} is live: the driver is on "
+                    "track, and an update is never applied mid-session",
+                    session_id=live_session,
+                    do_this="wait until the car is back in the menus or "
+                            "the session has ended, then call again")
+            job = _job = _start_job(to_commit, kw)
+    job["thread"].join(wait)
+    if job["thread"].is_alive():
+        return {"in_progress": True, "to_commit": to_commit,
+                "stage": job["stage"],
+                "running_for_s": round(time.time() - job["started_at"]),
+                "do_this": "call apply_update again with the same "
+                           "to_commit; it waits for the result again"}
+    with _job_lock:
+        if _job is job:
+            _job = None
+    return job["result"]
+
+
+def job_started(to_commit: str) -> bool:
+    """Whether a call now would only wait for or collect this apply."""
+    with _job_lock:
+        return bool(_job and _same_commit(_job["to_commit"],
+                                          to_commit.strip()))
+
+
+def _start_job(to_commit: str, kw: dict) -> dict:
+    job = {"to_commit": to_commit, "started_at": time.time(),
+           "stage": "fetching and fast-forwarding", "result": None}
+    pip = kw.pop("pip", _pip_install)
+
+    def staged_pip(root):
+        job["stage"] = "reinstalling the package; pip can take minutes"
+        return pip(root)
+
+    def run():
+        job["result"] = apply(to_commit, pip=staged_pip, **kw)
+        job["finished_at"] = time.time()
+
+    job["thread"] = threading.Thread(target=run, name="apply-update",
+                                     daemon=True)
+    job["thread"].start()
+    return job
 
 
 def _apply(to_commit, root, data_dir, ac, pip, is_game_running) -> dict:

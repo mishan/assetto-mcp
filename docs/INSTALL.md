@@ -71,6 +71,14 @@ Client config formats do drift, so if yours isn't listed or the path has moved,
 check its own MCP docs — you're looking for wherever it takes a `command` and
 `args` for a local server.
 
+Only Claude Code loads the race-engineer skill. Any client can get its
+routine from the server as prompts instead — `start_session`, `debrief`,
+`ab_test` and `race_prep`, a slash command in most clients — and the skill
+itself as `assetto://guide/...` resources. Both are read from the clone's
+`.claude/skills` folder, so an install without the clone has neither. For
+LM Studio, or a client that drops tools past a limit, set
+`ASSETTO_MCP_TOOLSET=core` in the server's `env` block ([below](#environment-overrides)).
+
 ### Claude Code
 
 ```
@@ -111,7 +119,8 @@ assetto_mcp.server` starts a small supervisor that runs the real server as a
 child process and keeps the client's connection open across restarts, so after
 a code change the assistant can call `restart_server` instead of you quitting
 the client. Clients that act on `notifications/tools/list_changed` also pick
-up new tools without reconnecting.
+up new tools without reconnecting. The server's instructions and version are
+the ones the client saw when it connected, until it reconnects.
 
 ## 3. Copy the in-game app
 
@@ -143,6 +152,11 @@ given the commit that check named, does the following:
    file by file where they differ — only if the app is installed there, and
    not while `acs.exe` is running;
 5. leaves the running server on the old code until `restart_server`.
+
+It refuses while the driver is in a live session, and while another apply is
+running in any server instance (`update_apply.lock` in the data directory; a
+lock left by a crashed apply is taken over). An apply still running after 25
+seconds answers `in_progress`, and calling again collects the result.
 
 The same from a terminal:
 
@@ -249,6 +263,7 @@ Config**, which always opens the file the running app actually reads.
 | `ASSETTO_MCP_UPDATE_REPO` | `mishan/assetto-mcp` | The GitHub repository updates come from |
 | `ASSETTO_MCP_UPDATE_API` | `https://api.github.com` | GitHub API base, for the update check |
 | `ASSETTO_MCP_UPDATE_GIT_URL` | `https://github.com/<repo>.git` | Where `apply_update` fetches from |
+| `ASSETTO_MCP_TOOLSET` | `full` | `core` serves only the tools of the session routine (`CORE_TOOLS` in `server.py`), for a small local model or a client that caps how many tools it takes |
 | `ASSETTO_MCP_MAX_DB_BYTES` | `2147483648` (2 GB) | Size budget for the telemetry database. Over it, the oldest sessions' traces are thinned; laps are never deleted. `0` keeps every sample forever. |
 
 Set them in the `env` block of your client's server entry, if it has one, or in

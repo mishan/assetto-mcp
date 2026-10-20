@@ -61,6 +61,7 @@ Instead a lap records facts, and the verdicts are derived:
 | `max_tyres_out`, `excursions`, `off_track_ms` | the track-limits evidence |
 | `invalid_source` | `inferred`, or `game` if it came from the game itself |
 | `sample_stride` | 1 normally; higher if the trace has been thinned |
+| `fuel_used_l` | fuel at the starting line minus at the finish; null if the lap did not start at the line |
 
 Two questions are kept apart, because conflating them loses data:
 
@@ -169,15 +170,15 @@ of the earliest one that took at least a quarter of what the heaviest did.
 Taking the last run instead would make any touch of the pedal before the apex
 the brake point. The walk never crosses the start/finish line.
 
-The sign says which corners turn the same way — it is deliberately *not*
-labeled left or right, because AC does not document which sign is which, and a
-consistent sign is more useful than a label that is right half the time.
+The sign says which way the corner turns: lateral g is positive in a
+left-hander, checked against recorded laps, so `turn_sign` +1 is
+`direction` "left" and -1 is "right".
 
 **`corner_detection`** appears alongside every corner list and says which
 lateral-g bar produced it. It is not the same bar in every tool: `lap_summary`
 uses the one shared across its session's laps — the same bar its turn numbers
-were built against — while `compare_laps` and `compare_runs` use one shared
-across every lap being compared. Either way corner membership doesn't depend
+were built against — while `compare_lap_corners` and `compare_runs` use one
+shared across every lap being compared. Either way corner membership doesn't depend
 on how hard an individual lap was driven, but the two bars are different
 numbers, so the same lap can carry a different number of corners in the two
 payloads. This is how you tell why. A lap handed to `analysis.lap_summary`
@@ -208,8 +209,8 @@ its slowest piece. The other piece still appears on that lap with
 
 `track_corners` is the table: where each turn starts, apexes and ends, where
 it is braked for, which way it turns and how many laps cornered there.
-`compare_runs` and `compare_laps` label their corners too, from the laps they
-were given rather than from the session — each of those payloads carries its
+`compare_runs` and `compare_lap_corners` label their corners too, from the
+laps they were given rather than from the session — each of those payloads carries its
 own `turns` table so the labels in it can be placed without a second call.
 
 Three things the numbering does not claim.
@@ -332,7 +333,7 @@ averaging it away.
 - **Orphaned complaint tags** — tags pressed while nothing is recording are
   still saved, but with no session attached. They'd otherwise be guessed onto
   whatever session ran last, which could be a different circuit.
-  `get_driver_notes` says how many are orphaned; pass `all_sessions=True` to
+  `list_driver_tags` says how many are orphaned; pass `all_sessions=True` to
   see them.
 
 ---
@@ -535,8 +536,8 @@ The Lua app talks to the server over HTTP on `127.0.0.1:9666` (change with
 binds localhost only.
 
 Only one server instance can hold the port, which is the same instance that
-holds the recording claim — see [Recording](#recording). `bridge_status` says
-whether this instance is the one listening.
+holds the recording claim — see [Recording](#recording). `session_check`
+(its `app`) says whether this instance is the one listening.
 
 ---
 
@@ -556,6 +557,7 @@ assetto_mcp/
   retention.py  database size budget, trace thinning
   bridge.py     localhost HTTP bridge for the in-game app
   config.py     data dir + environment, including pre-rename fallbacks
+  text.py       outside text (rival names, mod files) made safe to quote
   server.py     MCP tools
   supervisor.py keeps the client connection open across restarts
   update.py     update check and fast-forward from GitHub

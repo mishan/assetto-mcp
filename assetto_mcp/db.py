@@ -18,7 +18,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 # How many wheels have to be off the valid surface before a lap counts as
 # having exceeded track limits. Four is the count AC itself treats as
@@ -149,7 +149,13 @@ CREATE TABLE IF NOT EXISTS laps (
     -- Above 1 means this lap's samples were decimated to reclaim space,
     -- keeping every Nth; 1 is untouched. Kept on the lap so a coarse trace
     -- says so rather than reading as a lap driven at 5Hz.
-    sample_stride INTEGER NOT NULL DEFAULT 1
+    sample_stride INTEGER NOT NULL DEFAULT 1,
+
+    -- Fuel on board at the line the lap started from minus at the line it
+    -- finished on: what the car burns, which no nominal figure knows
+    -- (traffic, lift-and-coast, the league's multiplier). NULL when the
+    -- lap did not start at the line, so nothing measured its start.
+    fuel_used_l REAL
 );
 
 CREATE TABLE IF NOT EXISTS samples (
@@ -653,6 +659,13 @@ def _migrate(conn) -> list[str]:
     # v16 adds experiments, a new table -- CREATE TABLE IF NOT EXISTS in
     # SCHEMA covers it. Earlier comparisons were never stored, so there is
     # nothing to backfill.
+
+    if version < 17:
+        # v17: laps.fuel_used_l. Nothing to backfill: no older lap recorded
+        # the fuel at either line.
+        if _add_column(conn, "laps", "fuel_used_l", "REAL"):
+            log.append("laps.fuel_used_l added; laps recorded before this "
+                       "have no measured fuel burn")
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
@@ -1583,7 +1596,8 @@ def store_lap(conn, session_id: int, lap_number: int, lap_time_ms: int,
               valid: bool, samples: list[tuple],
               setup_name: str | None = None, complete: bool = True,
               out_lap: bool = False, pitted: bool = False,
-              outlier: bool = False) -> int:
+              outlier: bool = False,
+              fuel_used_l: float | None = None) -> int:
     """Store a lap and its samples, whether or not it reached the line.
 
     Nothing is refused. `valid` is accepted for compatibility and ignored --
@@ -1613,7 +1627,8 @@ def store_lap(conn, session_id: int, lap_number: int, lap_time_ms: int,
             setup_name = stamped
         return _store_lap(conn, session_id, lap_number, lap_time_ms,
                           samples, setup_name, complete,
-                          out_lap, pitted, outlier, fp, changed)
+                          out_lap, pitted, outlier, fp, changed,
+                          fuel_used_l)
     except Exception:
         # A lap and its samples are one write. The collector catches this
         # and keeps going, so an uncommitted lap row left behind would be
@@ -1668,19 +1683,19 @@ def name_for_measured_setup(conn, session_id: int, fp: str) -> str:
 
 def _store_lap(conn, session_id, lap_number, lap_time_ms, samples,
                setup_name, complete, out_lap, pitted, outlier,
-               setup_fp="", setup_changed=False):
+               setup_fp="", setup_changed=False, fuel_used_l=None):
     ex = score_excursions(excursion_pairs(samples))
     cur = conn.execute(
         "INSERT INTO laps (session_id, lap_number, lap_time_ms, valid,"
         " completed_at, setup_name, complete, out_lap, pitted, outlier,"
         " invalid, invalid_source, max_tyres_out, excursions, off_track_ms,"
-        " setup_fp, setup_changed)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " setup_fp, setup_changed, fuel_used_l)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (session_id, lap_number, lap_time_ms, int(not ex["invalid"]),
          time.time(), setup_name or "", int(complete), int(out_lap),
          int(pitted), int(outlier), int(ex["invalid"]), "inferred",
          ex["max_tyres_out"], ex["excursions"], ex["off_track_ms"],
-         setup_fp or "", int(bool(setup_changed))),
+         setup_fp or "", int(bool(setup_changed)), fuel_used_l),
     )
     lap_id = cur.lastrowid
     placeholders = ",".join("?" * len(SAMPLE_COLUMNS))
@@ -1781,6 +1796,28 @@ def lap_endpoints(conn, lap_id: int,
 def count_laps(conn, session_id: int) -> int:
     return conn.execute("SELECT COUNT(*) c FROM laps WHERE session_id = ?",
                         (session_id,)).fetchone()["c"]
+
+
+# lap_usability() in SQL, for queries that rank or average lap times.
+USABLE_LAP_SQL = ("complete = 1 AND out_lap = 0 AND pitted = 0"
+                  " AND lap_time_ms > 0")
+
+
+def best_clean_lap_id(conn, session_id: int) -> int | None:
+    """The session's quickest lap that is a lap time and stayed on track."""
+    r = conn.execute(
+        f"SELECT id FROM laps WHERE session_id = ? AND {USABLE_LAP_SQL}"
+        " AND invalid = 0 ORDER BY lap_time_ms, id LIMIT 1",
+        (session_id,)).fetchone()
+    return r["id"] if r else None
+
+
+def measured_fuel_burns(conn, session_id: int) -> list[float]:
+    """Fuel burned on each usable lap of a session that measured it."""
+    return [r["fuel_used_l"] for r in conn.execute(
+        f"SELECT fuel_used_l FROM laps WHERE session_id = ?"
+        f" AND {USABLE_LAP_SQL} AND fuel_used_l IS NOT NULL ORDER BY id",
+        (session_id,))]
 
 
 def unlabeled_lap_ids(conn, session_id: int) -> list[int]:

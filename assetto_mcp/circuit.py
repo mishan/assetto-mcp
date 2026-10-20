@@ -31,6 +31,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .config import env
+from .text import untrusted
 
 # How far outside a section an apex may fall and still take its name, as a
 # fraction of the lap: about 25 m on a 4 km circuit. Section boundaries are
@@ -189,7 +190,7 @@ def read_sections(path: Path) -> list[dict]:
             lo, hi = float(sec["IN"]), float(sec["OUT"])
         except (KeyError, ValueError):
             continue
-        text = (sec.get("TEXT") or "").strip()
+        text = untrusted(sec.get("TEXT"), 40)
         if text and 0.0 <= lo <= 1.0 and 0.0 <= hi <= 1.0:
             out.append({"name": text, "in_pos": lo, "out_pos": hi})
     return sorted(out, key=lambda s: s["in_pos"])
@@ -261,8 +262,8 @@ def _section_for(t: dict, sections: list[dict]) -> int | None:
     of it, or that holds at least half the approach, so a section the
     approach merely clips does not. Among those, the one holding the apex
     wins, then the one holding the most of the approach. A turn with no
-    approach -- the apex-only lists compare_laps and compare_runs carry --
-    falls back to the section its apex is in or nearest to, within
+    approach -- the apex-only lists compare_lap_corners and compare_runs
+    carry -- falls back to the section its apex is in or nearest to, within
     NAME_SLACK.
     """
     apex = t.get("apex_pos")

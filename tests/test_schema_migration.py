@@ -438,6 +438,34 @@ def test_v15_leaves_old_laps_unmeasured_rather_than_guessing():
             conn.close()
 
 
+def test_v17_gives_old_laps_no_burn_rather_than_none_burned():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "v16.db"
+        # The v16 laps table, built rather than altered: DROP COLUMN fails
+        # on the SQLite some runners ship when the table carries comments.
+        start = db.SCHEMA.index("sample_stride INTEGER NOT NULL DEFAULT 1,")
+        end = db.SCHEMA.index("fuel_used_l REAL", start) + len(
+            "fuel_used_l REAL")
+        v16 = (db.SCHEMA[:start] + "sample_stride INTEGER NOT NULL DEFAULT 1"
+               + db.SCHEMA[end:])
+        raw = sqlite3.connect(path)
+        raw.executescript(v16)
+        raw.execute("INSERT INTO sessions (started_at, car, track)"
+                    " VALUES (?, 'car', 'track')", (time.time(),))
+        raw.execute("INSERT INTO laps (session_id, lap_number, lap_time_ms,"
+                    " completed_at) VALUES (1, 1, 100000, ?)", (time.time(),))
+        raw.execute("PRAGMA user_version = 16")
+        raw.commit()
+        raw.close()
+        conn = db.connect(path)
+        try:
+            assert db.list_laps(conn, 1)[0]["fuel_used_l"] is None
+            assert db.measured_fuel_burns(conn, 1) == []
+            print("  v16 -> v17: old laps have no measured burn")
+        finally:
+            conn.close()
+
+
 def test_display_readings_survive_a_retention_pass():
     # They are keyed on the car, not the session, so pruning a session's
     # samples must not take the car's screen readings with it.

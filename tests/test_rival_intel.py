@@ -410,7 +410,7 @@ def test_compare_to_rival_times_every_stretch_of_the_lap():
     _store_rival(srv._conn, sid, 5, 125.0, 0.39, 3, server_ms=999_999)
     _set_turns(srv, sid, [TURN, OVER_THE_LINE], lap)
     out = json.loads(srv.compare_to_rival(car_index=5, lap_id=lap,
-                                          rival_lap_count=1,
+                                          rival_lap_number=2,
                                           session_id=sid))
     assert "error" not in out, out
     rows = out["time_by_turn"]

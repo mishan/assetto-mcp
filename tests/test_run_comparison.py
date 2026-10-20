@@ -945,11 +945,12 @@ def test_a_side_left_with_no_usable_laps_refuses():
 
 
 def test_lap_ids_survive_the_way_a_list_actually_arrives():
-    """Ids written by a model arrive wrapped and with trailing separators.
+    """Ids written by a model arrive wrapped, with trailing separators, or
+    separated by spaces alone.
 
-    A part holding only whitespace is skipped rather than handed to int(),
-    so a perfectly readable list is not refused for "a lap id" that is a
-    newline. Spaces inside a part still refuse: "1 2" is not lap 12.
+    A part holding only whitespace is skipped, so a perfectly readable list
+    is not refused for "a lap id" that is a newline, and "1 2" is two laps,
+    never lap 12.
     """
     srv = _server()
     sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
@@ -962,7 +963,10 @@ def test_lap_ids_survive_the_way_a_list_actually_arrives():
     for spelling in (f"{b0},\n{b1}",       # wrapped between the ids
                      f"{b0},{b1},",        # trailing separator
                      f"{b0},{b1},\n",      # trailing separator, then wrapped
-                     f"  {b0} , {b1}\n"):  # indented, and wrapped at the end
+                     f"  {b0} , {b1}\n",   # indented, and wrapped at the end
+                     f"{b0} {b1}",         # spaces only
+                     f"{b0};{b1}",
+                     f"{b0}-{b1}"):        # a run of consecutive ids
         got = json.loads(srv.compare_runs(spelling, cand))
         assert got == clean, (spelling, got.get("error"))
         print(f"  {spelling!r:22s} read as {b0},{b1}")
@@ -970,15 +974,42 @@ def test_lap_ids_survive_the_way_a_list_actually_arrives():
     # Whitespace alone is not a lap id list, and is answered as an empty
     # list rather than by blaming whichever character it tripped over.
     out = json.loads(srv.compare_runs(" \n ", cand))
-    assert out.get("error") == "need lap ids on both sides", out
+    assert out.get("error") == "need lap ids or a setup name on both sides", \
+        out
     print(" ", out["error"])
 
     # Genuinely unreadable input still refuses, and still quotes the part it
-    # could not read so the caller can see which one to fix. "12 13" must
-    # not be read as lap 1213.
-    for bad in (f"{b0};{b1}", "abc", f"{b0} {b1}"):
+    # could not read so the caller can see which one to fix.
+    for bad in ("abc", f"{b0}.5"):
         out = json.loads(srv.compare_runs(bad, cand))
-        assert out.get("error") == f"not a lap id: {bad!r}", (bad, out)
+        assert f'"{bad}"' in out.get("error", ""), (bad, out)
+        print(" ", out["error"])
+
+
+def test_a_side_can_be_named_by_its_setup_instead_of_its_laps():
+    srv = _server()
+    sid = make_session(srv._conn, track="mugello", car="rss_formula_rss_4")
+    base = [_store(srv, sid, n, 113400 + n) for n in (1, 2)]
+    cand = [_store(srv, sid, n, 112900 + n) for n in (3, 4)]
+    db.label_unattributed_laps(srv._conn, sid, "v1", base)
+    db.label_unattributed_laps(srv._conn, sid, "v2", cand)
+
+    by_ids = _run(srv, base, cand)
+    by_name = json.loads(srv.compare_runs(
+        baseline_setup="v1", candidate_setup="v2", session_id=sid))
+    assert by_name.pop("laps_by_setup") == {
+        "baseline": {"setup": "v1", "session_id": sid, "lap_ids": base},
+        "candidate": {"setup": "v2", "session_id": sid, "lap_ids": cand}}
+    assert by_name == by_ids, by_name.get("error")
+    mixed = json.loads(srv.compare_runs(
+        baseline_setup="v1", candidate_laps=cand, session_id=sid))
+    assert mixed["laps_by_setup"].keys() == {"baseline"}, mixed
+
+    for kw in ({"baseline_setup": "v9", "candidate_setup": "v2"},
+               {"baseline_setup": "v1", "baseline_laps": base,
+                "candidate_setup": "v2"}):
+        out = json.loads(srv.compare_runs(session_id=sid, **kw))
+        assert "error" in out, (kw, out)
         print(" ", out["error"])
 
 

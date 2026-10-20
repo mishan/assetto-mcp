@@ -97,7 +97,7 @@ def test_the_tools_take_a_number_or_a_list_through_mcp():
               for v in (87, [87, 88], "87-90")]
     calls += [("compare_runs", {"baseline_laps": v, "candidate_laps": v})
               for v in (87, [87, 88], "87,88")]
-    calls += [("locate", {"meters": v, "fractions": v})
+    calls += [("describe_positions", {"meters": v, "fractions": v})
               for v in (0.25, [0.25, 0.5], "0.25, 0.5")]
     for name, arguments in calls:
         try:
@@ -105,6 +105,63 @@ def test_the_tools_take_a_number_or_a_list_through_mcp():
         except Exception as e:
             raise AssertionError(f"{name}({arguments}): {e}") from None
         assert isinstance(reply, dict), (name, arguments, reply)
+
+
+def test_every_lap_id_list_takes_the_same_shapes():
+    """One parser behind every lap-id list, so a stint written "87-90" or
+    "87 88" works in any tool that takes several laps. The ids name no lap,
+    so nothing is labeled or drawn."""
+    s = _server()
+    shapes = (999998, [999998, 999999], "999998,999999", "999998 999999",
+              "999998-999999")
+    for given in shapes[1:]:
+        assert s._lap_ids(given) == [999998, 999999], given
+    params = [("compare_runs", "baseline_laps", {"candidate_laps": 999999}),
+              ("export_line_map", "lap_ids", {}),
+              ("field_benchmark", "lap_ids", {}),
+              ("label_laps", "lap_ids", {"setup_name": "a"})]
+    for name, param, others in params:
+        for given in shapes:
+            reply = json.loads(_call(name, {param: given, **others}))
+            assert "or ranges" not in reply.get("error", ""), (name, given,
+                                                               reply)
+
+
+def test_null_means_the_default():
+    """Models send null for "the default"; a parameter that has one must
+    not refuse it."""
+    calls = [("list_laps", {"session_id": None, "limit": None}),
+             ("list_rivals", {"session_id": None, "limit": None}),
+             ("driving_line", {"lap_id": -1, "compare_lap_id": None,
+                               "points": None}),
+             ("braking_report", {"lap_id": -1, "points": None}),
+             ("time_delta_along_lap", {"lap_id_a": -1, "lap_id_b": -2,
+                                       "segments": None}),
+             ("field_benchmark", {"lap_ids": None, "laps_per_rival": None}),
+             ("compare_runs", {"baseline_laps": 999998,
+                               "candidate_laps": 999999,
+                               "clean_laps_only": None,
+                               "baseline_setup": None}),
+             ("list_driver_tags", {"limit": None, "all_sessions": None}),
+             ("stint_wear", {"from_lap": None, "to_lap": None})]
+    for name, arguments in calls:
+        try:
+            json.loads(_call(name, arguments))
+        except Exception as e:
+            raise AssertionError(f"{name}({arguments}): {e}") from None
+
+
+def test_out_of_range_numbers_are_refused_by_the_schema():
+    s = _server()
+    for name, arguments in [("list_laps", {"limit": 0}),
+                            ("driving_line", {"lap_id": -1, "points": 5000}),
+                            ("field_benchmark", {"laps_per_rival": 50}),
+                            ("send_driver_message", {"text": "x" * 500})]:
+        try:
+            reply = _call(name, arguments)
+        except s.ToolError:
+            continue
+        raise AssertionError(f"{name}({arguments}) answered: {reply[:200]}")
 
 
 def test_a_reply_with_a_null_error_field_is_not_an_error_result():

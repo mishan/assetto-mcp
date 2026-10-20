@@ -584,7 +584,7 @@ def describe_display(conv: dict | None) -> dict:
             reason=f"the game reports a click index (mode "
                    f"{conv['show_clicks_mode']}), which says the stored "
                    f"number is a position rather than a value",
-            how_to_fix="record_display_value with what the driver reads")
+            how_to_fix="record_setup_display with what the driver reads")
         return out
     if conv.get("from_game", True) is False:
         out.update(
@@ -593,7 +593,7 @@ def describe_display(conv: dict | None) -> dict:
                    "missing multiplier means nobody said rather than no "
                    "conversion",
             how_to_fix="open the setup screen with the app running, then "
-                       "record_display_value")
+                       "record_setup_display")
         return out
     mult = conv.get("display_multiplier")
     if mult in (None, 0, 1):
@@ -683,7 +683,7 @@ def _displays_as(stored: float, conv: dict | None) -> dict | None:
                    f"not a value. What the screen shows for it is not "
                    f"derivable from anything here.",
             how_to_fix="ask the driver what the setup screen reads for this "
-                       "entry and record it with record_display_value")
+                       "entry and record it with record_setup_display")
 
     # Defaults to True: a caller handing us a conv dict directly is handing
     # us the game's own fields. db.setup_display sets it explicitly either
@@ -697,7 +697,7 @@ def _displays_as(stored: float, conv: dict | None) -> dict | None:
                    reason="the in-game app has never reported this entry, so "
                           "nothing here knows how it is displayed",
                    how_to_fix="open the setup screen with the app running, "
-                              "then record_display_value")
+                              "then record_setup_display")
 
     if mult in (None, 0, 1):
         # 0 and 1 both mean "shown as stored"; 0 is how some entries report
@@ -711,7 +711,7 @@ def _displays_as(stored: float, conv: dict | None) -> dict | None:
                value=round(shown, 4), source="game", stored=stored,
                caveat="from the game's display_multiplier, which has been "
                       "wrong before (a negated axis, a non-zero zero). "
-                      "record_display_value replaces it with a reading.")
+                      "record_setup_display replaces it with a reading.")
 
 
 def legal_values(lo: float, hi: float, step: float) -> list[float]:
@@ -1033,5 +1033,5 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
             + ", ".join(report["display_unknown"]) + " nothing here knows "
             "what the setup SCREEN will show. Do not state one: say it is "
             "unknown, and offer to record what the driver reads with "
-            "record_display_value so it is known next time.")
+            "record_setup_display so it is known next time.")
     return report

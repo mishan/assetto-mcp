@@ -176,8 +176,8 @@ consistent sign is more useful than a label that is right half the time.
 **`corner_detection`** appears alongside every corner list and says which
 lateral-g bar produced it. It is not the same bar in every tool: `lap_summary`
 uses the one shared across its session's laps — the same bar its turn numbers
-were built against — while `compare_laps` and `compare_runs` use one shared
-across every lap being compared. Either way corner membership doesn't depend
+were built against — while `compare_lap_corners` and `compare_runs` use one
+shared across every lap being compared. Either way corner membership doesn't depend
 on how hard an individual lap was driven, but the two bars are different
 numbers, so the same lap can carry a different number of corners in the two
 payloads. This is how you tell why. A lap handed to `analysis.lap_summary`
@@ -208,8 +208,8 @@ its slowest piece. The other piece still appears on that lap with
 
 `track_corners` is the table: where each turn starts, apexes and ends, where
 it is braked for, which way it turns and how many laps cornered there.
-`compare_runs` and `compare_laps` label their corners too, from the laps they
-were given rather than from the session — each of those payloads carries its
+`compare_runs` and `compare_lap_corners` label their corners too, from the
+laps they were given rather than from the session — each of those payloads carries its
 own `turns` table so the labels in it can be placed without a second call.
 
 Three things the numbering does not claim.
@@ -332,7 +332,7 @@ averaging it away.
 - **Orphaned complaint tags** — tags pressed while nothing is recording are
   still saved, but with no session attached. They'd otherwise be guessed onto
   whatever session ran last, which could be a different circuit.
-  `get_driver_notes` says how many are orphaned; pass `all_sessions=True` to
+  `list_driver_tags` says how many are orphaned; pass `all_sessions=True` to
   see them.
 
 ---

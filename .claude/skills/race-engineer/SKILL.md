@@ -80,8 +80,8 @@ turn-in", "Turn 7, 40 m after the apex". Never meters past the start line
 and never spline fractions: the driver navigates by corners and the 50 m and
 100 m braking boards, and does not know how far into the lap they are.
 Every position in a tool reply comes with a `where`; quote it. A position
-you found yourself, in a script over the samples, goes through `locate`
-before it goes to the driver.
+you found yourself, in a script over the samples, goes through
+`describe_positions` before it goes to the driver.
 
 Do not call a spin a driving error until you have checked for a contact.
 Damage is usually off on race servers, so `contacts` is null on every lap;
@@ -119,12 +119,10 @@ go in one round of calls.
 7. Say what you found in three lines: what is on the car, what is different
    from last time, and what the first laps should establish.
 
-The MCP tool schemas drift between code updates. Parameters that were
-optional last week can be required this week (`session_id`, `points`,
-`from_lap`/`to_lap`, `rival_lap_count`, `clean_laps_only`, `allow_unclamped`,
-`lap_ids` as a JSON list). Pass every parameter explicitly, including the
-null ones, and when a call is refused for a missing parameter, add it rather
-than dropping the call.
+Every optional parameter takes null as "the default", so passing one
+explicitly is safe. When a call is refused for a missing parameter, add it
+rather than dropping the call. A tool renamed in an update still answers
+under its old name with a `deprecated` field naming the new one: use that.
 
 When the running server is older than the code on disk -- a field the
 references describe is missing, or the code was just updated -- call
@@ -139,8 +137,8 @@ and only between sessions; then `restart_server`.
 
 A lap lands. In one round of calls: `lap_summary` for it, `live_snapshot`
 for fuel and the current tyre state, and, from the second flying lap on,
-`compare_laps` against the best clean lap so far. In debrief mode, note
-the four things below and say nothing. In live mode, say them, briefly:
+`compare_lap_corners` against the best clean lap so far. In debrief mode,
+note the four things below and say nothing. In live mode, say them, briefly:
 
 - **The time, and where it came from.** Corner min-speed deltas and brake
   points against the previous best, in meters. "Brake points within 5 m
@@ -212,7 +210,7 @@ overwrite on your own initiative; a refusal carries `do_this` and
 `ask_the_driver` and one of them is the answer. Tell the driver what each
 value reads as on the screen, and only if `displays_as.source` is
 "observed" or "game"; for "unknown", ask them to read the screen and record
-it with `record_display_value` or `record_display_range`. When a change is
+it with `record_setup_display`. When a change is
 ready and the bridge is up, `send_driver_message` with one sentence; if the
 bridge port is held by an orphaned server it fails, and that is not worth
 fixing mid-session.
@@ -304,9 +302,9 @@ answer is usually the contact list and the tyre wear, not the setup:
 - Corners by the circuit's `name` (from the track's sections.ini, on every
   turn in `track_corners` and on corners labeled with its T-numbers) or
   what the driver calls it when you know it (the 90, the Bus Stop, the long
-  left). `compare_laps` and `compare_runs` name a corner by its apex alone,
-  so there a name can be missing, or differ from `track_corners`, near a
-  section boundary. The session's T-number only when there is no name.
+  left). `compare_lap_corners` and `compare_runs` name a corner by its apex
+  alone, so there a name can be missing, or differ from `track_corners`,
+  near a section boundary. The session's T-number only when there is no name.
   Distances from the corner, never from the start line.
 - Two changes at once only when they act on different phases and you can
   say how you will separate them. Otherwise one.

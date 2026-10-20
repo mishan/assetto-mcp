@@ -375,6 +375,11 @@ the app running). Pass `allow_unclamped=false` explicitly. Both refusals
 cover what is invisible from here: a replaced hand-built setup looks like
 nothing from the setup screen, and AC loads an out-of-range value, shows
 it, and ignores it.
+Where the client can put a question to the driver itself (MCP
+elicitation), both refusals become that question, and the driver's answer
+decides whatever the flags say; `declined` in a refusal means they said no.
+The same goes for `restart_server` mid-session and for starting
+`apply_update` (`refused: "declined"`).
 
 **`record_display_value(field, displayed, stored, car, note, session_id)`**,
 **`record_display_range(field, displayed_at_min, displayed_at_max, car,

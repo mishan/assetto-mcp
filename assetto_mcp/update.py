@@ -660,6 +660,13 @@ def apply_in_background(to_commit: str, live_session: int | None = None,
     return job["result"]
 
 
+def job_started(to_commit: str) -> bool:
+    """Whether a call now would only wait for or collect this apply."""
+    with _job_lock:
+        return bool(_job and _same_commit(_job["to_commit"],
+                                          to_commit.strip()))
+
+
 def _start_job(to_commit: str, kw: dict) -> dict:
     job = {"to_commit": to_commit, "started_at": time.time(),
            "stage": "fetching and fast-forwarding", "result": None}

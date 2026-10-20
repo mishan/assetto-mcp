@@ -47,7 +47,7 @@ except ImportError:  # mcp SDK 1.x
 
 from . import analysis, config, db, line_map, retention  # noqa: E402
 from . import circuit, places, setups, supervisor, suspension  # noqa: E402
-from . import turns, update  # noqa: E402
+from . import guide, turns, update  # noqa: E402
 from .collector import Collector  # noqa: E402
 
 AC_DOCS_DIR = Path(os.environ.get(
@@ -64,25 +64,104 @@ from mcp.server.lowlevel import NotificationOptions  # noqa: E402
 _STATUS_TOOLS: set[str] = set()
 
 
+# Refusals the driver can lift by answering a question the client puts to
+# them, where it can: refusal -> the flag that lifts it, the question.
+_CONFIRMABLE = {
+    "write_setup": {
+        "setup_exists": ("overwrite", "Replace your setup \"{name}\" for "
+                         "{car} at {track}? The old file is backed up "
+                         "first."),
+        "no_ranges": ("allow_unclamped", "Write \"{name}\" for {car} "
+                      "without its legal ranges? The game silently "
+                      "ignores a value out of range."),
+    },
+    "restart_server": {
+        "recording": ("force", "Restart the server now, mid-session? The "
+                      "lap in progress is lost."),
+    },
+}
+
+
+def _payload(result) -> dict | None:
+    content = getattr(result, "content", result)  # 2.x result, 1.x list
+    if isinstance(content, tuple):  # 1.x with structured output
+        content = content[0]
+    text = getattr(content[0], "text", "") if content else ""
+    if text.startswith("{"):
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            return None
+        return payload if isinstance(payload, dict) else None
+    return None
+
+
+def _can_elicit(ctx) -> bool:
+    try:
+        from mcp.types import ClientCapabilities, ElicitationCapability
+        return ctx.session.check_client_capability(
+            ClientCapabilities(elicitation=ElicitationCapability()))
+    except Exception:  # noqa: BLE001 - outside a request, or an old SDK
+        return False
+
+
+async def _ask(ctx, question: str) -> bool | None:
+    """The driver's yes or no, or None when the client could not ask."""
+    from pydantic import BaseModel, Field
+
+    class Confirm(BaseModel):
+        confirm: bool = Field(description="Yes, go ahead")
+
+    try:
+        answer = await ctx.elicit(question, Confirm)
+    except Exception:  # noqa: BLE001 - no back channel, or a bad reply
+        return None
+    return answer.action == "accept" and answer.data.confirm
+
+
 class _Server(FastMCP):
     async def call_tool(self, name, arguments, *args, **kwargs):
+        ctx = args[0] if args else kwargs.get("context")
+        if ctx is None and hasattr(self, "get_context"):  # 1.x
+            ctx = self.get_context()
+        asks = dict(_CONFIRMABLE.get(name, {})) if _can_elicit(ctx) else {}
+        given = arguments
+        if asks:
+            # The driver answers in place of the flags, so a model cannot
+            # set one on its own.
+            arguments = {**arguments,
+                         **{flag: False for flag, _ in asks.values()}}
+        elif name == "apply_update" and _can_elicit(ctx):
+            if await _ask_to_update(ctx, arguments) is False:
+                raise ToolError(_j({
+                    "error": "the driver declined the update",
+                    "refused": "declined",
+                    "do_this": "leave the checkout as it is"}))
+        result = await super().call_tool(name, arguments, *args, **kwargs)
+        payload = _payload(result)
+        while payload and payload.get("refused") in asks:
+            flag, question = asks.pop(payload["refused"])
+            ok = await _ask(ctx, question.format_map(
+                {k: str(v) for k, v in arguments.items()}))
+            if ok is None:
+                if arguments != given:
+                    result = await super().call_tool(name, given, *args,
+                                                     **kwargs)
+                    payload = _payload(result)
+                break
+            if not ok:
+                payload.pop("ask_the_driver", None)
+                payload["declined"] = "the driver was asked and said no"
+                break
+            arguments = {**arguments, flag: True}
+            result = await super().call_tool(name, arguments, *args,
+                                             **kwargs)
+            payload = _payload(result)
         # Tools answer a refusal with an {"error": ...} payload. Raising it
         # instead marks the result isError, so the client sees a failed call,
         # and the payload stays the message.
-        result = await super().call_tool(name, arguments, *args, **kwargs)
-        if name in _STATUS_TOOLS:
-            return result
-        content = getattr(result, "content", result)  # 2.x result, 1.x list
-        if isinstance(content, tuple):  # 1.x with structured output
-            content = content[0]
-        text = getattr(content[0], "text", "") if content else ""
-        if text.startswith("{"):
-            try:
-                payload = json.loads(text)
-            except ValueError:
-                payload = None
-            if isinstance(payload, dict) and payload.get("error"):
-                raise ToolError(text)
+        if name not in _STATUS_TOOLS and payload and payload.get("error"):
+            raise ToolError(_j(payload))
         return result
 
 
@@ -178,6 +257,23 @@ def _j(obj) -> str:
     return json.dumps(obj, separators=(",", ":"), default=str)
 
 
+# ASSETTO_MCP_TOOLSET=core: the session routine in few enough tools for a
+# small local model's context and for a client that caps its tool count.
+# Every name must be a tool; startup fails on one that is not.
+CORE_TOOLS = (
+    # session_check and wait_for_lap join here when they exist.
+    "recording_status", "live_snapshot", "list_laps", "lap_summary",
+    "compare_laps", "delta_by_position", "compare_runs",
+    "set_session_setup", "label_laps", "fuel_plan",
+    "list_setups", "read_setup", "write_setup",
+)
+_TOOLSET = config.env("TOOLSET", "full")
+if _TOOLSET not in ("full", "core"):
+    print(f"assetto-mcp: ASSETTO_MCP_TOOLSET={_TOOLSET!r} is not 'full' "
+          "or 'core'; serving every tool", file=sys.stderr)
+_REGISTERED: set[str] = set()
+
+
 def _tool(title: str, *, writes: bool = False, destructive: bool = False,
           idempotent: bool = True, open_world: bool = False,
           status: bool = False, locks_conn: bool = True):
@@ -217,7 +313,9 @@ def _tool(title: str, *, writes: bool = False, destructive: bool = False,
             with _conn_lock:
                 return fn(*args, **kwargs)
         tool = locked if locks_conn else fn
-        mcp.tool(**options)(tool)
+        _REGISTERED.add(fn.__name__)
+        if _TOOLSET != "core" or fn.__name__ in CORE_TOOLS:
+            mcp.tool(**options)(tool)
         return tool
     return register
 
@@ -2613,12 +2711,29 @@ def apply_update(to_commit: str) -> str:
     running (`lua.note`). `in_progress: true` means still running: call
     again with the same to_commit for the result. The old code runs until
     restart_server. Pass any `warning` on as it is."""
+    return _j(update.apply_in_background(
+        to_commit, live_session=_live_session(), data_dir=DATA_DIR))
+
+
+def _live_session() -> int | None:
+    """The session the driver is on track in, in any instance."""
     snap = _bridge.status_snapshot()
-    live = (_collector.session_id
+    return (_collector.session_id
             if _collector.holds_recorder and _collector.live
             else snap["session_id"] if snap["by_other"] else None)
-    return _j(update.apply_in_background(to_commit, live_session=live,
-                                         data_dir=DATA_DIR))
+
+
+async def _ask_to_update(ctx, arguments) -> bool | None:
+    """Ask before an apply starts; not while one runs, and not on track."""
+    to_commit = arguments.get("to_commit")
+    if (not isinstance(to_commit, str) or update.job_started(to_commit)
+            or update.apply_running(DATA_DIR)
+            or _live_session() is not None):
+        return None
+    return await _ask(ctx, f"Update the assetto-mcp server to "
+                           f"{to_commit.strip()[:7]}? It reinstalls on "
+                           "disk; the running server is replaced only by "
+                           "a restart.")
 
 
 def _restart_soon() -> None:
@@ -2779,6 +2894,97 @@ def write_setup(car: str, track: str, name: str, values_json: str,
                    "do_this": "check the section names with setup_ranges"})
     except (ValueError, FileNotFoundError) as e:
         return _j({"error": str(e)})
+
+
+_unknown = set(CORE_TOOLS) - _REGISTERED
+if _unknown:
+    raise RuntimeError(f"CORE_TOOLS names no tool: {sorted(_unknown)}")
+
+
+# --- prompts and resources ---------------------------------------------
+# For clients without the skill. They complement the tools: most clients
+# let only the person attach a resource, not the model read one.
+
+
+def _offer(register, *args, **options):
+    """mcp.resource or mcp.prompt, without the options this SDK predates."""
+    import inspect
+    supported = inspect.signature(register).parameters
+    return register(*args, **{k: v for k, v in options.items()
+                              if k in supported})
+
+
+def _resource_text(text: str) -> str:
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return text
+    if isinstance(payload, dict) and payload.get("error"):
+        raise ValueError(payload["error"])
+    return text
+
+
+@_offer(mcp.resource, "assetto://session/{session_id}/laps",
+        name="session_laps", title="A session's laps",
+        mime_type="application/json")
+def _session_laps(session_id: str) -> str:
+    """The session's laps, most recent first, as list_laps gives them."""
+    return _resource_text(list_laps(session_id=int(session_id)))
+
+
+@_offer(mcp.resource, "assetto://setup/{car}/{track}/{name}", name="setup",
+        title="A setup file", mime_type="application/json")
+def _setup(car: str, track: str, name: str) -> str:
+    """A saved setup, as read_setup gives it."""
+    return _resource_text(read_setup(car=car, track=track, name=name))
+
+
+def _guide_resource(name: str, path: Path) -> None:
+    @_offer(mcp.resource, f"assetto://guide/{name}", name=f"guide_{name}",
+            title=f"Race-engineer guide: {name}", mime_type="text/markdown")
+    def read() -> str:
+        return path.read_text(encoding="utf-8")
+
+
+_GUIDE_NOTE = ("The whole routine is the resource "
+               "assetto://guide/race-engineer, and what each tool answers "
+               "is assetto://guide/tools.\n\n")
+
+if guide.guides():
+    for _name, _path in guide.guides().items():
+        _guide_resource(_name, _path)
+
+    @_offer(mcp.prompt, title="Start a session")
+    def start_session(mode: str = "debrief") -> str:
+        """The session-start routine. mode: "debrief" (one report at the
+        end, the default) or "live" (a read after every lap)."""
+        if mode not in ("debrief", "live"):
+            raise ValueError('mode is "debrief" or "live"')
+        return (f"Engineer this session in {mode} mode. Start it now.\n\n"
+                + _GUIDE_NOTE + guide.sections(
+                    "Two ways to work: live, or debrief", "Session start"))
+
+    @_offer(mcp.prompt, title="Debrief a session")
+    def debrief(session_id: str | None = None) -> str:
+        """Read a finished session's laps and write the debrief."""
+        which = (f"session {session_id}" if session_id
+                 else "the most recent session")
+        return (f"Debrief {which}: read every lap, then one report.\n\n"
+                + _GUIDE_NOTE + guide.sections(
+                    "The live loop", "After the race", "Closing a session"))
+
+    @_offer(mcp.prompt, title="A/B test a setup change")
+    def ab_test(change: str) -> str:
+        """Plan and judge one setup change against the current setup."""
+        return (f"A/B test this change: {change}\n\n" + _GUIDE_NOTE
+                + guide.sections("Changing the setup"))
+
+    @_offer(mcp.prompt, title="Prepare for a race")
+    def race_prep(race_laps: str | None = None) -> str:
+        """Fuel, tyres and gearing for a race distance."""
+        laps = f" of {race_laps} laps" if race_laps else ""
+        return (f"Prepare for the race{laps}.\n\n" + _GUIDE_NOTE
+                + guide.sections("Preparing for the race"))
 
 
 def main():

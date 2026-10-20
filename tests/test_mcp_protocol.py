@@ -39,7 +39,7 @@ def _server():
 
 
 @contextlib.asynccontextmanager
-async def _client():
+async def _client(**session_options):
     """A client session on the server, and its initialize result."""
     import anyio
     from mcp import ClientSession
@@ -51,7 +51,8 @@ async def _client():
         async with anyio.create_task_group() as tg:
             tg.start_soon(lambda: low.run(
                 server[0], server[1], low.create_initialization_options()))
-            async with ClientSession(client[0], client[1]) as session:
+            async with ClientSession(client[0], client[1],
+                                     **session_options) as session:
                 yield session, _wire(await session.initialize())
             tg.cancel_scope.cancel()
 
@@ -202,6 +203,140 @@ def test_initialize_carries_instructions_version_and_list_changed():
     named = set(re.findall(r"\b[a-z]+(?:_[a-z]+)+\b", init["instructions"]))
     assert named, init["instructions"]
     assert named <= {t["name"] for t in tools}, named
+
+
+def test_prompts_and_resources_serve_the_skill_and_the_data():
+    """A client with no skill gets the routine as prompts, cut from the
+    skill's own sections, and the skill and the data as resources."""
+    from assetto_mcp import guide
+    sid, ids = _session_with_laps(2)
+    prompts = [("start_session", {"mode": "live"}), ("start_session", {}),
+               ("debrief", {"session_id": str(sid)}), ("debrief", {}),
+               ("ab_test", {"change": "rear bar +1"}),
+               ("race_prep", {"race_laps": "20"}), ("race_prep", {})]
+
+    async def run():
+        async with _client() as (session, _):
+            listed = _wire(await session.list_prompts())["prompts"]
+            texts = [_wire(await session.get_prompt(n, a))
+                     ["messages"][0]["content"]["text"] for n, a in prompts]
+            skill = _wire(await session.read_resource(
+                "assetto://guide/race-engineer"))["contents"][0]["text"]
+            laps = _wire(await session.read_resource(
+                f"assetto://session/{sid}/laps"))["contents"][0]["text"]
+            return listed, texts, skill, laps
+
+    listed, texts, skill, laps = asyncio.run(run())
+    assert {p["name"] for p in listed} == {n for n, _ in prompts}, listed
+    for (name, _), text in zip(prompts, texts):
+        assert "\n## " in text, (name, text[:200])
+    assert "## Session start" in texts[0] and "live mode" in texts[0]
+    assert "debrief mode" in texts[1], texts[1][:100]
+    assert f"session {sid}" in texts[2], texts[2][:100]
+    assert skill == (guide.SKILL_DIR / "SKILL.md").read_text(
+        encoding="utf-8")
+    assert {lap["id"] for lap in json.loads(laps)} == set(ids), laps
+
+
+def test_the_driver_confirms_where_the_client_can_ask():
+    """With elicitation the driver's answer replaces the override flags, so
+    a model that set one itself still has to get a yes. A client that
+    cannot ask gets today's refusal, and the flag still works."""
+    from mcp import types
+    from assetto_mcp import supervisor, update
+    s = _server()
+    docs = Path(tempfile.mkdtemp(prefix="ac-confirm-"))
+    write = {"car": "c", "track": "t", "name": "v1",
+             "values_json": '{"PRESSURE_LF": 25}', "allow_unclamped": True}
+    (docs / "setups" / "c" / "t").mkdir(parents=True)
+    existing = docs / "setups" / "c" / "t" / "v1.ini"
+    applied, restarted = [], []
+
+    def answering(yes):
+        async def callback(context, params):
+            asked.append(params.message)
+            return types.ElicitResult(action="accept",
+                                      content={"confirm": yes})
+        return None if yes is None else callback
+
+    # (driver's answer, or None when the client cannot ask; tool, arguments;
+    #  whether it went ahead)
+    cases = [
+        (None, "write_setup", write, False),
+        (None, "write_setup", {**write, "overwrite": True}, True),
+        (True, "write_setup", write, True),
+        (False, "write_setup", {**write, "overwrite": True}, False),
+        (None, "restart_server", {}, False),
+        (True, "restart_server", {}, True),
+        (False, "restart_server", {"force": True}, False),
+        (True, "apply_update", {"to_commit": "abc1234"}, True),
+        (False, "apply_update", {"to_commit": "abc1234"}, False),
+    ]
+
+    async def call(yes, name, arguments):
+        async with _client(elicitation_callback=answering(yes)) as (c, _):
+            return _wire(await c.call_tool(name, arguments))
+
+    saved = (s.AC_DOCS_DIR, s._restart_soon, update.apply_in_background,
+             s._live_session, s._collector.holds_recorder, s._collector.session_id,
+             s._collector.live)
+    s.AC_DOCS_DIR = docs
+    s._restart_soon = lambda: restarted.append(True)
+    update.apply_in_background = (
+        lambda *a, **kw: applied.append(True) or {"applied": True})
+    os.environ[supervisor.CHILD_ENV] = "1"
+    s._collector.holds_recorder, s._collector.session_id = True, 42
+    s._collector.live = True
+    # Earlier tests leave sessions open, which reads as another instance on
+    # track, and an update is never offered then.
+    s._live_session = lambda: None
+    try:
+        for yes, name, arguments, went_ahead in cases:
+            existing.write_text("[PRESSURE_LF]\nVALUE=30\n")
+            asked, applied[:], restarted[:] = [], [], []
+            r = asyncio.run(call(yes, name, arguments))
+            out = json.loads(r["content"][0]["text"])
+            case = (yes, name, arguments, out)
+            did = {"write_setup": "VALUE=25" in existing.read_text(),
+                   "restart_server": bool(restarted),
+                   "apply_update": bool(applied)}[name]
+            assert did == went_ahead, case
+            assert bool(r.get("isError")) != went_ahead, case
+            assert bool(asked) == (yes is not None), case
+            if yes is False:
+                assert out.get("declined") or out["refused"] == "declined", \
+                    case
+                assert "ask_the_driver" not in out, case
+            if not went_ahead:
+                assert not [k for k in out if "overwrite" in k
+                            or "force" in k or "unclamped" in k], case
+    finally:
+        (s.AC_DOCS_DIR, s._restart_soon, update.apply_in_background,
+         s._live_session, s._collector.holds_recorder, s._collector.session_id,
+         s._collector.live) = saved
+        del os.environ[supervisor.CHILD_ENV]
+
+
+def test_the_core_toolset_serves_only_its_tools():
+    script = (
+        "import asyncio, json\n"
+        "import assetto_mcp.server as s\n"
+        "print(json.dumps([sorted(t.name for t in "
+        "asyncio.run(s.mcp.list_tools())), list(s.CORE_TOOLS)]))\n"
+        "s._shutdown()\n")
+    import subprocess
+    with tempfile.TemporaryDirectory(prefix="ac-core-") as d:
+        env = dict(os.environ, ASSETTO_MCP_DATA=d, AC_DOCS_DIR=d,
+                   ASSETTO_MCP_NO_AUTOSTART="1", ASSETTO_MCP_BRIDGE_PORT="0",
+                   ASSETTO_MCP_TOOLSET="core")
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parent.parent, env=env,
+            capture_output=True, text=True, timeout=120,
+            stdin=subprocess.DEVNULL)
+    assert proc.returncode == 0, proc.stderr
+    served, core = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert served == sorted(core), (served, core)
 
 
 if __name__ == "__main__":

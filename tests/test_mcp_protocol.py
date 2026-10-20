@@ -204,6 +204,39 @@ def test_initialize_carries_instructions_version_and_list_changed():
     assert named <= {t["name"] for t in tools}, named
 
 
+def test_prompts_and_resources_serve_the_skill_and_the_data():
+    """A client with no skill gets the routine as prompts, cut from the
+    skill's own sections, and the skill and the data as resources."""
+    from assetto_mcp import guide
+    sid, ids = _session_with_laps(2)
+    prompts = [("start_session", {"mode": "live"}), ("start_session", {}),
+               ("debrief", {"session_id": str(sid)}), ("debrief", {}),
+               ("ab_test", {"change": "rear bar +1"}),
+               ("race_prep", {"race_laps": "20"}), ("race_prep", {})]
+
+    async def run():
+        async with _client() as (session, _):
+            listed = _wire(await session.list_prompts())["prompts"]
+            texts = [_wire(await session.get_prompt(n, a))
+                     ["messages"][0]["content"]["text"] for n, a in prompts]
+            skill = _wire(await session.read_resource(
+                "assetto://guide/race-engineer"))["contents"][0]["text"]
+            laps = _wire(await session.read_resource(
+                f"assetto://session/{sid}/laps"))["contents"][0]["text"]
+            return listed, texts, skill, laps
+
+    listed, texts, skill, laps = asyncio.run(run())
+    assert {p["name"] for p in listed} == {n for n, _ in prompts}, listed
+    for (name, _), text in zip(prompts, texts):
+        assert "\n## " in text, (name, text[:200])
+    assert "## Session start" in texts[0] and "live mode" in texts[0]
+    assert "debrief mode" in texts[1], texts[1][:100]
+    assert f"session {sid}" in texts[2], texts[2][:100]
+    assert skill == (guide.SKILL_DIR / "SKILL.md").read_text(
+        encoding="utf-8")
+    assert {lap["id"] for lap in json.loads(laps)} == set(ids), laps
+
+
 def test_the_core_toolset_serves_only_its_tools():
     script = (
         "import asyncio, json\n"

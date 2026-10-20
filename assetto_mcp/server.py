@@ -47,7 +47,7 @@ except ImportError:  # mcp SDK 1.x
 
 from . import analysis, config, db, line_map, retention  # noqa: E402
 from . import circuit, places, setups, supervisor, suspension  # noqa: E402
-from . import turns, update  # noqa: E402
+from . import guide, turns, update  # noqa: E402
 from .collector import Collector  # noqa: E402
 
 AC_DOCS_DIR = Path(os.environ.get(
@@ -2803,6 +2803,92 @@ def write_setup(car: str, track: str, name: str, values_json: str,
 _unknown = set(CORE_TOOLS) - _REGISTERED
 if _unknown:
     raise RuntimeError(f"CORE_TOOLS names no tool: {sorted(_unknown)}")
+
+
+# --- prompts and resources ---------------------------------------------
+# For clients without the skill. They complement the tools: most clients
+# let only the person attach a resource, not the model read one.
+
+
+def _offer(register, *args, **options):
+    """mcp.resource or mcp.prompt, without the options this SDK predates."""
+    import inspect
+    supported = inspect.signature(register).parameters
+    return register(*args, **{k: v for k, v in options.items()
+                              if k in supported})
+
+
+def _resource_text(text: str) -> str:
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        return text
+    if isinstance(payload, dict) and payload.get("error"):
+        raise ValueError(payload["error"])
+    return text
+
+
+@_offer(mcp.resource, "assetto://session/{session_id}/laps",
+        name="session_laps", title="A session's laps",
+        mime_type="application/json")
+def _session_laps(session_id: str) -> str:
+    """The session's laps, most recent first, as list_laps gives them."""
+    return _resource_text(list_laps(session_id=int(session_id)))
+
+
+@_offer(mcp.resource, "assetto://setup/{car}/{track}/{name}", name="setup",
+        title="A setup file", mime_type="application/json")
+def _setup(car: str, track: str, name: str) -> str:
+    """A saved setup, as read_setup gives it."""
+    return _resource_text(read_setup(car=car, track=track, name=name))
+
+
+def _guide_resource(name: str, path: Path) -> None:
+    @_offer(mcp.resource, f"assetto://guide/{name}", name=f"guide_{name}",
+            title=f"Race-engineer guide: {name}", mime_type="text/markdown")
+    def read() -> str:
+        return path.read_text(encoding="utf-8")
+
+
+_GUIDE_NOTE = ("The whole routine is the resource "
+               "assetto://guide/race-engineer, and what each tool answers "
+               "is assetto://guide/tools.\n\n")
+
+if guide.guides():
+    for _name, _path in guide.guides().items():
+        _guide_resource(_name, _path)
+
+    @_offer(mcp.prompt, title="Start a session")
+    def start_session(mode: str = "debrief") -> str:
+        """The session-start routine. mode: "debrief" (one report at the
+        end, the default) or "live" (a read after every lap)."""
+        if mode not in ("debrief", "live"):
+            raise ValueError('mode is "debrief" or "live"')
+        return (f"Engineer this session in {mode} mode. Start it now.\n\n"
+                + _GUIDE_NOTE + guide.sections(
+                    "Two ways to work: live, or debrief", "Session start"))
+
+    @_offer(mcp.prompt, title="Debrief a session")
+    def debrief(session_id: str | None = None) -> str:
+        """Read a finished session's laps and write the debrief."""
+        which = (f"session {session_id}" if session_id
+                 else "the most recent session")
+        return (f"Debrief {which}: read every lap, then one report.\n\n"
+                + _GUIDE_NOTE + guide.sections(
+                    "The live loop", "After the race", "Closing a session"))
+
+    @_offer(mcp.prompt, title="A/B test a setup change")
+    def ab_test(change: str) -> str:
+        """Plan and judge one setup change against the current setup."""
+        return (f"A/B test this change: {change}\n\n" + _GUIDE_NOTE
+                + guide.sections("Changing the setup"))
+
+    @_offer(mcp.prompt, title="Prepare for a race")
+    def race_prep(race_laps: str | None = None) -> str:
+        """Fuel, tyres and gearing for a race distance."""
+        laps = f" of {race_laps} laps" if race_laps else ""
+        return (f"Prepare for the race{laps}.\n\n" + _GUIDE_NOTE
+                + guide.sections("Preparing for the race"))
 
 
 def main():

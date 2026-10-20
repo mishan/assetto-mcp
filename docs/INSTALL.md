@@ -71,6 +71,14 @@ Client config formats do drift, so if yours isn't listed or the path has moved,
 check its own MCP docs — you're looking for wherever it takes a `command` and
 `args` for a local server.
 
+Only Claude Code loads the race-engineer skill. Any client can get its
+routine from the server as prompts instead — `start_session`, `debrief`,
+`ab_test` and `race_prep`, a slash command in most clients — and the skill
+itself as `assetto://guide/...` resources. Both are read from the clone's
+`.claude/skills` folder, so an install without the clone has neither. For
+LM Studio, or a client that drops tools past a limit, set
+`ASSETTO_MCP_TOOLSET=core` in the server's `env` block ([below](#environment-overrides)).
+
 ### Claude Code
 
 ```

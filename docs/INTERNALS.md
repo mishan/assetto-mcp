@@ -495,8 +495,8 @@ dampers. Rather than quietly present one as the other, the report labels the
 tier and adds a caution when it's render-rate.
 
 The app's own window shows which tier it got (`◆` worker, `○` online,
-`◇` render-rate fallback), and `suspension_capture_status` explains it from
-the server's side.
+`◇` render-rate fallback), and `session_check`'s `suspension.tier` reports it
+from the server's side.
 
 > **Damper histograms are single-player only.**
 >

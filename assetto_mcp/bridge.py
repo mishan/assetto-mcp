@@ -47,7 +47,7 @@ class _ExclusiveHTTPServer(ThreadingHTTPServer):
     /status polls with its own idle collector while the live process serves
     MCP, and the overlay reports "connected, not recording".
 
-    Fail loudly on a port clash instead, so bridge_status surfaces it.
+    Fail loudly on a port clash instead, so session_check surfaces it.
     """
 
     allow_reuse_address = False

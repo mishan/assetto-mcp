@@ -137,22 +137,6 @@
   "annotations": {
    "destructiveHint": false,
    "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Deprecated: session_check's `app` says whether the in-game app is\nconnected. Port, bind error and pending message of its HTTP bridge.",
-  "inputSchema": {
-   "properties": {},
-   "title": "bridge_statusArguments",
-   "type": "object"
-  },
-  "name": "bridge_status",
-  "title": "In-game app bridge status"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
    "openWorldHint": true,
    "readOnlyHint": true
   },
@@ -1799,22 +1783,6 @@
   },
   "name": "storage_report",
   "title": "Storage report"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Deprecated: session_check gives the tier. Whether suspension data is\narriving, from which tier, and what to do about it, for when\nsuspension_report has no data or damper numbers look implausible.",
-  "inputSchema": {
-   "properties": {},
-   "title": "suspension_capture_statusArguments",
-   "type": "object"
-  },
-  "name": "suspension_capture_status",
-  "title": "Suspension capture status"
  },
  {
   "annotations": {

@@ -127,8 +127,7 @@ go in one round of calls.
 
 Every optional parameter takes null as "the default", so passing one
 explicitly is safe. When a call is refused for a missing parameter, add it
-rather than dropping the call. A tool renamed in an update still answers
-under its old name with a `deprecated` field naming the new one: use that.
+rather than dropping the call.
 
 When the running server is older than the code on disk -- a field the
 references describe is missing, or the code was just updated -- call

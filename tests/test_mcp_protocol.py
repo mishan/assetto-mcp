@@ -139,8 +139,7 @@ def test_a_status_report_is_not_a_failed_call_but_a_refusal_is():
     whose text is the JSON payload."""
     from assetto_mcp import update
     s = _server()
-    status = [("recording_status", {}), ("bridge_status", {}),
-              ("suspension_capture_status", {}), ("check_for_updates", {}),
+    status = [("recording_status", {}), ("check_for_updates", {}),
               ("session_check", {})]
     # Starting the real collector here would leave it polling for the game.
     assert {n for n, _ in status} == s._STATUS_TOOLS - {"start_recording"}
@@ -177,7 +176,7 @@ def test_a_status_report_is_not_a_failed_call_but_a_refusal_is():
         del os.environ["ASSETTO_MCP_UPDATE_API"]
     for (name, _), r in zip(status, answered):
         assert not r.get("isError"), (name, r)
-    for name in ("recording_status", "bridge_status", "check_for_updates"):
+    for name in ("recording_status", "check_for_updates"):
         r = answered[[n for n, _ in status].index(name)]
         assert json.loads(r["content"][0]["text"])["error"], (name, r)
     for (name, _), r in zip(refusals, refused):
@@ -355,38 +354,6 @@ def test_the_core_toolset_serves_only_its_tools():
     assert proc.returncode == 0, proc.stderr
     served, core = json.loads(proc.stdout.strip().splitlines()[-1])
     assert served == sorted(core), (served, core)
-
-
-def test_a_renamed_tool_still_answers_under_its_old_name_unlisted():
-    """A client holding an old tool list keeps working, and is told the
-    new name; the list itself carries each tool once."""
-    s = _server()
-    calls = {"get_driver_notes": {},
-             "delta_by_position": {"lap_id_a": -1, "lap_id_b": -2},
-             "compare_laps": {"lap_id_a": -1, "lap_id_b": -2},
-             "locate": {"meters": 100},
-             "record_display_value": {"field": "X", "displayed": 1.0,
-                                      "stored": 1.0, "car": "alias_car"},
-             "record_display_range": {"field": "X", "displayed_at_min": 0,
-                                      "displayed_at_max": 1,
-                                      "car": "alias_car"},
-             "record_display_note": {"field": "X", "note": "n",
-                                     "car": "alias_car"}}
-    assert set(calls) == set(s._RENAMED)
-
-    async def run():
-        async with _client() as (session, _):
-            names = {t["name"]
-                     for t in _wire(await session.list_tools())["tools"]}
-            return names, {old: _wire(await session.call_tool(old, a))
-                           for old, a in calls.items()}
-
-    names, replies = asyncio.run(run())
-    assert not names & set(s._RENAMED), names & set(s._RENAMED)
-    assert set(s._RENAMED.values()) <= names
-    for old, r in replies.items():
-        reply = json.loads(r["content"][0]["text"])
-        assert s._RENAMED[old] in reply.get("deprecated", ""), (old, reply)
 
 
 def _results(calls):

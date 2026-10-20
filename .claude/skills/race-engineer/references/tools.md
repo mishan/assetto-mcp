@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Forty-nine tools. They fall into nine groups. For each: what to pass,
+Forty-seven tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the traps.
 Every optional parameter takes null as "the default", so passing one
 explicitly is always safe; a call refused for a missing parameter is fixed
@@ -220,9 +220,9 @@ histograms, ride height, roll balance. `lap_number` is for a lap that was
 not stored (an out-lap); `lap_count` is its deprecated minus-one form.
 Read `source`: "app" is render-rate and the
 damper histograms are body motion, not valving; "worker" is 333 Hz and
-real. `session_check`'s `suspension.tier` says which tier is arriving;
-**`suspension_capture_status()`**, deprecated, still explains why and
-what to do about it. The worker is single-player only.
+real. `session_check`'s `suspension.tier` says which tier is arriving.
+The worker is single-player only: CSP runs no scripts on the physics
+thread online.
 
 **`lap_trace(lap_id, channels, from_m, to_m, step_m)`** -- the raw trace
 for what no report answers: shift rpm by gear, time in 6th, the slip
@@ -505,12 +505,8 @@ corner's slip balance and steer.
 
 **`send_driver_message(text)`** -- one sentence on the in-game overlay. Fails
 when the bridge port is held by an orphaned server; not worth chasing
-during a session.
-
-**`bridge_status()`** -- deprecated: `session_check`'s `app` says whether
-the in-game app is connected. Still answers with the port, the bind error,
-`app_last_seen_s` and the pending message. Without the app: no opponents,
-no suspension, no setup-screen values, no messages.
+during a session. Without the app (`session_check`'s `app`): no
+opponents, no suspension, no setup-screen values, no messages.
 
 **`read_notes(car)`**, **`save_notes(kind, markdown, car)`**,
 **`save_handoff(markdown, name)`** -- the notes and the handoff for a

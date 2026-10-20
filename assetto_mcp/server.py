@@ -100,13 +100,6 @@ def _payload(result) -> dict | None:
     return None
 
 
-def _set_text(result, text: str) -> None:
-    content = getattr(result, "content", result)
-    if isinstance(content, tuple):
-        content = content[0]
-    content[0].text = text
-
-
 def _can_elicit(ctx) -> bool:
     try:
         from mcp.types import ClientCapabilities, ElicitationCapability
@@ -130,27 +123,12 @@ async def _ask(ctx, question: str) -> bool | None:
     return answer.action == "accept" and answer.data.confirm
 
 
-# Old tool names, still answered but left out of tools/list: listing each
-# under both names would grow the list every client loads on every request,
-# and some clients drop tools past a budget of about 40.
-_RENAMED = {
-    "get_driver_notes": "list_driver_tags",
-    "delta_by_position": "time_delta_along_lap",
-    "compare_laps": "compare_lap_corners",
-    "locate": "describe_positions",
-    "record_display_value": "record_setup_display",
-    "record_display_range": "record_setup_display",
-    "record_display_note": "record_setup_display",
-}
-
-
 class _Server(FastMCP):
     async def call_tool(self, name, arguments, *args, **kwargs):
         # A null is how many models say "the default", and a parameter that
         # has one would otherwise refuse it.
         arguments = {k: v for k, v in (arguments or {}).items()
                      if v is not None}
-        called, name = name, _RENAMED.get(name, name)
         ctx = args[0] if args else kwargs.get("context")
         if ctx is None and hasattr(self, "get_context"):  # 1.x
             ctx = self.get_context()
@@ -187,9 +165,6 @@ class _Server(FastMCP):
             result = await super().call_tool(name, arguments, *args,
                                              **kwargs)
             payload = _payload(result)
-        if payload is not None and called != name:
-            payload["deprecated"] = f"{called} is renamed; call {name}"
-            _set_text(result, _j(payload))
         # Tools answer a refusal with an {"error": ...} or {"refused": ...}
         # payload. Raising it instead marks the result isError, so the
         # client sees a failed call, and the payload stays the message.
@@ -2282,50 +2257,6 @@ def suspension_report(lap_id: int | None = None,
     return _j(out)
 
 
-@_tool("Suspension capture status", status=True)
-def suspension_capture_status() -> str:
-    """Deprecated: session_check gives the tier. Whether suspension data is
-    arriving, from which tier, and what to do about it, for when
-    suspension_report has no data or damper numbers look implausible."""
-    sid = _active_session()
-    out = {"session_id": sid, "deprecated": "use session_check"}
-    if sid is None:
-        out["error"] = "no active session"
-        return _j(out)
-
-    by_source, captured = _suspension_sources(sid)
-    out["samples_by_source"] = by_source
-    out["laps_captured"] = captured
-
-    if not by_source:
-        out["status"] = "no suspension data in this session"
-        out["do_this"] = [
-            "Is the Assetto MCP app enabled in the in-game apps sidebar?",
-            "Is it the current version? Suspension capture was added after "
-            "the first release -- re-run install-windows.bat to update it.",
-            "Does the app's status window show a bridge connection?",
-        ]
-    elif "worker" in by_source:
-        out["status"] = "physics worker running: real damper velocity (333Hz)"
-    else:
-        out["status"] = ("render-rate capture only: ride height and load "
-                         "transfer are trustworthy, damper histograms show "
-                         "body motion rather than valving")
-        out["note"] = (
-            "The app tries to start a CSP physics worker for 333Hz damper "
-            "data and falls back to render-rate sampling when it can't. "
-            "The usual reason is multiplayer: CSP does not allow scripts on "
-            "the physics thread in an online session, because that thread "
-            "decides what the car does. Damper histograms are therefore a "
-            "single-player feature. Ride height, wheel loads and roll "
-            "balance never used the worker and are unaffected online.")
-        out["do_this"] = (
-            "Run the same car and track in a solo practice session. The "
-            "app's status window shows the tier: worker, online, "
-            "or render-rate fallback.")
-    return _j(out)
-
-
 @_tool("Driving line")
 def driving_line(lap_id: int, compare_lap_id: int | None = None,
                  points: Annotated[int, Field(ge=10, le=200)] = 100) -> str:
@@ -3313,17 +3244,6 @@ def send_driver_message(
         return _j({"error": _bridge.error if _bridge else "bridge not running"})
     return _j({"ok": True, "message_id": _bridge.set_message(text),
                "note": "displayed until driver dismisses it"})
-
-
-@_tool("In-game app bridge status", status=True)
-def bridge_status() -> str:
-    """Deprecated: session_check's `app` says whether the in-game app is
-    connected. Port, bind error and pending message of its HTTP bridge."""
-    return _j({"port": _bridge.port if _bridge else None,
-               "error": _bridge.error if _bridge else "not running",
-               "app_last_seen_s": _app_link()["last_seen_s"],
-               "pending_message": _bridge.get_message() if _bridge else None,
-               "deprecated": "use session_check"})
 
 
 # --- notes and the handoff -----------------------------------------------

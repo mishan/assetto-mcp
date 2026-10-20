@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import run_module  # noqa: E402
 from test_mcp_protocol import (  # noqa: E402
-    _client, _server, _session_with_laps, _wire)
+    _client, _session_with_laps, _wire)
 
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
@@ -140,8 +140,6 @@ _TOOLISH = re.compile(
     rf"(?:{_VERBS})_[a-z_]*[a-z]"
     r"|[a-z]+(?:_[a-z]+)*_(?:status|report|snapshot|summary|benchmark)"
     r"|[a-z]+(?:_[a-z]+)+(?=\())(?![\w/]|\.\w)")
-# Said near an old name, it is being named as old.
-_OLD = re.compile(r"renamed|formerly|deprecated|old name|\bwas\b", re.I)
 
 
 def _package_identifiers() -> set[str]:
@@ -170,10 +168,7 @@ def _server_strings() -> list[tuple[int, str]]:
 
 
 def test_every_tool_the_docs_and_replies_name_exists():
-    """A model told to call a tool that is gone guesses, or gives up. An
-    old name still answers, so the docs may say what a tool was called,
-    as long as they say it is old; text the model reads may not."""
-    s = _server()
+    """A model told to call a tool that is gone guesses, or gives up."""
     surface = _surface()
     tools = {t["name"] for t in surface["tools"]}
     model_reads = {"instructions": surface["instructions"].splitlines()}
@@ -186,27 +181,20 @@ def test_every_tool_the_docs_and_replies_name_exists():
             *sorted((ROOT / ".claude" / "skills" / "race-engineer")
                     .rglob("*.md"))]
     sources = {
-        **{k: (v, False) for k, v in model_reads.items()},
-        **{str(p.relative_to(ROOT)): (
-            p.read_text(encoding="utf-8").splitlines(), True) for p in docs},
-        **{f"server.py:{n}": ([text], False)
-           for n, text in _server_strings()},
+        **model_reads,
+        **{str(p.relative_to(ROOT)): p.read_text(encoding="utf-8")
+           .splitlines() for p in docs},
+        **{f"server.py:{n}": [text] for n, text in _server_strings()},
     }
     not_tools = (_package_identifiers() | set(surface["prompts"])
                  | {p for t in surface["tools"]
                     for p in t["inputSchema"].get("properties", {})})
-    old = re.compile(r"(?<![\w.])(" + "|".join(map(re.escape, s._RENAMED))
-                     + r")(?!\w)")
     bad = []
-    for where, (lines, may_name_old) in sources.items():
+    for where, lines in sources.items():
         for i, line in enumerate(lines, 1):
-            for name in old.findall(line):
-                if not (may_name_old and _OLD.search(line)):
-                    bad.append((where, i, name, s._RENAMED[name]))
             for name in _TOOLISH.findall(line):
-                if (name not in tools and name not in s._RENAMED
-                        and name not in not_tools):
-                    bad.append((where, i, name, None))
+                if name not in tools and name not in not_tools:
+                    bad.append((where, i, name))
     assert not bad, bad
 
 

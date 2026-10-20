@@ -514,10 +514,11 @@ import assetto_mcp.server as s
 from assetto_mcp import db
 
 def apply_update():
-    r = asyncio.run(s.mcp.call_tool("apply_update", {"to_commit": "abc1234"}))
-    content = getattr(r, "content", r)
-    return json.loads((content[0] if isinstance(content, tuple)
-                       else content)[0].text)
+    try:
+        asyncio.run(s.mcp.call_tool("apply_update", {"to_commit": "abc1234"}))
+    except s.ToolError as e:
+        return json.loads(str(e))
+    raise AssertionError("a refused apply was not a failed call")
 
 out = {"check": json.loads(s.check_for_updates())}
 c = s._collector

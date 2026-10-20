@@ -190,10 +190,11 @@ class _Server(FastMCP):
         if payload is not None and called != name:
             payload["deprecated"] = f"{called} is renamed; call {name}"
             _set_text(result, _j(payload))
-        # Tools answer a refusal with an {"error": ...} payload. Raising it
-        # instead marks the result isError, so the client sees a failed call,
-        # and the payload stays the message.
-        if name not in _STATUS_TOOLS and payload and payload.get("error"):
+        # Tools answer a refusal with an {"error": ...} or {"refused": ...}
+        # payload. Raising it instead marks the result isError, so the
+        # client sees a failed call, and the payload stays the message.
+        if name not in _STATUS_TOOLS and payload and (
+                payload.get("error") or payload.get("refused")):
             raise ToolError(_j(payload))
         return result
 

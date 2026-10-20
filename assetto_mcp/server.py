@@ -37,7 +37,7 @@ import statistics  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 from pathlib import Path  # noqa: E402
-from typing import Annotated  # noqa: E402
+from typing import Annotated, Literal  # noqa: E402
 
 from pydantic import Field  # noqa: E402
 
@@ -812,8 +812,10 @@ def compare_to_rival(car_index: int, lap_id: int,
 
     car_index and rival_lap_number: from list_rivals; default their
     quickest captured lap. rival_lap_count (lap number minus one) is
-    deprecated. `time_by_turn`: seconds through each turn and on the road
-    after it, with `where_they_gain` / `where_you_gain`."""
+    deprecated. `time_by_turn`: seconds through each turn (turn-in to exit)
+    and on the road after it to the next turn-in, `delta_s` positive where
+    the rival is quicker, with `where_they_gain` / `where_you_gain`. Their
+    10 Hz trace is good to a few hundredths per stretch."""
     if rival_lap_number is not None:
         if rival_lap_count not in (None, rival_lap_number - 1):
             return _j({"error": "rival_lap_number and rival_lap_count name "
@@ -875,12 +877,6 @@ def compare_to_rival(car_index: int, lap_id: int,
             result["where_you_gain"] = sorted(
                 (r for r in rows if r["delta_s"] < 0),
                 key=lambda r: r["delta_s"])[:5]
-            result["time_by_turn_note"] = (
-                "seconds through each turn (turn-in to exit) and on the road "
-                "after it to the next turn-in, the last turn's running across "
-                "the line, on this session's turns; delta_s positive where "
-                "the rival was quicker. Their trace is about 10 Hz and "
-                "interpolated, good to a few hundredths per stretch.")
     result["my_lap"] = {"id": lap_id,
                         "time_ms": lap["lap_time_ms"],
                         "setup": lap.get("setup_name") or None}
@@ -889,7 +885,7 @@ def compare_to_rival(car_index: int, lap_id: int,
                        "lap_time_ms": chosen["lap_time_ms"],
                        "lap_time_source": chosen.get("lap_time_source")}
     if chosen["lap_time_ms"] is None:
-        result["rival"]["caution"] = (
+        result["rival"]["warning"] = (
             "No lap time recorded for this rival lap, so its pace is "
             "unknown -- it could be an in-lap. Treat speed deltas as "
             "indicative only.")
@@ -957,10 +953,12 @@ def field_benchmark(session_id: int | None = None,
                     ) -> str:
     """Where the quicker cars find their time, turn by turn, against you.
 
-    Per turn, yours and the field's: median time through it and on the road
-    after, minimum and exit speeds, brake point in meters before turn-in,
-    and `available_s` (how much quicker the field is). `priorities`: rows by
-    time available, biggest first.
+    Per turn, yours and the field's medians: time through it (turn-in to
+    exit) and on the road after to the next turn-in, minimum and exit
+    speeds, brake point in meters before turn-in, and `available_s`
+    (positive: the field is quicker). `total_available_s` sums the turns
+    timed on both sides. `priorities`: rows by time available, biggest
+    first.
 
     lap_ids: your laps; default the newest clean ones. car_indexes: default
     every rival whose trace-timed best beats yours. Both take "433,434", a
@@ -1047,7 +1045,7 @@ def field_benchmark(session_id: int | None = None,
         used.append({"car_index": r["car_index"],
                      "driver_name": names.get(r["car_index"]),
                      "car_model": r.get("car_model"),
-                     "laps": [l["lap_count"] for l in laps],
+                     "lap_numbers": [l["lap_count"] + 1 for l in laps],
                      "lap_times_ms": [l["lap_time_ms"] for l in laps]})
     if not rival_sets:
         return _j({"error": "none of the chosen rivals has a trace-timed lap"})
@@ -1107,14 +1105,6 @@ def field_benchmark(session_id: int | None = None,
                            for r in ranked[::-1][:3]
                            if r["available_s"] < 0],
         "total_available_s": round(sum(r["available_s"] for r in ranked), 2),
-        "note": "times are through the turn (turn-in to exit) plus the road "
-                "after it to the next turn-in, the last turn's running "
-                "across the line to the first, medians over laps; "
-                "total_available_s is their sum, the whole lap where every "
-                "stretch was timed on both sides; "
-                "available_s positive where the field is quicker. Brake "
-                "points are meters before turn-in; the field's read up to "
-                "about 7 m early because opponent positions arrive late.",
     }
     if not brake_live:
         out["brake_note"] = ("this server does not send remote pedal inputs, "
@@ -1153,7 +1143,7 @@ def identify_setup(session_id: int | None = None) -> str:
         if state.get("reason"):
             out["setup_state_reason"] = state["reason"]
     if not values:
-        out["what_to_check"] = (
+        out["note"] = (
             "The in-game app posts setup values from ac.getSetupSpinners(). "
             "No values means the app isn't running, or is an older version.")
     return _j(out)
@@ -1364,9 +1354,9 @@ def _record_display_range(field: str, displayed_at_min: float,
                      f"cannot define a scale. Either the screen rounds this "
                      f"entry to a value that does not change across its "
                      f"range, or the same number was read twice.",
-            "what_to_do": "check the reading at each end again; if the "
-                          "screen really does show one number throughout, "
-                          "say so in a record_setup_display note instead."})
+            "do_this": "check the reading at each end again; if the "
+                       "screen really does show one number throughout, "
+                       "say so in a record_setup_display note instead."})
     db.record_display_observation(_conn, car, field, lo, displayed_at_min)
     db.record_display_observation(_conn, car, field, hi, displayed_at_max)
     if note:
@@ -1648,42 +1638,64 @@ def rescore_track_limits() -> str:
     return _j(out)
 
 
+def _lap_row(lap: dict) -> dict:
+    """A list_laps row: what picking a lap needs, not the table's columns."""
+    usable, why = db.lap_usability(lap)
+    done = lap.get("completed_at")
+    return {
+        "id": lap["id"],
+        "session_id": lap["session_id"],
+        "lap_number": lap.get("lap_number"),
+        "lap_time": (analysis._fmt_time(lap["lap_time_ms"])
+                     if lap.get("lap_time_ms") else None),
+        "lap_time_ms": lap.get("lap_time_ms"),
+        "setup_name": lap.get("setup_name") or None,
+        "usable_for_timing": usable,
+        "not_usable_because": why,
+        "ran_wide": bool(lap.get("invalid")),
+        "outlier": bool(lap.get("outlier")),
+        "completed_at": (time.strftime("%Y-%m-%d %H:%M:%S",
+                                       time.localtime(done))
+                         if done else None),
+    }
+
+
 @_tool("List laps")
 def list_laps(session_id: int | None = None,
               limit: Annotated[int, Field(ge=1, le=200)] = 20) -> str:
     """List recorded laps (most recent first), optionally for one session.
-    Returns lap ids to use with lap_summary / compare_lap_corners."""
-    return _j(db.list_laps(_conn, session_id, limit))
+    Returns lap ids to use with lap_summary / compare_lap_corners.
+    `outlier`: far slower than the session's pace, but still usable."""
+    return _j([_lap_row(lap)
+               for lap in db.list_laps(_conn, session_id, limit)])
+
+
+# What the live loop reads of a corner on every lap; detail="full" adds the
+# fractions, the entry phase and the per-axle slip.
+_SUMMARY_CORNER = ("turn", "name", "direction", "gear", "min_speed_kmh",
+                   "apex_m", "brake_before_turn_in_m", "throttle_on_m",
+                   "slip_balance", "peak_lat_g", "body_slip_peak_deg")
 
 
 @_tool("Lap summary")
-def lap_summary(lap_id: int) -> str:
-    """One lap: lap time, throttle/brake/coast split, tyre pressures and core
-    temps, and each corner.
+def lap_summary(lap_id: int,
+                detail: Literal["summary", "full"] = "summary") -> str:
+    """One lap: whether its time counts, throttle/brake/coast split, tyre
+    pressures and core temps, and each corner.
 
-    Each corner: entry/apex/exit positions, min speed, brake and throttle
-    points, peak_lat_g, peak_steer_norm (fraction of full lock, not
-    degrees), slip balance (front minus rear: positive = understeer), and
-    `entry_phase` (brake point or turn-in to apex: slip balance, steer, yaw
-    peak, rotation, body slip). `body_slip_peak_deg`: degrees the nose
-    points inside the car's path; 1-5 normal, tens a slide, large and
-    negative a spin. Quote `turn` (T1, T2... pooled across the session;
-    see track_corners), not `corner` (this lap's ordinal, shifts between
-    laps).
-    `direction` is "left" or "right" (`turn_sign` +1 or -1).
+    Each corner: `turn` (T1, T2... the session's; quote it or `name`),
+    direction, gear, min speed, `brake_before_turn_in_m` (the board),
+    throttle point, slip balance (positive = understeer), peak_lat_g,
+    `body_slip_peak_deg` (1-5 normal, tens a slide, large and negative a
+    spin). detail="full", for explaining a bad lap, adds `entry_phase`,
+    per-axle slip, steer, lap fractions, `corner` (an ordinal: never quote
+    it) and `corner_detection`. Quote positions as `_m` or `where`, never
+    fractions.
 
-    Positions also come in meters (`apex_m`, `at_m`...) and as `where` ("T4
-    braking zone, 90 m before turn-in"); quote those, not fractions.
-    `track_length` says whether the length is the game's or estimated.
-
-    `contacts` (damage rose) is null both for no contact and for damage
-    off: null is not a clean lap. `contacts_inferred`: every spike over 3 g
-    with position, pedals and nearest opponent; verdict "contact" (car
-    within 10 m), "wall" (nobody near, 15+ km/h lost at once: a barrier, or
-    a car the feed never carried), "snap" (nobody near, rotating over 90
-    deg/s; the g is the rotation, not an impact), "kerb" (the rest) or
-    "no_opponent_data" (`if_alone` gives the reading alone). Empty = no
-    spike; null = no acceleration data. Read it before calling a spin a
+    `contacts` (damage) null is not a clean lap. `contacts_inferred`: each
+    spike over 3 g, verdict "contact" (car within 10 m), "wall", "snap"
+    (rotation, not impact), "kerb" or "no_opponent_data" (`if_alone`);
+    [] = no spike, null = no data. Read it before calling a spin a
     driving error."""
     lap = db.get_lap(_conn, lap_id)
     if not lap:
@@ -1705,8 +1717,8 @@ def lap_summary(lap_id: int) -> str:
         out["contacts_inferred"] = analysis.compact_contacts(
             _contacts_inferred(lap, samples))
 
-    # A pointer, not a replacement: lap_summary has a ~1KB budget and the
-    # full suspension report is an order of magnitude bigger.
+    # A pointer, not a replacement: the full suspension report is bigger
+    # than the rest of this lap together.
     lap_count = lap["lap_number"] - 1
     susp_samples = db.get_suspension_samples(_conn, lap["session_id"],
                                              lap_count)
@@ -1714,7 +1726,15 @@ def lap_summary(lap_id: int) -> str:
         compact = suspension.compact(suspension.summarize(susp_samples))
         if compact:
             out["suspension"] = compact
-    return _j(_placed(out, lap["session_id"], cmap["turns"]))
+    out = _placed(out, lap["session_id"], cmap["turns"])
+    if detail == "summary" and "corners" in out:
+        # Read after every lap, so every lap pays for it. The standing
+        # explanations are in the description.
+        for key in ("balance_note", "corner_detection", "samples"):
+            out.pop(key, None)
+        out["corners"] = [{k: c[k] for k in _SUMMARY_CORNER if k in c}
+                          for c in out["corners"]]
+    return _j(out)
 
 
 @_tool("Track corners")
@@ -1723,12 +1743,12 @@ def track_corners(session_id: int | None = None) -> str:
     detected corners: the labels lap_summary uses.
 
     Each turn: start, apex, end, brake point (also in meters),
-    `brake_before_turn_in_m` (negative = braking after turn-in), direction
-    as a sign (not left/right), and laps cornered there. Not the circuit's
-    numbering (flat kinks are skipped, a "3A" is numbered through) and not
-    shared between sessions. With a track sections.ini each turn carries the
-    circuit's `name`, to quote over the T-number, and `circuit_names` lists
-    the named sections. `unnumbered`: road only one lap cornered on."""
+    `brake_before_turn_in_m` (negative = braking after turn-in),
+    `direction` (left/right; `turn_sign` +1/-1), and laps cornered there.
+    Not the circuit's numbering (flat kinks are skipped, a "3A" is numbered
+    through) and not shared between sessions. With a track sections.ini
+    each turn carries the circuit's `name`, to quote over the T-number, and
+    `circuit_names` lists the named sections. `unnumbered`: road only one lap cornered on."""
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id"})
@@ -1906,12 +1926,12 @@ def suspension_report(lap_id: int | None = None,
     """Damper histograms, ride height and roll balance for one lap. Needs the
     in-game app.
 
-    `source` is the capture tier: render-rate is fine for ride height and
-    load transfer, but its damper histograms are body motion, not valving;
-    the CSP physics worker (333 Hz) gives real damper numbers. Pass lap_id
-    from list_laps, or lap_number for a lap not stored (an out-lap, say);
-    lap_id wins if both are given. lap_count (lap number minus one) is
-    deprecated."""
+    `source` is the capture tier: "app" (render rate) is fine for ride
+    height and load transfer, but its damper histograms are body motion,
+    not valving; "worker" (the CSP physics worker, 333 Hz) gives real
+    damper numbers. Pass lap_id from list_laps, or lap_number for a lap not
+    stored (an out-lap, say); lap_id wins if both are given. lap_count (lap
+    number minus one) is deprecated."""
     if lap_number is not None:
         lap_count = lap_number - 1
     sid = _active_session(session_id)
@@ -1937,7 +1957,7 @@ def suspension_report(lap_id: int | None = None,
                        {"lap_number": r["lap_count"] + 1,
                         "source": r["source"],
                         "samples": r["n"]} for r in captured[-10:]],
-                   "hint": ("If this list is empty the in-game app either "
+                   "note": ("If this list is empty the in-game app either "
                             "isn't running or predates suspension capture.")})
 
     out = suspension.summarize(samples)
@@ -1968,7 +1988,7 @@ def suspension_capture_status() -> str:
 
     if not laps:
         out["status"] = "no suspension data in this session"
-        out["what_to_check"] = [
+        out["do_this"] = [
             "Is the Assetto MCP app enabled in the in-game apps sidebar?",
             "Is it the current version? Suspension capture was added after "
             "the first release -- re-run install-windows.bat to update it.",
@@ -1980,7 +2000,7 @@ def suspension_capture_status() -> str:
         out["status"] = ("render-rate capture only: ride height and load "
                          "transfer are trustworthy, damper histograms show "
                          "body motion rather than valving")
-        out["why"] = (
+        out["note"] = (
             "The app tries to start a CSP physics worker for 333Hz damper "
             "data and falls back to render-rate sampling when it can't. "
             "The usual reason is multiplayer: CSP does not allow scripts on "
@@ -1988,7 +2008,7 @@ def suspension_capture_status() -> str:
             "decides what the car does. Damper histograms are therefore a "
             "single-player feature. Ride height, wheel loads and roll "
             "balance never used the worker and are unaffected online.")
-        out["to_get_damper_data"] = (
+        out["do_this"] = (
             "Run the same car and track in a solo practice session. The "
             "app's status window shows the tier: worker, online, "
             "or render-rate fallback.")
@@ -2073,9 +2093,10 @@ def stint_wear(session_id: int | None = None,
     corner per lap, rate per lap, and whether the rate is rising.
 
     Stints are cut at out-laps, pit visits and tyre changes and reported
-    separately. from_lap / to_lap: inclusive lap numbers for an explicit
-    range. `used` counts up, so higher is worse. Laps before schema v9 have
-    no wear."""
+    separately: never compare figures across stints. `boundary_laps` (the
+    pit and tyre-change laps) are in no stint. from_lap / to_lap:
+    inclusive lap numbers for an explicit range. `used` counts up, so
+    higher is worse. Laps before schema v9 have no wear."""
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id"})
@@ -2124,13 +2145,6 @@ def stint_wear(session_id: int | None = None,
         "laps_in_no_stint": len(split["boundary_laps"]),
         "stint_count": len(split["stints"]),
         "boundary_laps": split["boundary_laps"],
-        "segmentation_note":
-            "laps are cut into stints at out-laps, pit visits, and any point "
-            "where remaining wear rose (a fresh set) -- either between two "
-            "laps or within one. Totals and trends below are per stint; "
-            "comparing across stints compares two different sets of tyres. "
-            "`boundary_laps` are held out of every stint and are counted in "
-            "`laps_considered` but in no stint's figures.",
         "stints": [],
     }
     if from_lap is not None or to_lap is not None:
@@ -2192,14 +2206,18 @@ def attitude_report(lap_id: int) -> str:
 
 
 @_tool("Compare two laps by corner")
-def compare_lap_corners(lap_id_a: int, lap_id_b: int) -> str:
+def compare_lap_corners(lap_id_a: int, lap_id_b: int,
+                        detail: Literal["summary", "full"] = "summary"
+                        ) -> str:
     """Corner-by-corner comparison of two laps on the same track: min speed,
-    brake point and slip balance deltas (a minus b).
+    brake point and slip balance deltas, all lap a minus lap b
+    (`a_slower_by_ms` too).
 
-    `turn` labels come from these two laps alone (`turns` gives each apex),
-    so they can differ from lap_summary's. Any two laps are compared, but
-    read `lap_time_warning` before quoting `time_delta_ms`: it says when
-    either time is not a real lap time."""
+    `turn` labels come from these two laps alone, so they can differ from
+    lap_summary's; detail="full" adds `turns` (each apex), lap fractions
+    and `corner_detection`. Any two laps are compared, but read
+    `lap_time_warning` before quoting `a_slower_by_ms`: it says when either
+    time is not a real lap time."""
     a, b = db.get_lap(_conn, lap_id_a), db.get_lap(_conn, lap_id_b)
     if not a or not b:
         return _j({"error": "one or both lap ids not found"})
@@ -2209,7 +2227,18 @@ def compare_lap_corners(lap_id_a: int, lap_id_b: int) -> str:
     warning = _lap_time_warning({"A": a, "B": b})
     if warning:
         out["lap_time_warning"] = warning
-    return _j(_placed(out, a["session_id"], out.get("turns")))
+    out = _placed(out, a["session_id"], out.get("turns"))
+    if detail == "summary" and "corners" in out:
+        for key in ("turns", "turns_note", "corner_detection"):
+            out.pop(key, None)
+        out["corners"] = [_without_fractions(c) for c in out["corners"]]
+    return _j(out)
+
+
+def _without_fractions(d: dict) -> dict:
+    """The dict less each lap fraction that has its meters beside it."""
+    twins = {**places.POSITION_KEYS, **places.DELTA_KEYS}
+    return {k: v for k, v in d.items() if twins.get(k) not in d}
 
 
 def _lap_time_warning(laps: dict) -> str | None:
@@ -2358,7 +2387,8 @@ def compare_runs(baseline_laps: str | int | list[int] | None = None,
                  include_invalid: bool | None = None,
                  baseline_setup: str | None = None,
                  candidate_setup: str | None = None,
-                 session_id: int | None = None) -> str:
+                 session_id: int | None = None,
+                 detail: Literal["summary", "full"] = "summary") -> str:
     """Did a setup change do anything, given lap-to-lap noise?
 
     baseline_laps / candidate_laps: lap ids before and after, "87,88",
@@ -2370,19 +2400,17 @@ def compare_runs(baseline_laps: str | int | list[int] | None = None,
     Metrics are one corrected family: read `p_value_adjusted` against 0.05,
     not `p_value`. "suggestive" cleared 95% only uncorrected: run more laps.
     "within noise" is not "no effect": read `resolution` (smallest change
-    these laps catch half the time) and `power`. `lap_time_consistency`
-    needs six laps a side. `corner_leads` are uncorrected and exploratory:
-    where to look, never a finding. Their turn labels come from the laps
-    compared and can differ from the session's T-numbers. `measured_setup_warning`: both sides ran
-    identical measured values, so nothing here is the change.
+    these laps catch half the time) and `power` (the chance of catching the
+    change measured). `lap_time_consistency` needs six laps a side.
+    `measured_setup_warning`: both sides ran identical measured values, so
+    nothing here is the change. detail="full" adds `corner_leads`,
+    exploratory: where to look once a metric moved, never a finding.
 
-    Laps that ran wide or had an inferred contact are counted, and listed in
-    `ran_wide` and `contacts`. clean_laps_only=True drops the ran-wide laps;
-    include_invalid is its deprecated reverse. Laps whose time is not a lap
-    time (abandoned, out-lap, pit stop) are in `excluded_laps`. With three
-    or more laps a side, laps over 1.75% slower than their side's median
-    are left out of the lap-time mean only, listed in
-    `lap_time_set_aside`."""
+    Laps that ran wide or had an inferred contact are counted, listed in
+    `ran_wide` and `contacts`; clean_laps_only=True drops the ran-wide ones
+    (include_invalid is its deprecated reverse). `excluded_laps`: laps
+    whose time is not a lap time. `lap_time_set_aside`: laps over 1.75%
+    slower than their side's median, kept out of the lap-time mean only."""
     deprecated_note = None
     if include_invalid is not None:
         if clean_laps_only and include_invalid:
@@ -2622,7 +2650,16 @@ def compare_runs(baseline_laps: str | int | list[int] | None = None,
         out["laps_by_setup"] = by_setup
     if deprecated_note:
         out["deprecated"] = deprecated_note
-    return _j(_placed(out, base_laps[0]["session_id"], out.get("turns")))
+    out = _placed(out, base_laps[0]["session_id"], out.get("turns"))
+    if detail == "summary":
+        # The leads are where to look once a metric moved, and the notes
+        # explain the method the description already states.
+        for key in ("corner_leads", "corner_leads_note", "turns",
+                    "turns_note", "resolution_note", "corner_detection"):
+            out.pop(key, None)
+        out["multiple_comparisons"].pop("note", None)
+        out["metrics"].get("lap_time_consistency", {}).pop("note", None)
+    return _j(out)
 
 
 def _measured_setups(base_laps: list[dict], cand_laps: list[dict]) -> dict:
@@ -2679,9 +2716,10 @@ def time_delta_along_lap(
     """Where lap b gained or lost time against lap a along the whole track,
     straights and sweepers included.
 
-    Read `gain_ms` per segment (positive = lap b slower there); the
-    cumulative figure only says a gap exists. segments: rows to split the
-    track into."""
+    Read `b_lost_ms` per segment (positive = lap b slower there; null = not
+    sampled on both laps); `b_lost_so_far_ms` and `b_slower_by_ms` only say
+    a gap exists. compare_lap_corners subtracts the other way, lap a minus
+    lap b. segments: rows to split the track into."""
     a, b = db.get_lap(_conn, lap_id_a), db.get_lap(_conn, lap_id_b)
     if not a or not b:
         return _j({"error": "one or both lap ids not found"})
@@ -2713,12 +2751,14 @@ def list_driver_tags(session_id: int | None = None,
                      limit: Annotated[int, Field(ge=1, le=200)] = 50,
                      all_sessions: bool = False) -> str:
     """Complaint tags the driver pressed in-game (understeer, oversteer,
-    braking, traction, note), each with a spline position (0-1) comparable
-    to lap_summary's apex_pos and the lap_count when pressed (current lap =
-    lap_count + 1). Defaults to the active session; all_sessions=True for
-    everything."""
+    braking, traction, note), each with its place on the lap and the
+    `lap_number` it was pressed on. Defaults to the active session;
+    all_sessions=True for everything."""
     sid = None if all_sessions else _active_session(session_id)
     notes = db.list_notes(_conn, sid, limit)
+    for n in notes:
+        # Stored as AC's completed-lap count, one behind the lap driven.
+        n["lap_number"] = n.pop("lap_count") + 1
     orphans = db.count_orphan_notes(_conn)
     out = {"session_id": sid, "notes": notes}
     if orphans and not all_sessions:
@@ -2747,7 +2787,9 @@ def send_driver_message(
 
 @_tool("In-game app bridge status", status=True)
 def bridge_status() -> str:
-    """Health of the HTTP bridge the in-game app connects to."""
+    """Health of the HTTP bridge the in-game app connects to: its port, the
+    `error` binding it, and the overlay message waiting. Not whether the
+    app is connected."""
     return _j({"port": _bridge.port if _bridge else None,
                "error": _bridge.error if _bridge else "not running",
                "pending_message": _bridge.get_message() if _bridge else None})

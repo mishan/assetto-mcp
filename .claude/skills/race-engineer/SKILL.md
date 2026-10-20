@@ -94,8 +94,10 @@ mitigation, not a habit. A spin that looks like a driving error can be a
 Do these in the first minute, before the first flying lap lands. Several can
 go in one round of calls.
 
-1. `start_recording` and `recording_status`. Read `state`; "standby" means
-   another server instance holds the recorder and that is fine.
+1. `recording_status`; recording starts with the server. Read `state`:
+   "standby" means another server instance holds the recorder and that is
+   fine. `start_recording` only for "never_started", or when the driver
+   wants recording back on after a stop.
 2. `live_snapshot` for car, track, layout, air and road temperature, fuel.
 3. `identify_setup` with the session id. If the driver has told you what they
    loaded, `set_session_setup` with that name now; it applies forward only,
@@ -137,8 +139,10 @@ and only between sessions; then `restart_server`.
 
 A lap lands. In one round of calls: `lap_summary` for it, `live_snapshot`
 for fuel and the current tyre state, and, from the second flying lap on,
-`compare_lap_corners` against the best clean lap so far. In debrief mode,
-note the four things below and say nothing. In live mode, say them, briefly:
+`compare_lap_corners` against the best clean lap so far. Their default,
+`detail="summary"`, is the lap read; `detail="full"` is for explaining a
+lap. In debrief mode, note the four things below and say nothing. In live
+mode, say them, briefly:
 
 - **The time, and where it came from.** Corner min-speed deltas and brake
   points against the previous best, in meters. "Brake points within 5 m
@@ -180,9 +184,10 @@ each step changes how the next one reads:
 2. The excursion: `track_limits` says how many wheels and for how long; the
    samples say where, at what speed, on what inputs, against the same
    stretch of the previous clean lap.
-3. The corner's `entry_phase`: brake point against turn-in, rear slip
-   against front, yaw peak and rotation. A brake input after turn-in on a
-   loaded corner is the shape of most of this driver's spins.
+3. The corner's `entry_phase` (`lap_summary` with `detail="full"`):
+   brake point against turn-in, rear slip against front, yaw peak and
+   rotation. A brake input after turn-in on a loaded corner is the shape
+   of most of this driver's spins.
 4. Only then setup. Most bad laps are traffic, a kerb, or an input, and a
    setup change proposed for one of those is a change proposed for nothing.
 
@@ -192,10 +197,10 @@ One variable at a time, three clean laps a side as the floor, four when the
 question is lap time. `compare_runs` judges against the driver's own spread;
 read `p_value_adjusted`, `resolution` and `power`, and treat "within noise"
 on a short run as "too short", not "no effect". A metric that moved is a
-finding; a corner lead is a place to look. The mechanism is often visible
-before the statistics are: braking distance at the same entry speed, the
-front-to-rear slip ratio under straight-line braking, entry yaw, tyre
-temperature spread. Report the mechanism and say what the statistics could
+finding; a corner lead (`detail="full"`) is a place to look. The mechanism
+is often visible before the statistics are: braking distance at the same
+entry speed, the front-to-rear slip ratio under straight-line braking,
+entry yaw, tyre temperature spread. Report the mechanism and say what the statistics could
 and could not see.
 
 Changes on the wheel (brake bias, TC, ABS) do not change the setup file.
@@ -242,7 +247,8 @@ What to change, in the order it has paid off with this driver:
   better, the in-game estimator's "laps at N liters" figure the driver can
   read off the fuel screen. Plan the race laps plus one lap of margin and no
   more; the driver trims anything beyond that. Say what margin the number
-  carries. A race lap count is a thing to ask for; the tool cannot read it.
+  carries. `live_snapshot` reads `race_laps` in a race of laps; in a timed
+  race, ask.
 - **Tyres over a race distance.** `stint_wear` with the lap range. This car's
   rear wear rate has more than doubled from lap 10 of every stint measured;
   budget for it in anything longer than 12 laps, and check the loaded rear

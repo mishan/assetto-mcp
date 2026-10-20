@@ -25,7 +25,9 @@ lap ids takes the same shapes: one id, a list, "87,88", "87 88" or "87-90".
 
 **`start_recording()`** -- idempotent; recording starts with the server
 anyway, so this mostly undoes a `stop_recording`. If another instance holds
-the recorder this one stands by and says so. Call it first every session.
+the recorder this one stands by and says so. Call it only when
+`recording_status` says "never_started", or the driver wants recording
+back on after a stop.
 
 **`recording_status()`** -- read `state`, not `running`: "never_started" and
 "stopped_by_request" look identical otherwise. "standby" is healthy.
@@ -54,7 +56,9 @@ where the track length came from in `track_length`; see "Positions into
 meters" in `analysis.md`.
 
 **`list_laps(session_id, limit)`** -- most recent first, with ids for the lap
-tools.
+tools: lap number, `lap_time`, `setup_name`, `usable_for_timing` (with
+`not_usable_because`), `ran_wide`, `outlier` (far off the session's pace,
+still usable) and `completed_at` in local time.
 
 **`storage_report()`** -- database size and thinning. `sample_stride` above 1
 on a lap means its trace was decimated; numbers are intact, resolution is
@@ -107,19 +111,23 @@ not a tool.
 
 ## 3. Reading one lap
 
-**`lap_summary(lap_id)`** -- the workhorse. Read in this order:
+**`lap_summary(lap_id, detail)`** -- the workhorse. The default
+`detail="summary"` is the lap read; `detail="full"` adds what explaining a
+bad lap needs (`entry_phase`, front and rear slip, steer, entry and exit
+points, the fractions, `corner_detection`). Read in this order:
 
 - `usable_for_timing` and `not_usable_because`; `ran_wide` and
   `track_limits` (wheels out, excursions, milliseconds off).
 - `contacts_inferred` (see group 6) before anything else about a bad lap.
-- `corners[]`: each has `turn` (the session's label, quote this),
-  `corner` (this lap's ordinal, do not quote), `apex_pos`, `entry_pos`,
-  `exit_pos`, `brake_point_pos`, `throttle_on_pos`, `min_speed_kmh`, `gear`,
-  `peak_steer_norm` (fraction of full lock, not degrees), `peak_lat_g`,
-  `slip_balance` (positive front slides more), `front_slip`, `rear_slip`,
-  `direction` ("left" or "right"; `turn_sign` +1 or -1), and `entry_phase` (from brake point or
+- `corners[]`: each has `turn` (the session's label, quote this), `name`,
+  `direction` ("left" or "right"), `gear`, `min_speed_kmh`, `apex_m`,
+  `brake_before_turn_in_m`, `throttle_on_m`, `slip_balance` (positive
+  front slides more), `peak_lat_g` and `body_slip_peak_deg`. Full adds
+  `corner` (this lap's ordinal, do not quote), `turn_sign`, the `_pos`
+  fractions, `peak_steer_norm` (fraction of full lock, not degrees),
+  `front_slip`, `rear_slip` and `entry_phase` (from brake point or
   turn-in to apex: slip balance, mean steer, yaw peak, rotation, body
-  slip), and `body_slip_peak_deg`: how far the nose points inside the
+  slip). `body_slip_peak_deg` is how far the nose points inside the
   car's path. A GT3 car corners at 1-5 degrees at the apex, up to 7 on
   entry; tens of degrees is a slide caught, large and negative a spin, and a slip balance that reads understeer next to a
   large body slip is a car that rotated. Entry
@@ -134,16 +142,16 @@ not a tool.
 - `overall_slip_balance` and `slip_quality`; `accel_samples_dropped`
   (spikes past 6 g dropped from the peaks; they are still in
   `contacts_inferred`).
-- `corner_detection`: which bar the corners were found against. With one
-  lap in the reference it is that lap's own peak, and every other lap is
-  judged against it; the numbering settles after a few laps.
+- `corner_detection` (full): which bar the corners were found against.
+  With one lap in the reference it is that lap's own peak, and every other
+  lap is judged against it; the numbering settles after a few laps.
 - `suspension` headlines when the app captured them; `suspension_report`
   for the rest.
 
 Quote `where` and the `_m` fields, never the fraction beside them.
 
 **`track_corners(session_id)`** -- where each T-number is: start, apex, end,
-brake point, sign, and how many laps cornered there. Built per session
+brake point, direction, and how many laps cornered there. Built per session
 from the laps driven, so the numbering is the session's, not the circuit's:
 a flat kink is not numbered, and 3A is numbered straight through. The
 numbering is also not the same in `compare_lap_corners` (built from those
@@ -205,25 +213,31 @@ so "is ABS aggressive enough" cannot be answered from them or from the
 setup value; the axle slip is what the driver feels. The straight-line
 filter matters: slip under combined braking and cornering is high by
 construction, and every trail-braked entry would read as a lockup.
-The lockup threshold is uncalibrated; read the distribution. Pass `points`.
+The lockup threshold is uncalibrated; read the distribution.
 
 ## 4. Comparing laps and runs
 
-**`compare_lap_corners(lap_id_a, lap_id_b)`** -- corner by corner: min speed
-delta, brake point delta, slip balance delta. Deltas are a minus b; a negative
-`min_speed_delta_kmh` means lap b carried more speed. Read
-`lap_time_warning` before quoting `time_delta_ms`. Its turn numbering is
-its own. An out-lap or a lap that ended in the barrier still has real
-corner speeds, so any two laps compare.
+**`compare_lap_corners(lap_id_a, lap_id_b, detail)`** -- corner by corner:
+min speed delta, brake point delta in meters, slip balance delta. Deltas
+are a minus b; a negative `min_speed_delta_kmh` means lap b carried more
+speed, and `a_slower_by_ms` is lap a's time minus lap b's. Read
+`lap_time_warning` before quoting it. Its turn numbering is its own;
+`detail="full"` lists it in `turns`. An out-lap or a lap that ended in the
+barrier still has real corner speeds, so any two laps compare.
 
 **`time_delta_along_lap(lap_id_a, lap_id_b, segments)`** -- where the time
 went, including straights and sweepers no corner detector flagged. Read
-`gain_ms` per segment; the cumulative figure only says a gap exists. 1 to
-200 segments.
+`b_lost_ms` per segment (positive: lap b lost time there);
+`b_lost_so_far_ms` and `b_slower_by_ms` only say a gap exists. This one
+subtracts lap a from lap b, the other way round from
+`compare_lap_corners`; the key names say which lap is slower. 1 to 200
+segments.
 
 **`compare_runs(baseline_laps, candidate_laps, clean_laps_only,
-include_invalid, baseline_setup, candidate_setup, session_id)`** -- the A/B
-judge. Each side is a lap id list, or a setup name: `baseline_setup` /
+include_invalid, baseline_setup, candidate_setup, session_id, detail)`**
+-- the A/B judge. The default `detail="summary"` has the verdicts and
+every warning; `detail="full"` adds `corner_leads` and the method notes.
+Each side is a lap id list, or a setup name: `baseline_setup` /
 `candidate_setup` take every lap in the session labeled with it, and
 `laps_by_setup` lists which: a name is only as right as the labels, so
 check that list before quoting the result. Read:
@@ -238,10 +252,10 @@ check that list before quoting the result. Read:
   moved. A large `resolution` means the run was too short, not that the
   change did nothing.
 - `lap_time_consistency`: needs six a side to say anything.
-- `corner_leads`: exploratory, uncorrected, about 5% of quiet corners show
-  up, and with up to five channels a corner most runs with nothing changed
-  carry at least one (`corner_leads_note` gives the figure). Where to look
-  when a metric moved; never a finding.
+- `corner_leads`, with `detail="full"` only: exploratory, uncorrected,
+  about 5% of quiet corners show up, and with up to five channels a corner
+  most runs with nothing changed carry at least one (`corner_leads_note`
+  gives the figure). Where to look when a metric moved; never a finding.
 - `lap_time_set_aside`: with three or more laps a side, laps more than
   1.75% slower than their side's median (a moment, or a slow first lap),
   left out of the lap-time mean so one such lap does not set the spread. They stay in `lap_time_consistency` and the corners. A side
@@ -260,8 +274,7 @@ check that list before quoting the result. Read:
   `measured_setup_note` says when a side spans two setups or has laps
   nothing measured.
 
-Pass `clean_laps_only=false` and `include_invalid=null` explicitly. Both
-sides must be the same car on the same layout. `clean_laps_only=true`
+Both sides must be the same car on the same layout. `clean_laps_only=true`
 drops ran-wide laps (worth it when the question is a clean lap time); it
 does not drop contact laps. `include_invalid=false` is honored as
 `clean_laps_only=true`, and the reply says so.
@@ -279,9 +292,8 @@ six laps is not evidence the change did nothing.
 **`stint_wear(session_id, from_lap, to_lap)`** -- remaining and used per tyre
 per lap, the rate, and whether the rate is rising. Segmented into stints
 at out-laps, pit visits and tyre changes. `from_lap`/`to_lap` are inclusive
-lap numbers and are required by this client; use the session's first and
-last lap numbers for everything. Wear, not pressure, is the evidence a
-tyre went off: hot pressure and core temperature move with half a dozen
+lap numbers; leave both out for the newest 200 laps. Wear, not pressure,
+is the evidence a tyre went off: hot pressure and core temperature move with half a dozen
 other things. A steady wear rate is not a tyre going off; only a rising
 rate is. A session is not a stint, which is why it segments: differencing
 the first set's start against the last set's end can call a healthy tyre
@@ -379,10 +391,9 @@ what the screen will show, with a source per entry. Refuses to reuse a
 name (write under `suggested_name`, or ask; `overwrite=true` backs the old
 file up first) and refuses without ranges (`allow_unclamped=true` is the
 driver's call, not yours: the fix is opening the setup screen once with
-the app running). Pass `allow_unclamped=false` explicitly. Both refusals
-cover what is invisible from here: a replaced hand-built setup looks like
-nothing from the setup screen, and AC loads an out-of-range value, shows
-it, and ignores it.
+the app running). Both refusals cover what is invisible from here: a
+replaced hand-built setup looks like nothing from the setup screen, and AC
+loads an out-of-range value, shows it, and ignores it.
 Where the client can put a question to the driver itself (MCP
 elicitation), both refusals become that question, and the driver's answer
 decides whatever the flags say; `declined` in a refusal means they said no.
@@ -412,16 +423,19 @@ is percent front.
 **`list_driver_tags(session_id, limit, all_sessions)`** -- complaint tags
 pressed on the wheel (understeer, oversteer, braking, traction, note) with
 a spline position comparable to `apex_pos` (with `at_m` and `where`
-beside it) and the lap they were pressed
-on (current lap = `lap_count` + 1). Correlate with the corner's slip
-balance and steer.
+beside it) and the `lap_number` they were pressed on. Correlate with the
+corner's slip balance and steer.
 
 **`send_driver_message(text)`** -- one sentence on the in-game overlay. Fails
 when the bridge port is held by an orphaned server; not worth chasing
 during a session.
 
-**`bridge_status()`** -- whether the in-game app is connected. Without it:
-no opponents, no suspension, no setup-screen values, no messages.
+**`bridge_status()`** -- the port the in-game app talks to, `error` when this
+instance could not bind it (another instance holds it), and the message
+waiting on the overlay. It cannot see whether the app is connected: data
+arriving (`suspension_capture_status`, `identify_setup`'s `live_values`)
+is the sign it is. Without the app: no opponents, no suspension, no
+setup-screen values, no messages.
 
 ## 9. The server itself
 

@@ -517,8 +517,8 @@ def summarize(samples: list[dict], source: str | None = None) -> dict:
 def compact(summary: dict) -> dict | None:
     """The few lines worth folding into lap_summary.
 
-    lap_summary has a ~1KB budget and suspension is not its main job, so
-    this is a pointer to suspension_report rather than a replacement for it.
+    lap_summary is read after every lap and suspension is not its main job,
+    so this is a pointer to suspension_report rather than a replacement.
     """
     if not summary.get("available"):
         return None

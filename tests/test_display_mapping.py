@@ -537,7 +537,7 @@ def test_both_ends_reading_the_same_number_is_refused():
     out = _call(srv.record_setup_display, car="flat_car", field="TOE_OUT_LF",
                 displayed_at_min=0.5, displayed_at_max=0.5)
     assert "error" in out and "cannot define a scale" in out["error"], out
-    assert "record_setup_display" in out["what_to_do"], out
+    assert "record_setup_display" in out["do_this"], out
     assert db.display_observations(srv._conn, "flat_car") == {}, out
 
 

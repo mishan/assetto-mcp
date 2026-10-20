@@ -365,21 +365,21 @@ def test_delta_finds_time_lost_between_corners():
     assert "error" not in out, out
     worst = out["worst_losses"][0]
     assert 0.55 <= worst["from"] <= 0.75, worst
-    assert worst["gain_ms"] > 100, worst
+    assert worst["b_lost_ms"] > 100, worst
 
     # Segments outside the slow stretch should be ~flat.
     quiet = [r for r in out["segments"] if r["to"] <= 0.55]
-    assert all(abs(r["gain_ms"]) < 20 for r in quiet), quiet
+    assert all(abs(r["b_lost_ms"]) < 20 for r in quiet), quiet
     print(f"  loss localized to {worst['from']}-{worst['to']}, "
-          f"{worst['gain_ms']}ms")
+          f"{worst['b_lost_ms']}ms")
 
 
 def test_delta_is_zero_for_a_lap_against_itself():
     lap = _lap()
     out = analysis.delta_by_position(_meta(1, 113000), lap,
                                      _meta(2, 113000), lap)
-    assert all(abs(r["gain_ms"]) < 1e-6 for r in out["segments"]), out
-    assert abs(out["segments"][-1]["cumulative_ms"]) < 1e-6
+    assert all(abs(r["b_lost_ms"]) < 1e-6 for r in out["segments"]), out
+    assert abs(out["segments"][-1]["b_lost_so_far_ms"]) < 1e-6
 
 
 def test_cumulative_matches_the_lap_time_difference():
@@ -388,7 +388,7 @@ def test_cumulative_matches_the_lap_time_difference():
     slow_ms = int(slow[-1]["t_ms"])
     out = analysis.delta_by_position(_meta(1, 113000), fast,
                                      _meta(2, slow_ms), slow)
-    final = out["segments"][-1]["cumulative_ms"]
+    final = out["segments"][-1]["b_lost_so_far_ms"]
     # Within a segment's worth of resolution of the true difference.
     assert abs(final - (slow_ms - 113000)) < 60, (final, slow_ms - 113000)
     print(f"  cumulative {final}ms vs true {slow_ms - 113000}ms")
@@ -415,11 +415,11 @@ def test_a_spin_does_not_invent_a_phantom_gain():
     out = analysis.delta_by_position(_meta(1, 113000), lap,
                                      _meta(2, int(spun[-1]["t_ms"])), spun)
     assert "error" not in out, out
-    assert all(r["gain_ms"] > -50 for r in out["segments"]), \
-        [r for r in out["segments"] if r["gain_ms"] <= -50]
+    assert all(r["b_lost_ms"] > -50 for r in out["segments"]), \
+        [r for r in out["segments"] if r["b_lost_ms"] <= -50]
     # The loss is real and must persist to the end, not wash out.
-    assert out["segments"][-1]["cumulative_ms"] > SPIN_MS * 0.8, out["segments"][-1]
-    print(f"  spin costs {out['segments'][-1]['cumulative_ms']}ms, no phantom gain")
+    assert out["segments"][-1]["b_lost_so_far_ms"] > SPIN_MS * 0.8, out["segments"][-1]
+    print(f"  spin costs {out['segments'][-1]['b_lost_so_far_ms']}ms, no phantom gain")
 
 
 def test_partial_overlap_is_refused():
@@ -458,12 +458,12 @@ def test_time_lost_at_the_very_end_of_the_lap_is_reported():
     assert len(out["segments"]) == 20, len(out["segments"])
     worst = out["worst_losses"][0]
     assert worst["from"] >= 0.9, worst
-    assert worst["gain_ms"] > 5000, worst
+    assert worst["b_lost_ms"] > 5000, worst
     # And the part genuinely beyond the last sample is named, not hidden.
     assert out["unaccounted_ms"] > 0, out["unaccounted_ms"]
     assert abs(out["accounted_ms"] + out["unaccounted_ms"]
-               - out["total_delta_ms"]) < 1.0, out
-    print(f"  {worst['gain_ms']}ms found at {worst['from']}-{worst['to']}, "
+               - out["b_slower_by_ms"]) < 1.0, out
+    print(f"  {worst['b_lost_ms']}ms found at {worst['from']}-{worst['to']}, "
           f"{out['unaccounted_ms']}ms beyond the last sample")
 
 

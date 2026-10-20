@@ -193,8 +193,8 @@ def test_time_by_turn_says_what_the_quicker_corner_was_worth():
     rows = analysis.time_by_turn(mine, theirs, {"T1": "Turn 1"})
     turn = next(r for r in rows if r["stretch"] == "Turn 1")
     expect = 0.1 * LENGTH / (100 / 3.6) - 0.1 * LENGTH / (125 / 3.6)
-    assert abs(turn["delta_s"] - expect) < 0.03, (turn, expect)
-    print(f"  Turn 1 worth {turn['delta_s']:.3f} s to the rival")
+    assert abs(turn["rival_faster_by_s"] - expect) < 0.03, (turn, expect)
+    print(f"  Turn 1 worth {turn['rival_faster_by_s']:.3f} s to the rival")
 
 
 # A second turn that runs across the line, taken flat.
@@ -251,7 +251,7 @@ def test_time_by_turn_adds_up_to_the_lap_difference():
     assert rows[-1]["stretch"] == "after T2", rows
     assert next(m for m in mine if m["turn"] == "T2")["min_kmh"] == 200.0
     lap_delta = _lap_seconds(100.0) - _lap_seconds(125.0)
-    total = sum(r["delta_s"] for r in rows)
+    total = sum(r["rival_faster_by_s"] for r in rows)
     assert abs(total - lap_delta) < 0.1, (total, lap_delta)
     print(f"  turns add to {total:.3f} s of a {lap_delta:.3f} s lap gap")
 
@@ -416,7 +416,7 @@ def test_compare_to_rival_times_every_stretch_of_the_lap():
     rows = out["time_by_turn"]
     assert len(rows) == 4, rows
     lap_delta = _lap_seconds(100.0) - _lap_seconds(125.0)
-    total = sum(r["delta_s"] for r in rows)
+    total = sum(r["rival_faster_by_s"] for r in rows)
     assert abs(total - lap_delta) < 0.15, (total, lap_delta, rows)
 
 

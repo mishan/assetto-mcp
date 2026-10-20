@@ -475,7 +475,7 @@ def build(conn, session_id: int | None = None,
     week's -- but not from different cars or layouts. World coordinates
     only share an origin within one layout, so two layouts would be drawn
     over each other as though they were one circuit; and a line is only
-    comparable with one driven in the same car, the rule driving_line
+    comparable with one driven in the same car, the rule compare_laps
     already applies.
 
     Raises ValueError, with a sentence meant for the driver, when there is

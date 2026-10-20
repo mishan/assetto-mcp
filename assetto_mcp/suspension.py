@@ -518,7 +518,8 @@ def compact(summary: dict) -> dict | None:
     """The few lines worth folding into lap_summary.
 
     lap_summary is read after every lap and suspension is not its main job,
-    so this is a pointer to suspension_report rather than a replacement.
+    so this is a summary of chassis_report's suspension aspect rather than
+    a replacement.
     """
     if not summary.get("available"):
         return None
@@ -539,5 +540,6 @@ def compact(summary: dict) -> dict | None:
         if "low_speed_share_pct" in front:
             out["front_low_speed_damper_pct"] = front["low_speed_share_pct"]
         if dampers.get("caution"):
-            out["caution"] = "render-rate sampling; see suspension_report"
+            out["caution"] = ("render-rate sampling: the damper figure is "
+                              "body motion, not valving")
     return out

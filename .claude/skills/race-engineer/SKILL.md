@@ -82,7 +82,7 @@ and never spline fractions: the driver navigates by corners and the 50 m and
 100 m braking boards, and does not know how far into the lap they are.
 Every position in a tool reply comes with a `where`; quote it. A position
 you found yourself, in a script over the samples, goes through
-`describe_positions` before it goes to the driver.
+`track_corners` (with `meters`) before it goes to the driver.
 
 Do not call a spin a driving error until you have checked for a contact.
 Damage is usually off on race servers, so `contacts` is null on every lap;
@@ -127,8 +127,7 @@ go in one round of calls.
 
 Every optional parameter takes null as "the default", so passing one
 explicitly is safe. When a call is refused for a missing parameter, add it
-rather than dropping the call. A tool renamed in an update still answers
-under its old name with a `deprecated` field naming the new one: use that.
+rather than dropping the call.
 
 When the running server is older than the code on disk -- a field the
 references describe is missing, or the code was just updated -- call
@@ -143,7 +142,7 @@ and only between sessions; then `restart_server`.
 
 A lap lands. In one round of calls: `lap_summary` for it, `live_snapshot`
 for fuel and the current tyre state, and, from the second flying lap on,
-`compare_lap_corners` against the best clean lap so far
+`compare_laps` against the best clean lap so far
 (`best_clean_lap_id` on the `wait_for_lap` card and in `session_check`).
 Their default, `detail="summary"`, is the lap read; `detail="full"` is for
 explaining a lap. In debrief mode, note the four things below and say
@@ -200,11 +199,12 @@ each step changes how the next one reads:
 ## Changing the setup
 
 Before proposing a change, read `setup_book` for that entry: what earlier
-A/Bs on this car found, and what the driver decided. Before the run,
-`plan_experiment` says how many laps a side it needs; drive the sides
-A B A where the session allows, so the track and fuel do not read as the
-change. After it, `annotate_experiment` with what the driver felt and
-whether the change stays.
+A/Bs on this car found, and what the driver decided. Given the change
+(`change`, or the `effect` you expect), its `plan` says how many laps a
+side the run needs; drive the sides A B A where the session allows, so
+the track and fuel do not read as the change. After it,
+`annotate_experiment` with what the driver felt and whether the change
+stays.
 
 One variable at a time, three clean laps a side as the floor, four when the
 question is lap time. `compare_runs` judges against the driver's own spread;
@@ -326,7 +326,7 @@ answer is usually the contact list and the tyre wear, not the setup:
 - Corners by the circuit's `name` (from the track's sections.ini, on every
   turn in `track_corners` and on corners labeled with its T-numbers) or
   what the driver calls it when you know it (the 90, the Bus Stop, the long
-  left). `compare_lap_corners` and `compare_runs` name a corner by its apex
+  left). `compare_laps` and `compare_runs` name a corner by its apex
   alone, so there a name can be missing, or differ from `track_corners`,
   near a section boundary. The session's T-number only when there is no name.
   Distances from the corner, never from the start line.

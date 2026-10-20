@@ -52,7 +52,7 @@ with extended physics.
 **ABS and TC intervention.** The stored `abs_active` and `tc_active` are a
 setting or threshold, constant across a lap. The real flags are
 `ac.CarState.absInAction` and `tractionControlInAction`, which are
-physics-only. With them, `braking_report` could say when ABS acted rather
+physics-only. With them, `chassis_report` could say when ABS acted rather
 than inferring it from slip.
 
 ---
@@ -84,7 +84,7 @@ than inferring it from slip.
 **Status:** partly done. Session-local numbering is built
 (`analysis.corner_map`, `label_corners`, `track_corners`). Where the track
 ships `data/sections.ini`, turns carry the circuit's own `name`
-(`circuit.py`), and `where` and `describe_positions` use it. Still open:
+(`circuit.py`), and `where` and `track_corners` use it. Still open:
 tracks with no `sections.ini`, and a hand-written override for them.
 
 Without names, turn numbers are the session's, not the circuit's:
@@ -169,8 +169,9 @@ the payload should say so.
   say which gains are which.
 - **Rival habits.** Late-stint fade, lap-time spread, and where each rival
   goes off.
-- **Lines.** Rival `pos_x`/`pos_z` are stored; `driving_line` could overlay
-  the quickest rival's line through a corner the benchmark flags.
+- **Lines.** Rival `pos_x`/`pos_z` are stored; `compare_laps`' line view
+  could overlay the quickest rival's line through a corner the benchmark
+  flags.
 - **A pre-race brief** from practice and qualifying: one card per rival,
   and the quickest rival lap as a ghost in the line map.
 - **Rival data in the handoff.** The race-engineer skill should run

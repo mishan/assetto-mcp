@@ -282,12 +282,13 @@ def test_comparison_finds_where_rival_gains():
     result = analysis.compare_to_rival(_my_samples(0.0), rival)
 
     assert result["track_coverage_pct"] > 95, result["track_coverage_pct"]
-    assert 9.0 < result["mean_delta_kmh"] < 11.0, result["mean_delta_kmh"]
-    assert all(s["delta_kmh"] > 0 for s in result["worst_deficits"])
+    mean = result["mean_rival_faster_by_kmh"]
+    assert 9.0 < mean < 11.0, mean
+    assert all(s["rival_faster_by_kmh"] > 0 for s in result["worst_deficits"])
     assert result["rival_input_fields"]["brake"]["varies"] is True
     assert "brake_points" in result
     assert len(result["brake_points"]["theirs"]) == 3, result["brake_points"]
-    print(f"  mean delta {result['mean_delta_kmh']} km/h, "
+    print(f"  mean delta {mean} km/h, "
           f"brake points {result['brake_points']['theirs']}")
 
 
@@ -312,7 +313,7 @@ def test_missing_input_fields_handled():
              for c in _lap_trace(with_inputs=False)]
     result = analysis.compare_to_rival(_my_samples(), rival)
     assert result["rival_input_fields"]["brake"]["present"] is False
-    assert result["mean_delta_kmh"] is not None
+    assert result["mean_rival_faster_by_kmh"] is not None
     print("  absent inputs handled, speed comparison still works")
 
 

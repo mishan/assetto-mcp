@@ -299,7 +299,8 @@ def test_the_stride_ladder_goes_deeper_than_eight():
 
 
 def test_the_documented_ladder_is_the_ladder():
-    """storage_report's docstring is what an assistant reads to explain it.
+    """session_check's docstring is what an assistant reads to explain
+    its storage figures.
 
     It must name the coarsest stride, or it understates how coarse the
     oldest sessions can get.
@@ -311,7 +312,7 @@ def test_the_documented_ladder_is_the_ladder():
            / "assetto_mcp" / "server.py").read_text()
     doc = next(ast.get_docstring(n) for n in ast.walk(ast.parse(src))
                if isinstance(n, ast.FunctionDef)
-               and n.name == "storage_report")
+               and n.name == "session_check")
     coarsest = retention.STRIDE_LADDER[-1]
     ordinal = {1: "st", 2: "nd", 3: "rd"}.get(coarsest % 10
                                               if coarsest % 100 not in
@@ -324,7 +325,7 @@ def test_the_documented_ladder_is_the_ladder():
 
 
 
-def test_storage_report_says_where_the_drivers_notes_go():
+def test_session_check_says_where_the_drivers_notes_go():
     """The race-engineer skill finds the data directory here.
 
     It keeps notes about the driver there, not in the repository, where they
@@ -334,11 +335,11 @@ def test_storage_report_says_where_the_drivers_notes_go():
     src = (Path(__file__).resolve().parent.parent
            / "assetto_mcp" / "server.py").read_text()
     fn = next(n for n in ast.walk(ast.parse(src))
-              if isinstance(n, ast.FunctionDef) and n.name == "storage_report")
+              if isinstance(n, ast.FunctionDef) and n.name == "session_check")
     body = ast.get_source_segment(src, fn)
-    assert 'out["data_dir"] = str(DATA_DIR)' in body, body
-    assert 'out["notes_dir"] = str(DATA_DIR / "notes")' in body, body
-    assert "notes_dir" in ast.get_docstring(fn)
+    assert '"data_dir": str(DATA_DIR)' in body, body
+    assert 'out["notes"] = {"dir": str(NOTES_DIR)' in body, body
+    assert "notes folder" in ast.get_docstring(fn)
 
 
 def test_no_driver_notes_are_committed():

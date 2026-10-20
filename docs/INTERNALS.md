@@ -83,18 +83,18 @@ rather than an assumed rate, because a thinned lap isn't 25 Hz any more.
 
 A lap whose trace has been thinned is never re-scored: its evidence was
 computed at full resolution and the samples behind it no longer are. So a
-changed threshold does not reach those laps, and `rescore_track_limits`
-reports how many it skipped for that reason rather than describing the pass
-as covering everything.
+changed threshold does not reach those laps, and
+`scripts/rescore_track_limits.py` reports how many it skipped for that reason
+rather than describing the pass as covering everything.
 
 The threshold is four wheels, not three: on circuits with flat kerbs, such
 as Sebring, three wheels over the line is routine on laps the game counts.
 
 **Because the evidence is stored, the verdict is re-derivable.** Change
-`TRACK_LIMITS_WHEELS` and run `rescore_track_limits`, and every lap still
-holding a full-resolution trace is re-scored from its own samples, without
-re-driving anything. That's the point of storing evidence rather than a
-decision.
+`TRACK_LIMITS_WHEELS` and run `scripts/rescore_track_limits.py`, and every
+lap still holding a full-resolution trace is re-scored from its own samples,
+without re-driving anything. That's the point of storing evidence rather than
+a decision.
 
 **It is still inference, not the game's verdict.** Vanilla AC doesn't expose
 lap validity in shared memory. CSP does — `ac.onLapCompleted` hands a
@@ -139,8 +139,8 @@ The current session is never thinned. `ASSETTO_MCP_MAX_DB_BYTES` sets the
 budget (default 2 GB); `0` disables budget-driven thinning entirely, though
 the per-session cap on suspension samples applies either way. A pass runs once at
 session start, so the cost lands while the car is in the garage rather than
-between two flying laps. `storage_report` says what's stored and what has
-been thinned; `sample_stride` on a lap says by how much.
+between two flying laps. `session_check`'s `storage` says what's stored and
+what has been thinned; `sample_stride` on a lap says by how much.
 
 Progress during a pass is *estimated* from rows removed rather than measured
 from the file. Deleted pages sit on the freelist and in the WAL until a
@@ -177,7 +177,7 @@ left-hander, checked against recorded laps, so `turn_sign` +1 is
 **`corner_detection`** appears alongside every corner list and says which
 lateral-g bar produced it. It is not the same bar in every tool: `lap_summary`
 uses the one shared across its session's laps — the same bar its turn numbers
-were built against — while `compare_lap_corners` and `compare_runs` use one
+were built against — while `compare_laps` and `compare_runs` use one
 shared across every lap being compared. Either way corner membership doesn't depend
 on how hard an individual lap was driven, but the two bars are different
 numbers, so the same lap can carry a different number of corners in the two
@@ -209,7 +209,7 @@ its slowest piece. The other piece still appears on that lap with
 
 `track_corners` is the table: where each turn starts, apexes and ends, where
 it is braked for, which way it turns and how many laps cornered there.
-`compare_runs` and `compare_lap_corners` label their corners too, from the
+`compare_runs` and `compare_laps` label their corners too, from the
 laps they were given rather than from the session — each of those payloads carries its
 own `turns` table so the labels in it can be placed without a second call.
 
@@ -340,10 +340,11 @@ averaging it away.
 
 ## Driving line
 
-`driving_line` slices the lap by track position and reports, per slice, where
-the car was in the world, how fast, the mean front ride height, and how much
-that ride height moved within the slice — the last of which is a bump map,
-since smooth tarmac holds the car at a steady height and broken tarmac doesn't.
+`compare_laps` with `view="line"` slices the lap by track position and reports,
+per slice, where the car was in the world, how fast, the mean front ride
+height, and how much that ride height moved within the slice — the last of
+which is a bump map, since smooth tarmac holds the car at a steady height and
+broken tarmac doesn't.
 
 Track position says where the car was *along* the lap. This says where it
 was *across* it, which is the whole of what a line is, so "I took a wider
@@ -412,7 +413,7 @@ four lines in one chart can't be told apart.
 Marks can be toggled on top of any view:
 - **Off track:** the track-limits rule, all counted wheels out for long
   enough to count.
-- **Lockups:** `braking_report`'s front lockup runs. Its slip threshold has
+- **Lockups:** `chassis_report`'s front lockup runs. Its slip threshold has
   never been calibrated, and a spin reads as a lockup.
 - **Complaint presses:** each press sits on the lap it was pressed on. A
   press made with no session running can't be placed, and the page says
@@ -447,7 +448,7 @@ channel — against the exact threshold it was held to. The other is speed,
 with brake points. Turn spans are shaded across both. A turn that appears
 split in two, or a kink that never crossed the threshold, is visible there.
 
-It draws raw samples rather than `driving_line`'s slices, thinned to one
+It draws raw samples rather than the line view's slices, thinned to one
 every 80 ms by time rather than by count, since retention has already
 thinned old laps. A lap's samples can straddle the start/finish line at
 either end, so each trace is split at every wrap and only the longest run
@@ -463,8 +464,8 @@ cars or layouts are refused: their coordinates don't share an origin.
 
 Stock shared memory exposes no suspension travel, no wheel load and no ride
 height, so all of this comes from the in-game Lua app. Ask for
-`suspension_report` after a lap, or look at the `suspension` block in
-`lap_summary`.
+`chassis_report` with the suspension aspect after a lap, or look at the
+`suspension` block in `lap_summary`.
 
 Three questions, in the order you'd ask them:
 
@@ -495,8 +496,8 @@ dampers. Rather than quietly present one as the other, the report labels the
 tier and adds a caution when it's render-rate.
 
 The app's own window shows which tier it got (`◆` worker, `○` online,
-`◇` render-rate fallback), and `suspension_capture_status` explains it from
-the server's side.
+`◇` render-rate fallback), and `session_check`'s `suspension.tier` reports it
+from the server's side.
 
 > **Damper histograms are single-player only.**
 >
@@ -576,6 +577,7 @@ run_tests.py         run and summarize the suite, no pytest needed
 tests/               behavior-named test modules + shared harness
 scripts/
   relabel_laps.py    fix laps stamped with the wrong setup name
+  rescore_track_limits.py  re-score track limits after a threshold change
   driving_line_map.py  write a session's line map without a server
   watch_laps.py      print a line as each lap is stored
   say.py             read a message aloud to the driver

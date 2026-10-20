@@ -1526,10 +1526,10 @@ def compare_to_rival(my_samples: list[dict], rival_samples: list[dict],
             "pos": round(i / buckets, 2),
             "my_speed_kmh": round(mine[i], 1),
             "their_speed_kmh": round(theirs[i], 1),
-            "delta_kmh": round(theirs[i] - mine[i], 1),
+            "rival_faster_by_kmh": round(theirs[i] - mine[i], 1),
         })
 
-    worst = sorted(segments, key=lambda s: -s["delta_kmh"])[:8]
+    worst = sorted(segments, key=lambda s: -s["rival_faster_by_kmh"])[:8]
 
     inputs = {
         "gas": _field_liveness(rival_samples, "gas"),
@@ -1538,11 +1538,11 @@ def compare_to_rival(my_samples: list[dict], rival_samples: list[dict],
     result = {
         "track_coverage_pct": round(100 * covered / buckets, 1),
         "compared_segments": len(segments),
-        "mean_delta_kmh": round(
-            mean(s["delta_kmh"] for s in segments), 2) if segments else None,
+        "mean_rival_faster_by_kmh": round(
+            mean(s["rival_faster_by_kmh"] for s in segments), 2)
+        if segments else None,
         "worst_deficits": worst,
         "rival_input_fields": inputs,
-        "note": "delta_kmh positive means the rival is faster at that point",
     }
 
     # Braking and throttle points are only meaningful if the server actually
@@ -1821,9 +1821,10 @@ def time_by_turn(mine: list[dict], theirs: list[dict],
                  labels: dict[str, str]) -> list[dict]:
     """Two laps' turn_metrics as time differences, turn and straight apart.
 
-    One row per turn and one per stretch of road after it, `delta_s`
-    positive where the other car was quicker. Time rather than speed:
-    "16 km/h faster at the Bus Stop exit" does not say what it was worth,
+    One row per turn and one per stretch of road after it,
+    `rival_faster_by_s` positive where the other car was quicker. Time
+    rather than speed: "16 km/h faster at the Bus Stop exit" does not say
+    what it was worth,
     and the straight after a slow exit is where most of it is paid.
     """
     rows = []
@@ -1838,7 +1839,7 @@ def time_by_turn(mine: list[dict], theirs: list[dict],
                 continue
             rows.append({"turn": m["turn"], "stretch": where,
                          "my_s": m[key], "their_s": o[key],
-                         "delta_s": round(m[key] - o[key], 3)})
+                         "rival_faster_by_s": round(m[key] - o[key], 3)})
     return rows
 
 

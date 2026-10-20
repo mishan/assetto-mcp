@@ -1404,16 +1404,17 @@ def test_every_comparison_is_filed_for_the_setup_book():
 def test_a_plan_uses_this_drivers_own_spread_from_stored_comparisons():
     srv = _server()
     car = "plan_car"
-    none = json.loads(srv.plan_experiment(effect=300, car=car))
-    assert "spread is not known" in none["error"], none
+    none = json.loads(srv.setup_book(effect=300, car=car))
+    assert "spread is not known" in none["plan"]["error"], none
     sid = make_session(srv._conn, track="sebring", car=car)
     base = [_store(srv, sid, n, t) for n, t in
             ((1, 113000), (2, 113400), (3, 113200))]
     cand = [_store(srv, sid, n, t) for n, t in
             ((4, 113100), (5, 113500), (6, 113300))]
     _run(srv, base, cand)
-    plan = json.loads(srv.plan_experiment(effect=300, car=car))
-    assert plan["spread_sd"] == 200.0, plan
+    book = json.loads(srv.setup_book(effect=300, car=car))
+    plan = book["plan"]
+    assert book["experiments_total"] == 1 and plan["spread_sd"] == 200.0, book
     assert plan["laps_per_side"] > 3, plan
 
 

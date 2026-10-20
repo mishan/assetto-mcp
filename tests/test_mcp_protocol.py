@@ -95,7 +95,7 @@ def test_parallel_calls_on_shared_data_answer_as_sequential_ones_do():
     calls = []
     for lap_id in ids:
         calls += [("lap_summary", {"lap_id": lap_id}),
-                  ("compare_lap_corners", {"lap_id_a": ids[0], "lap_id_b": lap_id}),
+                  ("compare_laps", {"lap_id_a": ids[0], "lap_id_b": lap_id}),
                   ("list_laps", {"session_id": sid}),
                   ("track_corners", {"session_id": sid})]
     calls *= 3
@@ -139,13 +139,12 @@ def test_a_status_report_is_not_a_failed_call_but_a_refusal_is():
     whose text is the JSON payload."""
     from assetto_mcp import update
     s = _server()
-    status = [("recording_status", {}), ("bridge_status", {}),
-              ("suspension_capture_status", {}), ("check_for_updates", {}),
+    status = [("recording_status", {}), ("check_for_updates", {}),
               ("session_check", {})]
     # Starting the real collector here would leave it polling for the game.
     assert {n for n, _ in status} == s._STATUS_TOOLS - {"start_recording"}
     refusals = [("lap_summary", {"lap_id": -1}),
-                ("compare_lap_corners", {"lap_id_a": -1, "lap_id_b": -2}),
+                ("compare_laps", {"lap_id_a": -1, "lap_id_b": -2}),
                 ("track_corners", {"session_id": 999999}),
                 ("label_laps", {"lap_ids": "abc", "setup_name": "a"}),
                 ("read_setup", {"car": "nope", "track": "nope",
@@ -177,7 +176,7 @@ def test_a_status_report_is_not_a_failed_call_but_a_refusal_is():
         del os.environ["ASSETTO_MCP_UPDATE_API"]
     for (name, _), r in zip(status, answered):
         assert not r.get("isError"), (name, r)
-    for name in ("recording_status", "bridge_status", "check_for_updates"):
+    for name in ("recording_status", "check_for_updates"):
         r = answered[[n for n, _ in status].index(name)]
         assert json.loads(r["content"][0]["text"])["error"], (name, r)
     for (name, _), r in zip(refusals, refused):
@@ -357,38 +356,6 @@ def test_the_core_toolset_serves_only_its_tools():
     assert served == sorted(core), (served, core)
 
 
-def test_a_renamed_tool_still_answers_under_its_old_name_unlisted():
-    """A client holding an old tool list keeps working, and is told the
-    new name; the list itself carries each tool once."""
-    s = _server()
-    calls = {"get_driver_notes": {},
-             "delta_by_position": {"lap_id_a": -1, "lap_id_b": -2},
-             "compare_laps": {"lap_id_a": -1, "lap_id_b": -2},
-             "locate": {"meters": 100},
-             "record_display_value": {"field": "X", "displayed": 1.0,
-                                      "stored": 1.0, "car": "alias_car"},
-             "record_display_range": {"field": "X", "displayed_at_min": 0,
-                                      "displayed_at_max": 1,
-                                      "car": "alias_car"},
-             "record_display_note": {"field": "X", "note": "n",
-                                     "car": "alias_car"}}
-    assert set(calls) == set(s._RENAMED)
-
-    async def run():
-        async with _client() as (session, _):
-            names = {t["name"]
-                     for t in _wire(await session.list_tools())["tools"]}
-            return names, {old: _wire(await session.call_tool(old, a))
-                           for old, a in calls.items()}
-
-    names, replies = asyncio.run(run())
-    assert not names & set(s._RENAMED), names & set(s._RENAMED)
-    assert set(s._RENAMED.values()) <= names
-    for old, r in replies.items():
-        reply = json.loads(r["content"][0]["text"])
-        assert s._RENAMED[old] in reply.get("deprecated", ""), (old, reply)
-
-
 def _results(calls):
     async def run():
         async with _client() as (session, _):
@@ -402,8 +369,7 @@ def test_the_per_lap_reads_are_compact_unless_asked_for_everything():
     lap fractions; detail="full" still has the rest."""
     sid, ids = _session_with_laps(4)
     calls = [("lap_summary", {"lap_id": ids[-1]}),
-             ("compare_lap_corners", {"lap_id_a": ids[-1],
-                                      "lap_id_b": ids[0]}),
+             ("compare_laps", {"lap_id_a": ids[-1], "lap_id_b": ids[0]}),
              ("compare_runs", {"baseline_laps": ids[:2],
                                "candidate_laps": ids[2:]})]
     out = _results([(n, {**a, **d}) for n, a in calls
@@ -421,15 +387,48 @@ def test_the_per_lap_reads_are_compact_unless_asked_for_everything():
 
 
 def test_both_lap_deltas_name_the_lap_that_was_slower():
-    """compare_lap_corners subtracts lap b from lap a, time_delta_along_lap
-    lap a from lap b; each key says which lap it measures as slower."""
+    """The corners view subtracts lap b from lap a, along_lap lap a from
+    lap b; each key says which lap it measures as slower."""
     sid, (fast, slow) = _session_with_laps(2)
     corners, along = _results([
-        ("compare_lap_corners", {"lap_id_a": slow, "lap_id_b": fast}),
-        ("time_delta_along_lap", {"lap_id_a": slow, "lap_id_b": fast})])
+        ("compare_laps", {"lap_id_a": slow, "lap_id_b": fast}),
+        ("compare_laps", {"lap_id_a": slow, "lap_id_b": fast,
+                          "view": "along_lap"})])
     assert corners["a_slower_by_ms"] == 150, corners
     assert along["b_slower_by_ms"] == -150, along
     assert along["segments"][-1]["b_lost_so_far_ms"] < 0, along["segments"]
+
+
+def test_the_line_view_reads_one_lap_and_the_others_need_two():
+    sid, (lap,) = _session_with_laps(1)
+    line, corners = _results([
+        ("compare_laps", {"lap_id_a": lap, "view": "line"}),
+        ("compare_laps", {"lap_id_a": lap})])
+    assert line["lap_id"] == lap and "has_position" in line, line
+    assert "lap_id_b" in corners["error"], corners
+
+
+def test_a_chassis_aspect_that_cannot_be_read_leaves_the_others():
+    """A lap whose trace has no straight-line braking or attitude still
+    has its suspension read, and a lap never stored has only that."""
+    from assetto_mcp import db
+    from test_suspension import _lap as suspension_lap
+    s = _server()
+    sid, (lap,) = _session_with_laps(1)
+    db.store_suspension_batch(s._conn, sid, "worker", suspension_lap(n=900))
+    default, every, unstored = _results([
+        ("chassis_report", {"lap_id": lap}),
+        ("chassis_report", {"lap_id": lap,
+                            "aspects": ["braking", "attitude",
+                                        "suspension"]}),
+        ("chassis_report", {"lap_number": 1, "session_id": sid,
+                            "aspects": ["suspension", "braking"]})])
+    assert default["error"] and set(default) == {
+        "lap_id", "braking", "attitude", "error"}, default
+    assert "error" not in every and every["braking"]["error"], every
+    assert every["suspension"]["lap_number"] == 1, every["suspension"]
+    assert "error" not in unstored, unstored
+    assert "lap_id" in unstored["braking"]["error"], unstored["braking"]
 
 
 def test_list_laps_says_which_laps_have_a_lap_time():
@@ -444,6 +443,21 @@ def test_list_laps_says_which_laps_have_a_lap_time():
     assert by_id[timed]["lap_time"] == "1:53.150", by_id[timed]
     assert by_id[out_lap]["usable_for_timing"] is False, by_id[out_lap]
     assert "out-lap" in by_id[out_lap]["not_usable_because"], by_id[out_lap]
+
+
+def test_list_laps_reads_the_active_session_unless_asked_for_all():
+    s = _server()
+    other, _ = _session_with_laps(1)
+    active, mine = _session_with_laps(2)
+    saved = s._bridge.active_session_id
+    s._bridge.active_session_id = lambda: active
+    try:
+        default, everything = _results([
+            ("list_laps", {}), ("list_laps", {"all_sessions": True})])
+    finally:
+        s._bridge.active_session_id = saved
+    assert sorted(r["id"] for r in default) == sorted(mine), default
+    assert {r["session_id"] for r in everything} >= {active, other}
 
 
 def test_write_setup_takes_its_values_as_an_object_or_as_json_text():

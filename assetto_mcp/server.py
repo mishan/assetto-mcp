@@ -271,10 +271,12 @@ def _j(obj) -> str:
 # small local model's context and for a client that caps its tool count.
 # Every name must be a tool; startup fails on one that is not.
 CORE_TOOLS = (
-    # start_recording, restart_server and setup_ranges are what the
-    # others' replies tell a model to call when something needs fixing.
+    # start_recording, restart_server, setup_ranges and the display tools
+    # are what the others' replies tell a model to call when something
+    # needs fixing.
     "session_check", "wait_for_lap", "recording_status", "start_recording",
-    "restart_server", "setup_ranges", "live_snapshot",
+    "restart_server", "setup_ranges", "record_setup_display",
+    "forget_display_value", "live_snapshot",
     "list_laps", "lap_summary", "compare_laps", "compare_runs", "setup_book", "set_session_setup", "label_laps",
     "fuel_plan", "list_setups", "read_setup", "write_setup",
 )
@@ -779,7 +781,7 @@ def _app_link() -> dict:
         out["note"] = (
             "this instance does not hold the bridge port. With another chat "
             "open, its server holds it: the app's data still arrives, but "
-            "send_driver_message from here does not reach the driver.")
+            "a message sent from here does not reach the driver.")
     return out
 
 
@@ -3136,7 +3138,8 @@ def _measured_setups(base_laps: list[dict], cand_laps: list[dict]) -> dict:
             "both sides were driven on the SAME measured setup: whatever was "
             "changed between them did not reach the car. Do not read any "
             "difference below as the effect of a setup change -- ask whether "
-            "the new setup was loaded, and check identify_setup.")
+            "the new setup was loaded, and check session_check's "
+            "`setup_on_car`.")
     elif len(a) == 1 and len(b) == 1:
         values = db.setup_fingerprint_values(_conn, a | b)
         va, vb = values.get(next(iter(a))), values.get(next(iter(b)))

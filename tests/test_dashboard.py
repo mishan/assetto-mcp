@@ -172,6 +172,24 @@ def test_show_on_dashboard_checks_what_it_points_at():
         s._active_session = active
 
 
+def test_a_message_from_any_chat_reaches_the_game():
+    """The game polls whichever process holds the port; the chat sending
+    the message is often another one, such as beside assetto-mcp-pit-wall."""
+    with temp_db() as path:
+        holder = _bridge(path)
+        chat = B.Bridge(path, FakeCollector(), 0)
+        try:
+            mid = chat.set_message("box this lap")
+            shown = json.loads(_get(holder.port, "/status")[2])["message"]
+            assert shown == {"id": mid, "text": "box this lap"}, shown
+            assert post(holder.port, "/ack", {"id": mid})[1]["ok"] is True
+            assert chat.get_message() is None
+            print("  sent from one instance, shown and dismissed via another")
+        finally:
+            holder.stop()
+            chat.stop()
+
+
 def test_the_lan_dashboard_needs_its_secret_and_serves_nothing_else():
     with temp_db() as path:
         B_port, B.DASH_LAN_PORT = B.DASH_LAN_PORT, 0

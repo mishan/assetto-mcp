@@ -256,8 +256,6 @@ class Bridge:
         self._collector = collector
         self._port = port
         self._lock = threading.Lock()
-        self._message: dict | None = None
-        self._msg_seq = 0
         self._server: ThreadingHTTPServer | None = None
         self._handler_cls = None
         self._bind_stop = threading.Event()
@@ -370,21 +368,13 @@ class Bridge:
     # -- message slot (Claude -> driver) --------------------------------
 
     def set_message(self, text: str) -> int:
-        with self._lock:
-            self._msg_seq += 1
-            self._message = {"id": self._msg_seq, "text": text}
-            return self._msg_seq
+        return self._dash_db(db.set_driver_message, text)
 
     def get_message(self) -> dict | None:
-        with self._lock:
-            return dict(self._message) if self._message else None
+        return self._dash_db(db.driver_message)
 
     def ack_message(self, msg_id: int) -> bool:
-        with self._lock:
-            if self._message and self._message["id"] == msg_id:
-                self._message = None
-                return True
-            return False
+        return self._dash_db(db.ack_driver_message, msg_id)
 
     # -- the dashboard's data -------------------------------------------
 

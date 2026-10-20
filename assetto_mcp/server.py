@@ -1986,7 +1986,8 @@ def lap_trace(lap_id: int,
     from_m/to_m: meters past the start line, default the whole lap. At most
     300 rows: a longer window gets a coarser `step_m`. Rows carry `m` and
     `t_s` (since the lap started); `from_where`/`to_where` place the
-    window, and locate turns any other `m` into words for the driver."""
+    window, and describe_positions turns any other `m` into words for the
+    driver."""
     lap = db.get_lap(_conn, lap_id)
     if not lap:
         return _j({"error": f"no lap with id {lap_id}"})

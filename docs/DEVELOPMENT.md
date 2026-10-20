@@ -51,6 +51,23 @@ both directions: `7 // 2` runs there and is a syntax error in the game, and
 `string.format('%d', 1.5)` raises there and works in the game. The harness asks
 for LuaJIT by name.
 
+### The tool surface
+
+`tests/test_mcp_contract.py` compares `tools/list` (names, input schemas,
+titles, hints and descriptions) with `tests/golden/tools.json`, so a
+changed tool shows up as a failing test before it reaches a client. When
+the change is meant, rewrite the snapshot and commit it with the change:
+
+```
+python tests/test_mcp_contract.py --write-snapshot
+```
+
+The same module holds the budgets: the size of `tools/list`, of each
+description and of the instructions, and of the replies read on every lap.
+A budget that fails is a question about context cost, not a number to
+raise by reflex. It also checks that every tool the docs, the skill, the
+prompts and the server's own replies name exists.
+
 ## CI
 
 `.github/workflows/ci.yml` runs four jobs:

@@ -62,7 +62,8 @@ def _wire(model) -> dict:
     return model.model_dump(by_alias=True, exclude_none=True)
 
 
-def _session_with_laps(n: int = 4) -> tuple[int, list[int]]:
+def _session_with_laps(n: int = 4, samples: int = 600,
+                       corners=None) -> tuple[int, list[int]]:
     from assetto_mcp import db
     s = _server()
     sid = db.create_session(s._conn, car="ks_mazda_mx5_cup", track="mugello",
@@ -78,7 +79,8 @@ def _session_with_laps(n: int = 4) -> tuple[int, list[int]]:
                  r["slip_rr"], r["press_fl"], r["press_fr"], r["press_rl"],
                  r["press_rr"], r["core_fl"], r["core_fr"], r["core_rl"],
                  r["core_rr"], r["ride_f"], r["ride_r"], 0)
-                for r in _lap(n=600, lap_ms=113000 + 150 * lap)]
+                for r in _lap(n=samples, lap_ms=113000 + 150 * lap,
+                              **({"corners": corners} if corners else {}))]
         ids.append(db.store_lap(s._conn, sid, lap, 113000 + 150 * lap, True,
                                 rows))
     s._conn.commit()

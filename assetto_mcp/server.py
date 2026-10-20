@@ -2337,13 +2337,13 @@ def compare_runs(baseline_laps: str | int | list[int],
     if deprecated_note:
         out["deprecated"] = deprecated_note
     spreads = out.pop("_spreads", {})
-    conditions = {side: _conditions([l for l, _ in pairs])
-                  for side, pairs in (("baseline", base_loaded),
-                                      ("candidate", cand_loaded))}
-    note = _conditions_note(conditions)
-    if note:
-        out["conditions_note"] = note
     try:
+        conditions = {side: _conditions([l for l, _ in pairs])
+                      for side, pairs in (("baseline", base_loaded),
+                                          ("candidate", cand_loaded))}
+        note = _conditions_note(conditions)
+        if note:
+            out["conditions_note"] = note
         out["experiment_id"] = _record_experiment(
             out, spreads, conditions, base_loaded, cand_loaded)
     except Exception as e:  # noqa: BLE001
@@ -2363,12 +2363,13 @@ def _conditions(laps: list[dict]) -> dict:
     sessions = [db.get_session(_conn, sid)
                 for sid in sorted({l["session_id"] for l in laps})]
     sessions = [s for s in sessions if s]
-    temps = [s["road_temp"] for s in sessions if s.get("road_temp")]
+    temps = [s["road_temp"] for s in sessions
+             if s.get("road_temp") is not None]
     return {
         "session_ids": [s["id"] for s in sessions],
         "road_temp_c": round(sum(temps) / len(temps), 1) if temps else None,
         "air_temp_c": next((s["air_temp"] for s in sessions
-                            if s.get("air_temp")), None),
+                            if s.get("air_temp") is not None), None),
         "tyre_compounds": sorted({s["tyre_compound"] for s in sessions
                                   if s.get("tyre_compound")}),
     }
@@ -2395,7 +2396,11 @@ def _conditions_note(c: dict) -> str | None:
 def _record_experiment(out, spreads, conditions, base_loaded,
                        cand_loaded) -> int:
     session = db.get_session(_conn, base_loaded[0][0]["session_id"])
-    if "setup_changes" in out:
+    if any(not l.get("setup_fp") for l, _ in base_loaded + cand_loaded):
+        # A lap nothing measured may have run anything; filing the rest's
+        # difference as the change would credit it with those laps.
+        changes = None
+    elif "setup_changes" in out:
         changes = out["setup_changes"]
     elif out.get("same_measured_setup"):
         changes = []
@@ -2445,8 +2450,9 @@ def setup_book(car: str | None = None, entry: str | None = None,
 
     Check it before proposing a change. Per entry: the experiments that
     changed it alone, and per metric the effect per unit of the stored value
-    (and `per_click`), pooled across them with its `se`. `tracks_disagree`:
-    the effect differs by circuit; quote `by_track`, not the pool.
+    (and `per_click`), pooled across them with its `se`. `within_noise`:
+    the sign is not settled; say so, never quote it as an effect.
+    `tracks_disagree`: the effect differs by layout; quote `by_track`.
     `changed_together` lists A/Bs that changed several entries, which cannot
     be split. car: default the current session's. entry: one setup entry,
     e.g. "ARB_REAR". track: only that circuit's experiments."""
@@ -2471,9 +2477,11 @@ def plan_experiment(metric: str = "lap_time_ms", effect: float | None = None,
 
     Give `effect` (in the metric's units, e.g. 300 for 0.3 s of lap time),
     or `entry` and `change` (stored units) to take the effect from the
-    setup book. The spread is this driver's own, pooled from stored A/Bs on
-    this car (this track's when there are any). Run the sides interleaved,
-    A B A, so track temperature, fuel and tyres do not read as the change.
+    setup book. The spread and the book's effect are this driver's own, from
+    stored A/Bs on this car at this layout (track defaults to the current
+    session's), or at every layout when there are none. Run the sides
+    interleaved, A B A, so track temperature, fuel and tyres do not read as
+    the change.
     metric: one of the compare_runs metrics, e.g. "lap_time_ms",
     "slip_balance", "front_load_transfer_pct"."""
     if metric not in analysis.BOOK_METRICS:
@@ -2483,7 +2491,14 @@ def plan_experiment(metric: str = "lap_time_ms", effect: float | None = None,
     if car is None:
         return _j({"error": "no active session; pass car explicitly"})
     exps = db.experiments_for(_conn, car)
-    here = [e for e in exps if track and e["track"] == track]
+    config = None
+    if track is None:
+        sid = _active_session()
+        session = db.get_session(_conn, sid) if sid else None
+        if session and session["car"] == car:
+            track, config = session["track"], session["track_config"] or ""
+    here = [e for e in exps if track and e["track"] == track
+            and config in (None, e.get("track_config") or "")]
     basis = here or exps
     spreads = [(r["sd"], r["df"]) for e in basis
                if (r := e["results"].get(metric) or {}).get("sd")
@@ -2498,14 +2513,18 @@ def plan_experiment(metric: str = "lap_time_ms", effect: float | None = None,
     if effect is None:
         if entry is None or change is None:
             return _j({"error": "give effect, or entry and change"})
-        book = analysis.setup_book(exps, entry=entry)["entries"].get(entry)
+        book = analysis.setup_book(basis, entry=entry)["entries"].get(entry)
         m = (book or {}).get("effects", {}).get(metric)
         if not m:
             return _j({"error": f"the setup book has no {metric} effect for "
                                 f"{entry} on {car}; give effect instead"})
         effect = m["per_unit"] * change
         effect_basis = (f"setup book: {m['per_unit']} per unit of {entry} "
-                        f"x {change}, from {m['experiments']} experiment(s)")
+                        f"x {change}, from {m['experiments']} experiment(s)"
+                        + (" at this layout" if here else ""))
+        if m["within_noise"]:
+            effect_basis += ("; the book's effect is within noise, so this "
+                             "plans for a change that may not exist")
     out = analysis.plan_experiment(sd, effect)
     out.update({"car": car, "metric": metric, "effect": effect,
                 "effect_basis": effect_basis, "spread_sd": round(sd, 3),

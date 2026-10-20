@@ -254,8 +254,9 @@ single id, or a list. Read:
   measured setups, fuel aside. Check it matches the change you meant.
   `measured_setup_note` says when a side spans two setups or has laps
   nothing measured.
-- `conditions_note`: the sides ran at different road temperatures or on
-  different compounds; part of any difference may be the track.
+- `conditions_note`: the sides' sessions started at different road
+  temperatures or ran different compounds; part of any difference may be
+  the track. It cannot see the track changing within one session.
 - `experiment_id`: the comparison is filed in the setup book under this
   id. Annotate it once the driver has said what they felt.
 
@@ -277,9 +278,11 @@ six laps is not evidence the change did nothing.
 setup entry. Read it before proposing a change. Per entry: the experiments
 that changed only that entry (with the driver's `conclusion` and `note`),
 and per metric the effect `per_unit` of the stored value (`per_click` when
-the step is known) pooled across them, with `se`. An effect smaller than
-twice its `se` is not established. `tracks_disagree`: quote `by_track`,
-not the pool. `changed_together`: A/Bs that changed several entries at
+the step is known) pooled across them, with `se`. `within_noise: true`
+means the sign is not settled: say so, and never quote it as what the
+entry does. `tracks_disagree`: the layouts differ by more than noise;
+quote `by_track`, not the pool. Comparing laps that overlap an earlier
+comparison replaces it, so re-running one as laps come in is safe. `changed_together`: A/Bs that changed several entries at
 once, which cannot be attributed to any one of them.
 
 **`plan_experiment(metric, effect, entry, change, car, track)`** -- laps a

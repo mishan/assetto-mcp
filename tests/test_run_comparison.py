@@ -1333,7 +1333,6 @@ def test_a_session_with_nothing_to_number_says_which_kind_of_nothing():
     print(f"  {out['error']}")
 
 
-
 # --- the setup book -----------------------------------------------------
 
 
@@ -1400,6 +1399,41 @@ def test_a_comparison_across_different_road_temperatures_says_so():
     assert "road temperature" in out.get("conditions_note", ""), out
 
 
+def test_comparing_overlapping_laps_again_replaces_rather_than_adds():
+    srv = _server()
+    car = "dup_car"
+    sid = make_session(srv._conn, track="sebring", car=car)
+    db.record_measured_setup(srv._conn, sid, car, {"ARB_REAR": 3.0}, now=1.0)
+    srv._conn.commit()
+    base = [_store(srv, sid, n, 113000 + 90 * n) for n in (1, 2, 3)]
+    db.record_measured_setup(srv._conn, sid, car, {"ARB_REAR": 5.0})
+    srv._conn.commit()
+    cand = [_store(srv, sid, n, 112700 + 90 * n) for n in (4, 5, 6, 7)]
+    first = _run(srv, base, cand[:3])["experiment_id"]
+    srv.annotate_experiment(first, conclusion="kept")
+    for a, b in ((cand[:3], base), (base, cand)):
+        assert _run(srv, a, b)["experiment_id"] == first
+    arb = json.loads(srv.setup_book(car=car))["entries"]["ARB_REAR"]
+    assert arb["effects"]["lap_time_ms"]["experiments"] == 1, arb
+    assert arb["experiments"][0]["conclusion"] == "kept", arb
+
+
+def test_a_side_with_unmeasured_laps_is_not_filed_as_a_known_change():
+    srv = _server()
+    car = "half_measured_car"
+    sid = make_session(srv._conn, track="sebring", car=car)
+    blind = _store(srv, sid, 1, 113100)
+    db.record_measured_setup(srv._conn, sid, car, {"ARB_REAR": 3.0}, now=1.0)
+    srv._conn.commit()
+    base = [blind] + [_store(srv, sid, n, 113000 + n) for n in (2, 3)]
+    db.record_measured_setup(srv._conn, sid, car, {"ARB_REAR": 5.0})
+    srv._conn.commit()
+    cand = [_store(srv, sid, n, 112800 + n) for n in (4, 5, 6)]
+    _run(srv, base, cand)
+    book = json.loads(srv.setup_book(car=car))
+    assert book["entries"] == {} and book["experiments_unmeasured"] == 1, book
+
+
 def _exp(eid, track, entry, frm, to, change, se, extra=None):
     ch = [{"entry": entry, "baseline": frm, "candidate": to}]
     if extra:
@@ -1433,13 +1467,26 @@ def test_tracks_that_disagree_are_reported_apart():
         lt["by_track"]["sebring"]["per_unit"], lt
 
 
+def test_two_layouts_within_each_others_noise_do_not_disagree():
+    exps = [_exp(1, "sebring", "WING_1", 5, 6, -300, 100),
+            _exp(2, "kyalami", "WING_1", 5, 6, -100, 100)]
+    lt = analysis.setup_book(exps)["entries"]["WING_1"]["effects"][
+        "lap_time_ms"]
+    assert "tracks_disagree" not in lt, lt
+    assert lt["within_noise"] is False and lt["by_track"]["kyalami"][
+        "within_noise"] is True, lt
+
+
 def test_the_plan_matches_the_detection_rates_compare_runs_documents():
-    """500 ms against 250 ms of spread: 11% at three laps, 39% at five,
-    77% at eight -- the figures in compare_runs' own docstring."""
+    """500 ms against 250 ms of spread: 11% at three laps and 39% at five,
+    the figures in compare_runs' own docstring at alpha/8. From six laps a
+    side lap_time_consistency joins the family, so eight laps plan at
+    alpha/9 and fall a little short of the docstring's 77%."""
     plan = analysis.plan_experiment(250.0, 500.0)
     got = plan["power_at"]
-    for n, want in ((3, 0.11), (5, 0.39), (8, 0.77)):
+    for n, want in ((3, 0.11), (5, 0.39)):
         assert abs(got[n] - want) <= 0.02, (n, got)
+    assert 0.73 <= got[8] < 0.77, got
     assert plan["laps_per_side"] == 9, plan
 
 if __name__ == "__main__":

@@ -374,21 +374,9 @@ CREATE TABLE IF NOT EXISTS rival_laps (
     PRIMARY KEY (session_id, car_index, lap_count)
 );
 
--- Which process is allowed to record, and whether recording is wanted at
--- all. One row, forever.
---
--- Claude Desktop launches one server per client surface, so several of
--- these processes exist at once, all seeing the same shared memory and
--- database file. Two collectors reading one game would write every lap
--- twice under two session ids -- duplicates that make compare_runs' t-test
--- certain about nothing.
---
--- `enabled` is separate from the claim and deliberately shared: stopping
--- recording is an instruction about the car, not about whichever server
--- process received it, and it survives a restart.
 -- Every compare_runs, kept so effects can be pooled across sessions: what
 -- changed on the car, under what conditions, and what it did. One row per
--- pair of lap sets; comparing the same laps again updates it.
+-- set of laps; a comparison sharing any lap with an earlier one replaces it.
 CREATE TABLE IF NOT EXISTS experiments (
     id INTEGER PRIMARY KEY,
     lap_key TEXT NOT NULL UNIQUE,   -- sorted lap ids, baseline | candidate
@@ -408,6 +396,18 @@ CREATE TABLE IF NOT EXISTS experiments (
 );
 CREATE INDEX IF NOT EXISTS idx_experiments_car ON experiments (car, track);
 
+-- Which process is allowed to record, and whether recording is wanted at
+-- all. One row, forever.
+--
+-- Claude Desktop launches one server per client surface, so several of
+-- these processes exist at once, all seeing the same shared memory and
+-- database file. Two collectors reading one game would write every lap
+-- twice under two session ids -- duplicates that make compare_runs' t-test
+-- certain about nothing.
+--
+-- `enabled` is separate from the claim and deliberately shared: stopping
+-- recording is an instruction about the car, not about whichever server
+-- process received it, and it survives a restart.
 CREATE TABLE IF NOT EXISTS recorder (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     owner TEXT NOT NULL DEFAULT '',   -- host/pid/token of the holder
@@ -2315,27 +2315,44 @@ EXPERIMENT_CONCLUSIONS = ("kept", "reverted", "undecided")
 
 
 def record_experiment(conn, rec: dict) -> int:
-    """Store one comparison, or refresh it if these laps were compared."""
+    """Store one comparison, replacing any earlier one that shares a lap.
+
+    Re-comparing as laps come in, with the sides swapped, or with laps
+    dropped is the same evidence again; kept alongside, the setup book
+    would pool it as independent and grow certain of nothing. The newest
+    comparison stands, under the old one's id, and keeps what the driver
+    said about it.
+    """
     laps = rec["laps"]
+    mine = set(laps["baseline"]) | set(laps["candidate"])
     key = (",".join(map(str, sorted(laps["baseline"]))) + "|"
            + ",".join(map(str, sorted(laps["candidate"]))))
     now = time.time()
     changes = rec.get("changes")
     with conn:
-        conn.execute(
-            "INSERT INTO experiments (lap_key, car, track, track_config,"
+        old = [r for r in conn.execute(
+                   "SELECT id, laps_json, note, conclusion, created_at"
+                   " FROM experiments WHERE car = ? ORDER BY updated_at",
+                   (rec["car"],))
+               if mine & {*json.loads(r["laps_json"])["baseline"],
+                          *json.loads(r["laps_json"])["candidate"]}]
+        note = next((r["note"] for r in reversed(old) if r["note"]), "")
+        conclusion = next((r["conclusion"] for r in reversed(old)
+                           if r["conclusion"]), "")
+        conn.executemany("DELETE FROM experiments WHERE id = ?",
+                         [(r["id"],) for r in old])
+        cur = conn.execute(
+            "INSERT INTO experiments (id, lap_key, car, track, track_config,"
             " created_at, updated_at, changes_json, laps_json,"
-            " conditions_json, results_json) VALUES (?,?,?,?,?,?,?,?,?,?)"
-            " ON CONFLICT(lap_key) DO UPDATE SET updated_at=excluded.updated_at,"
-            " changes_json=excluded.changes_json, laps_json=excluded.laps_json,"
-            " conditions_json=excluded.conditions_json,"
-            " results_json=excluded.results_json",
-            (key, rec["car"], rec["track"], rec.get("track_config") or "",
-             now, now, None if changes is None else json.dumps(changes),
+            " conditions_json, results_json, note, conclusion)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (old[-1]["id"] if old else None,
+             key, rec["car"], rec["track"], rec.get("track_config") or "",
+             min([now] + [r["created_at"] for r in old]), now,
+             None if changes is None else json.dumps(changes),
              json.dumps(laps), json.dumps(rec.get("conditions") or {}),
-             json.dumps(rec["results"])))
-    return conn.execute("SELECT id FROM experiments WHERE lap_key = ?",
-                        (key,)).fetchone()["id"]
+             json.dumps(rec["results"]), note, conclusion))
+    return cur.lastrowid
 
 
 def _experiment(row) -> dict:
@@ -2353,12 +2370,16 @@ def get_experiment(conn, experiment_id: int) -> dict | None:
     return _experiment(r) if r else None
 
 
-def experiments_for(conn, car: str, track: str | None = None) -> list[dict]:
-    """A car's experiments, oldest first, optionally at one track."""
+def experiments_for(conn, car: str, track: str | None = None,
+                    track_config: str | None = None) -> list[dict]:
+    """A car's experiments, oldest first, optionally at one layout."""
     q, args = "SELECT * FROM experiments WHERE car = ?", [car]
     if track:
         q += " AND track = ?"
         args.append(track)
+    if track_config is not None:
+        q += " AND track_config = ?"
+        args.append(track_config)
     return [_experiment(r) for r in conn.execute(q + " ORDER BY created_at",
                                                  args)]
 

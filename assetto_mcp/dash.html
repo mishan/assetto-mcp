@@ -4,6 +4,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="dark light">
 <title>Pit Wall</title>
+<link rel="icon" href="data:,">
 <style>
 :root{
   --ground:#eeeff0; --surface:#ffffff; --ink:#1b1e23; --muted:#646a74; --line:#d6d9dd;
@@ -34,11 +35,19 @@ body{margin:0;background:var(--ground);color:var(--ink);font:14px/1.4 var(--font
 .focus{margin:8px 16px 0;padding:10px 14px;background:var(--surface);border:1px solid var(--line);border-left:4px solid var(--accent);font-size:16px}
 .focus:empty{display:none}
 .state{padding:4px 16px 0;color:var(--muted);font:12px var(--font-mono)}
+.ask{display:flex;gap:8px;padding:8px 16px 0}
+.ask input{flex:1;min-width:0;font:14px var(--font-body);color:var(--ink);background:var(--surface);border:1px solid var(--line);padding:8px 10px}
+.ask button{font:600 12px var(--font-body);letter-spacing:.06em;text-transform:uppercase;color:var(--ground);background:var(--ink);border:0;padding:8px 14px;cursor:pointer}
+.ask input:focus-visible,.ask button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
 iframe{flex:1;min-height:420px;width:100%;border:0;margin-top:8px;background:var(--ground)}
 </style>
 <div class="live" id="live"></div>
 <div class="focus" id="focus" aria-live="polite"></div>
 <div class="state" id="state">connecting…</div>
+<form class="ask" id="ask">
+  <input id="q" maxlength="300" placeholder="Ask the engineer. Click the map to point at a place." aria-label="Question for the engineer">
+  <button>Ask</button>
+</form>
 <iframe id="map" title="Line map"></iframe>
 <script>
 const $ = id => document.getElementById(id);
@@ -54,7 +63,9 @@ function liveTiles(l){
   if (l.current_lap) t.push(tile("Lap", l.current_lap + (l.race_laps ? " / " + l.race_laps : ""),
     l.session_time_left_s != null ? Math.floor(l.session_time_left_s/60) + " min left" : ""));
   t.push(tile("Lap time", esc(l.lap_time || "—"), "last " + esc(l.last_lap || "—")));
-  t.push(tile("Best", esc(l.best_lap || "—")));
+  const d = l.delta_to_best_s;
+  t.push(tile("Best", esc(l.best_lap || "—"), d == null ? "" :
+    `<span class="${d > 0 ? "short" : "ok"}">${d > 0 ? "+" : ""}${d.toFixed(2)}</span> to best here`));
   const f = l.fuel_to_finish;
   const cls = !f || f.margin_laps == null ? "" : f.margin_laps < 0 ? "short" : f.margin_laps < 0.6 ? "tight" : "ok";
   t.push(tile("Fuel", l.fuel_l + " L", f ? `<span class="${cls}">${esc(f.verdict)}</span>` +
@@ -69,21 +80,48 @@ function liveTiles(l){
 let mapKey = null;
 async function poll(){
   try {
-    const d = await (await fetch("/dash/live", {cache: "no-store"})).json();
+    const d = await (await fetch("dash/live", {cache: "no-store"})).json();
     $("live").innerHTML = liveTiles(d.live);
     $("focus").textContent = d.focus.caption || "";
     const r = d.recording;
     $("state").textContent = (r.running ? r.status + " · " + r.laps_recorded + " laps" : "not recording") +
       (d.focus.lap_ids.length ? " · showing laps " + d.focus.lap_ids.join(", ") : "");
     // Reload the map only when what it should draw changes, so a driver
-    // reading it is not reset every second.
-    const key = [d.focus.id, r.session_id, r.laps_recorded].join("-");
-    if (key !== mapKey){ mapKey = key; $("map").src = "/dash/map?k=" + key; }
+    // reading it, or zoomed into a turn, is not reset.
+    const key = d.focus.lap_ids.length ? String(d.focus.id)
+      : [d.focus.id, r.session_id, r.laps_recorded].join("-");
+    if (key !== mapKey){
+      mapKey = key;
+      $("map").src = "dash/map?k=" + key + (d.focus.turn ? "#turn=" + d.focus.turn : "");
+    }
   } catch (e) {
     $("state").textContent = "server not answering: " + e.message;
   }
   setTimeout(poll, 1000);
 }
 poll();
+
+// The map in the frame posts the place clicked; it goes with the question.
+let place = "";
+addEventListener("message", e => {
+  if (e.origin !== location.origin || typeof e.data?.place !== "string") return;
+  place = e.data.place;
+  $("q").placeholder = "About " + place + ": ask the engineer";
+  $("q").focus();
+});
+$("ask").addEventListener("submit", async e => {
+  e.preventDefault();
+  const text = $("q").value.trim();
+  if (!text) return;
+  try {
+    const r = await fetch("dash/ask", {method: "POST", headers: {"Content-Type": "application/json"},
+                                      body: JSON.stringify({text, place})});
+    if (!r.ok) throw new Error((await r.json()).error);
+    $("q").value = ""; place = "";
+    $("q").placeholder = "Sent. The engineer sees it with the next thing they read.";
+  } catch (err) {
+    $("q").placeholder = "Not sent: " + err.message;
+  }
+});
 </script>
 </html>

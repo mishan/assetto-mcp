@@ -18,7 +18,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 # How many wheels have to be off the valid surface before a lap counts as
 # having exceeded track limits. Four is the count AC itself treats as
@@ -402,6 +402,24 @@ CREATE TABLE IF NOT EXISTS experiments (
 );
 CREATE INDEX IF NOT EXISTS idx_experiments_car ON experiments (car, track);
 
+-- What the pit wall shows, and what the driver asked from it. Here and not
+-- in the bridge's memory: one server runs per client surface, and the chat
+-- that calls show_on_dashboard is often not the process serving the page.
+CREATE TABLE IF NOT EXISTS pit_wall_focus (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    seq INTEGER NOT NULL,           -- the page reloads its map when it moves
+    lap_ids TEXT NOT NULL DEFAULT '[]',
+    turn TEXT,
+    caption TEXT
+);
+CREATE TABLE IF NOT EXISTS pit_wall_asks (
+    id INTEGER PRIMARY KEY,
+    text TEXT NOT NULL,
+    place TEXT,
+    created_at REAL NOT NULL,
+    taken INTEGER NOT NULL DEFAULT 0  -- handed to Claude in a reply
+);
+
 -- Which process is allowed to record, and whether recording is wanted at
 -- all. One row, forever.
 --
@@ -666,6 +684,9 @@ def _migrate(conn) -> list[str]:
         if _add_column(conn, "laps", "fuel_used_l", "REAL"):
             log.append("laps.fuel_used_l added; laps recorded before this "
                        "have no measured fuel burn")
+
+    # v18 adds pit_wall_focus and pit_wall_asks, new tables that SCHEMA
+    # creates; there was no pit wall before them.
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
@@ -1810,6 +1831,63 @@ def best_clean_lap_id(conn, session_id: int) -> int | None:
         " AND invalid = 0 ORDER BY lap_time_ms, id LIMIT 1",
         (session_id,)).fetchone()
     return r["id"] if r else None
+
+
+# Questions kept for the watcher; Claude only needs the ones not yet taken.
+KEEP_PIT_WALL_ASKS = 20
+
+
+def set_pit_wall_focus(conn, lap_ids: list[int], turn: str | None,
+                       caption: str | None) -> int:
+    with conn:
+        conn.execute(
+            "INSERT INTO pit_wall_focus (id, seq, lap_ids, turn, caption)"
+            " VALUES (1, 1, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET"
+            " seq = seq + 1, lap_ids = excluded.lap_ids,"
+            " turn = excluded.turn, caption = excluded.caption",
+            (json.dumps(lap_ids), turn, caption))
+    return pit_wall_focus(conn)["id"]
+
+
+def pit_wall_focus(conn) -> dict:
+    r = conn.execute("SELECT * FROM pit_wall_focus").fetchone()
+    if not r:
+        return {"id": 0, "lap_ids": [], "turn": None, "caption": None}
+    return {"id": r["seq"], "lap_ids": json.loads(r["lap_ids"]),
+            "turn": r["turn"], "caption": r["caption"]}
+
+
+def add_pit_wall_ask(conn, text: str, place: str | None) -> int:
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO pit_wall_asks (text, place, created_at)"
+            " VALUES (?, ?, ?)", (text, place, time.time()))
+        conn.execute("DELETE FROM pit_wall_asks WHERE id <= ?",
+                     (cur.lastrowid - KEEP_PIT_WALL_ASKS,))
+    return cur.lastrowid
+
+
+def pit_wall_asks_after(conn, after: int) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT id, text, place, created_at FROM pit_wall_asks"
+        " WHERE id > ? ORDER BY id", (after,))]
+
+
+def take_pit_wall_asks(conn) -> list[dict]:
+    """The questions no reply has carried yet, each handed over once.
+
+    Read first: this runs after every tool call, and a write each time
+    would queue behind the collector's.
+    """
+    if not conn.execute(
+            "SELECT 1 FROM pit_wall_asks WHERE taken = 0 LIMIT 1").fetchone():
+        return []
+    with conn:
+        rows = conn.execute(
+            "UPDATE pit_wall_asks SET taken = 1 WHERE taken = 0"
+            " RETURNING id, text, place").fetchall()
+    return [{"text": r["text"], "place": r["place"]}
+            for r in sorted(rows, key=lambda r: r["id"])]
 
 
 def measured_fuel_burns(conn, session_id: int) -> list[float]:

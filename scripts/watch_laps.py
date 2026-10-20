@@ -17,7 +17,11 @@ stored:
     LAP id=265 session=41 n=6 time=1:33.651 wide=0 out=0 pit=0
 
 `wide` is the inferred track-limits verdict, `out` an out-lap, `pit` a lap
-with a pit visit in it. Lines are flushed as they are printed, so the output
+with a pit visit in it. A question the driver types on the pit wall
+dashboard prints as one line too, its text and the place clicked as JSON:
+
+    ASK id=3 {"text": "why so slow here?", "place": "lap 6 (id 265), T4, 1830 m into the lap"}
+ Lines are flushed as they are printed, so the output
 can be piped. Errors go to the same stream prefixed ERR, and the watch keeps
 going -- a locked database during a write is the usual one, and it clears.
 
@@ -25,9 +29,11 @@ Stop it with Ctrl-C.
 """
 
 import argparse
+import json
 import sqlite3
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -60,6 +66,16 @@ def open_db(path):
                            timeout=5)
 
 
+def asks(port, after):
+    """Pit wall questions after id `after`; none while the bridge is down."""
+    url = f"http://127.0.0.1:{port}/dash/asks?after={after}"
+    try:
+        with urllib.request.urlopen(url, timeout=2) as r:
+            return json.load(r)["asks"]
+    except (OSError, ValueError, KeyError):
+        return []
+
+
 def active_session(conn):
     row = conn.execute("select max(id) from sessions").fetchone()
     return row[0] or 0
@@ -76,6 +92,9 @@ def main(argv=None):
     p.add_argument("--interval", type=float, default=3.0,
                    help="seconds between polls (default 3)")
     p.add_argument("--db", default=str(DB_PATH))
+    p.add_argument("--port", type=int,
+                   default=int(config.env("BRIDGE_PORT", "9666")),
+                   help="the bridge's port, for pit wall questions")
     args = p.parse_args(argv)
 
     db_path = Path(args.db)
@@ -88,6 +107,7 @@ def main(argv=None):
     # give up on it.
     since = args.session
     seen = None
+    asked = None
     try:
         while True:
             try:
@@ -108,6 +128,12 @@ def main(argv=None):
                 if row[0] not in seen:
                     seen.add(row[0])
                     print(line(row), flush=True)
+            new = asks(args.port, asked or 0)
+            if asked is not None or args.replay:
+                for a in new:
+                    body = json.dumps({"text": a["text"], "place": a["place"]})
+                    print(f"ASK id={a['id']} {body}", flush=True)
+            asked = max([a["id"] for a in new] + [asked or 0])
             time.sleep(args.interval)
     except KeyboardInterrupt:
         return 0

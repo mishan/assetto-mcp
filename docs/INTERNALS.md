@@ -553,6 +553,7 @@ assetto_mcp/
   turns.py      a session's turn numbering, shared by tools and scripts
   line_map.py   driving-line map as one HTML file (+ line_map.html)
   dash.html     the pit wall page the bridge serves at /dash
+  overlay.html  its strip for a stream, at /dash/overlay
   setups.py     setup INI read/write, range clamping
   circuit.py    corner names from the track's sections.ini
   places.py     positions in meters and turns, for drivers

@@ -103,9 +103,19 @@ say:
   PC: `scripts/say.py` uses the voices Windows already has.
 
 Either way, **the pit wall** at <http://127.0.0.1:9666/dash> shows the
-session live in a browser on the gaming PC: lap times, position, fuel to
-the flag, tyre pressures and temperatures, and the line map. When the
-assistant points at something, it puts those laps and a caption there.
+session live in a browser on the gaming PC: lap times and the gap to your
+best lap, position, fuel to the flag, tyre pressures and temperatures, and
+the line map. When the assistant points at something, it puts those laps,
+zoomed to the turn, and a caption there. Click the map and type a question,
+and the assistant gets it with the next thing it reads.
+
+- **On a phone or tablet:** set `ASSETTO_MCP_DASH_LAN=1` and the pit wall is
+  also served on your network, on port 9667, at a secret link the assistant
+  gives you (`lan_url`). Anyone with the link can see it and ask questions.
+- **On a stream:** <http://127.0.0.1:9666/dash/overlay> is a strip of cards
+  (position, lap clock and gap, fuel and tyres, a track map with every car)
+  on a transparent background. Add it in OBS as a Browser source at the size
+  of the space it fills; it scales to any size.
 
 Without the skill you still get every tool; you just ask for each step
 yourself, as below.

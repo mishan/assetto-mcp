@@ -1302,14 +1302,35 @@
  },
  {
   "annotations": {
-   "destructiveHint": false,
+   "destructiveHint": true,
    "idempotentHint": false,
    "openWorldHint": false,
    "readOnlyHint": false
   },
-  "description": "Write the closing handoff document to the data folder's exports as\n<name>.md; name defaults to session-<id>-<track>-<car>. Never replaces\na file: an existing name gets -2, -3... Returns the path to hand to\nthe driver.",
+  "description": "Save the engineer's files in the data folder, never the repository.\n\nkind \"driver\" (what the driver prefers and has corrected) or \"car\"\n(setup lineage, verdicts, measured rates; car defaults to the\nsession's) replaces driver.md or <car>.md in notes: send the whole\nfile, read_notes first and edit it. The old file is kept as\n<name>.md.bak-<time>, the newest 5. kind \"handoff\" writes the closing\ndocument to exports as <name>.md (default\nsession-<id>-<track>-<car>) and never replaces a file: an existing\nname gets -2, -3... Returns the path to hand to the driver.",
   "inputSchema": {
    "properties": {
+    "car": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Car"
+    },
+    "kind": {
+     "enum": [
+      "driver",
+      "car",
+      "handoff"
+     ],
+     "title": "Kind",
+     "type": "string"
+    },
     "markdown": {
      "title": "Markdown",
      "type": "string"
@@ -1328,50 +1349,6 @@
     }
    },
    "required": [
-    "markdown"
-   ],
-   "title": "save_handoffArguments",
-   "type": "object"
-  },
-  "name": "save_handoff",
-  "title": "Save the session handoff"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": false
-  },
-  "description": "Replace driver.md (kind \"driver\": what the driver prefers and has\ncorrected) or <car>.md (kind \"car\": setup lineage, verdicts, measured\nrates; car defaults to the session's) in the data folder's notes.\nSend the whole file: read_notes first and edit it. The old file is kept\nas <name>.md.bak-<time>, the newest 5.",
-  "inputSchema": {
-   "properties": {
-    "car": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Car"
-    },
-    "kind": {
-     "enum": [
-      "driver",
-      "car"
-     ],
-     "title": "Kind",
-     "type": "string"
-    },
-    "markdown": {
-     "title": "Markdown",
-     "type": "string"
-    }
-   },
-   "required": [
     "kind",
     "markdown"
    ],
@@ -1379,7 +1356,7 @@
    "type": "object"
   },
   "name": "save_notes",
-  "title": "Save the engineer's notes"
+  "title": "Save notes or the handoff"
  },
  {
   "annotations": {

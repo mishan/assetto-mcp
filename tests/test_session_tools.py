@@ -119,11 +119,14 @@ def test_notes_stay_in_their_folders_and_keep_what_they_replace():
                 ("save_notes", {"kind": "driver", "markdown": "# v2"}),
                 ("save_notes", {"kind": "car", "markdown": "# car"}),
                 ("read_notes", {}),
-                ("save_handoff", {"markdown": "# one", "name": "week"}),
-                ("save_handoff", {"markdown": "# two", "name": "week.md"}),
+                ("save_notes", {"kind": "handoff", "markdown": "# one",
+                                "name": "week"}),
+                ("save_notes", {"kind": "handoff", "markdown": "# two",
+                                "name": "week.md"}),
                 ("save_notes", {"kind": "car", "car": "../outside",
                                 "markdown": "x"}),
-                ("save_handoff", {"markdown": "x", "name": "../evil"}),
+                ("save_notes", {"kind": "handoff", "markdown": "x",
+                                "name": "../evil"}),
                 ("read_notes", {"car": "..\\outside"}))
         finally:
             s.NOTES_DIR, s.EXPORTS_DIR = saved

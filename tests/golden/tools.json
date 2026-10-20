@@ -331,7 +331,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Compare one of your laps against a rival's by track position: where\nthey carry more speed and, when the server sends their pedals, where\nthey brake and get on power.\n\ncar_index and rival_lap_number: from list_rivals; default their\nquickest captured lap. rival_lap_count (lap number minus one) is\ndeprecated. `time_by_turn`: seconds through each turn (turn-in to exit)\nand on the road after it to the next turn-in, `delta_s` positive where\nthe rival is quicker, with `where_they_gain` / `where_you_gain`. Their\n10 Hz trace is good to a few hundredths per stretch.",
+  "description": "Compare one of the driver's laps with an opponent's (car_index), by\ntrack position: where they carry more speed and, when the server sends\ntheir pedals, where they brake and get on power.\n\ncar_index and rival_lap_number: from list_rivals; default their\nquickest captured lap. rival_lap_count (lap number minus one) is\ndeprecated. `time_by_turn`: seconds through each turn (turn-in to exit)\nand on the road after it to the next turn-in, `delta_s` positive where\nthe rival is quicker, with `where_they_gain` / `where_you_gain`. Their\n10 Hz trace is good to a few hundredths per stretch.",
   "inputSchema": {
    "properties": {
     "car_index": {
@@ -691,7 +691,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Fuel for a race distance and the stint splits; tank size from the\nsetup ranges or shared memory.\n\nThe burn per lap is `liters_per_lap` when given (the in-game\nestimator's figure, say), else this session's measured median once 3\nusable laps measured it, else nominal from track length and the car's\nkm_per_liter (in-game app). `liters_per_lap_source` says which.\nstops is a floor: a distance needing more stops is planned with more,\nand says so. Reports whether a stop is forced by fuel.",
+  "description": "How much fuel a race of race_laps needs, and the stint splits; tank\nsize from the setup ranges or shared memory.\n\nThe burn per lap is `liters_per_lap` when given (the in-game\nestimator's figure, say), else this session's measured median once 3\nusable laps measured it, else nominal from track length and the car's\nkm_per_liter (in-game app). `liters_per_lap_source` says which.\nstops is a floor: a distance needing more stops is planned with more,\nand says so. Reports whether a stop is forced by fuel.",
   "inputSchema": {
    "properties": {
     "liters_per_lap": {
@@ -832,7 +832,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "One lap: whether its time counts, throttle/brake/coast split, tyre\npressures and core temps, and each corner.\n\nEach corner: `turn` (T1, T2... the session's; quote it or `name`),\ndirection, gear, min speed, `brake_before_turn_in_m` (the board),\nthrottle point, slip balance (positive = understeer), peak_lat_g,\n`body_slip_peak_deg` (1-5 normal, tens a slide, large and negative a\nspin). detail=\"full\", for explaining a bad lap, adds `entry_phase`,\nper-axle slip, steer, lap fractions, `corner` (an ordinal: never quote\nit) and `corner_detection`. Quote positions as `_m` or `where`, never\nfractions.\n\n`contacts` (damage) null is not a clean lap. `contacts_inferred`: each\nspike over 3 g, verdict \"contact\" (car within 10 m), \"wall\", \"snap\"\n(rotation, not impact), \"kerb\" or \"no_opponent_data\" (`if_alone`);\n[] = no spike, null = no data. Read it before calling a spin a\ndriving error.",
+  "description": "One lap: whether its time counts, throttle/brake/coast split, tyre\npressures and core temps, and each corner with its brake point.\n\nEach corner: `turn` (T1, T2... the session's; quote it or `name`),\ndirection, gear, min speed, `brake_before_turn_in_m` (the board),\nthrottle point, slip balance (positive = understeer), peak_lat_g,\n`body_slip_peak_deg` (1-5 normal, tens a slide, large and negative a\nspin). detail=\"full\", for explaining a bad lap, adds `entry_phase`,\nper-axle slip, steer, lap fractions, `corner` (an ordinal: never quote\nit) and `corner_detection`. Quote positions as `_m` or `where`, never\nfractions.\n\n`contacts` (damage) null is not a clean lap. `contacts_inferred`: each\nspike over 3 g, verdict \"contact\" (car within 10 m), \"wall\", \"snap\"\n(rotation, not impact), \"kerb\" or \"no_opponent_data\" (`if_alone`);\n[] = no spike, null = no data. Read it before calling a spin a\ndriving error.",
   "inputSchema": {
    "properties": {
     "detail": {
@@ -865,7 +865,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Raw telemetry along one stretch of one lap, a row every step_m\nmeters, for what no report answers: shift rpm by gear, time in 6th,\nslip through one braking zone, entry speed against the brake point.\n\nchannels: sample columns (default speed_kmh, gas, brake, gear).\nfrom_m/to_m: meters past the start line, default the whole lap. At most\n300 rows: a longer window gets a coarser `step_m`. Rows carry `m` and\n`t_s` (since the lap started); `from_where`/`to_where` place the\nwindow, and describe_positions turns any other `m` into words for the\ndriver.",
+  "description": "Raw telemetry along one stretch of one lap, a row every step_m\nmeters, for what no report answers: shift rpm by gear, time in 6th,\nslip through one braking zone, entry speed against the brake point.\nBrake points per corner are in lap_summary.\n\nchannels: sample columns (default speed_kmh, gas, brake, gear).\nfrom_m/to_m: meters past the start line, default the whole lap. At most\n300 rows: a longer window gets a coarser `step_m`. Rows carry `m` and\n`t_s` (since the lap started); `from_where`/`to_where` place the\nwindow, and describe_positions turns any other `m` into words for the\ndriver.",
   "inputSchema": {
    "properties": {
     "channels": {

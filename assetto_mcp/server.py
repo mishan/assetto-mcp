@@ -961,9 +961,9 @@ def compare_to_rival(car_index: int, lap_id: int,
                      rival_lap_number: int | None = None,
                      session_id: int | None = None,
                      rival_lap_count: int | None = None) -> str:
-    """Compare one of your laps against a rival's by track position: where
-    they carry more speed and, when the server sends their pedals, where
-    they brake and get on power.
+    """Compare one of the driver's laps with an opponent's (car_index), by
+    track position: where they carry more speed and, when the server sends
+    their pedals, where they brake and get on power.
 
     car_index and rival_lap_number: from list_rivals; default their
     quickest captured lap. rival_lap_count (lap number minus one) is
@@ -1836,7 +1836,7 @@ _SUMMARY_CORNER = ("turn", "name", "direction", "gear", "min_speed_kmh",
 def lap_summary(lap_id: int,
                 detail: Literal["summary", "full"] = "summary") -> str:
     """One lap: whether its time counts, throttle/brake/coast split, tyre
-    pressures and core temps, and each corner.
+    pressures and core temps, and each corner with its brake point.
 
     Each corner: `turn` (T1, T2... the session's; quote it or `name`),
     direction, gear, min speed, `brake_before_turn_in_m` (the board),
@@ -1986,6 +1986,7 @@ def lap_trace(lap_id: int,
     """Raw telemetry along one stretch of one lap, a row every step_m
     meters, for what no report answers: shift rpm by gear, time in 6th,
     slip through one braking zone, entry speed against the brake point.
+    Brake points per corner are in lap_summary.
 
     channels: sample columns (default speed_kmh, gas, brake, gear).
     from_m/to_m: meters past the start line, default the whole lap. At most
@@ -2637,8 +2638,8 @@ def fuel_plan(race_laps: Annotated[int, Field(ge=1, le=100_000)],
               session_id: int | None = None,
               liters_per_lap: Annotated[float, Field(gt=0)] | None = None
               ) -> str:
-    """Fuel for a race distance and the stint splits; tank size from the
-    setup ranges or shared memory.
+    """How much fuel a race of race_laps needs, and the stint splits; tank
+    size from the setup ranges or shared memory.
 
     The burn per lap is `liters_per_lap` when given (the in-game
     estimator's figure, say), else this session's measured median once 3

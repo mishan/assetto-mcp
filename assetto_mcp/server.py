@@ -571,7 +571,8 @@ def recording_status() -> str:
         out["storage_thinned"] = _collector.last_retention.get("actions")
         out["storage_note"] = (
             "the database passed its size budget, so the oldest sessions' "
-            "traces were decimated. No lap was deleted. See storage_report.")
+            "traces were decimated. No lap was deleted. session_check's "
+            "`storage` has the figures.")
     migrations = db.MIGRATION_LOG.pop(str(DB_PATH), None)
     if migrations:
         out["database_upgraded"] = migrations
@@ -816,8 +817,13 @@ def session_check() -> str:
     now, the session (setup tag, measured setup, best_clean_lap_id), which
     saved setup is on the car, whether the in-game app is connected
     (`app.last_seen_s`), the suspension tier ("worker" 333 Hz, "app"
-    render-rate, null none), whether a restart or update is owed, and the
-    notes folder. `to_do`: what to fix before the first flying lap."""
+    render-rate, null none), whether a restart or update is owed, the
+    notes folder, and `storage`: the database against its budget
+    (ASSETTO_MCP_MAX_DB_BYTES, default 2 GB, 0 = no limit). Past it the
+    oldest sessions' traces are decimated, down to every 32nd sample; lap
+    times, setup labels and track-limits evidence are kept, and
+    `sample_stride` on a lap says how thinned it is. `to_do`: what to fix
+    before the first flying lap."""
     state, why = _collector_state()
     snap = _bridge.status_snapshot()
     sid = snap["session_id"]
@@ -882,6 +888,8 @@ def session_check() -> str:
                     "driver": (NOTES_DIR / "driver.md").exists(),
                     "car": bool(car and _is_file_name(car)
                                 and (NOTES_DIR / f"{car}.md").exists())}
+    out["storage"] = {**retention.storage_report(_conn, DB_PATH),
+                      "data_dir": str(DATA_DIR)}
     out["to_do"] = to_do
     return _j(out)
 
@@ -1722,23 +1730,6 @@ def label_laps(lap_ids: str | int | list[int], setup_name: str,
         # "ok" and nothing else would read as "done".
         out["ok"] = False
         out.setdefault("note", "Nothing was labeled.")
-    return _j(out)
-
-
-@_tool("Storage report")
-def storage_report() -> str:
-    """What the telemetry database holds and its disk cost (~0.4 MB per lap).
-
-    Past the budget (ASSETTO_MCP_MAX_DB_BYTES, default 2 GB, 0 = no limit)
-    the oldest sessions' traces are decimated, down to every 32nd sample;
-    lap times, setup labels and track-limits evidence are kept. `sample_stride`
-    on a lap says how thinned it is. `data_dir` is the data folder;
-    `notes_dir` is where notes about the driver go, never the repository."""
-    out = retention.storage_report(_conn, DB_PATH)
-    # Where the driver's own files live: the notes the race-engineer skill
-    # keeps, and exports. Neither belongs in the repository.
-    out["data_dir"] = str(DATA_DIR)
-    out["notes_dir"] = str(DATA_DIR / "notes")
     return _j(out)
 
 

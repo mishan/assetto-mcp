@@ -51,6 +51,7 @@ def test_session_check_says_what_is_missing_before_the_first_lap():
     assert after["app"]["connected"] is True, after["app"]
     assert 0 <= after["app"]["last_seen_s"] < 5, after["app"]
     assert not any("in-game app" in t for t in after["to_do"]), after
+    assert after["storage"]["laps"] >= len(ids), after["storage"]
 
 
 def test_wait_for_lap_returns_the_next_lap_and_blocks_nothing_else():

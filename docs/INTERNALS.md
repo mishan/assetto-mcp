@@ -139,8 +139,8 @@ The current session is never thinned. `ASSETTO_MCP_MAX_DB_BYTES` sets the
 budget (default 2 GB); `0` disables budget-driven thinning entirely, though
 the per-session cap on suspension samples applies either way. A pass runs once at
 session start, so the cost lands while the car is in the garage rather than
-between two flying laps. `storage_report` says what's stored and what has
-been thinned; `sample_stride` on a lap says by how much.
+between two flying laps. `session_check`'s `storage` says what's stored and
+what has been thinned; `sample_stride` on a lap says by how much.
 
 Progress during a pass is *estimated* from rows removed rather than measured
 from the file. Deleted pages sit on the freelist and in the WAL until a

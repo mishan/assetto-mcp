@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Thirty-nine tools. They fall into nine groups. For each: what to pass,
+Thirty-eight tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the traps.
 Every optional parameter takes null as "the default", so passing one
 explicitly is always safe; a call refused for a missing parameter is fixed
@@ -35,7 +35,10 @@ asks GitHub), and `notes` (the folder, and whether `driver.md` and the
 car's file exist). `to_do` is the list to work through before the first
 flying lap. An `app.bridge_error` with another chat open means that chat's
 server holds the in-game app: data still arrives, but
-`send_driver_message` from here does not reach the driver.
+`send_driver_message` from here does not reach the driver. `storage` is
+the database's size against its budget, and how many laps were thinned to
+stay under it: `sample_stride` above 1 on a lap means its trace was
+decimated; numbers are intact, resolution is not.
 
 **`start_recording()`** -- idempotent; recording starts with the server
 anyway, so this mostly undoes a `stop_recording`. If another instance holds
@@ -87,10 +90,6 @@ stored now) and returns its card: `lap_id`, `lap_number`, `lap_time`,
 `recording` state: call again with the same `after_lap_id`. A card with
 `more_waiting` has later laps behind it: call again with its `lap_id`.
 Laps in a later session count too, so a new session id shows up here.
-
-**`storage_report()`** -- database size and thinning. `sample_stride` above 1
-on a lap means its trace was decimated; numbers are intact, resolution is
-not.
 
 **`rescore_track_limits()`** -- re-derive ran-wide verdicts after changing
 the wheels-out threshold. Skips thinned laps and says so: a new threshold

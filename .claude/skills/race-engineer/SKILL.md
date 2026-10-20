@@ -96,6 +96,11 @@ Damage is usually off on race servers, so `contacts` is null on every lap;
 mitigation, not a habit. A spin that looks like a driving error can be a
 6.8 g hit from behind.
 
+The pit wall marks every impact but kerbs on the map. Talking one
+through in a debrief, `show_on_dashboard` with its lap and the turn from
+its `where` first, so the driver is looking at the place while you say
+what happened.
+
 ## Session start
 
 Do these in the first minute, before the first flying lap lands. Several can

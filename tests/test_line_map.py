@@ -292,6 +292,27 @@ def test_a_corner_one_lap_invented_is_shown_and_not_numbered():
     print(f"  lap {odd}: extra corner at {stray[0]['apex']}, unnumbered")
 
 
+def test_an_impact_is_marked_where_it_happened_and_a_kerb_is_not():
+    """A 12 g stop at 0.3 with nobody recorded near, and a 4 g kerb strike
+    at 0.6 the car carried on through."""
+    samples = _dicts(_lap_positions())
+    samples[600].update(acc_lon=-12.0, speed_kmh=60.0)
+    for s in samples[601:612]:
+        s["speed_kmh"] = 40.0
+    samples[1200]["acc_lat"] = 4.0
+    with temp_db() as path:
+        conn = db.connect(path)
+        try:
+            lap = db.store_lap(conn, make_session(conn), 1, 90000, True,
+                               [tuple(s[c] for c in _COLS) for s in samples])
+            data = line_map.build(conn, lap_ids=[lap])
+        finally:
+            conn.close()
+    hits = data["laps"][0]["contacts"]
+    assert [(c["pos"], c["alone"]) for c in hits] == [(0.3, "wall")], hits
+    print(f"  {hits}")
+
+
 def test_balance_is_front_minus_rear_slip_and_only_counts_cornering():
     """The corner metric's sign, point by point, and a glitch is not data."""
     got = analysis.sample_slip_balance(

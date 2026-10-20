@@ -16,20 +16,36 @@ on 127.0.0.1 that it polls and posts to:
                      and fuel, which cannot separate setups differing in ARB
                      or camber
     POST /ack     -> dismiss the currently displayed message
+    GET  /dash    -> the pit wall: a page for a browser on this PC, polling
+    GET  /dash/overlay -> a strip of it for a stream, on a clear background
+    GET  /dash/live  -> shared memory now, the cars around, and what Claude
+                     put on screen
+    GET  /dash/map   -> the line map of those laps, or the latest session
+    GET  /dash/track -> the best lap's outline, for the small maps
+    POST /dash/ask   -> a question the driver typed, for Claude's next reply
+    GET  /dash/asks  -> those questions, for scripts/watch_laps.py to wake on
+
+With ASSETTO_MCP_DASH_LAN=1 the /dash pages are also served on the local
+network, on DASH_LAN_PORT, under a secret first path segment; nothing else
+is.
 
 Messages flow the other way via the send_driver_message MCP tool: Claude sets
 a message, the app shows it on the next poll, the driver dismisses it.
 """
 
+import hmac
+import html
 import json
 import math
+import secrets
 import socket
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
-from . import db
+from . import db, line_map
 from .text import untrusted
 
 
@@ -134,6 +150,14 @@ BIND_RETRY_SECONDS = 300.0
 # sessions db.SESSION_STALE_SECONDS decides.
 OTHER_INSTANCE_STALE_SECONDS = 900.0
 
+DASH_PAGE = Path(__file__).with_name("dash.html")
+OVERLAY_PAGE = Path(__file__).with_name("overlay.html")
+DASH_LAN_PORT = 9667
+
+# Opponents post a batch a second; a car silent for longer than this has
+# left, crashed out or entered the pits, and is dropped from the small map.
+CAR_FRESH_S = 3.0
+
 
 class FieldError(ValueError):
     """A request field was missing, the wrong type, or out of range."""
@@ -226,7 +250,8 @@ def _req_int(body: dict, key: str, lo: int, hi: int) -> int:
 
 
 class Bridge:
-    def __init__(self, db_path, collector, port: int = 9666):
+    def __init__(self, db_path, collector, port: int = 9666,
+                 lan: bool = False):
         self._db_path = db_path
         self._collector = collector
         self._port = port
@@ -241,6 +266,17 @@ class Bridge:
         # time.monotonic() of the in-game app's latest request. The app polls
         # /status every couple of seconds, so a stale one means it is gone.
         self.app_seen_at: float | None = None
+        # The server's live_snapshot reader, set once it is defined.
+        self.live = None
+        self._cars: dict[int, dict] = {}
+        # One connection for the dashboard's reads, opened on first use:
+        # a page polls every second, and db.connect runs the schema each
+        # time it opens one.
+        self._dash_conn = None
+        self._dash_lock = threading.Lock()
+        self._lan = lan
+        self._lan_server: ThreadingHTTPServer | None = None
+        self.lan_error: str | None = None
 
     # -- session resolution ---------------------------------------------
 
@@ -350,6 +386,58 @@ class Bridge:
                 return True
             return False
 
+    # -- the dashboard's data -------------------------------------------
+
+    def _dash_db(self, fn, *args):
+        with self._dash_lock:
+            if self._dash_conn is None:
+                self._dash_conn = db.connect(self._db_path)
+            return fn(self._dash_conn, *args)
+
+    def note_cars(self, drivers: list[dict], samples: list[dict]):
+        """Where each opponent was at the end of a batch, for the small map."""
+        now = time.monotonic()
+        names = {}
+        for d in drivers:
+            if d["driver_name"]:
+                names.setdefault(d["car_index"], d["driver_name"])
+        with self._lock:
+            for smp in samples:
+                if smp["pos_x"] is not None and smp["pos_z"] is not None:
+                    i = smp["car_index"]
+                    prev = self._cars.get(i, {})
+                    self._cars[i] = {"name": names.get(i, prev.get("name")),
+                                     "x": smp["pos_x"], "z": smp["pos_z"],
+                                     "at": now}
+
+    def _dash_live(self) -> dict:
+        try:
+            live = self.live() if self.live else {"error": "starting"}
+        except Exception as e:  # noqa: BLE001 - the game closed is normal
+            live = {"error": str(e)}
+        now = time.monotonic()
+        with self._lock:
+            cars = [{k: c[k] for k in ("name", "x", "z")}
+                    for c in self._cars.values()
+                    if now - c["at"] < CAR_FRESH_S]
+        return {"live": live, "cars": cars,
+                "focus": self._dash_db(db.pit_wall_focus),
+                "recording": self.status_snapshot()}
+
+    def _dash_track(self) -> dict:
+        return self._dash_db(_track_outline, self.active_session_id())
+
+    def _dash_map(self) -> str:
+        def build(conn):
+            laps = db.pit_wall_focus(conn)["lap_ids"]
+            return line_map.render(line_map.build(conn, None, laps or None))
+        try:
+            return self._dash_db(build)
+        except Exception as e:  # noqa: BLE001 - say why in the frame
+            return ('<!doctype html><meta name="color-scheme" '
+                    'content="dark light"><body style="font:14px system-ui;'
+                    f'padding:16px">{html.escape(str(e))}')
+
     # -- HTTP -----------------------------------------------------------
 
     def start(self):
@@ -361,16 +449,17 @@ class Bridge:
 
             _responded = False
 
-            def _send(self, code: int, obj: dict):
+            def _send(self, code: int, obj, ctype="application/json"):
                 # Guard against a second response on the same connection: if
                 # the client vanished mid-write, the error handler must not
                 # try to write another status line onto a half-sent reply.
                 if self._responded:
                     return
                 self._responded = True
-                body = json.dumps(obj).encode()
+                body = (obj if isinstance(obj, str)
+                        else json.dumps(obj)).encode()
                 self.send_response(code)
-                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -414,12 +503,25 @@ class Bridge:
                     remaining -= len(got)
                 self.close_connection = True
 
+            # The LAN listener's secret first path segment; None on localhost.
+            token = None
+
             def _from_web_page(self) -> bool:
                 # A browser tab can reach 127.0.0.1 too. Without a JSON
                 # Content-Type a cross-site POST needs no CORS preflight, and
                 # a DNS-rebound page arrives under its own Host name. Either
                 # could plant fake setup ranges or rival names that the model
-                # later reads.
+                # later reads. On the LAN the Host is whatever address the
+                # phone used, and the secret path does the Host check's job.
+                if self.token is not None:
+                    head, _, rest = self.path.partition("/")[2].partition("/")
+                    if not (hmac.compare_digest(head, self.token)
+                            and rest.startswith("dash")):
+                        return True
+                    self.path = "/" + rest
+                    return (self.command == "POST" and
+                            self.headers.get("Content-Type", "").split(";")[0]
+                            .strip() != "application/json")
                 host = self.headers.get("Host", "")
                 port = self.server.server_address[1]
                 if host not in (f"127.0.0.1:{port}",
@@ -430,11 +532,36 @@ class Bridge:
                         and ctype.split(";")[0].strip() != "application/json")
 
             def do_GET(self):
+                # A dropped connection leaves the dashboard's map frame on
+                # the browser's own error page.
+                try:
+                    return self._do_get()
+                except Exception as e:  # noqa: BLE001
+                    return self._send(500, {"error": f"{type(e).__name__}: {e}"})
+
+            def _do_get(self):
                 if self._from_web_page():
                     return self._send(403, {"error": "forbidden"})
-                bridge.app_seen_at = time.monotonic()
-                if self.path != "/status":
+                page = "text/html; charset=utf-8"
+                path, _, query = self.path.partition("?")
+                if path in ("/dash", "/dash/overlay"):
+                    return self._send(200, (DASH_PAGE if path == "/dash" else
+                                            OVERLAY_PAGE).read_text(
+                        encoding="utf-8"), page)
+                if path == "/dash/live":
+                    return self._send(200, bridge._dash_live())
+                if path == "/dash/map":
+                    return self._send(200, bridge._dash_map(), page)
+                if path == "/dash/track":
+                    return self._send(200, bridge._dash_track())
+                if path == "/dash/asks":
+                    after = _opt_int(query.partition("after=")[2] or 0,
+                                     0, 2**31 - 1) or 0
+                    return self._send(200, {"asks": bridge._dash_db(
+                        db.pit_wall_asks_after, after)})
+                if self.token is not None or self.path != "/status":
                     return self._send(404, {"error": "unknown path"})
+                bridge.app_seen_at = time.monotonic()
                 self._send(200, {**bridge.status_snapshot(),
                                  "message": bridge.get_message()})
 
@@ -449,10 +576,19 @@ class Bridge:
             def _do_post(self):
                 if self._from_web_page():
                     return self._send(403, {"error": "forbidden"})
-                bridge.app_seen_at = time.monotonic()
                 body = self._body()
                 if body is None:
                     return self._send(400, {"error": "bad JSON"})
+                if self.path == "/dash/ask":
+                    text = untrusted(body.get("text"), 300)
+                    if not text:
+                        return self._send(400, {"error": "'text' is empty"})
+                    return self._send(200, {"ok": True, "id": bridge._dash_db(
+                        db.add_pit_wall_ask, text,
+                        untrusted(body.get("place"), 120) or None)})
+                if self.token is not None:
+                    return self._send(404, {"error": "unknown path"})
+                bridge.app_seen_at = time.monotonic()
 
                 if self.path == "/note":
                     tag = str(body.get("tag", "")).lower()
@@ -562,6 +698,7 @@ class Bridge:
                         n = db.store_rival_batch(conn, sid, drivers, samples)
                     finally:
                         conn.close()
+                    bridge.note_cars(drivers, samples)
                     return self._send(200, {"ok": True, "stored": n,
                                             "skipped": skipped})
 
@@ -777,7 +914,43 @@ class Bridge:
         self._port = self._server.server_address[1]  # resolve port=0
         threading.Thread(target=self._server.serve_forever,
                          daemon=True).start()
+        if self._lan:
+            self._start_lan()
         return True
+
+    def _start_lan(self):
+        """The dashboard for a phone or tablet on the same network, served
+        by the instance holding the bridge port."""
+        try:
+            token = self._lan_token(create=True)
+            handler = type("LanHandler", (self._handler_cls,),
+                           {"token": token})
+            self._lan_server = _ExclusiveHTTPServer(("0.0.0.0", DASH_LAN_PORT),
+                                                    handler)
+        except OSError as e:
+            self.lan_error = f"LAN dashboard not started: {e}"
+            return
+        threading.Thread(target=self._lan_server.serve_forever,
+                         daemon=True).start()
+
+    def _lan_token(self, create: bool = False) -> str | None:
+        """Kept beside the database, so every instance can hand out the
+        link and a bookmarked one survives a restart."""
+        path = Path(self._db_path).parent / "dash-token"
+        token = path.read_text(encoding="utf-8").strip() if path.exists() else ""
+        if len(token) < 16 and create:
+            token = secrets.token_urlsafe(16)
+            path.write_text(token, encoding="utf-8")
+        return token if len(token) >= 16 else None
+
+    @property
+    def lan_url(self) -> str | None:
+        token = self._lan_token() if self._lan else None
+        if not token:
+            return None
+        port = (self._lan_server.server_address[1] if self._lan_server
+                else DASH_LAN_PORT)
+        return f"http://{_lan_address()}:{port}/{token}/dash"
 
     def _retry_bind(self):
         deadline = time.monotonic() + BIND_RETRY_SECONDS
@@ -803,9 +976,49 @@ class Bridge:
         self._bind_stop.set()
         with self._lock:
             server, self._server = self._server, None
+            lan, self._lan_server = self._lan_server, None
+        if lan:
+            lan.shutdown()
+            lan.server_close()
+        with self._dash_lock:
+            if self._dash_conn is not None:
+                self._dash_conn.close()
+                self._dash_conn = None
         if server:
             server.shutdown()      # stop the accept loop
             # shutdown() alone leaves the listening socket open until
             # refcounting closes it, which on Windows stretches the TIME_WAIT
             # window our own restart has to wait out.
             server.server_close()
+
+
+def _track_outline(conn, sid: int | None) -> dict:
+    """The session's best clean lap as a thinned outline, else one of its
+    newest laps with positions; the latest session when none is live."""
+    if sid is None:
+        latest = db.latest_session(conn)
+        sid = latest["id"] if latest else None
+    if sid is None:
+        return {"lap_id": None}
+    recent = [r["id"] for r in conn.execute(
+        "SELECT id FROM laps WHERE session_id = ? ORDER BY id DESC LIMIT 5",
+        (sid,))]
+    for lap_id in filter(None, [db.best_clean_lap_id(conn, sid), *recent]):
+        line = line_map.trace(db.get_samples(conn, lap_id), 250)
+        if line:
+            return {"lap_id": lap_id, "x": line["x"], "z": line["z"]}
+    return {"lap_id": None}
+
+
+def _lan_address() -> str:
+    """This PC's address on the network its default route uses.
+
+    Connecting a UDP socket sends nothing; it only asks the OS which
+    interface it would use.
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        try:
+            s.connect(("192.0.2.1", 9))
+            return s.getsockname()[0]
+        except OSError:
+            return socket.gethostname()

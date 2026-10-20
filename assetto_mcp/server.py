@@ -244,7 +244,8 @@ _collector = Collector(DB_PATH, _sim_factory)
 from .bridge import Bridge  # noqa: E402
 
 BRIDGE_PORT = int(config.env("BRIDGE_PORT", "9666"))
-_bridge = Bridge(DB_PATH, _collector, BRIDGE_PORT)
+_bridge = Bridge(DB_PATH, _collector, BRIDGE_PORT,
+                 lan=config.env("DASH_LAN", "") == "1")
 _bridge.start()
 
 # Start recording the moment the server exists, rather than waiting to be
@@ -265,6 +266,19 @@ def _j(obj) -> str:
     # Compact: every reply lands in the model's context, and indentation
     # would be a third of it.
     return json.dumps(obj, separators=(",", ":"), default=str)
+
+
+def _asks_ride_along(tool):
+    """Questions the driver typed on the pit wall arrive with the next reply,
+    whatever was called: a server cannot start a turn in the chat."""
+    @functools.wraps(tool)
+    def wrapped(*args, **kwargs):
+        reply = tool(*args, **kwargs)
+        if not reply.startswith("{"):
+            return reply
+        asks = _take_asks()
+        return _j({**json.loads(reply), "driver_asks": asks}) if asks else reply
+    return wrapped
 
 
 # ASSETTO_MCP_TOOLSET=core: the session routine in few enough tools for a
@@ -327,6 +341,8 @@ def _tool(title: str, *, writes: bool = False, destructive: bool = False,
             with _conn_lock:
                 return fn(*args, **kwargs)
         tool = locked if locks_conn else fn
+        if not inspect.iscoroutinefunction(fn):
+            tool = _asks_ride_along(tool)
         _REGISTERED.add(fn.__name__)
         if _TOOLSET != "core" or fn.__name__ in CORE_TOOLS:
             extra = {}
@@ -668,7 +684,15 @@ def live_snapshot() -> str:
     `checkered_flag`. `fuel_to_finish`, in a race of laps: fuel on board
     against the laps to go, with `margin_laps` and a `verdict` ("tight"
     under 0.6 laps spare); `basis` "measured" is this session's median burn,
-    "nominal" the car's rated consumption."""
+    "nominal" the car's rated consumption. `lap_time` is the lap being
+    driven; `delta_to_best_s` sets it against the session's best clean lap
+    at the same point, + slower."""
+    return _j(_live())
+
+
+def _live(dash: bool = False) -> dict:
+    """live_snapshot's payload; the dashboard polls it from bridge threads,
+    with where the car is for its maps."""
     from .sim_info import SimInfo
     sim = SimInfo()
     try:
@@ -687,6 +711,7 @@ def live_snapshot() -> str:
             "road_temp": round(p.roadTemp, 1),
             "fuel_l": round(p.fuel, 1),
             "speed_kmh": round(p.speedKmh, 1),
+            "lap_time": g.currentTime,
             "last_lap": g.lastTime,
             "best_lap": g.bestTime,
             "completed_laps": g.completedLaps,
@@ -699,19 +724,57 @@ def live_snapshot() -> str:
                 w: round(p.tyreCoreTemperature[i], 1)
                 for i, w in enumerate(("fl", "fr", "rl", "rr"))},
         }
+        driving = g.status == 2 and g.iCurrentTime > 0
+        at = (g.normalizedCarPosition, g.iCurrentTime)
+        if dash:
+            payload.update(lap_time_ms=g.iCurrentTime, car_x=g.carCoordinates[0],
+                           car_z=g.carCoordinates[2])
     finally:
         # Release the ctypes views before closing the mapping.
         p = g = s = None
         sim.close()
     try:
-        fuel = _fuel_to_finish(payload)
+        with _conn_lock:
+            fuel = _fuel_to_finish(payload)
     except Exception:  # noqa: BLE001
         # This call is how anyone finds out whether shared memory reads at
         # all; a fuel estimate is not worth failing it over.
         fuel = None
     if fuel:
         payload["fuel_to_finish"] = fuel
-    return _j(payload)
+    if driving:
+        try:
+            with _conn_lock:
+                payload["delta_to_best_s"] = _delta_to_best(payload, *at)
+        except Exception:  # noqa: BLE001 - a delta is not worth the call
+            pass
+    return payload
+
+
+# The best lap's (position, clock) points, one lap at a time: the dashboard
+# asks every second, and the lap only changes when a faster one is stored.
+_delta_ref: dict[int, list] = {}
+
+
+def _delta_to_best(snap: dict, pos: float, lap_ms: int) -> float | None:
+    """Seconds behind (+) the session's best clean lap at this point."""
+    sid = _active_session()
+    session = db.get_session(_conn, sid) if sid else None
+    if not session or any(session.get(k) != snap.get(k)
+                          for k in ("car", "track", "track_config")):
+        return None
+    best = db.best_clean_lap_id(_conn, sid)
+    if best is None:
+        return None
+    if best not in _delta_ref:
+        _delta_ref.clear()
+        _delta_ref[best] = analysis._monotonic_positions(
+            db.get_samples(_conn, best))
+    t = analysis._interpolate_clock(_delta_ref[best], [pos])[0]
+    return None if t is None else round((lap_ms - t) / 1000, 2)
+
+
+_bridge.live = lambda: _live(dash=True)
 
 
 # Usable laps of measured burn before it replaces the nominal figure: one
@@ -776,6 +839,8 @@ def _app_link() -> dict:
     out = {"connected": age is not None and age < APP_SILENT_S,
            "last_seen_s": None if age is None else round(age, 1),
            "port": _bridge.port}
+    if _bridge.lan_error:
+        out["lan_error"] = _bridge.lan_error
     if _bridge.error:
         out["bridge_error"] = _bridge.error
         out["note"] = (
@@ -1894,7 +1959,9 @@ async def wait_for_lap(after_lap_id: int | None = None,
     usable, ran_wide, contact verdicts, setup, fuel used, and the session's
     best_clean_lap_id. For live mode in a client with no background watcher.
     {"new_lap": false} is a timeout: call again with the same after_lap_id.
-    `more_waiting`: later laps already stored; call again with this lap_id."""
+    `more_waiting`: later laps already stored; call again with this lap_id.
+    `driver_asks`: the driver typed a question on the pit wall; answer it,
+    then wait again."""
     import anyio
 
     timeout = min(max(timeout_s, 1), WAIT_FOR_LAP_MAX_S)
@@ -1905,15 +1972,22 @@ async def wait_for_lap(after_lap_id: int | None = None,
         # async sleep: SDK 1.x runs tools on the event loop, where a
         # blocking wait would hold up every other call.
         after, card = await anyio.to_thread.run_sync(_next_lap, after)
-        if card or time.monotonic() >= deadline:
+        asks = await anyio.to_thread.run_sync(_take_asks)
+        if card or asks or time.monotonic() >= deadline:
             break
         await anyio.sleep(WAIT_FOR_LAP_POLL_S)
+    asks = {"driver_asks": asks} if asks else {}
     if card:
-        return _j(card)
+        return _j({**card, **asks})
     with _conn_lock:
         state, _ = _collector_state()
     return _j({"new_lap": False, "after_lap_id": after,
-               "waited_s": timeout, "recording": state})
+               "waited_s": timeout, "recording": state, **asks})
+
+
+def _take_asks() -> list[dict]:
+    with _conn_lock:
+        return db.take_pit_wall_asks(_conn)
 
 
 TRACE_CHANNELS = (
@@ -3208,6 +3282,39 @@ def send_driver_message(
         return _j({"error": _bridge.error if _bridge else "bridge not running"})
     return _j({"ok": True, "message_id": _bridge.set_message(text),
                "note": "displayed until driver dismisses it"})
+
+
+@_tool("Show on the dashboard", writes=True)
+def show_on_dashboard(lap_ids: str | int | list[int] | None = None,
+                      turn: Annotated[str | None,
+                                      Field(pattern=r"^[Tt]?\d{1,3}$")] = None,
+                      caption: Annotated[str | None,
+                                         Field(max_length=200)] = None) -> str:
+    """Put laps in front of the driver on the pit wall, the live dashboard
+    page, with a caption saying what to look at ("lap 12 vs 9: T4 entry,
+    you brake 8 m early"). Returns its `url` for the driver to open in a
+    browser on this PC, `overlay_url` for a stream, and `lan_url` for a
+    phone when LAN access is on. Show it, then talk.
+
+    lap_ids: "87,88", "87-90", one id or a list, drawn on the line map;
+    null shows the current session. turn: "T4" zooms the map to it."""
+    turn = f"T{turn.lstrip('Tt')}" if turn else None
+    try:
+        lap_ids = _lap_ids(lap_ids)
+        if lap_ids or turn:
+            data = line_map.build(_conn, None if lap_ids else _active_session(),
+                                  lap_ids)
+            if turn and turn not in {t["turn"] for t in data["turns"]}:
+                raise ValueError(f"no {turn} on that map; its turns are "
+                                 f"{[t['turn'] for t in data['turns']]}")
+    except ValueError as e:
+        return _j({"error": str(e)})
+    base = f"http://127.0.0.1:{BRIDGE_PORT}/dash"
+    out = {"url": base, "overlay_url": base + "/overlay",
+           "focus_id": db.set_pit_wall_focus(_conn, lap_ids, turn, caption)}
+    if _bridge.lan_url:
+        out["lan_url"] = _bridge.lan_url
+    return _j(out)
 
 
 # --- notes and the handoff -----------------------------------------------

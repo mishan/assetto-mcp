@@ -61,6 +61,12 @@ this lap or next: a pit call, a fuel warning, a car close behind, a
 change confirmed. The lap read stays in text. If the bridge is up,
 `send_driver_message` puts the same sentence on the in-game overlay.
 
+When a lap read points at a place on the track, `show_on_dashboard` with
+the laps, the turn and a one-line caption puts them on the pit wall, a page
+the driver keeps open on a second screen or a phone; give them its `url`
+(or `lan_url`) the first time. Show it, then talk. A driver who streams
+puts `overlay_url` in OBS as a browser source.
+
 Whichever mode, the recording, tagging and watching are identical, so a
 driver who starts in debrief can ask a question mid-session and get the
 live answer.
@@ -122,6 +128,9 @@ go in one round of calls.
    commands calls `wait_for_lap` instead, in live mode, again after every
    reply: it returns the next lap's card, or `new_lap: false` after at most
    45 s, and then you call it again with the same `after_lap_id`.
+   The watcher also prints an `ASK` line, and any reply can carry
+   `driver_asks`, when the driver types a question on the pit wall: answer
+   it before the next lap, with the place it names.
 6. Say what you found in three lines: what is on the car, what is different
    from last time, and what the first laps should establish.
 

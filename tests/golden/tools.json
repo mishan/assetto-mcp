@@ -1059,7 +1059,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Current state from shared memory: car, track, session status, tyre\npressures/temps, fuel, last/best lap.\n\nAlso `session_type`, `position` (race order in a race, best-lap rank\notherwise), `current_lap` of `race_laps`, `laps_remaining` (counts the\nlap being driven) and `session_time_left_s`; null unless the game is\nlive or paused. `race_laps` and `laps_remaining` are null in a timed\nsession. A lapped car may have a lap fewer than `laps_remaining` until\n`checkered_flag`. `fuel_to_finish`, in a race of laps: fuel on board\nagainst the laps to go, with `margin_laps` and a `verdict` (\"tight\"\nunder 0.6 laps spare); `basis` \"measured\" is this session's median burn,\n\"nominal\" the car's rated consumption.",
+  "description": "Current state from shared memory: car, track, session status, tyre\npressures/temps, fuel, last/best lap.\n\nAlso `session_type`, `position` (race order in a race, best-lap rank\notherwise), `current_lap` of `race_laps`, `laps_remaining` (counts the\nlap being driven) and `session_time_left_s`; null unless the game is\nlive or paused. `race_laps` and `laps_remaining` are null in a timed\nsession. A lapped car may have a lap fewer than `laps_remaining` until\n`checkered_flag`. `fuel_to_finish`, in a race of laps: fuel on board\nagainst the laps to go, with `margin_laps` and a `verdict` (\"tight\"\nunder 0.6 laps spare); `basis` \"measured\" is this session's median burn,\n\"nominal\" the car's rated consumption. `lap_time` is the lap being\ndriven; `delta_to_best_s` sets it against the session's best clean lap\nat the same point, + slower.",
   "inputSchema": {
    "properties": {},
    "title": "live_snapshotArguments",
@@ -1564,6 +1564,70 @@
    "openWorldHint": false,
    "readOnlyHint": false
   },
+  "description": "Put laps in front of the driver on the pit wall, the live dashboard\npage, with a caption saying what to look at (\"lap 12 vs 9: T4 entry,\nyou brake 8 m early\"). Returns its `url` for the driver to open in a\nbrowser on this PC, `overlay_url` for a stream, and `lan_url` for a\nphone when LAN access is on. Show it, then talk.\n\nlap_ids: \"87,88\", \"87-90\", one id or a list, drawn on the line map;\nnull shows the current session. turn: \"T4\" zooms the map to it.",
+  "inputSchema": {
+   "properties": {
+    "caption": {
+     "anyOf": [
+      {
+       "maxLength": 200,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Caption"
+    },
+    "lap_ids": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "integer"
+      },
+      {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Ids"
+    },
+    "turn": {
+     "anyOf": [
+      {
+       "pattern": "^[Tt]?\\d{1,3}$",
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Turn"
+    }
+   },
+   "title": "show_on_dashboardArguments",
+   "type": "object"
+  },
+  "name": "show_on_dashboard",
+  "title": "Show on the dashboard"
+ },
+ {
+  "annotations": {
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false,
+   "readOnlyHint": false
+  },
   "description": "Start recording telemetry; laps are stored as they complete.\nIdempotent, and recording starts with the server, so this mostly undoes\nstop_recording. Stands by, and says so, if another server instance\nholds the recorder.",
   "inputSchema": {
    "properties": {},
@@ -1720,7 +1784,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Wait until a lap after after_lap_id is stored (null: the newest one\nnow), up to timeout_s (at most 45), and return it as a card: time,\nusable, ran_wide, contact verdicts, setup, fuel used, and the session's\nbest_clean_lap_id. For live mode in a client with no background watcher.\n{\"new_lap\": false} is a timeout: call again with the same after_lap_id.\n`more_waiting`: later laps already stored; call again with this lap_id.",
+  "description": "Wait until a lap after after_lap_id is stored (null: the newest one\nnow), up to timeout_s (at most 45), and return it as a card: time,\nusable, ran_wide, contact verdicts, setup, fuel used, and the session's\nbest_clean_lap_id. For live mode in a client with no background watcher.\n{\"new_lap\": false} is a timeout: call again with the same after_lap_id.\n`more_waiting`: later laps already stored; call again with this lap_id.\n`driver_asks`: the driver typed a question on the pit wall; answer it,\nthen wait again.",
   "inputSchema": {
    "properties": {
     "after_lap_id": {

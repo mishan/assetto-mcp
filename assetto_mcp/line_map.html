@@ -273,7 +273,9 @@ function lapColor(l){
   return mix(css("--ramp0"), css("--ramp1"), i/n);
 }
 
-let xs=[],zs=[]; laps.forEach(l=>{xs.push(...l.x);zs.push(...l.z)});
+// The pit wall opens the map on one turn with #turn=T4.
+const ZOOM = TURNS.find(t=>t.turn===new URLSearchParams(location.hash.slice(1)).get("turn") && t.entry_pos<t.exit_pos);
+let xs=[],zs=[]; laps.forEach(l=>l.p.forEach((p,i)=>{ if (!ZOOM || (p>=ZOOM.entry_pos-0.02 && p<=ZOOM.exit_pos+0.02)){ xs.push(l.x[i]); zs.push(l.z[i]); } }));
 const bx=[Math.min(...xs),Math.max(...xs)], bz=[Math.min(...zs),Math.max(...zs)];
 const cv=document.getElementById("c"), ctx=cv.getContext("2d"), tip=document.getElementById("tip");
 const sv=document.getElementById("s"), sctx=sv.getContext("2d"), stip=document.getElementById("stip");
@@ -755,6 +757,13 @@ cv.addEventListener("mousemove", e=>{
   placeTip(tip, mx, my, W, H);
 });
 cv.addEventListener("mouseleave", ()=>{hov=null;tip.style.display="none";draw();});
+// On the pit wall a click hands the place to the question box.
+cv.addEventListener("click", ()=>{
+  if (!hov || parent===window) return;
+  const l=hov.l, p=l.p[hov.i], t=turnAt(p);
+  parent.postMessage({place: "lap "+l.n+" (id "+l.id+"), "+(t ? t+", " : "")+
+    (TRACK_M ? Math.round(p*TRACK_M)+" m" : "pos "+p.toFixed(3))+" into the lap"}, location.origin);
+});
 sv.addEventListener("mousemove", e=>{
   const sel=byId.get(state.sel), r=sv.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
   const p=(mx-PL)/(SW-PL-PR);

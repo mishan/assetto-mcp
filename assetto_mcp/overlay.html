@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Pit Wall Overlay</title>
+<!--
+  For a stream: add it in OBS as a Browser source at the size of the space it
+  fills (2857 x 553 on a 4K canvas, for example). Everything is sized in vh, so
+  any size works; the page background is transparent and only the cards show.
+-->
+<style>
+:root{
+  --card:rgba(12,14,18,.84); --edge:rgba(255,255,255,.09); --ink:#f1f2ef; --muted:#9aa2ab;
+  --good:#4fd48a; --warn:#f0b44c; --bad:#ff6a5c; --you:#a88cff; --car:#c9ced4; --track:#3b434d;
+  --font-body:system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-mono:ui-monospace,"Cascadia Mono",Consolas,monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:transparent;overflow:hidden}
+body{color:var(--ink);font-family:var(--font-body);display:flex;gap:2.4vh;padding:2.4vh}
+.card{background:var(--card);border:1px solid var(--edge);border-radius:2.4vh;padding:4vh 5vh;display:flex;flex-direction:column;justify-content:center;min-width:0}
+h2{margin:0;font:700 6.5vh/1 var(--font-body);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.big{font:700 38vh/1 var(--font-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.time{font:700 21vh/1.05 var(--font-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.mid{font:700 14vh/1.1 var(--font-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.sub{font:500 7.5vh/1.3 var(--font-mono);color:var(--muted);white-space:nowrap}
+.sub b{color:var(--ink);font-weight:600}
+.ok{color:var(--good)} .tight{color:var(--warn)} .short{color:var(--bad)}
+.tyres{display:grid;grid-template-columns:auto auto;gap:1vh 5vh;margin-top:2vh;font:600 8vh/1.2 var(--font-mono);font-variant-numeric:tabular-nums}
+.tyres span{color:var(--muted);font-weight:500;margin-right:1.5vh}
+.map{flex:1;padding:2vh;min-width:30vh}
+canvas{width:100%;height:100%;display:block}
+body.off .card:not(.map){opacity:.45}
+</style>
+<div class="card"><h2>Position</h2><div class="big" id="pos">—</div><div class="sub" id="lap"></div></div>
+<div class="card"><h2>Lap time</h2><div class="time" id="clock">—</div><div class="mid" id="delta"></div>
+  <div class="sub" id="times"></div></div>
+<div class="card"><h2>Fuel</h2><div class="mid" id="fuel">—</div><div class="sub" id="margin"></div>
+  <div class="tyres" id="tyres"></div></div>
+<div class="card map"><canvas id="c"></canvas></div>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = ms => Math.floor(ms/60000) + ":" + String(Math.floor(ms%60000/1000)).padStart(2,"0") + "." + Math.floor(ms%1000/100);
+let live = null, at = 0, cars = [], track = null, trackKey = null;
+
+async function poll(){
+  try {
+    const d = await (await fetch("live", {cache: "no-store"})).json();
+    live = d.live; at = performance.now(); cars = d.cars;
+    show();
+    const r = d.recording, key = r.session_id + "-" + r.laps_recorded;
+    if (key !== trackKey){
+      trackKey = key;
+      const t = await (await fetch("track", {cache: "no-store"})).json();
+      track = t.lap_id ? t : null;
+    }
+  } catch (e) { live = null; show(); }
+  setTimeout(poll, 500);
+}
+
+function show(){
+  const l = live && !live.error ? live : null;
+  document.body.classList.toggle("off", !l || l.status !== "live");
+  $("pos").textContent = l?.position ? "P" + l.position : "—";
+  $("lap").innerHTML = l?.current_lap ? "LAP <b>" + l.current_lap + (l.race_laps ? " / " + l.race_laps : "") + "</b>" : "";
+  const d = l?.delta_to_best_s;
+  $("delta").textContent = d == null ? "" : (d > 0 ? "+" : "") + d.toFixed(2);
+  $("delta").className = "mid " + (d == null ? "" : d > 0 ? "short" : "ok");
+  $("times").innerHTML = l ? "LAST <b>" + (l.last_lap || "—") + "</b>  BEST <b>" + (l.best_lap || "—") + "</b>" : "";
+  $("fuel").textContent = l ? l.fuel_l.toFixed(1) + " L" : "—";
+  const f = l?.fuel_to_finish, m = f?.margin_laps;
+  $("margin").textContent = m == null ? "" : (m >= 0 ? "+" : "") + m.toFixed(1) + " laps at the flag";
+  $("margin").className = "sub " + (m == null ? "" : m < 0 ? "short" : m < 0.6 ? "tight" : "ok");
+  $("tyres").innerHTML = l ? ["fl","fr","rl","rr"].map(w =>
+    `<div><span>${w.toUpperCase()}</span>${Math.round(l.tyre_core_temps_c[w])}°</div>`).join("") : "";
+}
+
+// The lap clock runs between polls, so it reads as a clock on stream.
+function tick(){
+  const l = live && !live.error ? live : null;
+  $("clock").textContent = l?.lap_time_ms > 0
+    ? fmt(l.lap_time_ms + (l.status === "live" ? performance.now() - at : 0)) : "—";
+  draw();
+  requestAnimationFrame(tick);
+}
+
+const cv = $("c"), ctx = cv.getContext("2d");
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function draw(){
+  const dpr = devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== W*dpr || cv.height !== H*dpr){ cv.width = W*dpr; cv.height = H*dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+  if (!track) return;
+  const bx = [Math.min(...track.x), Math.max(...track.x)], bz = [Math.min(...track.z), Math.max(...track.z)];
+  const pad = H*0.08, S = Math.min((W-2*pad)/((bx[1]-bx[0])||1), (H-2*pad)/((bz[1]-bz[0])||1));
+  const ox = (W-(bx[1]-bx[0])*S)/2 - bx[0]*S, oz = (H-(bz[1]-bz[0])*S)/2 - bz[0]*S;
+  const px = x => ox + x*S, pz = z => oz + z*S;
+  ctx.lineJoin = ctx.lineCap = "round";
+  ctx.strokeStyle = css("--track"); ctx.lineWidth = H*0.035;
+  ctx.beginPath(); track.x.forEach((x, i) => i ? ctx.lineTo(px(x), pz(track.z[i])) : ctx.moveTo(px(x), pz(track.z[i])));
+  ctx.closePath(); ctx.stroke();
+  const dot = (x, z, r, fill) => { ctx.beginPath(); ctx.arc(px(x), pz(z), r, 0, 7); ctx.fillStyle = fill; ctx.fill(); };
+  cars.forEach(c => dot(c.x, c.z, H*0.022, css("--car")));
+  const l = live && !live.error ? live : null;
+  if (l && l.car_x != null && l.status !== "off"){
+    dot(l.car_x, l.car_z, H*0.042, css("--ink"));
+    dot(l.car_x, l.car_z, H*0.032, css("--you"));
+  }
+}
+poll(); tick();
+</script>
+</html>

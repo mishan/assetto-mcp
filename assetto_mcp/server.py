@@ -2622,7 +2622,204 @@ def compare_runs(baseline_laps: str | int | list[int] | None = None,
         out["laps_by_setup"] = by_setup
     if deprecated_note:
         out["deprecated"] = deprecated_note
+    spreads = out.pop("_spreads", {})
+    try:
+        conditions = {side: _conditions([l for l, _ in pairs])
+                      for side, pairs in (("baseline", base_loaded),
+                                          ("candidate", cand_loaded))}
+        note = _conditions_note(conditions)
+        if note:
+            out["conditions_note"] = note
+        out["experiment_id"] = _record_experiment(
+            out, spreads, conditions, base_loaded, cand_loaded)
+    except Exception as e:  # noqa: BLE001
+        # The comparison stands on its own; failing to file it for the
+        # setup book is not a reason to withhold it.
+        out["experiment_not_stored"] = f"{type(e).__name__}: {e}"
     return _j(_placed(out, base_laps[0]["session_id"], out.get("turns")))
+
+
+# Road temperature difference between the two sides of a comparison past
+# which the track, not the setup, may be the change.
+CONDITIONS_ROAD_TEMP_C = 3.0
+
+
+def _conditions(laps: list[dict]) -> dict:
+    """Conditions at the start of each session the laps came from."""
+    sessions = [db.get_session(_conn, sid)
+                for sid in sorted({l["session_id"] for l in laps})]
+    sessions = [s for s in sessions if s]
+    temps = [s["road_temp"] for s in sessions
+             if s.get("road_temp") is not None]
+    return {
+        "session_ids": [s["id"] for s in sessions],
+        "road_temp_c": round(sum(temps) / len(temps), 1) if temps else None,
+        "air_temp_c": next((s["air_temp"] for s in sessions
+                            if s.get("air_temp") is not None), None),
+        "tyre_compounds": sorted({s["tyre_compound"] for s in sessions
+                                  if s.get("tyre_compound")}),
+    }
+
+
+def _conditions_note(c: dict) -> str | None:
+    a, b = c["baseline"], c["candidate"]
+    notes = []
+    if (a["road_temp_c"] is not None and b["road_temp_c"] is not None
+            and abs(a["road_temp_c"] - b["road_temp_c"])
+            > CONDITIONS_ROAD_TEMP_C):
+        notes.append(f"road temperature differed ({a['road_temp_c']} C "
+                     f"against {b['road_temp_c']} C at session start)")
+    if a["tyre_compounds"] and b["tyre_compounds"] \
+            and a["tyre_compounds"] != b["tyre_compounds"]:
+        notes.append(f"tyre compound differed ({', '.join(a['tyre_compounds'])}"
+                     f" against {', '.join(b['tyre_compounds'])})")
+    if not notes:
+        return None
+    return ("; ".join(notes) + ": part of any difference may be the "
+            "conditions rather than the setup")
+
+
+def _record_experiment(out, spreads, conditions, base_loaded,
+                       cand_loaded) -> int:
+    session = db.get_session(_conn, base_loaded[0][0]["session_id"])
+    if any(not l.get("setup_fp") for l, _ in base_loaded + cand_loaded):
+        # A lap nothing measured may have run anything; filing the rest's
+        # difference as the change would credit it with those laps.
+        changes = None
+    elif "setup_changes" in out:
+        changes = out["setup_changes"]
+    elif out.get("same_measured_setup"):
+        changes = []
+    else:
+        changes = None
+    results = {}
+    for key, m in out.get("metrics", {}).items():
+        r = {k: m.get(k) for k in ("baseline", "candidate", "change",
+                                   "baseline_n", "candidate_n", "verdict",
+                                   "p_value_adjusted")}
+        r.update(spreads.get(key, {}))
+        results[key] = r
+    return db.record_experiment(_conn, {
+        "car": session["car"], "track": session["track"],
+        "track_config": session.get("track_config"),
+        "changes": changes,
+        "laps": {"baseline": [l["id"] for l, _ in base_loaded],
+                 "candidate": [l["id"] for l, _ in cand_loaded],
+                 "set_aside": [a["lap_id"]
+                               for a in out.get("lap_time_set_aside", [])]},
+        "conditions": conditions,
+        "results": results,
+    })
+
+
+@_tool("Annotate an A/B", writes=True)
+def annotate_experiment(experiment_id: int, note: str | None = None,
+                        conclusion: str | None = None) -> str:
+    """Record what the driver felt about an A/B and what was decided.
+
+    experiment_id: from compare_runs. conclusion: "kept", "reverted" or
+    "undecided". note: the driver's words, briefly."""
+    try:
+        found = db.annotate_experiment(_conn, experiment_id, note,
+                                       conclusion)
+    except ValueError as e:
+        return _j({"error": str(e)})
+    if not found:
+        return _j({"error": f"no experiment with id {experiment_id}"})
+    return _j({"ok": True, "experiment_id": experiment_id})
+
+
+@_tool("Setup book")
+def setup_book(car: str | None = None, entry: str | None = None,
+               track: str | None = None) -> str:
+    """What every stored A/B says each setup entry does to this car.
+
+    Check it before proposing a change. Per entry: the experiments that
+    changed it alone, and per metric the effect per unit of the stored value
+    (and `per_click`), pooled across them with its `se`. `within_noise`:
+    the sign is not settled; say so, never quote it as an effect.
+    `tracks_disagree`: the effect differs by layout; quote `by_track`.
+    `changed_together` lists A/Bs that changed several entries, which cannot
+    be split. car: default the current session's. entry: one setup entry,
+    e.g. "ARB_REAR". track: only that circuit's experiments."""
+    car = _resolve_car(car)
+    if car is None:
+        return _j({"error": "no active session; pass car explicitly"})
+    exps = db.experiments_for(_conn, car, track)
+    if not exps:
+        return _j({"car": car, "entries": {},
+                   "note": "No A/B comparisons stored for this car yet. "
+                           "compare_runs files each one as it runs."})
+    steps = {k: v[2] for k, v in db.setup_ranges(_conn, car).items()
+             if v[2]}
+    return _j({"car": car, **analysis.setup_book(exps, steps, entry)})
+
+
+@_tool("Plan an A/B")
+def plan_experiment(metric: str = "lap_time_ms", effect: float | None = None,
+                    entry: str | None = None, change: float | None = None,
+                    car: str | None = None, track: str | None = None) -> str:
+    """How many laps a side an A/B needs to see a change, before running it.
+
+    Give `effect` (in the metric's units, e.g. 300 for 0.3 s of lap time),
+    or `entry` and `change` (stored units) to take the effect from the
+    setup book. The spread and the book's effect are this driver's own, from
+    stored A/Bs on this car at this layout (track defaults to the current
+    session's), or at every layout when there are none. Run the sides
+    interleaved, A B A, so track temperature, fuel and tyres do not read as
+    the change.
+    metric: one of the compare_runs metrics, e.g. "lap_time_ms",
+    "slip_balance", "front_load_transfer_pct"."""
+    if metric not in analysis.BOOK_METRICS:
+        return _j({"error": f"metric must be one of "
+                            f"{', '.join(analysis.BOOK_METRICS)}"})
+    car = _resolve_car(car)
+    if car is None:
+        return _j({"error": "no active session; pass car explicitly"})
+    exps = db.experiments_for(_conn, car)
+    config = None
+    if track is None:
+        sid = _active_session()
+        session = db.get_session(_conn, sid) if sid else None
+        if session and session["car"] == car:
+            track, config = session["track"], session["track_config"] or ""
+    here = [e for e in exps if track and e["track"] == track
+            and config in (None, e.get("track_config") or "")]
+    basis = here or exps
+    spreads = [(r["sd"], r["df"]) for e in basis
+               if (r := e["results"].get(metric) or {}).get("sd")
+               and r.get("df")]
+    if not spreads:
+        return _j({"error": f"no stored A/B on {car} measured {metric} "
+                            f"with two or more laps a side, so this driver's "
+                            f"spread is not known yet"})
+    sd = (sum(s * s * d for s, d in spreads)
+          / sum(d for _, d in spreads)) ** 0.5
+    effect_basis = "given"
+    if effect is None:
+        if entry is None or change is None:
+            return _j({"error": "give effect, or entry and change"})
+        book = analysis.setup_book(basis, entry=entry)["entries"].get(entry)
+        m = (book or {}).get("effects", {}).get(metric)
+        if not m:
+            return _j({"error": f"the setup book has no {metric} effect for "
+                                f"{entry} on {car}; give effect instead"})
+        effect = m["per_unit"] * change
+        effect_basis = (f"setup book: {m['per_unit']} per unit of {entry} "
+                        f"x {change}, from {m['experiments']} experiment(s)"
+                        + (" at this layout" if here else ""))
+        if m["within_noise"]:
+            effect_basis += ("; the book's effect is within noise, so this "
+                             "plans for a change that may not exist")
+    out = analysis.plan_experiment(sd, effect)
+    out.update({"car": car, "metric": metric, "effect": effect,
+                "effect_basis": effect_basis, "spread_sd": round(sd, 3),
+                "spread_from": f"{len(spreads)} stored A/B(s)"
+                               + (f" at {track}" if here else "")})
+    if out.get("laps_per_side") is None and "error" not in out:
+        out["note"] = ("not reachable in 30 laps a side: the change is "
+                       "small against this driver's lap-to-lap spread")
+    return _j(out)
 
 
 def _measured_setups(base_laps: list[dict], cand_laps: list[dict]) -> dict:

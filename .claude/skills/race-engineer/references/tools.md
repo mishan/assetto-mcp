@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Forty tools. They fall into nine groups. For each: what to pass,
+Forty-three tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the traps.
 Every optional parameter takes null as "the default", so passing one
 explicitly is always safe; a call refused for a missing parameter is fixed
@@ -112,21 +112,21 @@ not a tool.
 - `usable_for_timing` and `not_usable_because`; `ran_wide` and
   `track_limits` (wheels out, excursions, milliseconds off).
 - `contacts_inferred` (see group 6) before anything else about a bad lap.
-- `corners[]`: each has `turn` (the session's label, quote this),
-  `corner` (this lap's ordinal, do not quote), `apex_pos`, `entry_pos`,
-  `exit_pos`, `brake_point_pos`, `throttle_on_pos`, `min_speed_kmh`, `gear`,
+- `corners[]`: each has `turn` (the session's label, quote this), `corner`
+  (this lap's ordinal, do not quote), `apex_pos`, `entry_pos`, `exit_pos`,
+  `brake_point_pos`, `throttle_on_pos`, `min_speed_kmh`, `gear`,
   `peak_steer_norm` (fraction of full lock, not degrees), `peak_lat_g`,
   `slip_balance` (positive front slides more), `front_slip`, `rear_slip`,
-  `direction` ("left" or "right"; `turn_sign` +1 or -1), and `entry_phase` (from brake point or
-  turn-in to apex: slip balance, mean steer, yaw peak, rotation, body
-  slip), and `body_slip_peak_deg`: how far the nose points inside the
-  car's path. A GT3 car corners at 1-5 degrees at the apex, up to 7 on
-  entry; tens of degrees is a slide caught, large and negative a spin, and a slip balance that reads understeer next to a
-  large body slip is a car that rotated. Entry
-  phase is where trail braking, entry rotation and most spins live; a
-  change aimed at entry stability shows here when the apex figures do
-  not move. Yaw and rotation are null on laps recorded before heading.
-  `brake_before_turn_in_m` is the board to brake at.
+  `direction` ("left" or "right"; `turn_sign` +1 or -1), and `entry_phase`
+  (from brake point or turn-in to apex: slip balance, mean steer, yaw peak,
+  rotation, body slip), and `body_slip_peak_deg`: how far the nose points
+  inside the car's path. A GT3 car corners at 1-5 degrees at the apex, up to
+  7 on entry; tens of degrees is a slide caught, large and negative a spin,
+  and a slip balance that reads understeer next to a large body slip is a
+  car that rotated. Entry phase is where trail braking, entry rotation and
+  most spins live; a change aimed at entry stability shows here when the
+  apex figures do not move. Yaw and rotation are null on laps recorded
+  before heading. `brake_before_turn_in_m` is the board to brake at.
 - `tyres`: pressure average and end-of-lap, core temperature average, per
   corner of the car.
 - `top_speed_kmh`, `time_full_throttle_pct`, `time_braking_pct`,
@@ -244,8 +244,9 @@ check that list before quoting the result. Read:
   when a metric moved; never a finding.
 - `lap_time_set_aside`: with three or more laps a side, laps more than
   1.75% slower than their side's median (a moment, or a slow first lap),
-  left out of the lap-time mean so one such lap does not set the spread. They stay in `lap_time_consistency` and the corners. A side
-  with many set aside was not driven consistently enough to judge pace.
+  left out of the lap-time mean so one such lap does not set the spread.
+  They stay in `lap_time_consistency` and the corners. A side with many
+  set aside was not driven consistently enough to judge pace.
 - `excluded_laps` with reasons: laps left out. `ran_wide` and `contacts`:
   laps counted but flagged (with `clean_laps_only`, ran-wide laps move to
   `excluded_laps`). A result resting on a contact lap may be measuring
@@ -259,6 +260,11 @@ check that list before quoting the result. Read:
   measured setups, fuel aside. Check it matches the change you meant.
   `measured_setup_note` says when a side spans two setups or has laps
   nothing measured.
+- `conditions_note`: the sides' sessions started at different road
+  temperatures or ran different compounds; part of any difference may be
+  the track. It cannot see the track changing within one session.
+- `experiment_id`: the comparison is filed in the setup book under this
+  id. Annotate it once the driver has said what they felt.
 
 Pass `clean_laps_only=false` and `include_invalid=null` explicitly. Both
 sides must be the same car on the same layout. `clean_laps_only=true`
@@ -273,6 +279,28 @@ gain against a 0.25 s spread is caught 3% at two laps, 11% at three, 39%
 at five and 77% at eight. Two laps a side is a real test on a quiet
 channel and none on lap time; a null lap-time answer from under five or
 six laps is not evidence the change did nothing.
+
+**`setup_book(car, entry, track)`** -- every stored A/B for the car, by
+setup entry. Read it before proposing a change. Per entry: the experiments
+that changed only that entry (with the driver's `conclusion` and `note`),
+and per metric the effect `per_unit` of the stored value (`per_click` when
+the step is known) pooled across them, with `se`. `within_noise: true`
+means the sign is not settled: say so, and never quote it as what the
+entry does. `tracks_disagree`: the layouts differ by more than noise;
+quote `by_track`, not the pool. Comparing laps that overlap an earlier
+comparison replaces it, so re-running one as laps come in is safe. `changed_together`: A/Bs that changed several entries at
+once, which cannot be attributed to any one of them.
+
+**`plan_experiment(metric, effect, entry, change, car, track)`** -- laps a
+side for an 80% chance of seeing a change, from this driver's own spread in
+stored A/Bs. Give `effect` in the metric's units, or `entry` and `change`
+to take it from the setup book. If `laps_per_side` is more than the driver
+will drive, test a quieter metric (load transfer, slip balance) or a bigger
+change, and say so before the run, not after.
+
+**`annotate_experiment(experiment_id, note, conclusion)`** -- after an A/B,
+what the driver felt and whether the change was "kept", "reverted" or left
+"undecided". The setup book quotes it back.
 
 ## 5. Tyres, brakes, suspension, fuel
 

@@ -374,7 +374,12 @@ def _server_env(data: str, **extra) -> dict:
 _REFUSALS = r'''
 import json, os
 import assetto_mcp.server as s
-out = {"unsupervised": json.loads(s.restart_server())}
+from assetto_mcp import update
+lock = update._cache_path(s.DATA_DIR, update.LOCK_FILE)
+lock.write_text(json.dumps({"pid": os.getpid(), "to_commit": "abc1234"}))
+out = {"updating": json.loads(s.restart_server(force=True))}
+lock.unlink()
+out["unsupervised"] = json.loads(s.restart_server())
 os.environ["ASSETTO_MCP_CHILD"] = "1"
 c = s._collector
 c.holds_recorder, c.session_id, c.live = True, 42, True
@@ -401,6 +406,10 @@ def test_restart_server_refuses_when_it_cannot_or_should_not():
             text=True, timeout=120)
         assert proc.returncode == 0, proc.stderr
         out = json.loads(proc.stdout.strip().splitlines()[-1])
+
+        upd = out["updating"]
+        assert upd["refused"] == "updating", upd
+        assert upd["to_commit"] == "abc1234", upd
 
         unsup = out["unsupervised"]
         assert unsup["restarting"] is False, unsup

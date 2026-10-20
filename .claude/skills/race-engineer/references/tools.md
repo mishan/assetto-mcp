@@ -417,7 +417,9 @@ connection, so new code on disk takes effect without the driver quitting
 the client. Use it instead of asking them to restart; ask them first, and
 never mid-lap. Refuses with `refused: "recording"` while this instance is
 recording a live session -- wait for the menus, or ask; `force` is only
-for when the driver has said yes. `refused: "not_supervised"` means the
+for when the driver has said yes. `refused: "updating"`: an
+`apply_update` is still reinstalling; collect its result first, and
+`force` does not override it. `refused: "not_supervised"` means the
 server cannot restart itself, and then the driver does have to fully quit
 and reopen the client. Afterwards: give it a few seconds, an open session
 continues under a new session id (tag it again), and `bridge_status` may

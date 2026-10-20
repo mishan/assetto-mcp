@@ -552,6 +552,21 @@ def _take_lock(path: Path | None, to_commit: str) -> dict | None:
     return held
 
 
+def apply_running(data_dir: Path | None = None) -> dict | None:
+    """The lock record of an apply running in any instance, or None."""
+    path = _cache_path(data_dir, LOCK_FILE)
+    try:
+        held = {"started_at": path.stat().st_mtime,
+                **(_read_cache(path) or {})}
+    except (AttributeError, OSError):
+        return None
+    pid = held.get("pid")
+    if (time.time() - held["started_at"] >= LOCK_STALE_SECONDS
+            or (pid is not None and not _pid_alive(pid))):
+        return None
+    return held
+
+
 def apply(to_commit: str, root: Path | None = None,
           data_dir: Path | None = None, ac: Path | None = None,
           pip=_pip_install, is_game_running=game_running) -> dict:

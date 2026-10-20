@@ -2641,11 +2641,23 @@ def restart_server(force: bool = False) -> str:
     """Restart this MCP server in place to load new code; the connection stays
     open. Ask the driver first, and never mid-lap.
 
-    Refuses "not_supervised" (the driver must quit and reopen the client)
+    Refuses "updating" (an apply_update is still reinstalling; collect it
+    first), "not_supervised" (the driver must quit and reopen the client)
     and "recording" (a live lap would be lost; wait for the menus). force
-    overrides "recording", only when the driver says so. Afterwards an open
+    overrides "recording" only, and only when the driver says so. Afterwards an open
     session has a new session id (tag it again), and on Windows the bridge
     can take a minute or more to reconnect."""
+    applying = update.apply_running(DATA_DIR)
+    if applying:
+        # Killing the process mid-reinstall can leave the package half
+        # installed, which no restart then recovers from.
+        return _j({
+            "restarting": False, "refused": "updating",
+            "to_commit": applying.get("to_commit"),
+            "error": "an update is being applied; restarting now would "
+                     "interrupt the reinstall",
+            "do_this": "call apply_update again with the same to_commit "
+                       "until it returns its result, then restart"})
     if not os.environ.get(supervisor.CHILD_ENV):
         return _j({
             "restarting": False, "refused": "not_supervised",

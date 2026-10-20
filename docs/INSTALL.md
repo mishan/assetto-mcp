@@ -111,7 +111,8 @@ assetto_mcp.server` starts a small supervisor that runs the real server as a
 child process and keeps the client's connection open across restarts, so after
 a code change the assistant can call `restart_server` instead of you quitting
 the client. Clients that act on `notifications/tools/list_changed` also pick
-up new tools without reconnecting.
+up new tools without reconnecting. The server's instructions and version are
+the ones the client saw when it connected, until it reconnects.
 
 ## 3. Copy the in-game app
 

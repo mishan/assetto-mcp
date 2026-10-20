@@ -1262,7 +1262,7 @@
    "openWorldHint": false,
    "readOnlyHint": false
   },
-  "description": "Save the engineer's files in the data folder, never the repository.\n\nkind \"driver\" (what the driver prefers and has corrected) or \"car\"\n(setup lineage, verdicts, measured rates; car defaults to the\nsession's) replaces driver.md or <car>.md in notes: send the whole\nfile, read_notes first and edit it. The old file is kept as\n<name>.md.bak-<time>, the newest 5. kind \"handoff\" writes the closing\ndocument to exports as <name>.md (default\nsession-<id>-<track>-<car>) and never replaces a file: an existing\nname gets -2, -3... Returns the path to hand to the driver.",
+  "description": "Save the engineer's files in the data folder, never the repository.\n\nkind \"driver\" (what the driver prefers and has corrected) or \"car\"\n(setup lineage, verdicts, measured rates; car defaults to the\nsession's) replaces driver.md or <car>.md in notes: send the whole\nfile, read_notes first and edit it. The old file is kept as\n<name>.md.bak-<time>, the newest 5. kind \"handoff\" writes the closing\ndocument to exports as <name>.md (default\nsession-<id>-<track>-<car>) and never replaces a file: an existing\nname gets -2, -3... Returns the path to hand to the driver. Marked\ndestructive, as a notes save replaces a file, and not idempotent, as\neach handoff save is a new one.",
   "inputSchema": {
    "properties": {
     "car": {

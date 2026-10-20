@@ -3279,7 +3279,9 @@ def save_notes(kind: Literal["driver", "car", "handoff"], markdown: str,
     <name>.md.bak-<time>, the newest 5. kind "handoff" writes the closing
     document to exports as <name>.md (default
     session-<id>-<track>-<car>) and never replaces a file: an existing
-    name gets -2, -3... Returns the path to hand to the driver."""
+    name gets -2, -3... Returns the path to hand to the driver. Marked
+    destructive, as a notes save replaces a file, and not idempotent, as
+    each handoff save is a new one."""
     if not isinstance(markdown, str) or not markdown.strip():
         return _j({"error": "markdown is empty"})
     if len(markdown) > NOTES_MAX_CHARS:

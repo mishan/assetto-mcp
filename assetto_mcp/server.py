@@ -1969,7 +1969,7 @@ def lap_trace(lap_id: int,
     from_m/to_m: meters past the start line, default the whole lap. At most
     300 rows: a longer window gets a coarser `step_m`. Rows carry `m` and
     `t_s` (since the lap started); `from_where`/`to_where` place the
-    window, and describe_positions turns any other `m` into words for the
+    window, and track_corners turns any other `m` into words for the
     driver."""
     lap = db.get_lap(_conn, lap_id)
     if not lap:
@@ -2026,9 +2026,13 @@ def lap_trace(lap_id: int,
 
 
 @_tool("Track corners")
-def track_corners(session_id: int | None = None) -> str:
+def track_corners(session_id: int | None = None,
+                  meters: str | float | list[float] | None = None,
+                  fractions: str | float | list[float] | None = None) -> str:
     """The session's turns, T1, T2... in track order, pooled from every lap's
-    detected corners: the labels lap_summary uses.
+    detected corners: the labels lap_summary uses. Given positions, it
+    says those instead, from the nearest corner ("Turn 10A braking zone,
+    60 m before turn-in"): use it for a position found outside the tools.
 
     Each turn: start, apex, end, brake point (also in meters),
     `brake_before_turn_in_m` (negative = braking after turn-in),
@@ -2036,13 +2040,21 @@ def track_corners(session_id: int | None = None) -> str:
     Not the circuit's numbering (flat kinks are skipped, a "3A" is numbered
     through) and not shared between sessions. With a track sections.ini
     each turn carries the circuit's `name`, to quote over the T-number, and
-    `circuit_names` lists the named sections. `unnumbered`: road only one lap cornered on."""
+    `circuit_names` lists the named sections. `unnumbered`: road only one
+    lap cornered on.
+
+    meters: distances past the start line, as a list or as text separated
+    by spaces or ", "; no thousands separators ("3,335" is refused).
+    fractions: lap fractions 0-1 (`norm_pos` / `spline`), the same shapes.
+    Either or both; the reply is then `places`."""
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id"})
     session = db.get_session(_conn, sid)
     if not session:
         return _j({"error": f"no session with id {sid}"})
+    if meters is not None or fractions is not None:
+        return _j(_positions(sid, meters, fractions))
     cmap = _session_corner_map(sid)
     ref = cmap["reference"]
     out = {
@@ -2173,37 +2185,22 @@ def _whole_numbers(value) -> list[int]:
     return out
 
 
-@_tool("Describe track positions")
-def describe_positions(meters: str | float | list[float] | None = None,
-                       fractions: str | float | list[float] | None = None,
-                       session_id: int | None = None) -> str:
-    """Say positions from the nearest corner, the way the tools do ("Turn 10A
-    braking zone, 60 m before turn-in"), for positions found outside them.
-
-    meters: distances past the start line, as a list or as text separated
-    by spaces or ", "; no thousands separators ("3,335" is refused).
-    fractions: lap fractions 0-1 (`norm_pos` / `spline`), the same shapes.
-    Either or both."""
-    sid = _active_session(session_id)
-    if sid is None:
-        return _j({"error": "no active session; pass session_id"})
-    if not db.get_session(_conn, sid):
-        return _j({"error": f"no session with id {sid}"})
+def _positions(sid: int, meters, fractions) -> dict:
     try:
         ms, fs = _parse_numbers(meters), _parse_numbers(fractions)
     except ValueError as e:
-        return _j({"error": str(e)})
+        return {"error": str(e)}
     if not ms and not fs:
-        return _j({"error": "pass meters or fractions"})
+        return {"error": "pass meters or fractions"}
     length, _ = _track_length(sid)
     if not length:
-        return _j({"error": f"session {sid} has no track length, stored or "
-                            f"estimable, so meters cannot be placed"})
+        return {"error": f"session {sid} has no track length, stored or "
+                         f"estimable, so meters cannot be placed"}
     if any(not 0.0 <= f <= 1.0 for f in fs):
-        return _j({"error": "fractions are lap fractions between 0 and 1"})
+        return {"error": "fractions are lap fractions between 0 and 1"}
     positions = ([{"pos": (m % length) / length, "given_m": m} for m in ms]
                  + [{"pos": f} for f in fs])
-    return _j(_placed({"session_id": sid, "places": positions}, sid))
+    return _placed({"session_id": sid, "places": positions}, sid)
 
 
 _ASPECTS = ("braking", "attitude", "suspension")

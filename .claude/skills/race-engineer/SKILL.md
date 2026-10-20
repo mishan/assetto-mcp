@@ -82,7 +82,7 @@ and never spline fractions: the driver navigates by corners and the 50 m and
 100 m braking boards, and does not know how far into the lap they are.
 Every position in a tool reply comes with a `where`; quote it. A position
 you found yourself, in a script over the samples, goes through
-`describe_positions` before it goes to the driver.
+`track_corners` (with `meters`) before it goes to the driver.
 
 Do not call a spin a driving error until you have checked for a contact.
 Damage is usually off on race servers, so `contacts` is null on every lap;

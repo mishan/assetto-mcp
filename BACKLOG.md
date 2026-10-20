@@ -84,7 +84,7 @@ than inferring it from slip.
 **Status:** partly done. Session-local numbering is built
 (`analysis.corner_map`, `label_corners`, `track_corners`). Where the track
 ships `data/sections.ini`, turns carry the circuit's own `name`
-(`circuit.py`), and `where` and `describe_positions` use it. Still open:
+(`circuit.py`), and `where` and `track_corners` use it. Still open:
 tracks with no `sections.ini`, and a hand-written override for them.
 
 Without names, turn numbers are the session's, not the circuit's:

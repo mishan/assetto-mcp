@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Forty-three tools. They fall into nine groups. For each: what to pass,
+Forty-two tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the traps.
 Every optional parameter takes null as "the default", so passing one
 explicitly is always safe; a call refused for a missing parameter is fixed
@@ -195,11 +195,12 @@ corner whose apex sits near a section boundary can come back with no
 pieces of road only one lap cornered on, kept out so that a spin carved
 out as its own corner does not renumber every turn after it.
 
-**`describe_positions(meters, fractions, session_id)`** -- any position you
-found outside the tools (a script over `samples`, a rival trace) said the way the
-tools say it: "Turn 10A braking zone, 60 m before turn-in". `meters` is
-distance past the start line, comma-separated; `fractions` is `norm_pos`.
-Use it before quoting a position from a script to the driver.
+**`track_corners(session_id, meters, fractions)`** with positions -- any
+position you found outside the tools (a script over `samples`, a rival
+trace) said the way the tools say it: "Turn 10A braking zone, 60 m before
+turn-in", in `places` and in place of the turn table. `meters` is distance
+past the start line, comma-separated; `fractions` is `norm_pos`. Use it
+before quoting a position from a script to the driver.
 
 One lap's line across the track is `compare_laps` with `view="line"`
 and no `lap_id_b` (group 4).
@@ -255,8 +256,8 @@ speed, pedals and gear. `from_m`/`to_m` are meters past the start line
 (the whole lap by default) and a row comes every `step_m` meters, at most
 300: a longer window gets a coarser step, and `step_m_requested` says so.
 Each row has `m` and `t_s` since the lap started. `from_where` and
-`to_where` place the window; any other `m` goes through `describe_positions` before it
-goes to the driver.
+`to_where` place the window; any other `m` goes through `track_corners`
+before it goes to the driver.
 
 ## 4. Comparing laps and runs
 

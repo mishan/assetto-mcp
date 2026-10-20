@@ -21,7 +21,7 @@ driver: nobody at the wheel knows they are 3,335 m into the lap. Say it
 from the corner. Where the track ships `data/sections.ini` (Road Atlanta
 and the Glen do), turns carry the circuit's `name` and `where` uses it;
 the session's T-numbers can drift from the circuit's (Road Atlanta's
-session T12 was Turn 10A). `describe_positions(meters=..., fractions=...)`
+session T12 was Turn 10A). `track_corners(meters=..., fractions=...)`
 turns any position from a script into the same wording.
 
 `track_length` on the payload says where the length came from: `game` is

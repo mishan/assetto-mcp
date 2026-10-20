@@ -442,77 +442,6 @@
    "destructiveHint": false,
    "idempotentHint": true,
    "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Say positions from the nearest corner, the way the tools do (\"Turn 10A\nbraking zone, 60 m before turn-in\"), for positions found outside them.\n\nmeters: distances past the start line, as a list or as text separated\nby spaces or \", \"; no thousands separators (\"3,335\" is refused).\nfractions: lap fractions 0-1 (`norm_pos` / `spline`), the same shapes.\nEither or both.",
-  "inputSchema": {
-   "properties": {
-    "fractions": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "number"
-      },
-      {
-       "items": {
-        "type": "number"
-       },
-       "type": "array"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Fractions"
-    },
-    "meters": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "number"
-      },
-      {
-       "items": {
-        "type": "number"
-       },
-       "type": "array"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Meters"
-    },
-    "session_id": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Session Id"
-    }
-   },
-   "title": "describe_positionsArguments",
-   "type": "object"
-  },
-  "name": "describe_positions",
-  "title": "Describe track positions"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
    "readOnlyHint": false
   },
   "description": "Draw laps as a driving-line map in one HTML file in the data\ndirectory's exports folder; returns the path to hand to the driver.\n\nlap_ids: \"87,88\", \"87-90\", one id or a list; null for the whole\nsession. Laps from several sessions (same car and layout) are drawn\nwithout turn numbers. Laps without position data are listed in\n`skipped`. Exporting the same session again replaces its file.",
@@ -870,7 +799,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Raw telemetry along one stretch of one lap, a row every step_m\nmeters, for what no report answers: shift rpm by gear, time in 6th,\nslip through one braking zone, entry speed against the brake point.\nBrake points per corner are in lap_summary.\n\nchannels: sample columns (default speed_kmh, gas, brake, gear).\nfrom_m/to_m: meters past the start line, default the whole lap. At most\n300 rows: a longer window gets a coarser `step_m`. Rows carry `m` and\n`t_s` (since the lap started); `from_where`/`to_where` place the\nwindow, and describe_positions turns any other `m` into words for the\ndriver.",
+  "description": "Raw telemetry along one stretch of one lap, a row every step_m\nmeters, for what no report answers: shift rpm by gear, time in 6th,\nslip through one braking zone, entry speed against the brake point.\nBrake points per corner are in lap_summary.\n\nchannels: sample columns (default speed_kmh, gas, brake, gear).\nfrom_m/to_m: meters past the start line, default the whole lap. At most\n300 rows: a longer window gets a coarser `step_m`. Rows carry `m` and\n`t_s` (since the lap started); `from_where`/`to_where` place the\nwindow, and track_corners turns any other `m` into words for the\ndriver.",
   "inputSchema": {
    "properties": {
     "channels": {
@@ -1812,9 +1741,51 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "The session's turns, T1, T2... in track order, pooled from every lap's\ndetected corners: the labels lap_summary uses.\n\nEach turn: start, apex, end, brake point (also in meters),\n`brake_before_turn_in_m` (negative = braking after turn-in),\n`direction` (left/right; `turn_sign` +1/-1), and laps cornered there.\nNot the circuit's numbering (flat kinks are skipped, a \"3A\" is numbered\nthrough) and not shared between sessions. With a track sections.ini\neach turn carries the circuit's `name`, to quote over the T-number, and\n`circuit_names` lists the named sections. `unnumbered`: road only one lap cornered on.",
+  "description": "The session's turns, T1, T2... in track order, pooled from every lap's\ndetected corners: the labels lap_summary uses. Given positions, it\nsays those instead, from the nearest corner (\"Turn 10A braking zone,\n60 m before turn-in\"): use it for a position found outside the tools.\n\nEach turn: start, apex, end, brake point (also in meters),\n`brake_before_turn_in_m` (negative = braking after turn-in),\n`direction` (left/right; `turn_sign` +1/-1), and laps cornered there.\nNot the circuit's numbering (flat kinks are skipped, a \"3A\" is numbered\nthrough) and not shared between sessions. With a track sections.ini\neach turn carries the circuit's `name`, to quote over the T-number, and\n`circuit_names` lists the named sections. `unnumbered`: road only one\nlap cornered on.\n\nmeters: distances past the start line, as a list or as text separated\nby spaces or \", \"; no thousands separators (\"3,335\" is refused).\nfractions: lap fractions 0-1 (`norm_pos` / `spline`), the same shapes.\nEither or both; the reply is then `places`.",
   "inputSchema": {
    "properties": {
+    "fractions": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "number"
+      },
+      {
+       "items": {
+        "type": "number"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Fractions"
+    },
+    "meters": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "number"
+      },
+      {
+       "items": {
+        "type": "number"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Meters"
+    },
     "session_id": {
      "anyOf": [
       {

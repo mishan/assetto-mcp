@@ -97,7 +97,7 @@ def test_the_tools_take_a_number_or_a_list_through_mcp():
               for v in (87, [87, 88], "87-90")]
     calls += [("compare_runs", {"baseline_laps": v, "candidate_laps": v})
               for v in (87, [87, 88], "87,88")]
-    calls += [("describe_positions", {"meters": v, "fractions": v})
+    calls += [("track_corners", {"meters": v, "fractions": v})
               for v in (0.25, [0.25, 0.5], "0.25, 0.5")]
     for name, arguments in calls:
         try:

@@ -26,7 +26,14 @@ import shutil
 import time
 from pathlib import Path
 
+from .text import untrusted
+
 _NAME_RE = re.compile(r"^[\w][\w \-.]{0,60}$")
+
+# Anything that would make a car, track or setup name more than one path
+# component: separators of either OS, a drive letter, NUL and the other
+# control characters Windows refuses in a filename.
+_NOT_IN_A_NAME = re.compile(r"[/\\:\x00-\x1f]")
 
 # What fraction of the live setup a saved file must actually cover before
 # agreeing on all of it counts as identification. A file holding only
@@ -117,6 +124,29 @@ def setups_root(ac_docs_dir: Path) -> Path:
     return ac_docs_dir / "setups"
 
 
+def _component(value: str, what: str) -> str:
+    """`value`, if it names one folder or file rather than a path.
+
+    Windows drops trailing dots and spaces, so ". ." is ".." there.
+    """
+    if not value.strip(" .") or _NOT_IN_A_NAME.search(value):
+        raise ValueError(f"{what} must be a single folder or file name, "
+                         f"got {value!r}")
+    return value
+
+
+def _inside(ac_docs_dir: Path, path: Path) -> Path:
+    """`path`, if it resolves to somewhere under the setups folder.
+
+    The names are checked one by one already; this catches a symlink or
+    junction leading out.
+    """
+    if not path.resolve().is_relative_to(
+            setups_root(ac_docs_dir).resolve()):
+        raise ValueError(f"{path} is outside the setups folder")
+    return path
+
+
 def setup_dir(ac_docs_dir: Path, car: str, track: str,
               loose: bool = True) -> Path | None:
     """The folder holding this car's setups for this track, if there is one.
@@ -125,9 +155,10 @@ def setup_dir(ac_docs_dir: Path, car: str, track: str,
     loose match can land on a folder called something else entirely, and
     every caller then has to read from *that*.
     """
-    d = setups_root(ac_docs_dir) / car / track
+    d = (setups_root(ac_docs_dir) / _component(car, "car")
+         / _component(track, "track"))
     if d.is_dir():
-        return d
+        return _inside(ac_docs_dir, d)
     if not loose:
         return None
     # AC uses plain track dir for default layout, "track/layout" dirs
@@ -137,7 +168,7 @@ def setup_dir(ac_docs_dir: Path, car: str, track: str,
         hits = [p for p in parent.iterdir()
                 if p.is_dir() and p.name.startswith(track)]
         if len(hits) == 1:
-            return hits[0]
+            return _inside(ac_docs_dir, hits[0])
     return None
 
 
@@ -205,29 +236,44 @@ def _resolve_track_dir(ac_docs_dir: Path, car: str,
     return empty, []
 
 
+def _setup_path(ac_docs_dir: Path, car: str, track: str, name: str) -> Path:
+    """Where the setup called `name` is, or would be written.
+
+    Through setup_dir rather than the literal path, so a track prefix --
+    "mugello" for "mugello_osrw" -- means the folder that list_setups uses.
+    None from it means no folder for this track yet, which is ordinary for
+    the first setup at a new circuit -- use the name as given.
+    """
+    d = setup_dir(ac_docs_dir, car, track) or (
+        setups_root(ac_docs_dir) / car / track)
+    return _inside(ac_docs_dir, d / f"{_component(name, 'setup name')}.ini")
+
+
 def read_setup(ac_docs_dir: Path, car: str, track: str, name: str) -> dict:
     """One setup file, resolved the same way list_setups resolves it.
 
-    Through setup_dir rather than the literal path, so a track prefix --
-    "mugello" for "mugello_osrw" -- reads the folder that list_setups and
-    write_setup use.
+    Its text values and the names in it come from whoever wrote the file,
+    which may be a stranger's download, so they are passed through
+    text.untrusted.
     """
-    d = setup_dir(ac_docs_dir, car, track)
-    path = (d or setups_root(ac_docs_dir) / car / track) / f"{name}.ini"
+    path = _setup_path(ac_docs_dir, car, track, name)
     if not path.is_file():
         raise FileNotFoundError(f"no setup at {path}")
     cp = _parser()
     _read_ini(cp, path)
     out = {}
     for section in cp.sections():
+        key = untrusted(section, 64)
         if "VALUE" in cp[section]:
             raw = cp[section]["VALUE"]
             try:
-                out[section] = float(raw) if "." in raw else int(raw)
+                out[key] = float(raw) if "." in raw else int(raw)
             except ValueError:
-                out[section] = raw
+                out[key] = untrusted(raw, 64)
         else:  # e.g. [CAR] MODEL=...
-            out[section] = dict(cp[section])
+            out[key] = {untrusted(k, 64): v if v is None
+                        else untrusted(v, 64)
+                        for k, v in cp[section].items()}
     return out
 
 
@@ -847,15 +893,11 @@ def write_setup(ac_docs_dir: Path, ranges_dir: Path, car: str, track: str,
     # would be one AC never reads, and its existence would stop the prefix
     # fallback from finding the driver's own setups.
     #
-    # None means no folder for this track yet, which is ordinary for the
-    # first setup at a new circuit -- use the name as given.
-    #
     # No mkdir yet: a refusal must leave the filesystem as it found it, for
     # the same reason, and a refused write is the likeliest moment for a
     # track id to be wrong.
-    d = setup_dir(ac_docs_dir, car, track) or (
-        setups_root(ac_docs_dir) / car / track)
-    path = d / f"{name}.ini"
+    path = _setup_path(ac_docs_dir, car, track, name)
+    d = path.parent
     if path.exists() and not overwrite:
         free = _free_name(d, name)
         raise SetupExistsError(

@@ -350,7 +350,12 @@ def _tool(title: str, *, writes: bool = False, destructive: bool = False,
         tool = locked if locks_conn else fn
         _REGISTERED.add(fn.__name__)
         if _TOOLSET != "core" or fn.__name__ in CORE_TOOLS:
-            mcp.tool(**options)(tool)
+            extra = {}
+            if "description" in supported:
+                # Before 3.13 a docstring keeps its indentation, which
+                # every client would load with the description.
+                extra["description"] = inspect.getdoc(fn)
+            mcp.tool(**options, **extra)(tool)
         return tool
     return register
 

@@ -602,6 +602,24 @@ def test_live_snapshot_fuel_uses_the_driven_sessions_consumption():
     print(f"  {race['verdict']}, {race['margin_laps']} laps spare")
 
 
+_NO_BASIS_PROBE = """
+import json
+from assetto_mcp import db, server
+
+conn = server._conn
+server._live_fuel_facts = lambda: ({}, "AC is not running")
+sid = db.create_session(conn, car="bare", track="mugello", track_config="",
+                        tyre_compound="S", air_temp=25.0, road_temp=30.0)
+print(server.fuel_plan(20, session_id=sid))
+"""
+
+
+def test_a_plan_with_no_burn_and_no_tank_gives_both_fixes():
+    out = _run_probe(_NO_BASIS_PROBE)
+    assert "liters_per_lap" in out["do_this"], out
+    assert "Tank capacity" in out["do_this"], out
+
+
 def test_fuel_to_finish_counts_only_the_part_of_this_lap_still_to_drive():
     cases = [
         # fuel, laps remaining, lap done, l/lap -> laps to go, margin, verdict

@@ -296,7 +296,10 @@ def _j(obj) -> str:
 # small local model's context and for a client that caps its tool count.
 # Every name must be a tool; startup fails on one that is not.
 CORE_TOOLS = (
-    "session_check", "wait_for_lap", "recording_status", "live_snapshot",
+    # start_recording, restart_server and setup_ranges are what the
+    # others' replies tell a model to call when something needs fixing.
+    "session_check", "wait_for_lap", "recording_status", "start_recording",
+    "restart_server", "setup_ranges", "live_snapshot",
     "list_laps", "lap_summary", "compare_lap_corners", "time_delta_along_lap",
     "compare_runs", "setup_book", "set_session_setup", "label_laps",
     "fuel_plan", "list_setups", "read_setup", "write_setup",
@@ -1828,8 +1831,8 @@ def list_laps(session_id: int | None = None,
 # What the live loop reads of a corner on every lap; detail="full" adds the
 # fractions, the entry phase and the per-axle slip.
 _SUMMARY_CORNER = ("turn", "name", "direction", "gear", "min_speed_kmh",
-                   "apex_m", "brake_before_turn_in_m", "throttle_on_m",
-                   "slip_balance", "peak_lat_g", "body_slip_peak_deg")
+                   "where", "apex_m", "brake_before_turn_in_m",
+                   "throttle_on_m", "slip_balance", "peak_lat_g", "body_slip_peak_deg")
 
 
 @_tool("Lap summary")
@@ -2691,6 +2694,7 @@ def fuel_plan(race_laps: Annotated[int, Field(ge=1, le=100_000)],
         out["tank_liters_source"] = source["tank_source"]
     else:
         out["do_this"] = (
+            (out["do_this"] + ". Also: " if "do_this" in out else "") +
             "Tank capacity is unknown, so no stop verdict was possible. It "
             "comes from the car's FUEL setup entry once the in-game app has "
             "seen the setup menu, or from shared memory while AC is running"

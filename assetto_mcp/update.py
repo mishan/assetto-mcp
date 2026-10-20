@@ -619,6 +619,9 @@ def apply(to_commit: str, root: Path | None = None,
                 pass
 
 
+# How long a finished apply's result waits for the poll that collects it.
+UNCOLLECTED_RESULT_SECONDS = 600
+
 _job_lock = threading.Lock()
 _job: dict | None = None
 
@@ -640,8 +643,17 @@ def apply_in_background(to_commit: str, live_session: int | None = None,
     """
     global _job
     to_commit = to_commit.strip()
+    if not to_commit:
+        return _refuse("no_commit", "to_commit is empty",
+                       do_this="pass `latest` from check_for_updates")
     with _job_lock:
         job = _job
+        if (job and not job["thread"].is_alive()
+                and time.time() - job.get("finished_at", 0)
+                > UNCOLLECTED_RESULT_SECONDS):
+            # Nobody came back for it; a call this much later is a new
+            # attempt, not the poll that result was waiting for.
+            job = _job = None
         if job and not _same_commit(job["to_commit"], to_commit):
             if job["thread"].is_alive():
                 return _refuse(
@@ -691,6 +703,7 @@ def _start_job(to_commit: str, kw: dict) -> dict:
 
     def run():
         job["result"] = apply(to_commit, pip=staged_pip, **kw)
+        job["finished_at"] = time.time()
 
     job["thread"] = threading.Thread(target=run, name="apply-update",
                                      daemon=True)

@@ -564,5 +564,10 @@ def test_the_server_tools_as_the_model_calls_them():
               "refused in a live session")
 
 
+
+def test_an_empty_commit_is_refused_rather_than_matched():
+    out = U.apply_in_background("  ")
+    assert out["refused"] == "no_commit", out
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

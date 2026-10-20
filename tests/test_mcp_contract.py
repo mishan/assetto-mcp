@@ -28,11 +28,13 @@ ROOT = TESTS.parent
 SNAPSHOT = TESTS / "golden" / "tools.json"
 EVAL_CASES = TESTS / "eval" / "cases.json"
 
-# Today's figures are 44.0k, 1.3k and 0.9k characters: these leave room to
+# Today's figures are 39.4k, 1.4k and 0.9k characters: these leave room to
 # grow a little, and make growing a lot a decision.
-TOOLS_LIST_BUDGET = 50_000
+TOOLS_LIST_BUDGET = 43_000
 DESCRIPTION_BUDGET = 1_500
 INSTRUCTIONS_BUDGET = 1_200
+# 37 today; some clients drop tools past about 40.
+TOOL_COUNT_BUDGET = 40
 
 # Characters of reply on a ten-corner lap, read on every lap of a live
 # session. Today: 2.8k, 7.6k, 1.3k and 0.2k.
@@ -97,6 +99,7 @@ def test_the_tool_list_and_instructions_fit_their_budgets():
     tools = _normalized(surface["tools"])
     size = len(json.dumps(tools, separators=(",", ":"), ensure_ascii=False))
     assert size <= TOOLS_LIST_BUDGET, size
+    assert len(tools) <= TOOL_COUNT_BUDGET, len(tools)
     long = {t["name"]: len(t["description"]) for t in tools
             if len(t["description"]) > DESCRIPTION_BUDGET}
     assert not long, long

@@ -132,11 +132,12 @@ def test_null_means_the_default():
     not refuse it."""
     calls = [("list_laps", {"session_id": None, "limit": None}),
              ("list_rivals", {"session_id": None, "limit": None}),
-             ("driving_line", {"lap_id": -1, "compare_lap_id": None,
-                               "points": None}),
+             ("compare_laps", {"lap_id_a": -1, "lap_id_b": None,
+                               "view": "line", "points": None}),
              ("braking_report", {"lap_id": -1, "points": None}),
-             ("time_delta_along_lap", {"lap_id_a": -1, "lap_id_b": -2,
-                                       "segments": None}),
+             ("compare_laps", {"lap_id_a": -1, "lap_id_b": -2,
+                               "view": None, "detail": None,
+                               "segments": None}),
              ("field_benchmark", {"lap_ids": None, "laps_per_rival": None}),
              ("compare_runs", {"baseline_laps": 999998,
                                "candidate_laps": 999999,
@@ -159,7 +160,8 @@ def test_null_means_the_default():
 def test_out_of_range_numbers_are_refused_by_the_schema():
     s = _server()
     for name, arguments in [("list_laps", {"limit": 0}),
-                            ("driving_line", {"lap_id": -1, "points": 5000}),
+                            ("compare_laps", {"lap_id_a": -1,
+                                              "points": 5000}),
                             ("field_benchmark", {"laps_per_rival": 50}),
                             ("send_driver_message", {"text": "x" * 500}),
                             ("annotate_experiment", {"experiment_id": 0}),

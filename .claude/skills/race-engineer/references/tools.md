@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Forty-seven tools. They fall into nine groups. For each: what to pass,
+Forty-five tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the traps.
 Every optional parameter takes null as "the default", so passing one
 explicitly is always safe; a call refused for a missing parameter is fixed
@@ -182,7 +182,7 @@ Quote `where` and the `_m` fields, never the fraction beside them.
 brake point, direction, and how many laps cornered there. Built per session
 from the laps driven, so the numbering is the session's, not the circuit's:
 a flat kink is not numbered, and 3A is numbered straight through. The
-numbering is also not the same in `compare_lap_corners` (built from those
+numbering is also not the same in `compare_laps` (built from those
 two laps only) or `compare_runs` (built from the laps compared). Quote the
 label with the tool that produced it, and prefer the circuit `name` or the
 driver's own name for a corner when the labels disagree. Each turn carries
@@ -201,10 +201,8 @@ tools say it: "Turn 10A braking zone, 60 m before turn-in". `meters` is
 distance past the start line, comma-separated; `fractions` is `norm_pos`.
 Use it before quoting a position from a script to the driver.
 
-**`driving_line(lap_id, compare_lap_id, points)`** -- where the car was
-across the track, slice by slice, with speed, ride height and a bump map.
-With `compare_lap_id`, `separation_m` says how far apart the two lines
-were at each point: the answer to "was that a wider line".
+One lap's line across the track is `compare_laps` with `view="line"`
+and no `lap_id_b` (group 4).
 
 **`export_line_map(session_id, lap_ids)`** -- one HTML file in the data
 directory's `exports/` folder with every lap drawn, best lap picked out,
@@ -260,21 +258,26 @@ The lockup threshold is uncalibrated; read the distribution.
 
 ## 4. Comparing laps and runs
 
-**`compare_lap_corners(lap_id_a, lap_id_b, detail)`** -- corner by corner:
-min speed delta, brake point delta in meters, slip balance delta. Deltas
-are a minus b; a negative `min_speed_delta_kmh` means lap b carried more
-speed, and `a_slower_by_ms` is lap a's time minus lap b's. Read
-`lap_time_warning` before quoting it. Its turn numbering is its own;
-`detail="full"` lists it in `turns`. An out-lap or a lap that ended in the
-barrier still has real corner speeds, so any two laps compare.
+**`compare_laps(lap_id_a, lap_id_b, view, detail, segments, points)`**
+-- two laps, one `view` at a time. Read `lap_time_warning` before quoting
+a lap-time difference. An out-lap or a lap that ended in the barrier still
+has real corner speeds and a real line, so any two laps compare.
 
-**`time_delta_along_lap(lap_id_a, lap_id_b, segments)`** -- where the time
-went, including straights and sweepers no corner detector flagged. Read
-`b_lost_ms` per segment (positive: lap b lost time there);
-`b_lost_so_far_ms` and `b_slower_by_ms` only say a gap exists. This one
-subtracts lap a from lap b, the other way round from
-`compare_lap_corners`; the key names say which lap is slower. 1 to 200
-segments.
+- `view="corners"` (the default) -- corner by corner: min speed delta,
+  brake point delta in meters, slip balance delta. Deltas are a minus b; a
+  negative `min_speed_delta_kmh` means lap b carried more speed, and
+  `a_slower_by_ms` is lap a's time minus lap b's. Its turn numbering is
+  its own; `detail="full"` lists it in `turns`.
+- `view="along_lap"` -- where the time went, including straights and
+  sweepers no corner detector flagged. Read `b_lost_ms` per segment
+  (positive: lap b lost time there); `b_lost_so_far_ms` and
+  `b_slower_by_ms` only say a gap exists. This view subtracts lap a from
+  lap b, the other way round from the corners; the key names say which
+  lap is slower. 1 to 200 `segments`.
+- `view="line"` -- where the car was across the track, slice by slice
+  (`points`), with speed, ride height and a bump map. With `lap_id_b`,
+  `separation_m` says how far apart the two lines were at each point: the
+  answer to "was that a wider line". Without it, one lap's line.
 
 **`compare_runs(baseline_laps, candidate_laps, clean_laps_only,
 include_invalid, baseline_setup, candidate_setup, session_id, detail)`**

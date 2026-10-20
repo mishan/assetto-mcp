@@ -177,7 +177,7 @@ left-hander, checked against recorded laps, so `turn_sign` +1 is
 **`corner_detection`** appears alongside every corner list and says which
 lateral-g bar produced it. It is not the same bar in every tool: `lap_summary`
 uses the one shared across its session's laps — the same bar its turn numbers
-were built against — while `compare_lap_corners` and `compare_runs` use one
+were built against — while `compare_laps` and `compare_runs` use one
 shared across every lap being compared. Either way corner membership doesn't depend
 on how hard an individual lap was driven, but the two bars are different
 numbers, so the same lap can carry a different number of corners in the two
@@ -209,7 +209,7 @@ its slowest piece. The other piece still appears on that lap with
 
 `track_corners` is the table: where each turn starts, apexes and ends, where
 it is braked for, which way it turns and how many laps cornered there.
-`compare_runs` and `compare_lap_corners` label their corners too, from the
+`compare_runs` and `compare_laps` label their corners too, from the
 laps they were given rather than from the session — each of those payloads carries its
 own `turns` table so the labels in it can be placed without a second call.
 
@@ -340,10 +340,11 @@ averaging it away.
 
 ## Driving line
 
-`driving_line` slices the lap by track position and reports, per slice, where
-the car was in the world, how fast, the mean front ride height, and how much
-that ride height moved within the slice — the last of which is a bump map,
-since smooth tarmac holds the car at a steady height and broken tarmac doesn't.
+`compare_laps` with `view="line"` slices the lap by track position and reports,
+per slice, where the car was in the world, how fast, the mean front ride
+height, and how much that ride height moved within the slice — the last of
+which is a bump map, since smooth tarmac holds the car at a steady height and
+broken tarmac doesn't.
 
 Track position says where the car was *along* the lap. This says where it
 was *across* it, which is the whole of what a line is, so "I took a wider
@@ -447,7 +448,7 @@ channel — against the exact threshold it was held to. The other is speed,
 with brake points. Turn spans are shaded across both. A turn that appears
 split in two, or a kink that never crossed the threshold, is visible there.
 
-It draws raw samples rather than `driving_line`'s slices, thinned to one
+It draws raw samples rather than the line view's slices, thinned to one
 every 80 ms by time rather than by count, since retention has already
 thinned old laps. A lap's samples can straddle the start/finish line at
 either end, so each trace is split at every wrap and only the longest run

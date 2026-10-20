@@ -39,7 +39,7 @@ INSTRUCTIONS_BUDGET = 1_200
 PER_LAP_BUDGETS = {
     ("lap_summary", "summary"): 3_500,
     ("lap_summary", "full"): 9_500,
-    ("compare_lap_corners", "summary"): 1_700,
+    ("compare_laps", "summary"): 1_700,
     ("wait_for_lap", None): 400,
 }
 TEN_CORNERS = tuple((0.05 + i * 0.09, 0.025, (2.4, 1.2, 2.8, 1.6, 2.0)[i % 5])
@@ -107,7 +107,7 @@ def test_the_tool_list_and_instructions_fit_their_budgets():
 def test_the_per_lap_reads_fit_their_budgets():
     sid, ids = _session_with_laps(4, samples=1200, corners=TEN_CORNERS)
     args = {"lap_summary": {"lap_id": ids[-1]},
-            "compare_lap_corners": {"lap_id_a": ids[-1], "lap_id_b": ids[0]},
+            "compare_laps": {"lap_id_a": ids[-1], "lap_id_b": ids[0]},
             "wait_for_lap": {"after_lap_id": ids[-2], "timeout_s": 1}}
 
     async def run():

@@ -262,7 +262,7 @@ def _section_for(t: dict, sections: list[dict]) -> int | None:
     of it, or that holds at least half the approach, so a section the
     approach merely clips does not. Among those, the one holding the apex
     wins, then the one holding the most of the approach. A turn with no
-    approach -- the apex-only lists compare_lap_corners and compare_runs
+    approach -- the apex-only lists compare_laps and compare_runs
     carry -- falls back to the section its apex is in or nearest to, within
     NAME_SLACK.
     """

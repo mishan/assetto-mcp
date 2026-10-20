@@ -156,7 +156,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Corner-by-corner comparison of two laps on the same track: min speed,\nbrake point and slip balance deltas, all lap a minus lap b\n(`a_slower_by_ms` too).\n\n`turn` labels come from these two laps alone, so they can differ from\nlap_summary's; detail=\"full\" adds `turns` (each apex), lap fractions\nand `corner_detection`. Any two laps are compared, but read\n`lap_time_warning` before quoting `a_slower_by_ms`: it says when either\ntime is not a real lap time.",
+  "description": "Two laps on the same track, one view at a time:\n\n- \"corners\": what each corner did differently -- min speed, brake\n  point and slip balance, all lap a minus lap b (`a_slower_by_ms` too).\n- \"along_lap\": where the time went along the whole track, straights\n  and sweepers included -- `b_lost_ms` per segment (positive = lap b\n  slower there; null = not sampled on both laps).\n- \"line\": where the car was across the track -- per slice, world\n  position, speed and front ride height with its movement (a bump\n  map), and `separation_m` between the two lines; lap_id_b optional.\n\ncorners: `turn` labels come from these two laps alone, so they can\ndiffer from lap_summary's; detail=\"full\" adds `turns` (each apex), lap\nfractions and `corner_detection`. along_lap: `b_lost_so_far_ms` and\n`b_slower_by_ms` only say a gap exists; segments: rows to split the\ntrack into. line: points: slices; laps from before position logging\nreport has_position: false. Read `lap_time_warning` before quoting a\nlap-time difference: it says when either time is not a real one.",
   "inputSchema": {
    "properties": {
     "detail": {
@@ -173,19 +173,50 @@
      "type": "integer"
     },
     "lap_id_b": {
-     "title": "Lap Id B",
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Id B"
+    },
+    "points": {
+     "default": 100,
+     "maximum": 200,
+     "minimum": 10,
+     "title": "Points",
      "type": "integer"
+    },
+    "segments": {
+     "default": 20,
+     "maximum": 200,
+     "minimum": 1,
+     "title": "Segments",
+     "type": "integer"
+    },
+    "view": {
+     "default": "corners",
+     "enum": [
+      "corners",
+      "along_lap",
+      "line"
+     ],
+     "title": "View",
+     "type": "string"
     }
    },
    "required": [
-    "lap_id_a",
-    "lap_id_b"
+    "lap_id_a"
    ],
-   "title": "compare_lap_cornersArguments",
+   "title": "compare_lapsArguments",
    "type": "object"
   },
-  "name": "compare_lap_corners",
-  "title": "Compare two laps by corner"
+  "name": "compare_laps",
+  "title": "Compare two laps"
  },
  {
   "annotations": {
@@ -443,49 +474,6 @@
   },
   "name": "describe_positions",
   "title": "Describe track positions"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Where the car went across the track: per slice of the lap, world\nposition, speed, mean front ride height and its movement within the\nslice (a bump map).\n\npoints: number of slices. compare_lap_id adds `separation_m`, the\ndistance between the two lines at each point. Laps from before position\nlogging report has_position: false.",
-  "inputSchema": {
-   "properties": {
-    "compare_lap_id": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Compare Lap Id"
-    },
-    "lap_id": {
-     "title": "Lap Id",
-     "type": "integer"
-    },
-    "points": {
-     "default": 100,
-     "maximum": 200,
-     "minimum": 10,
-     "title": "Points",
-     "type": "integer"
-    }
-   },
-   "required": [
-    "lap_id"
-   ],
-   "title": "driving_lineArguments",
-   "type": "object"
-  },
-  "name": "driving_line",
-  "title": "Driving line"
  },
  {
   "annotations": {
@@ -999,7 +987,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "List recorded laps (most recent first), optionally for one session.\nReturns lap ids to use with lap_summary / compare_lap_corners.\n`outlier`: far slower than the session's pace, but still usable.",
+  "description": "List recorded laps (most recent first), optionally for one session.\nReturns lap ids to use with lap_summary / compare_laps.\n`outlier`: far slower than the session's pace, but still usable.",
   "inputSchema": {
    "properties": {
     "limit": {
@@ -1848,42 +1836,6 @@
   },
   "name": "suspension_report",
   "title": "Suspension report"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Where lap b gained or lost time against lap a along the whole track,\nstraights and sweepers included.\n\nRead `b_lost_ms` per segment (positive = lap b slower there; null = not\nsampled on both laps); `b_lost_so_far_ms` and `b_slower_by_ms` only say\na gap exists. compare_lap_corners subtracts the other way, lap a minus\nlap b. segments: rows to split the track into.",
-  "inputSchema": {
-   "properties": {
-    "lap_id_a": {
-     "title": "Lap Id A",
-     "type": "integer"
-    },
-    "lap_id_b": {
-     "title": "Lap Id B",
-     "type": "integer"
-    },
-    "segments": {
-     "default": 20,
-     "maximum": 200,
-     "minimum": 1,
-     "title": "Segments",
-     "type": "integer"
-    }
-   },
-   "required": [
-    "lap_id_a",
-    "lap_id_b"
-   ],
-   "title": "time_delta_along_lapArguments",
-   "type": "object"
-  },
-  "name": "time_delta_along_lap",
-  "title": "Time delta along the lap"
  },
  {
   "annotations": {

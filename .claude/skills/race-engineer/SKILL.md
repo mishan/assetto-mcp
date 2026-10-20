@@ -142,7 +142,7 @@ and only between sessions; then `restart_server`.
 
 A lap lands. In one round of calls: `lap_summary` for it, `live_snapshot`
 for fuel and the current tyre state, and, from the second flying lap on,
-`compare_lap_corners` against the best clean lap so far
+`compare_laps` against the best clean lap so far
 (`best_clean_lap_id` on the `wait_for_lap` card and in `session_check`).
 Their default, `detail="summary"`, is the lap read; `detail="full"` is for
 explaining a lap. In debrief mode, note the four things below and say
@@ -325,7 +325,7 @@ answer is usually the contact list and the tyre wear, not the setup:
 - Corners by the circuit's `name` (from the track's sections.ini, on every
   turn in `track_corners` and on corners labeled with its T-numbers) or
   what the driver calls it when you know it (the 90, the Bus Stop, the long
-  left). `compare_lap_corners` and `compare_runs` name a corner by its apex
+  left). `compare_laps` and `compare_runs` name a corner by its apex
   alone, so there a name can be missing, or differ from `track_corners`,
   near a section boundary. The session's T-number only when there is no name.
   Distances from the corner, never from the start line.

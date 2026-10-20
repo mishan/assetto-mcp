@@ -330,14 +330,15 @@ def test_every_tool_that_subtracts_lap_times_says_when_it_should_not():
     out = db.store_lap(srv._conn, sid, 2, 0, True,
                        _lap_samples([0] * 60), out_lap=True)
 
-    for tool in (srv.compare_lap_corners, srv.time_delta_along_lap):
-        got = call(tool, lap_id_a=clean, lap_id_b=out)
-        assert "lap_time_warning" in got, (tool, got)
+    for view in ("corners", "along_lap"):
+        got = call(srv.compare_laps, lap_id_a=clean, lap_id_b=out, view=view)
+        assert "lap_time_warning" in got, (view, got)
         assert "out-lap" in got["lap_time_warning"], got["lap_time_warning"]
         # And two real laps carry no warning at all.
-        both = call(tool, lap_id_a=clean, lap_id_b=clean)
+        both = call(srv.compare_laps, lap_id_a=clean, lap_id_b=clean,
+                    view=view)
         assert "lap_time_warning" not in both, both
-    print("  compare_lap_corners and time_delta_along_lap both flag it")
+    print("  compare_laps flags it in both views")
 
 
 def test_a_lap_that_ran_wide_can_still_be_the_best_lap():

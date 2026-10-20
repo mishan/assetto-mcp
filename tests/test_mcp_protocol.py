@@ -95,7 +95,7 @@ def test_parallel_calls_on_shared_data_answer_as_sequential_ones_do():
     calls = []
     for lap_id in ids:
         calls += [("lap_summary", {"lap_id": lap_id}),
-                  ("compare_lap_corners", {"lap_id_a": ids[0], "lap_id_b": lap_id}),
+                  ("compare_laps", {"lap_id_a": ids[0], "lap_id_b": lap_id}),
                   ("list_laps", {"session_id": sid}),
                   ("track_corners", {"session_id": sid})]
     calls *= 3
@@ -144,7 +144,7 @@ def test_a_status_report_is_not_a_failed_call_but_a_refusal_is():
     # Starting the real collector here would leave it polling for the game.
     assert {n for n, _ in status} == s._STATUS_TOOLS - {"start_recording"}
     refusals = [("lap_summary", {"lap_id": -1}),
-                ("compare_lap_corners", {"lap_id_a": -1, "lap_id_b": -2}),
+                ("compare_laps", {"lap_id_a": -1, "lap_id_b": -2}),
                 ("track_corners", {"session_id": 999999}),
                 ("label_laps", {"lap_ids": "abc", "setup_name": "a"}),
                 ("read_setup", {"car": "nope", "track": "nope",
@@ -369,8 +369,7 @@ def test_the_per_lap_reads_are_compact_unless_asked_for_everything():
     lap fractions; detail="full" still has the rest."""
     sid, ids = _session_with_laps(4)
     calls = [("lap_summary", {"lap_id": ids[-1]}),
-             ("compare_lap_corners", {"lap_id_a": ids[-1],
-                                      "lap_id_b": ids[0]}),
+             ("compare_laps", {"lap_id_a": ids[-1], "lap_id_b": ids[0]}),
              ("compare_runs", {"baseline_laps": ids[:2],
                                "candidate_laps": ids[2:]})]
     out = _results([(n, {**a, **d}) for n, a in calls
@@ -388,15 +387,25 @@ def test_the_per_lap_reads_are_compact_unless_asked_for_everything():
 
 
 def test_both_lap_deltas_name_the_lap_that_was_slower():
-    """compare_lap_corners subtracts lap b from lap a, time_delta_along_lap
-    lap a from lap b; each key says which lap it measures as slower."""
+    """The corners view subtracts lap b from lap a, along_lap lap a from
+    lap b; each key says which lap it measures as slower."""
     sid, (fast, slow) = _session_with_laps(2)
     corners, along = _results([
-        ("compare_lap_corners", {"lap_id_a": slow, "lap_id_b": fast}),
-        ("time_delta_along_lap", {"lap_id_a": slow, "lap_id_b": fast})])
+        ("compare_laps", {"lap_id_a": slow, "lap_id_b": fast}),
+        ("compare_laps", {"lap_id_a": slow, "lap_id_b": fast,
+                          "view": "along_lap"})])
     assert corners["a_slower_by_ms"] == 150, corners
     assert along["b_slower_by_ms"] == -150, along
     assert along["segments"][-1]["b_lost_so_far_ms"] < 0, along["segments"]
+
+
+def test_the_line_view_reads_one_lap_and_the_others_need_two():
+    sid, (lap,) = _session_with_laps(1)
+    line, corners = _results([
+        ("compare_laps", {"lap_id_a": lap, "view": "line"}),
+        ("compare_laps", {"lap_id_a": lap})])
+    assert line["lap_id"] == lap and "has_position" in line, line
+    assert "lap_id_b" in corners["error"], corners
 
 
 def test_list_laps_says_which_laps_have_a_lap_time():

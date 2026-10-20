@@ -169,7 +169,7 @@ the payload should say so.
   say which gains are which.
 - **Rival habits.** Late-stint fade, lap-time spread, and where each rival
   goes off.
-- **Lines.** Rival `pos_x`/`pos_z` are stored; `driving_line` could overlay
+- **Lines.** Rival `pos_x`/`pos_z` are stored; `compare_laps`' line view could overlay
   the quickest rival's line through a corner the benchmark flags.
 - **A pre-race brief** from practice and qualifying: one card per rival,
   and the quickest rival lap as a ghost in the line map.

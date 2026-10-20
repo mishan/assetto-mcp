@@ -275,8 +275,7 @@ CORE_TOOLS = (
     # others' replies tell a model to call when something needs fixing.
     "session_check", "wait_for_lap", "recording_status", "start_recording",
     "restart_server", "setup_ranges", "live_snapshot",
-    "list_laps", "lap_summary", "compare_lap_corners", "time_delta_along_lap",
-    "compare_runs", "setup_book", "set_session_setup", "label_laps",
+    "list_laps", "lap_summary", "compare_laps", "compare_runs", "setup_book", "set_session_setup", "label_laps",
     "fuel_plan", "list_setups", "read_setup", "write_setup",
 )
 _TOOLSET = config.env("TOOLSET", "full")
@@ -1797,7 +1796,7 @@ def _lap_row(lap: dict) -> dict:
 def list_laps(session_id: int | None = None,
               limit: Annotated[int, Field(ge=1, le=200)] = 20) -> str:
     """List recorded laps (most recent first), optionally for one session.
-    Returns lap ids to use with lap_summary / compare_lap_corners.
+    Returns lap ids to use with lap_summary / compare_laps.
     `outlier`: far slower than the session's pace, but still usable."""
     return _j([_lap_row(lap)
                for lap in db.list_laps(_conn, session_id, limit)])
@@ -2257,35 +2256,6 @@ def suspension_report(lap_id: int | None = None,
     return _j(out)
 
 
-@_tool("Driving line")
-def driving_line(lap_id: int, compare_lap_id: int | None = None,
-                 points: Annotated[int, Field(ge=10, le=200)] = 100) -> str:
-    """Where the car went across the track: per slice of the lap, world
-    position, speed, mean front ride height and its movement within the
-    slice (a bump map).
-
-    points: number of slices. compare_lap_id adds `separation_m`, the
-    distance between the two lines at each point. Laps from before position
-    logging report has_position: false."""
-    lap = db.get_lap(_conn, lap_id)
-    if not lap:
-        return _j({"error": f"no lap with id {lap_id}"})
-    other = other_samples = None
-    if compare_lap_id is not None:
-        other = db.get_lap(_conn, compare_lap_id)
-        if not other:
-            return _j({"error": f"no lap with id {compare_lap_id}"})
-        if (other["track"], other.get("track_config"), other["car"]) != (
-                lap["track"], lap.get("track_config"), lap["car"]):
-            return _j({"error": "those laps are not on the same car and "
-                                "layout, so their coordinates do not share "
-                                "an origin and cannot be subtracted"})
-        other_samples = db.get_samples(_conn, compare_lap_id)
-    return _j(_placed(analysis.driving_line(
-        lap, db.get_samples(_conn, lap_id), points, other, other_samples),
-        lap["session_id"]))
-
-
 @_tool("Export a line map", writes=True)
 def export_line_map(session_id: int | None = None,
                     lap_ids: str | int | list[int] | None = None) -> str:
@@ -2447,28 +2417,74 @@ def attitude_report(lap_id: int) -> str:
         lap["session_id"]))
 
 
-@_tool("Compare two laps by corner")
-def compare_lap_corners(lap_id_a: int, lap_id_b: int,
-                        detail: Literal["summary", "full"] = "summary"
-                        ) -> str:
-    """Corner-by-corner comparison of two laps on the same track: min speed,
-    brake point and slip balance deltas, all lap a minus lap b
-    (`a_slower_by_ms` too).
+@_tool("Compare two laps")
+def compare_laps(lap_id_a: int, lap_id_b: int | None = None,
+                 view: Literal["corners", "along_lap", "line"] = "corners",
+                 detail: Literal["summary", "full"] = "summary",
+                 segments: Annotated[int, Field(ge=1, le=200)] = 20,
+                 points: Annotated[int, Field(ge=10, le=200)] = 100) -> str:
+    """Two laps on the same track, one view at a time:
 
-    `turn` labels come from these two laps alone, so they can differ from
-    lap_summary's; detail="full" adds `turns` (each apex), lap fractions
-    and `corner_detection`. Any two laps are compared, but read
-    `lap_time_warning` before quoting `a_slower_by_ms`: it says when either
-    time is not a real lap time."""
-    a, b = db.get_lap(_conn, lap_id_a), db.get_lap(_conn, lap_id_b)
-    if not a or not b:
+    - "corners": what each corner did differently -- min speed, brake
+      point and slip balance, all lap a minus lap b (`a_slower_by_ms` too).
+    - "along_lap": where the time went along the whole track, straights
+      and sweepers included -- `b_lost_ms` per segment (positive = lap b
+      slower there; null = not sampled on both laps).
+    - "line": where the car was across the track -- per slice, world
+      position, speed and front ride height with its movement (a bump
+      map), and `separation_m` between the two lines; lap_id_b optional.
+
+    corners: `turn` labels come from these two laps alone, so they can
+    differ from lap_summary's; detail="full" adds `turns` (each apex), lap
+    fractions and `corner_detection`. along_lap: `b_lost_so_far_ms` and
+    `b_slower_by_ms` only say a gap exists; segments: rows to split the
+    track into. line: points: slices; laps from before position logging
+    report has_position: false. Read `lap_time_warning` before quoting a
+    lap-time difference: it says when either time is not a real one."""
+    a = db.get_lap(_conn, lap_id_a)
+    b = db.get_lap(_conn, lap_id_b) if lap_id_b is not None else None
+    if not a or (lap_id_b is not None and not b):
         return _j({"error": "one or both lap ids not found"})
-    out = analysis.compare_laps(
-        a, db.get_samples(_conn, lap_id_a),
-        b, db.get_samples(_conn, lap_id_b))
+    if view == "line":
+        other_samples = None
+        if b:
+            if (b["track"], b.get("track_config"), b["car"]) != (
+                    a["track"], a.get("track_config"), a["car"]):
+                return _j({"error": "those laps are not on the same car "
+                                    "and layout, so their coordinates do "
+                                    "not share an origin and cannot be "
+                                    "subtracted"})
+            other_samples = db.get_samples(_conn, lap_id_b)
+        return _j(_placed(analysis.driving_line(
+            a, db.get_samples(_conn, lap_id_a), points, b, other_samples),
+            a["session_id"]))
+    if not b:
+        return _j({"error": f'view "{view}" compares two laps; pass '
+                            'lap_id_b'})
+    if view == "along_lap":
+        # Layout matters as much as track: 'mugello' and 'mugello_osrw' are
+        # the same folder and different circuits, so norm_pos 0.6 is not the
+        # same corner in both. Comparing them produces a delta trace that
+        # looks entirely plausible and means nothing.
+        if (a.get("track"), a.get("track_config")) != \
+                (b.get("track"), b.get("track_config")):
+            def _name(l):
+                cfg = l.get("track_config") or "(default layout)"
+                return f"{l.get('track')}/{cfg}"
+            return _j({"error": f"different track layouts: {_name(a)} vs "
+                                f"{_name(b)}; positions are not comparable"})
+        out = analysis.delta_by_position(
+            a, db.get_samples(_conn, lap_id_a),
+            b, db.get_samples(_conn, lap_id_b), segments=segments)
+    else:
+        out = analysis.compare_laps(
+            a, db.get_samples(_conn, lap_id_a),
+            b, db.get_samples(_conn, lap_id_b))
     warning = _lap_time_warning({"A": a, "B": b})
     if warning:
         out["lap_time_warning"] = warning
+    if view == "along_lap":
+        return _j(_placed(out, a["session_id"]))
     out = _placed(out, a["session_id"], out.get("turns"))
     if detail == "summary" and "corners" in out:
         for key in ("turns", "turns_note", "corner_detection"):
@@ -3168,40 +3184,6 @@ def _measured_setups(base_laps: list[dict], cand_laps: list[dict]) -> dict:
     if notes:
         out["measured_setup_note"] = "; ".join(notes)
     return out
-
-
-@_tool("Time delta along the lap")
-def time_delta_along_lap(
-        lap_id_a: int, lap_id_b: int,
-        segments: Annotated[int, Field(ge=1, le=200)] = 20) -> str:
-    """Where lap b gained or lost time against lap a along the whole track,
-    straights and sweepers included.
-
-    Read `b_lost_ms` per segment (positive = lap b slower there; null = not
-    sampled on both laps); `b_lost_so_far_ms` and `b_slower_by_ms` only say
-    a gap exists. compare_lap_corners subtracts the other way, lap a minus
-    lap b. segments: rows to split the track into."""
-    a, b = db.get_lap(_conn, lap_id_a), db.get_lap(_conn, lap_id_b)
-    if not a or not b:
-        return _j({"error": "one or both lap ids not found"})
-    # Layout matters as much as track: 'mugello' and 'mugello_osrw' are the
-    # same folder and different circuits, so norm_pos 0.6 is not the same
-    # corner in both. Comparing them produces a delta trace that looks
-    # entirely plausible and means nothing.
-    if (a.get("track"), a.get("track_config")) != \
-            (b.get("track"), b.get("track_config")):
-        def _name(l):
-            cfg = l.get("track_config") or "(default layout)"
-            return f"{l.get('track')}/{cfg}"
-        return _j({"error": f"different track layouts: {_name(a)} vs "
-                            f"{_name(b)}; positions are not comparable"})
-    out = analysis.delta_by_position(
-        a, db.get_samples(_conn, lap_id_a),
-        b, db.get_samples(_conn, lap_id_b), segments=segments)
-    warning = _lap_time_warning({"A": a, "B": b})
-    if warning:
-        out["lap_time_warning"] = warning
-    return _j(_placed(out, a["session_id"]))
 
 
 # --- in-game app bridge ------------------------------------------------

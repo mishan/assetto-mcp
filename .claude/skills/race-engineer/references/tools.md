@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Forty tools. They fall into nine groups. For each: what to pass,
+Thirty-nine tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the traps.
 Every optional parameter takes null as "the default", so passing one
 explicitly is always safe; a call refused for a missing parameter is fixed
@@ -400,20 +400,24 @@ server's remote-car lap times lag and repeat: at the Glen they ranked the
 driver ahead of two cars that were quicker. Each captured lap carries
 `lap_time_source`, "trace" or "server".
 
-**`compare_to_rival(car_index, lap_id, rival_lap_number, session_id)`** --
-where they carry more speed by track position; their brake and throttle
-points when the server transmits them (`rival_input_fields` says which
-are live). Take `rival_lap_number` from `list_rivals`' well-covered laps,
-quickest first, or omit it for their quickest; `rival_lap_count` (the
-number minus one) is its deprecated form. `time_by_turn` is the
-part to quote: seconds through each turn and on the road after it, with
-`where_they_gain` and `where_you_gain`. The road after the last turn
-runs across the line to the first turn-in, so the rows cover the whole lap
-and add up to the lap difference within a few hundredths; a stretch either
-lap's trace did not cover is left out, and the sum falls short by it.
+**`compare_to_rival(car_index, lap_id, rival_lap_number, session_id,
+lap_ids, car_indexes, laps_per_rival)`** -- one rival with `car_index`,
+the whole field without it.
 
-**`field_benchmark(session_id, lap_ids, car_indexes, laps_per_rival)`** --
-the coaching list. Per turn: your median time through it and on the road
+With `car_index`: where they carry more speed by track position
+(`rival_faster_by_kmh`); their brake and throttle points when the server
+transmits them (`rival_input_fields` says which are live). Take
+`rival_lap_number` from `list_rivals`' well-covered laps, quickest first,
+or omit it for their quickest. `time_by_turn` is the part to quote:
+seconds through each turn and on the road after it, `rival_faster_by_s`
+on each (negative where the driver was quicker), with `where_they_gain`
+and `where_you_gain`. The road after the last turn runs across the line
+to the first turn-in, so the rows cover the whole lap and add up to the
+lap difference within a few hundredths; a stretch either lap's trace did
+not cover is left out, and the sum falls short by it.
+
+Without `car_index`, the field benchmark: the coaching list. Per turn:
+your median time through it and on the road
 after it, the field's, `available_s` (how much quicker the field is
 there), minimum and exit speeds, and brake point in meters before
 turn-in, for you and the field. `priorities` sorts by time available.
@@ -421,9 +425,9 @@ The field defaults to every rival whose traced best beats yours, each on
 their three quickest laps within 2%. Their brake points read up to about
 7 m early (positions arrive late) and their minimum speeds a little high
 (10 Hz). Run it after practice and qualifying, not only after a race.
-`lap_ids` and `car_indexes` take "433, 434", a single number, or a list
-(`lap_ids` also "433-436"); the client often sends the text as a number
-or a list, and all three work.
+`lap_ids` (or `lap_id`) and `car_indexes` take "433, 434", a single
+number, or a list (`lap_ids` also "433-436"); the client often sends the
+text as a number or a list, and all three work.
 
 **`contacts_inferred`** (on `lap_summary`) and **`contacts`** (on
 `compare_runs`, only the `contact` verdicts) -- impacts without the damage

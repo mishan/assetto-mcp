@@ -70,13 +70,13 @@
 
   {"id": "rivals-who", "area": "rivals",
    "request": "Who else is out there, and who is faster than me?",
-   "expect": ["list_rivals", "field_benchmark"]},
+   "expect": ["list_rivals", "compare_to_rival"]},
   {"id": "rivals-one", "area": "rivals",
    "request": "Compare my lap 438 with the best lap of car 5.",
    "expect": ["compare_to_rival", "list_rivals"]},
   {"id": "rivals-field", "area": "rivals",
    "request": "Corner by corner, where am I slow against the rest of the field?",
-   "expect": ["field_benchmark"]},
+   "expect": ["compare_to_rival"]},
 
   {"id": "fuel-race", "area": "fuel",
    "request": "The race is 20 laps. How much fuel do I need?",

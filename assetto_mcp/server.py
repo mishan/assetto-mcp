@@ -933,27 +933,44 @@ def _well_covered_rival_laps(sid: int, car_index: int) -> list[dict]:
     return db.well_covered_rival_laps(_conn, sid, car_index)
 
 
-@_tool("Compare to a rival lap")
-def compare_to_rival(car_index: int, lap_id: int,
+@_tool("Compare to a rival or the field")
+def compare_to_rival(car_index: int | None = None, lap_id: int | None = None,
                      rival_lap_number: int | None = None,
                      session_id: int | None = None,
-                     rival_lap_count: int | None = None) -> str:
-    """Compare one of the driver's laps with an opponent's (car_index), by
-    track position: where they carry more speed and, when the server sends
-    their pedals, where they brake and get on power.
+                     lap_ids: str | int | list[int] | None = None,
+                     car_indexes: str | int | list[int] | None = None,
+                     laps_per_rival: Annotated[int, Field(ge=1, le=10)] = 3
+                     ) -> str:
+    """Where an opponent, or the quicker field, finds time against you.
 
-    car_index and rival_lap_number: from list_rivals; default their
-    quickest captured lap. rival_lap_count (lap number minus one) is
-    deprecated. `time_by_turn`: seconds through each turn (turn-in to exit)
-    and on the road after it to the next turn-in, `delta_s` positive where
-    the rival is quicker, with `where_they_gain` / `where_you_gain`. Their
-    10 Hz trace is good to a few hundredths per stretch."""
-    if rival_lap_number is not None:
-        if rival_lap_count not in (None, rival_lap_number - 1):
-            return _j({"error": "rival_lap_number and rival_lap_count name "
-                                "different laps; pass rival_lap_number "
-                                "alone"})
-        rival_lap_count = rival_lap_number - 1
+    With car_index (from list_rivals): your lap_id against that rival's
+    lap (rival_lap_number, default their quickest captured), by track
+    position: where they carry more speed (`rival_faster_by_kmh`) and, when
+    the server sends their pedals, where they brake and get on power.
+    `time_by_turn`: seconds through each turn (turn-in to exit) and on the
+    road after it to the next turn-in, `rival_faster_by_s` per stretch,
+    with `where_they_gain` / `where_you_gain`. Their 10 Hz trace is good to
+    a few hundredths per stretch.
+
+    Without car_index, the field benchmark: per turn, yours and the
+    field's medians -- time through it and on the road after, minimum and
+    exit speeds, brake point in meters before turn-in -- and
+    `available_s` (positive: the field is quicker). `total_available_s`
+    sums the turns timed on both sides; `priorities`: rows by time
+    available, biggest first. lap_ids (or lap_id): your laps, default the
+    newest clean ones. car_indexes: default every rival whose trace-timed
+    best beats yours. Both take "433,434", a number or a list; lap_ids also
+    "433-436". laps_per_rival: each rival's quickest laps within 2% of
+    their best. Rival brake points read up to ~7 m early, slow-corner
+    minimum speeds a little high."""
+    if car_index is None:
+        return _field_benchmark(session_id, lap_id if lap_ids is None
+                                else lap_ids, car_indexes, laps_per_rival)
+    if lap_id is None:
+        return _j({"error": "pass lap_id, the driver's lap to compare with "
+                            f"car {car_index}"})
+    rival_lap_count = (None if rival_lap_number is None
+                       else rival_lap_number - 1)
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
@@ -1004,11 +1021,11 @@ def compare_to_rival(car_index: int, lap_id: int,
         if rows:
             result["time_by_turn"] = rows
             result["where_they_gain"] = sorted(
-                (r for r in rows if r["delta_s"] > 0),
-                key=lambda r: -r["delta_s"])[:5]
+                (r for r in rows if r["rival_faster_by_s"] > 0),
+                key=lambda r: -r["rival_faster_by_s"])[:5]
             result["where_you_gain"] = sorted(
-                (r for r in rows if r["delta_s"] < 0),
-                key=lambda r: r["delta_s"])[:5]
+                (r for r in rows if r["rival_faster_by_s"] < 0),
+                key=lambda r: r["rival_faster_by_s"])[:5]
     result["my_lap"] = {"id": lap_id,
                         "time_ms": lap["lap_time_ms"],
                         "setup": lap.get("setup_name") or None}
@@ -1077,26 +1094,8 @@ def _with_brake_distance(metrics: list[dict], turns: list[dict]) -> list[dict]:
     return metrics
 
 
-@_tool("Benchmark against the field")
-def field_benchmark(session_id: int | None = None,
-                    lap_ids: str | int | list[int] | None = None,
-                    car_indexes: str | int | list[int] | None = None,
-                    laps_per_rival: Annotated[int, Field(ge=1, le=10)] = 3
-                    ) -> str:
-    """Where the quicker cars find their time, turn by turn, against you.
-
-    Per turn, yours and the field's medians: time through it (turn-in to
-    exit) and on the road after to the next turn-in, minimum and exit
-    speeds, brake point in meters before turn-in, and `available_s`
-    (positive: the field is quicker). `total_available_s` sums the turns
-    timed on both sides. `priorities`: rows by time available, biggest
-    first.
-
-    lap_ids: your laps; default the newest clean ones. car_indexes: default
-    every rival whose trace-timed best beats yours. Both take "433,434", a
-    number or a list; lap_ids also "433-436". laps_per_rival: each rival's
-    quickest laps within 2% of their best. Rival brake points read up to
-    ~7 m early, slow-corner minimum speeds a little high."""
+def _field_benchmark(session_id: int | None, lap_ids, car_indexes,
+                     laps_per_rival: int) -> str:
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id"})

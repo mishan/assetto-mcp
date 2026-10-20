@@ -142,7 +142,7 @@ the payload should say so.
 
 **Status:** open. Built: rival lap times from each car's own trace
 (`analysis.trace_lap_times`), `time_by_turn` on `compare_to_rival`, and
-`field_benchmark`. In rough order of payoff:
+its field benchmark. In rough order of payoff:
 
 - **Cost of trace timing.** `list_rivals` reads every rival sample of the
   session to time laps: about 150k rows for a 12-lap race with ten cars,
@@ -160,7 +160,7 @@ the payload should say so.
   the line with no lap completed, `lap_done` may read near 1 and make the
   laps to go one short. Both unverified. It also uses nominal consumption;
   a measured burn per lap would be better.
-- **Where to attack and defend.** From `field_benchmark` per rival: the
+- **Where to attack and defend.** From the field benchmark per rival: the
   driver's strong corners are where a pass is set up; a rival's strong exit
   onto a straight is where the driver is vulnerable.
 - **Car against driver.** Split each rival's gain into straights and
@@ -169,12 +169,13 @@ the payload should say so.
   say which gains are which.
 - **Rival habits.** Late-stint fade, lap-time spread, and where each rival
   goes off.
-- **Lines.** Rival `pos_x`/`pos_z` are stored; `compare_laps`' line view could overlay
-  the quickest rival's line through a corner the benchmark flags.
+- **Lines.** Rival `pos_x`/`pos_z` are stored; `compare_laps`' line view
+  could overlay the quickest rival's line through a corner the benchmark
+  flags.
 - **A pre-race brief** from practice and qualifying: one card per rival,
   and the quickest rival lap as a ghost in the line map.
 - **Rival data in the handoff.** The race-engineer skill should run
-  `field_benchmark` after practice, qualifying and each race, put
+  the field benchmark after practice, qualifying and each race, put
   `priorities` in the handoff, and quote only trace-timed rival laps
   (`lap_time_source: "trace"`).
 

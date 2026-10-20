@@ -3,7 +3,7 @@
 The server's lap time for a remote car can lag its lap counter, so the
 time it reports for a lap is often the previous lap's. These pin the timing
 taken from the trace instead, the ranking built on it, and the per-turn time
-split that compare_to_rival and field_benchmark report.
+split that compare_to_rival reports, against a rival or the field.
 """
 
 import atexit
@@ -193,8 +193,8 @@ def test_time_by_turn_says_what_the_quicker_corner_was_worth():
     rows = analysis.time_by_turn(mine, theirs, {"T1": "Turn 1"})
     turn = next(r for r in rows if r["stretch"] == "Turn 1")
     expect = 0.1 * LENGTH / (100 / 3.6) - 0.1 * LENGTH / (125 / 3.6)
-    assert abs(turn["delta_s"] - expect) < 0.03, (turn, expect)
-    print(f"  Turn 1 worth {turn['delta_s']:.3f} s to the rival")
+    assert abs(turn["rival_faster_by_s"] - expect) < 0.03, (turn, expect)
+    print(f"  Turn 1 worth {turn['rival_faster_by_s']:.3f} s to the rival")
 
 
 # A second turn that runs across the line, taken flat.
@@ -251,7 +251,7 @@ def test_time_by_turn_adds_up_to_the_lap_difference():
     assert rows[-1]["stretch"] == "after T2", rows
     assert next(m for m in mine if m["turn"] == "T2")["min_kmh"] == 200.0
     lap_delta = _lap_seconds(100.0) - _lap_seconds(125.0)
-    total = sum(r["delta_s"] for r in rows)
+    total = sum(r["rival_faster_by_s"] for r in rows)
     assert abs(total - lap_delta) < 0.1, (total, lap_delta)
     print(f"  turns add to {total:.3f} s of a {lap_delta:.3f} s lap gap")
 
@@ -304,7 +304,7 @@ def test_field_benchmark_ranks_the_corner_where_the_field_is_quicker():
     ids = srv.turns.basis_lap_ids(srv._conn, sid)
     srv._corner_maps[sid] = (tuple(ids), {"turns": [TURN]})
 
-    out = json.loads(srv.field_benchmark(session_id=sid))
+    out = json.loads(srv.compare_to_rival(session_id=sid))
     assert "error" not in out, out
     row = out["turns"][0]
     assert row["turn"] == "T1", row
@@ -356,7 +356,7 @@ def test_a_stretch_only_one_side_timed_is_not_counted_as_time_available():
     _store_rival(srv._conn, sid, 5, 125.0, 0.39, 3, server_ms=999_999)
     _set_turns(srv, sid, [TURN])
 
-    out = json.loads(srv.field_benchmark(
+    out = json.loads(srv.compare_to_rival(
         session_id=sid, lap_ids=",".join(map(str, ids))))
     assert "error" not in out, out
     row = out["turns"][0]
@@ -379,7 +379,7 @@ def test_field_benchmark_says_why_when_there_is_nothing_to_measure():
                for t, pos, v, b, lap in trace]
     lap = db.store_lap(srv._conn, sid, 2, 0, True, samples)
     _set_turns(srv, sid, [TURN])
-    out = json.loads(srv.field_benchmark(session_id=sid, lap_ids=str(lap)))
+    out = json.loads(srv.compare_to_rival(session_id=sid, lap_ids=str(lap)))
     assert "lap time" in out.get("error", ""), out
 
         # Rival samples without a clock: no trace timing, which is not the
@@ -394,7 +394,7 @@ def test_field_benchmark_says_why_when_there_is_nothing_to_measure():
         [{"car_index": 5, "lap_count": l, "spline": pos, "speed_kmh": v,
           "brake": b} for t, pos, v, b, l in trace])
     _set_turns(srv, sid, [TURN])
-    out = json.loads(srv.field_benchmark(session_id=sid, lap_ids=str(lap)))
+    out = json.loads(srv.compare_to_rival(session_id=sid, lap_id=lap))
     assert "trace" in out.get("error", ""), out
     assert "quicker" not in out["error"], out
 
@@ -416,7 +416,7 @@ def test_compare_to_rival_times_every_stretch_of_the_lap():
     rows = out["time_by_turn"]
     assert len(rows) == 4, rows
     lap_delta = _lap_seconds(100.0) - _lap_seconds(125.0)
-    total = sum(r["delta_s"] for r in rows)
+    total = sum(r["rival_faster_by_s"] for r in rows)
     assert abs(total - lap_delta) < 0.15, (total, lap_delta, rows)
 
 

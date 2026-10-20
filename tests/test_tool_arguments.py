@@ -91,7 +91,7 @@ def _text(r):
 def test_the_tools_take_a_number_or_a_list_through_mcp():
     """The client's coercion is refused before any parser runs unless the
     parameter's type admits it."""
-    calls = [("field_benchmark", {"lap_ids": v, "car_indexes": v})
+    calls = [("compare_to_rival", {"lap_ids": v, "car_indexes": v})
              for v in (14, [14, 5], "14,5")]
     calls += [("label_laps", {"lap_ids": v, "setup_name": "a"})
               for v in (87, [87, 88], "87-90")]
@@ -118,7 +118,7 @@ def test_every_lap_id_list_takes_the_same_shapes():
         assert s._lap_ids(given) == [999998, 999999], given
     params = [("compare_runs", "baseline_laps", {"candidate_laps": 999999}),
               ("export_line_map", "lap_ids", {}),
-              ("field_benchmark", "lap_ids", {}),
+              ("compare_to_rival", "lap_ids", {}),
               ("label_laps", "lap_ids", {"setup_name": "a"})]
     for name, param, others in params:
         for given in shapes:
@@ -139,7 +139,7 @@ def test_null_means_the_default():
              ("compare_laps", {"lap_id_a": -1, "lap_id_b": -2,
                                "view": None, "detail": None,
                                "segments": None}),
-             ("field_benchmark", {"lap_ids": None, "laps_per_rival": None}),
+             ("compare_to_rival", {"lap_ids": None, "laps_per_rival": None}),
              ("compare_runs", {"baseline_laps": 999998,
                                "candidate_laps": 999999,
                                "clean_laps_only": None,
@@ -163,7 +163,7 @@ def test_out_of_range_numbers_are_refused_by_the_schema():
     for name, arguments in [("list_laps", {"limit": 0}),
                             ("compare_laps", {"lap_id_a": -1,
                                               "points": 5000}),
-                            ("field_benchmark", {"laps_per_rival": 50}),
+                            ("compare_to_rival", {"laps_per_rival": 50}),
                             ("send_driver_message", {"text": "x" * 500}),
                             ("annotate_experiment", {"experiment_id": 0}),
                             ("annotate_experiment", {"experiment_id": 1,

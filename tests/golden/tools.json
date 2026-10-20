@@ -379,18 +379,10 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Compare one of the driver's laps with an opponent's (car_index), by\ntrack position: where they carry more speed and, when the server sends\ntheir pedals, where they brake and get on power.\n\ncar_index and rival_lap_number: from list_rivals; default their\nquickest captured lap. rival_lap_count (lap number minus one) is\ndeprecated. `time_by_turn`: seconds through each turn (turn-in to exit)\nand on the road after it to the next turn-in, `delta_s` positive where\nthe rival is quicker, with `where_they_gain` / `where_you_gain`. Their\n10 Hz trace is good to a few hundredths per stretch.",
+  "description": "Where an opponent, or the quicker field, finds time against you.\n\nWith car_index (from list_rivals): your lap_id against that rival's\nlap (rival_lap_number, default their quickest captured), by track\nposition: where they carry more speed (`rival_faster_by_kmh`) and, when\nthe server sends their pedals, where they brake and get on power.\n`time_by_turn`: seconds through each turn (turn-in to exit) and on the\nroad after it to the next turn-in, `rival_faster_by_s` per stretch,\nwith `where_they_gain` / `where_you_gain`. Their 10 Hz trace is good to\na few hundredths per stretch.\n\nWithout car_index, the field benchmark: per turn, yours and the\nfield's medians -- time through it and on the road after, minimum and\nexit speeds, brake point in meters before turn-in -- and\n`available_s` (positive: the field is quicker). `total_available_s`\nsums the turns timed on both sides; `priorities`: rows by time\navailable, biggest first. lap_ids (or lap_id): your laps, default the\nnewest clean ones. car_indexes: default every rival whose trace-timed\nbest beats yours. Both take \"433,434\", a number or a list; lap_ids also\n\"433-436\". laps_per_rival: each rival's quickest laps within 2% of\ntheir best. Rival brake points read up to ~7 m early, slow-corner\nminimum speeds a little high.",
   "inputSchema": {
    "properties": {
     "car_index": {
-     "title": "Car Index",
-     "type": "integer"
-    },
-    "lap_id": {
-     "title": "Lap Id",
-     "type": "integer"
-    },
-    "rival_lap_count": {
      "anyOf": [
       {
        "type": "integer"
@@ -400,7 +392,68 @@
       }
      ],
      "default": null,
-     "title": "Rival Lap Count"
+     "title": "Car Index"
+    },
+    "car_indexes": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "integer"
+      },
+      {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Car Indexes"
+    },
+    "lap_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Id"
+    },
+    "lap_ids": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "integer"
+      },
+      {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Ids"
+    },
+    "laps_per_rival": {
+     "default": 3,
+     "maximum": 10,
+     "minimum": 1,
+     "title": "Laps Per Rival",
+     "type": "integer"
     },
     "rival_lap_number": {
      "anyOf": [
@@ -427,15 +480,11 @@
      "title": "Session Id"
     }
    },
-   "required": [
-    "car_index",
-    "lap_id"
-   ],
    "title": "compare_to_rivalArguments",
    "type": "object"
   },
   "name": "compare_to_rival",
-  "title": "Compare to a rival lap"
+  "title": "Compare to a rival or the field"
  },
  {
   "annotations": {
@@ -486,84 +535,6 @@
   },
   "name": "export_line_map",
   "title": "Export a line map"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Where the quicker cars find their time, turn by turn, against you.\n\nPer turn, yours and the field's medians: time through it (turn-in to\nexit) and on the road after to the next turn-in, minimum and exit\nspeeds, brake point in meters before turn-in, and `available_s`\n(positive: the field is quicker). `total_available_s` sums the turns\ntimed on both sides. `priorities`: rows by time available, biggest\nfirst.\n\nlap_ids: your laps; default the newest clean ones. car_indexes: default\nevery rival whose trace-timed best beats yours. Both take \"433,434\", a\nnumber or a list; lap_ids also \"433-436\". laps_per_rival: each rival's\nquickest laps within 2% of their best. Rival brake points read up to\n~7 m early, slow-corner minimum speeds a little high.",
-  "inputSchema": {
-   "properties": {
-    "car_indexes": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "integer"
-      },
-      {
-       "items": {
-        "type": "integer"
-       },
-       "type": "array"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Car Indexes"
-    },
-    "lap_ids": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "integer"
-      },
-      {
-       "items": {
-        "type": "integer"
-       },
-       "type": "array"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Lap Ids"
-    },
-    "laps_per_rival": {
-     "default": 3,
-     "maximum": 10,
-     "minimum": 1,
-     "title": "Laps Per Rival",
-     "type": "integer"
-    },
-    "session_id": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Session Id"
-    }
-   },
-   "title": "field_benchmarkArguments",
-   "type": "object"
-  },
-  "name": "field_benchmark",
-  "title": "Benchmark against the field"
  },
  {
   "annotations": {

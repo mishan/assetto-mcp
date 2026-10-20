@@ -255,6 +255,7 @@ Config**, which always opens the file the running app actually reads.
 | `ASSETTO_MCP_UPDATE_REPO` | `mishan/assetto-mcp` | The GitHub repository updates come from |
 | `ASSETTO_MCP_UPDATE_API` | `https://api.github.com` | GitHub API base, for the update check |
 | `ASSETTO_MCP_UPDATE_GIT_URL` | `https://github.com/<repo>.git` | Where `apply_update` fetches from |
+| `ASSETTO_MCP_TOOLSET` | `full` | `core` serves only the tools of the session routine (`CORE_TOOLS` in `server.py`), for a small local model or a client that caps how many tools it takes |
 | `ASSETTO_MCP_MAX_DB_BYTES` | `2147483648` (2 GB) | Size budget for the telemetry database. Over it, the oldest sessions' traces are thinned; laps are never deleted. `0` keeps every sample forever. |
 
 Set them in the `env` block of your client's server entry, if it has one, or in

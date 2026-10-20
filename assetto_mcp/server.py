@@ -178,6 +178,23 @@ def _j(obj) -> str:
     return json.dumps(obj, separators=(",", ":"), default=str)
 
 
+# ASSETTO_MCP_TOOLSET=core: the session routine in few enough tools for a
+# small local model's context and for a client that caps its tool count.
+# Every name must be a tool; startup fails on one that is not.
+CORE_TOOLS = (
+    # session_check and wait_for_lap join here when they exist.
+    "recording_status", "live_snapshot", "list_laps", "lap_summary",
+    "compare_laps", "delta_by_position", "compare_runs",
+    "set_session_setup", "label_laps", "fuel_plan",
+    "list_setups", "read_setup", "write_setup",
+)
+_TOOLSET = config.env("TOOLSET", "full")
+if _TOOLSET not in ("full", "core"):
+    print(f"assetto-mcp: ASSETTO_MCP_TOOLSET={_TOOLSET!r} is not 'full' "
+          "or 'core'; serving every tool", file=sys.stderr)
+_REGISTERED: set[str] = set()
+
+
 def _tool(title: str, *, writes: bool = False, destructive: bool = False,
           idempotent: bool = True, open_world: bool = False,
           status: bool = False, locks_conn: bool = True):
@@ -217,7 +234,9 @@ def _tool(title: str, *, writes: bool = False, destructive: bool = False,
             with _conn_lock:
                 return fn(*args, **kwargs)
         tool = locked if locks_conn else fn
-        mcp.tool(**options)(tool)
+        _REGISTERED.add(fn.__name__)
+        if _TOOLSET != "core" or fn.__name__ in CORE_TOOLS:
+            mcp.tool(**options)(tool)
         return tool
     return register
 
@@ -2779,6 +2798,11 @@ def write_setup(car: str, track: str, name: str, values_json: str,
                    "do_this": "check the section names with setup_ranges"})
     except (ValueError, FileNotFoundError) as e:
         return _j({"error": str(e)})
+
+
+_unknown = set(CORE_TOOLS) - _REGISTERED
+if _unknown:
+    raise RuntimeError(f"CORE_TOOLS names no tool: {sorted(_unknown)}")
 
 
 def main():

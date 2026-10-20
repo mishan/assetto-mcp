@@ -204,5 +204,27 @@ def test_initialize_carries_instructions_version_and_list_changed():
     assert named <= {t["name"] for t in tools}, named
 
 
+def test_the_core_toolset_serves_only_its_tools():
+    script = (
+        "import asyncio, json\n"
+        "import assetto_mcp.server as s\n"
+        "print(json.dumps([sorted(t.name for t in "
+        "asyncio.run(s.mcp.list_tools())), list(s.CORE_TOOLS)]))\n"
+        "s._shutdown()\n")
+    import subprocess
+    with tempfile.TemporaryDirectory(prefix="ac-core-") as d:
+        env = dict(os.environ, ASSETTO_MCP_DATA=d, AC_DOCS_DIR=d,
+                   ASSETTO_MCP_NO_AUTOSTART="1", ASSETTO_MCP_BRIDGE_PORT="0",
+                   ASSETTO_MCP_TOOLSET="core")
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parent.parent, env=env,
+            capture_output=True, text=True, timeout=120,
+            stdin=subprocess.DEVNULL)
+    assert proc.returncode == 0, proc.stderr
+    served, core = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert served == sorted(core), (served, core)
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

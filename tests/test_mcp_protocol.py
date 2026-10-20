@@ -446,6 +446,21 @@ def test_list_laps_says_which_laps_have_a_lap_time():
     assert "out-lap" in by_id[out_lap]["not_usable_because"], by_id[out_lap]
 
 
+def test_list_laps_reads_the_active_session_unless_asked_for_all():
+    s = _server()
+    other, _ = _session_with_laps(1)
+    active, mine = _session_with_laps(2)
+    saved = s._bridge.active_session_id
+    s._bridge.active_session_id = lambda: active
+    try:
+        default, everything = _results([
+            ("list_laps", {}), ("list_laps", {"all_sessions": True})])
+    finally:
+        s._bridge.active_session_id = saved
+    assert sorted(r["id"] for r in default) == sorted(mine), default
+    assert {r["session_id"] for r in everything} >= {active, other}
+
+
 def test_write_setup_takes_its_values_as_an_object_or_as_json_text():
     values = {"PRESSURE_LF": 25}
 

@@ -1015,9 +1015,14 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "List recorded laps (most recent first), optionally for one session.\nReturns lap ids to use with lap_summary / compare_lap_corners.\n`outlier`: far slower than the session's pace, but still usable.",
+  "description": "List recorded laps (most recent first). Defaults to the active\nsession, or every session when none is recording; all_sessions=True\nfor every session. Returns lap ids to use with lap_summary /\ncompare_lap_corners. `outlier`: far slower than the session's pace,\nbut still usable.",
   "inputSchema": {
    "properties": {
+    "all_sessions": {
+     "default": false,
+     "title": "All Sessions",
+     "type": "boolean"
+    },
     "limit": {
      "default": 20,
      "maximum": 200,

@@ -1820,12 +1820,15 @@ def _lap_row(lap: dict) -> dict:
 
 @_tool("List laps")
 def list_laps(session_id: int | None = None,
-              limit: Annotated[int, Field(ge=1, le=200)] = 20) -> str:
-    """List recorded laps (most recent first), optionally for one session.
-    Returns lap ids to use with lap_summary / compare_lap_corners.
-    `outlier`: far slower than the session's pace, but still usable."""
-    return _j([_lap_row(lap)
-               for lap in db.list_laps(_conn, session_id, limit)])
+              limit: Annotated[int, Field(ge=1, le=200)] = 20,
+              all_sessions: bool = False) -> str:
+    """List recorded laps (most recent first). Defaults to the active
+    session, or every session when none is recording; all_sessions=True
+    for every session. Returns lap ids to use with lap_summary /
+    compare_lap_corners. `outlier`: far slower than the session's pace,
+    but still usable."""
+    sid = None if all_sessions else _active_session(session_id)
+    return _j([_lap_row(lap) for lap in db.list_laps(_conn, sid, limit)])
 
 
 # What the live loop reads of a corner on every lap; detail="full" adds the

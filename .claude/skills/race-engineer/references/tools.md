@@ -70,8 +70,10 @@ that reports a position adds meters and a `where` beside it, and says
 where the track length came from in `track_length`; see "Positions into
 meters" in `analysis.md`.
 
-**`list_laps(session_id, limit)`** -- most recent first, with ids for the lap
-tools: lap number, `lap_time`, `setup_name`, `usable_for_timing` (with
+**`list_laps(session_id, limit, all_sessions)`** -- the active session's
+laps (every session's when none is recording, or with
+`all_sessions=True`), most recent first, with ids for the lap tools: lap
+number, `lap_time`, `setup_name`, `usable_for_timing` (with
 `not_usable_because`), `ran_wide`, `outlier` (far off the session's pace,
 still usable) and `completed_at` in local time.
 

@@ -18,7 +18,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # How many wheels have to be off the valid surface before a lap counts as
 # having exceeded track limits. Four is the count AC itself treats as
@@ -386,6 +386,28 @@ CREATE TABLE IF NOT EXISTS rival_laps (
 -- `enabled` is separate from the claim and deliberately shared: stopping
 -- recording is an instruction about the car, not about whichever server
 -- process received it, and it survives a restart.
+-- Every compare_runs, kept so effects can be pooled across sessions: what
+-- changed on the car, under what conditions, and what it did. One row per
+-- pair of lap sets; comparing the same laps again updates it.
+CREATE TABLE IF NOT EXISTS experiments (
+    id INTEGER PRIMARY KEY,
+    lap_key TEXT NOT NULL UNIQUE,   -- sorted lap ids, baseline | candidate
+    car TEXT NOT NULL,
+    track TEXT NOT NULL,
+    track_config TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    -- [{entry, baseline, candidate}], or NULL when either side was not one
+    -- measured setup and what changed is not known.
+    changes_json TEXT,
+    laps_json TEXT NOT NULL,
+    conditions_json TEXT NOT NULL DEFAULT '{}',
+    results_json TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    conclusion TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_experiments_car ON experiments (car, track);
+
 CREATE TABLE IF NOT EXISTS recorder (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     owner TEXT NOT NULL DEFAULT '',   -- host/pid/token of the holder
@@ -627,6 +649,10 @@ def _migrate(conn) -> list[str]:
         if added:
             log.append(f"{', '.join(added)} added; laps recorded before "
                        "this have no measured setup")
+
+    # v16 adds experiments, a new table -- CREATE TABLE IF NOT EXISTS in
+    # SCHEMA covers it. Earlier comparisons were never stored, so there is
+    # nothing to backfill.
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
@@ -2281,3 +2307,79 @@ def list_notes(conn, session_id: int | None = None, limit: int = 100):
     q += " ORDER BY id DESC LIMIT ?"
     args.append(limit)
     return [dict(r) for r in conn.execute(q, args)]
+
+
+# --- experiments --------------------------------------------------------
+
+EXPERIMENT_CONCLUSIONS = ("kept", "reverted", "undecided")
+
+
+def record_experiment(conn, rec: dict) -> int:
+    """Store one comparison, or refresh it if these laps were compared."""
+    laps = rec["laps"]
+    key = (",".join(map(str, sorted(laps["baseline"]))) + "|"
+           + ",".join(map(str, sorted(laps["candidate"]))))
+    now = time.time()
+    changes = rec.get("changes")
+    with conn:
+        conn.execute(
+            "INSERT INTO experiments (lap_key, car, track, track_config,"
+            " created_at, updated_at, changes_json, laps_json,"
+            " conditions_json, results_json) VALUES (?,?,?,?,?,?,?,?,?,?)"
+            " ON CONFLICT(lap_key) DO UPDATE SET updated_at=excluded.updated_at,"
+            " changes_json=excluded.changes_json, laps_json=excluded.laps_json,"
+            " conditions_json=excluded.conditions_json,"
+            " results_json=excluded.results_json",
+            (key, rec["car"], rec["track"], rec.get("track_config") or "",
+             now, now, None if changes is None else json.dumps(changes),
+             json.dumps(laps), json.dumps(rec.get("conditions") or {}),
+             json.dumps(rec["results"])))
+    return conn.execute("SELECT id FROM experiments WHERE lap_key = ?",
+                        (key,)).fetchone()["id"]
+
+
+def _experiment(row) -> dict:
+    out = dict(row)
+    for k in ("changes", "laps", "conditions", "results"):
+        raw = out.pop(f"{k}_json")
+        out[k] = None if raw is None else json.loads(raw)
+    out.pop("lap_key", None)
+    return out
+
+
+def get_experiment(conn, experiment_id: int) -> dict | None:
+    r = conn.execute("SELECT * FROM experiments WHERE id = ?",
+                     (experiment_id,)).fetchone()
+    return _experiment(r) if r else None
+
+
+def experiments_for(conn, car: str, track: str | None = None) -> list[dict]:
+    """A car's experiments, oldest first, optionally at one track."""
+    q, args = "SELECT * FROM experiments WHERE car = ?", [car]
+    if track:
+        q += " AND track = ?"
+        args.append(track)
+    return [_experiment(r) for r in conn.execute(q + " ORDER BY created_at",
+                                                 args)]
+
+
+def annotate_experiment(conn, experiment_id: int, note: str | None,
+                        conclusion: str | None) -> bool:
+    """Set what the driver felt and what was decided. False if no such row."""
+    if conclusion is not None and conclusion not in EXPERIMENT_CONCLUSIONS:
+        raise ValueError(f"conclusion must be one of "
+                         f"{', '.join(EXPERIMENT_CONCLUSIONS)}")
+    sets, args = [], []
+    if note is not None:
+        sets.append("note = ?")
+        args.append(note)
+    if conclusion is not None:
+        sets.append("conclusion = ?")
+        args.append(conclusion)
+    if not sets:
+        return get_experiment(conn, experiment_id) is not None
+    with conn:
+        cur = conn.execute(
+            f"UPDATE experiments SET {', '.join(sets)}, updated_at = ?"
+            " WHERE id = ?", (*args, time.time(), experiment_id))
+    return cur.rowcount > 0

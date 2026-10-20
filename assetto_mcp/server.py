@@ -2397,7 +2397,8 @@ def compare_laps(lap_id_a: int, lap_id_b: int | None = None,
                  detail: Literal["summary", "full"] = "summary",
                  segments: Annotated[int, Field(ge=1, le=200)] = 20,
                  points: Annotated[int, Field(ge=10, le=200)] = 100) -> str:
-    """Two laps on the same track, one view at a time:
+    """Two of the driver's own laps on the same track (the best clean one
+    is `best_clean_lap_id` in session_check), one view at a time:
 
     - "corners": what each corner did differently -- min speed, brake
       point and slip balance, all lap a minus lap b (`a_slower_by_ms` too).

@@ -26,7 +26,7 @@
    "expect": ["lap_summary"]},
   {"id": "live-vs-best", "area": "live lap",
    "request": "Where did I lose time on lap 438 against my best clean lap?",
-   "expect": ["compare_laps"]},
+   "expect": ["compare_laps", "session_check", "list_laps"]},
   {"id": "live-spin", "area": "live lap",
    "request": "I spun on lap 436. Did someone hit me or was that me?",
    "expect": ["lap_summary"]},

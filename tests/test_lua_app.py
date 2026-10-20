@@ -80,8 +80,15 @@ def test_a_car_in_the_pit_lane_is_placed_but_kept_off_the_traces():
     rec.sim_fields = {"raceSessionType": 1, "carsCount": 3}
     lua, api, rec = lua_harness.load(rec)
     api.setRunning(True)
-    rec.cars[1] = {"splinePosition": 0.3, "position": (1.0, 0.0, 2.0)}
+    rec.cars[1] = {"isInPitlane": True, "position": (1.0, 0.0, 2.0)}
     rec.cars[2] = {"isInPitlane": True, "position": (7.0, 0.0, -3.0)}
+    api.sampleRivals()
+    api.postRivals()
+    batch = _rival_batches(rec)[-1]
+    assert not batch["cars"] and len(batch["pit"]) == 2, batch
+
+    rec.deliver(200, {"ok": True, "stored": 0})
+    rec.cars[1] = {"splinePosition": 0.3, "position": (1.0, 0.0, 2.0)}
     api.sampleRivals()
     api.postRivals()
     batch = _rival_batches(rec)[-1]
@@ -94,7 +101,8 @@ def test_a_car_in_the_pit_lane_is_placed_but_kept_off_the_traces():
     api.postRivals()
     batch = _rival_batches(rec)[-1]
     assert not batch["pit"] and len(batch["cars"]) == 2, batch
-    print("  car 2 placed from the pit lane, then traced once out of it")
+    print("  both in the pits posted; then car 2 placed from the pit lane,"
+          " traced once out of it")
 
 
 def _rival_batches(rec):

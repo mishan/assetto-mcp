@@ -2,8 +2,10 @@
 
 import http.client
 import json
+import os
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -182,6 +184,9 @@ def test_the_lan_dashboard_needs_its_secret_and_serves_nothing_else():
             token = br.lan_url.split("/")[3]
             assert _get(port, f"/{token}/dash/live")[0] == 200
             assert _get(port, f"/{token}/dash")[0] == 200
+            assert token not in _get(br.port, "/dash/live")[2]
+            assert json.loads(_get(br.port, "/dash/lan")[2]) == {
+                "url": br.lan_url}
             assert _get(port, "/dash/live")[0] == 403
             assert _get(port, f"/{token[:-1]}x/dash/live")[0] == 403
             assert _get(port, f"/{token}/status")[0] == 403
@@ -212,9 +217,10 @@ def test_opponents_show_where_their_latest_sample_put_them():
                          "speed_kmh": 150})
             pit = [{"car_index": 3, "pos_x": 4.0, "pos_z": 2.0},
                    {"car_index": "x"}, "junk"]
-            assert post(br.port, "/rivals", {"cars": cars, "pit": pit})[0] == 200
+            assert post(br.port, "/rivals", {"cars": {}, "pit": pit})[0] == 200
+            assert post(br.port, "/rivals", {"cars": cars})[0] == 200
             live = json.loads(_get(br.port, "/dash/live")[2])
-            assert live["cars"] == [
+            assert sorted(live["cars"], key=lambda c: c["pit"]) == [
                 {"name": "Ann", "x": 30.0, "z": -5.0, "pit": False},
                 {"name": None, "x": 4.0, "z": 2.0, "pit": True}], live["cars"]
             print("  each opponent at its last placed sample, named;"
@@ -227,10 +233,15 @@ def test_opponents_show_where_their_latest_sample_put_them():
 def test_the_pit_wall_runs_without_a_chat():
     from test_supervisor import _server_env
     with temp_db() as path:
+        env = _server_env(str(Path(path).parent))
+        env.pop("ASSETTO_MCP_DASH_LAN", None)
         proc = subprocess.Popen(
             [sys.executable, "-m", "assetto_mcp.pit_wall"],
             cwd=Path(__file__).resolve().parent.parent, text=True,
-            env=_server_env(str(Path(path).parent)), stdout=subprocess.PIPE)
+            env=env, stdout=subprocess.PIPE)
+        # A child that never prints would leave readline blocked forever.
+        stuck = threading.Timer(60, proc.kill)
+        stuck.start()
         try:
             lines = [proc.stdout.readline() for _ in range(3)]
             assert lines[-1].startswith("Ctrl+C"), lines
@@ -238,8 +249,13 @@ def test_the_pit_wall_runs_without_a_chat():
             code, _, body = _get(port, "/dash/live")
             assert code == 200 and "recording" in json.loads(body)
             print(f"  serving the pit wall on its own, port {port}")
-        finally:
             proc.terminate()
+            # Windows has no SIGTERM to catch; terminate() is a hard kill.
+            code = proc.wait(10)
+            assert os.name == "nt" or code == 0, "SIGTERM skipped the shutdown"
+        finally:
+            stuck.cancel()
+            proc.kill()
             proc.wait(10)
             proc.stdout.close()
 

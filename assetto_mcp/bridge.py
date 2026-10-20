@@ -423,7 +423,8 @@ class Bridge:
                     if now - c["at"] < CAR_FRESH_S]
         return {"live": live, "cars": cars,
                 "focus": self._dash_db(db.pit_wall_focus),
-                "recording": self.status_snapshot(), "lan_url": self.lan_url}
+                "recording": self.status_snapshot(),
+                "lan": self._lan_server is not None}
 
     def _dash_track(self) -> dict:
         return self._dash_db(_track_outline, self.active_session_id())
@@ -555,6 +556,10 @@ class Bridge:
                     return self._send(200, bridge._dash_map(), page)
                 if path == "/dash/track":
                     return self._send(200, bridge._dash_track())
+                # Asked for on click, not polled: the overlay a stream loads
+                # never carries the secret.
+                if path == "/dash/lan":
+                    return self._send(200, {"url": bridge.lan_url})
                 if path == "/dash/asks":
                     after = _opt_int(query.partition("after=")[2] or 0,
                                      0, 2**31 - 1) or 0
@@ -640,7 +645,11 @@ class Bridge:
                     if claimed is not None and claimed != sid:
                         return self._send(200, {"ok": False,
                                                 "reason": "session changed"})
+                    # Empty when every opponent is in the pit lane, which
+                    # the app's JSON may encode as an object.
                     raw_cars = body.get("cars")
+                    if raw_cars == {}:
+                        raw_cars = []
                     if not isinstance(raw_cars, list):
                         return self._send(400, {"error": "'cars' must be a "
                                                 "list"})
@@ -699,14 +708,13 @@ class Bridge:
                         n = db.store_rival_batch(conn, sid, drivers, samples)
                     finally:
                         conn.close()
-                    # Cars in the pit lane, for the overlay's map only.
                     raw_pit = body.get("pit")
                     pit = [{"car_index": i,
                             **{k: _opt_float(p.get(k), -MAX_WORLD_M,
                                              MAX_WORLD_M)
                                for k in ("pos_x", "pos_z")}}
-                           for p in (raw_pit if isinstance(raw_pit, list)
-                                     else ())
+                           for p in (raw_pit[:MAX_RIVAL_BATCH]
+                                     if isinstance(raw_pit, list) else ())
                            if isinstance(p, dict) and (i := _opt_int(
                                p.get("car_index"), 0, 255)) is not None]
                     bridge.note_cars(drivers, samples, pit)

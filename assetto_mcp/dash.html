@@ -87,14 +87,13 @@ function liveTiles(l){
   return t.join("");
 }
 
-let mapKey = null, lanUrl = null;
+let mapKey = null;
 async function poll(){
   try {
     const d = await (await fetch("dash/live", {cache: "no-store"})).json();
     $("live").innerHTML = liveTiles(d.live);
     $("focus").textContent = d.focus.caption || "";
-    lanUrl = d.lan_url;
-    $("phone").hidden = !lanUrl;
+    $("phone").hidden = !d.lan;
     const r = d.recording;
     $("state").textContent = (r.running ? r.status + " · " + r.laps_recorded + " laps" : "not recording") +
       (d.focus.lap_ids.length ? " · showing laps " + d.focus.lap_ids.join(", ") : "");
@@ -116,9 +115,11 @@ poll();
 // Only on click: the link carries the secret, so it stays off the page, and
 // off a stream that happens to show it, until asked for.
 $("phone").addEventListener("click", async () => {
-  $("lanurl").textContent = lanUrl;
+  $("qr").textContent = $("lanurl").textContent = "";
   $("lan").showModal();
   try {
+    const lanUrl = (await (await fetch("dash/lan", {cache: "no-store"})).json()).url;
+    $("lanurl").textContent = lanUrl;
     if (!window.qrcode) await new Promise((ok, fail) => document.head.appendChild(Object.assign(
       document.createElement("script"), {onload: ok, onerror: fail, crossOrigin: "anonymous",
         src: "https://cdnjs.cloudflare.com/ajax/libs/qrcode-generator/1.4.4/qrcode.min.js",

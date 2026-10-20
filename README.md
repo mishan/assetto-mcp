@@ -115,7 +115,8 @@ and the assistant gets it with the next thing it reads.
 - **On a phone or tablet:** set `ASSETTO_MCP_DASH_LAN=1` and the pit wall is
   also served on your network, on port 9667, at a secret link: click **Open
   on a phone** on the pit wall for a QR code. Anyone with the link can see it
-  and ask questions; delete `~/.assetto-mcp/dash-token` for a new one.
+  and ask questions; for a new one, delete `~/.assetto-mcp/dash-token` and
+  restart.
 - **On a stream:** <http://127.0.0.1:9666/dash/overlay> is a strip of cards
   (position, lap clock and gap, fuel and tyres, a track map with every car,
   dimmed in the pit lane) on a transparent background. In OBS, add a

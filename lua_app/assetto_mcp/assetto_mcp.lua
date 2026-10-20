@@ -688,11 +688,15 @@ local function sampleRivals()
 end
 
 local function postRivals()
-  if rivalBusy or #rivalBuffer == 0 or sendSlots() < 1 then return end
+  -- Pit-lane cars alone are worth a post: before a session's first run
+  -- every opponent can be in the pits, and the overlay should show them.
+  if rivalBusy or (#rivalBuffer == 0 and next(rivalPit) == nil)
+      or sendSlots() < 1 then return end
   -- Only ship telemetry the server can file against a session.
   if not status.running then
     rivalBuffer = {}
     rivalMeta = {}
+    rivalPit = {}
     return
   end
   rivalBusy = true

@@ -6,6 +6,8 @@ so the engineer can still put laps on screen and read the driver's
 questions.
 """
 
+import signal
+import sys
 import time
 
 
@@ -23,6 +25,9 @@ def main() -> None:
     if server._bridge.error:
         print(server._bridge.error)
     print("Ctrl+C to stop.", flush=True)
+    # A service manager or `kill` stops it with SIGTERM; the recorder claim
+    # still has to be handed back on the way out.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     try:
         # Not Event.wait(): on Windows that blocks Ctrl+C.
         while True:

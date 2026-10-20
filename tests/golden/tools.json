@@ -85,36 +85,60 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Body roll and pitch for one lap, and how much per g.\n\nThe roll gradient includes banking and grade, so compare it only\nbetween laps at one track. Check `fit_r2` first; `gradient_caveats` and\n`dive_caveats` say why a fit is weak. `dive_deg_per_g` is braking and\ncoasting only. The sign of `fitted_slope_deg_per_g` is unverified: use\nit only to check that laps of one car agree. Laps before schema v8 have\nno attitude.",
+  "description": "How the car behaved on one lap, by aspect (default braking and\nattitude, which every lap has):\n\n- \"braking\": tyre slip under straight-line braking -- slip per axle,\n  which axle is nearer its limit (what brake bias moves), and runs\n  where a front wheel ran away. The ABS/TC fields hold one value all\n  lap: a setting, not a measure of intervention. The lockup threshold\n  is uncalibrated, so the raw distribution comes with it. points:\n  track slices for `hardest_braking_slices`.\n- \"attitude\": body roll and pitch, and how much per g. The roll\n  gradient includes banking and grade, so compare it only between\n  laps at one track. Check `fit_r2` first; `gradient_caveats` and\n  `dive_caveats` say why a fit is weak. `dive_deg_per_g` is braking\n  and coasting only. The sign of `fitted_slope_deg_per_g` is\n  unverified: use it only to check that laps of one car agree. Laps\n  before schema v8 have no attitude.\n- \"suspension\": damper histograms, ride height and roll balance;\n  needs the in-game app. `source` is the capture tier: \"app\" (render\n  rate) is fine for ride height and load transfer, but its damper\n  histograms are body motion, not valving; \"worker\" (the CSP physics\n  worker, 333 Hz) gives real damper numbers. lap_number reads a lap\n  not stored (an out-lap, say); lap_id wins if both are given.\n\nAn aspect that cannot be read carries its own `error`.",
   "inputSchema": {
    "properties": {
+    "aspects": {
+     "anyOf": [
+      {
+       "enum": [
+        "braking",
+        "attitude",
+        "suspension"
+       ],
+       "type": "string"
+      },
+      {
+       "items": {
+        "enum": [
+         "braking",
+         "attitude",
+         "suspension"
+        ],
+        "type": "string"
+       },
+       "type": "array"
+      }
+     ],
+     "default": [
+      "braking",
+      "attitude"
+     ],
+     "title": "Aspects"
+    },
     "lap_id": {
-     "title": "Lap Id",
-     "type": "integer"
-    }
-   },
-   "required": [
-    "lap_id"
-   ],
-   "title": "attitude_reportArguments",
-   "type": "object"
-  },
-  "name": "attitude_report",
-  "title": "Attitude report"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Tyre slip under straight-line braking: slip per axle, which axle is\nnearer its limit (what brake bias moves), and runs where a front wheel\nran away.\n\nThe ABS/TC fields hold one value all lap: a setting, not a measure of\nintervention. The lockup threshold is uncalibrated, so the raw\ndistribution comes with it. points: track slices for\n`hardest_braking_slices`.",
-  "inputSchema": {
-   "properties": {
-    "lap_id": {
-     "title": "Lap Id",
-     "type": "integer"
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Id"
+    },
+    "lap_number": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Number"
     },
     "points": {
      "default": 20,
@@ -122,32 +146,25 @@
      "minimum": 1,
      "title": "Points",
      "type": "integer"
+    },
+    "session_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Session Id"
     }
    },
-   "required": [
-    "lap_id"
-   ],
-   "title": "braking_reportArguments",
+   "title": "chassis_reportArguments",
    "type": "object"
   },
-  "name": "braking_report",
-  "title": "Braking report"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Deprecated: session_check's `app` says whether the in-game app is\nconnected. Port, bind error and pending message of its HTTP bridge.",
-  "inputSchema": {
-   "properties": {},
-   "title": "bridge_statusArguments",
-   "type": "object"
-  },
-  "name": "bridge_status",
-  "title": "In-game app bridge status"
+  "name": "chassis_report",
+  "title": "Chassis report"
  },
  {
   "annotations": {
@@ -172,7 +189,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Corner-by-corner comparison of two laps on the same track: min speed,\nbrake point and slip balance deltas, all lap a minus lap b\n(`a_slower_by_ms` too).\n\n`turn` labels come from these two laps alone, so they can differ from\nlap_summary's; detail=\"full\" adds `turns` (each apex), lap fractions\nand `corner_detection`. Any two laps are compared, but read\n`lap_time_warning` before quoting `a_slower_by_ms`: it says when either\ntime is not a real lap time.",
+  "description": "Two laps on the same track, one view at a time:\n\n- \"corners\": what each corner did differently -- min speed, brake\n  point and slip balance, all lap a minus lap b (`a_slower_by_ms` too).\n- \"along_lap\": where the time went along the whole track, straights\n  and sweepers included -- `b_lost_ms` per segment (positive = lap b\n  slower there; null = not sampled on both laps).\n- \"line\": where the car was across the track -- per slice, world\n  position, speed and front ride height with its movement (a bump\n  map), and `separation_m` between the two lines; lap_id_b optional.\n\ncorners: `turn` labels come from these two laps alone, so they can\ndiffer from lap_summary's; detail=\"full\" adds `turns` (each apex), lap\nfractions and `corner_detection`. along_lap: `b_lost_so_far_ms` and\n`b_slower_by_ms` only say a gap exists; segments: rows to split the\ntrack into. line: points: slices; laps from before position logging\nreport has_position: false. Read `lap_time_warning` before quoting a\nlap-time difference: it says when either time is not a real one.",
   "inputSchema": {
    "properties": {
     "detail": {
@@ -189,19 +206,50 @@
      "type": "integer"
     },
     "lap_id_b": {
-     "title": "Lap Id B",
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Id B"
+    },
+    "points": {
+     "default": 100,
+     "maximum": 200,
+     "minimum": 10,
+     "title": "Points",
      "type": "integer"
+    },
+    "segments": {
+     "default": 20,
+     "maximum": 200,
+     "minimum": 1,
+     "title": "Segments",
+     "type": "integer"
+    },
+    "view": {
+     "default": "corners",
+     "enum": [
+      "corners",
+      "along_lap",
+      "line"
+     ],
+     "title": "View",
+     "type": "string"
     }
    },
    "required": [
-    "lap_id_a",
-    "lap_id_b"
+    "lap_id_a"
    ],
-   "title": "compare_lap_cornersArguments",
+   "title": "compare_lapsArguments",
    "type": "object"
   },
-  "name": "compare_lap_corners",
-  "title": "Compare two laps by corner"
+  "name": "compare_laps",
+  "title": "Compare two laps"
  },
  {
   "annotations": {
@@ -331,18 +379,10 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Compare one of the driver's laps with an opponent's (car_index), by\ntrack position: where they carry more speed and, when the server sends\ntheir pedals, where they brake and get on power.\n\ncar_index and rival_lap_number: from list_rivals; default their\nquickest captured lap. rival_lap_count (lap number minus one) is\ndeprecated. `time_by_turn`: seconds through each turn (turn-in to exit)\nand on the road after it to the next turn-in, `delta_s` positive where\nthe rival is quicker, with `where_they_gain` / `where_you_gain`. Their\n10 Hz trace is good to a few hundredths per stretch.",
+  "description": "Where an opponent, or the quicker field, finds time against you.\n\nWith car_index (from list_rivals): your lap_id against that rival's\nlap (rival_lap_number, default their quickest captured), by track\nposition: where they carry more speed (`rival_faster_by_kmh`) and, when\nthe server sends their pedals, where they brake and get on power.\n`time_by_turn`: seconds through each turn (turn-in to exit) and on the\nroad after it to the next turn-in, `rival_faster_by_s` per stretch,\nwith `where_they_gain` / `where_you_gain`. Their 10 Hz trace is good to\na few hundredths per stretch.\n\nWithout car_index, the field benchmark: per turn, yours and the\nfield's medians -- time through it and on the road after, minimum and\nexit speeds, brake point in meters before turn-in -- and\n`available_s` (positive: the field is quicker). `total_available_s`\nsums the turns timed on both sides; `priorities`: rows by time\navailable, biggest first. lap_ids (or lap_id): your laps, default the\nnewest clean ones. car_indexes: default every rival whose trace-timed\nbest beats yours. Both take \"433,434\", a number or a list; lap_ids also\n\"433-436\". laps_per_rival: each rival's quickest laps within 2% of\ntheir best. Rival brake points read up to ~7 m early, slow-corner\nminimum speeds a little high.",
   "inputSchema": {
    "properties": {
     "car_index": {
-     "title": "Car Index",
-     "type": "integer"
-    },
-    "lap_id": {
-     "title": "Lap Id",
-     "type": "integer"
-    },
-    "rival_lap_count": {
      "anyOf": [
       {
        "type": "integer"
@@ -352,7 +392,68 @@
       }
      ],
      "default": null,
-     "title": "Rival Lap Count"
+     "title": "Car Index"
+    },
+    "car_indexes": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "integer"
+      },
+      {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Car Indexes"
+    },
+    "lap_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Id"
+    },
+    "lap_ids": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "integer"
+      },
+      {
+       "items": {
+        "type": "integer"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Lap Ids"
+    },
+    "laps_per_rival": {
+     "default": 3,
+     "maximum": 10,
+     "minimum": 1,
+     "title": "Laps Per Rival",
+     "type": "integer"
     },
     "rival_lap_number": {
      "anyOf": [
@@ -379,129 +480,11 @@
      "title": "Session Id"
     }
    },
-   "required": [
-    "car_index",
-    "lap_id"
-   ],
    "title": "compare_to_rivalArguments",
    "type": "object"
   },
   "name": "compare_to_rival",
-  "title": "Compare to a rival lap"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Say positions from the nearest corner, the way the tools do (\"Turn 10A\nbraking zone, 60 m before turn-in\"), for positions found outside them.\n\nmeters: distances past the start line, as a list or as text separated\nby spaces or \", \"; no thousands separators (\"3,335\" is refused).\nfractions: lap fractions 0-1 (`norm_pos` / `spline`), the same shapes.\nEither or both.",
-  "inputSchema": {
-   "properties": {
-    "fractions": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "number"
-      },
-      {
-       "items": {
-        "type": "number"
-       },
-       "type": "array"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Fractions"
-    },
-    "meters": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "number"
-      },
-      {
-       "items": {
-        "type": "number"
-       },
-       "type": "array"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Meters"
-    },
-    "session_id": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Session Id"
-    }
-   },
-   "title": "describe_positionsArguments",
-   "type": "object"
-  },
-  "name": "describe_positions",
-  "title": "Describe track positions"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Where the car went across the track: per slice of the lap, world\nposition, speed, mean front ride height and its movement within the\nslice (a bump map).\n\npoints: number of slices. compare_lap_id adds `separation_m`, the\ndistance between the two lines at each point. Laps from before position\nlogging report has_position: false.",
-  "inputSchema": {
-   "properties": {
-    "compare_lap_id": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Compare Lap Id"
-    },
-    "lap_id": {
-     "title": "Lap Id",
-     "type": "integer"
-    },
-    "points": {
-     "default": 100,
-     "maximum": 200,
-     "minimum": 10,
-     "title": "Points",
-     "type": "integer"
-    }
-   },
-   "required": [
-    "lap_id"
-   ],
-   "title": "driving_lineArguments",
-   "type": "object"
-  },
-  "name": "driving_line",
-  "title": "Driving line"
+  "title": "Compare to a rival or the field"
  },
  {
   "annotations": {
@@ -552,84 +535,6 @@
   },
   "name": "export_line_map",
   "title": "Export a line map"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Where the quicker cars find their time, turn by turn, against you.\n\nPer turn, yours and the field's medians: time through it (turn-in to\nexit) and on the road after to the next turn-in, minimum and exit\nspeeds, brake point in meters before turn-in, and `available_s`\n(positive: the field is quicker). `total_available_s` sums the turns\ntimed on both sides. `priorities`: rows by time available, biggest\nfirst.\n\nlap_ids: your laps; default the newest clean ones. car_indexes: default\nevery rival whose trace-timed best beats yours. Both take \"433,434\", a\nnumber or a list; lap_ids also \"433-436\". laps_per_rival: each rival's\nquickest laps within 2% of their best. Rival brake points read up to\n~7 m early, slow-corner minimum speeds a little high.",
-  "inputSchema": {
-   "properties": {
-    "car_indexes": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "integer"
-      },
-      {
-       "items": {
-        "type": "integer"
-       },
-       "type": "array"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Car Indexes"
-    },
-    "lap_ids": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "integer"
-      },
-      {
-       "items": {
-        "type": "integer"
-       },
-       "type": "array"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Lap Ids"
-    },
-    "laps_per_rival": {
-     "default": 3,
-     "maximum": 10,
-     "minimum": 1,
-     "title": "Laps Per Rival",
-     "type": "integer"
-    },
-    "session_id": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Session Id"
-    }
-   },
-   "title": "field_benchmarkArguments",
-   "type": "object"
-  },
-  "name": "field_benchmark",
-  "title": "Benchmark against the field"
  },
  {
   "annotations": {
@@ -865,7 +770,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Raw telemetry along one stretch of one lap, a row every step_m\nmeters, for what no report answers: shift rpm by gear, time in 6th,\nslip through one braking zone, entry speed against the brake point.\nBrake points per corner are in lap_summary.\n\nchannels: sample columns (default speed_kmh, gas, brake, gear).\nfrom_m/to_m: meters past the start line, default the whole lap. At most\n300 rows: a longer window gets a coarser `step_m`. Rows carry `m` and\n`t_s` (since the lap started); `from_where`/`to_where` place the\nwindow, and describe_positions turns any other `m` into words for the\ndriver.",
+  "description": "Raw telemetry along one stretch of one lap, a row every step_m\nmeters, for what no report answers: shift rpm by gear, time in 6th,\nslip through one braking zone, entry speed against the brake point.\nBrake points per corner are in lap_summary.\n\nchannels: sample columns (default speed_kmh, gas, brake, gear).\nfrom_m/to_m: meters past the start line, default the whole lap. At most\n300 rows: a longer window gets a coarser `step_m`. Rows carry `m` and\n`t_s` (since the lap started); `from_where`/`to_where` place the\nwindow, and track_corners turns any other `m` into words for the\ndriver.",
   "inputSchema": {
    "properties": {
     "channels": {
@@ -1015,7 +920,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "List recorded laps (most recent first). Defaults to the active\nsession, or every session when none is recording; all_sessions=True\nfor every session. Returns lap ids to use with lap_summary /\ncompare_lap_corners. `outlier`: far slower than the session's pace,\nbut still usable.",
+  "description": "List recorded laps (most recent first). Defaults to the active\nsession, or every session when none is recording; all_sessions=True\nfor every session. Returns lap ids to use with lap_summary /\ncompare_laps. `outlier`: far slower than the session's pace,\nbut still usable.",
   "inputSchema": {
    "properties": {
     "all_sessions": {
@@ -1145,98 +1050,6 @@
   },
   "name": "live_snapshot",
   "title": "Live car state"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "How many laps a side an A/B needs to see a change, before running it.\n\nGive `effect` (in the metric's units, e.g. 300 for 0.3 s of lap time),\nor `entry` and `change` (stored units) to take the effect from the\nsetup book. The spread and the book's effect are this driver's own, from\nstored A/Bs on this car at this circuit (track: the track folder name,\ndefault the current session's layout), or at every circuit when there\nare none. Run the sides interleaved, A B A, so track temperature, fuel\nand tyres do not read as the change. metric: a compare_runs metric.",
-  "inputSchema": {
-   "properties": {
-    "car": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Car"
-    },
-    "change": {
-     "anyOf": [
-      {
-       "type": "number"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Change"
-    },
-    "effect": {
-     "anyOf": [
-      {
-       "type": "number"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Effect"
-    },
-    "entry": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Entry"
-    },
-    "metric": {
-     "default": "lap_time_ms",
-     "enum": [
-      "lap_time_ms",
-      "slip_balance",
-      "front_load_transfer_pct",
-      "fl_core_temp",
-      "fl_pressure_end",
-      "top_speed_kmh",
-      "peak_lat_g",
-      "coasting_pct"
-     ],
-     "title": "Metric",
-     "type": "string"
-    },
-    "track": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Track"
-    }
-   },
-   "title": "plan_experimentArguments",
-   "type": "object"
-  },
-  "name": "plan_experiment",
-  "title": "Plan an A/B"
  },
  {
   "annotations": {
@@ -1427,22 +1240,6 @@
  },
  {
   "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": false
-  },
-  "description": "Re-derive every stored lap's track-limits verdict from its wheels-off\nsamples, after changing TRACK_LIMITS_WHEELS. Never deletes a lap or\ntouches a verdict that came from the game.\n\nLaps with thinned traces are skipped (`laps_skipped_thinned`) and keep\ntheir old verdict: do not describe the pass as covering every lap.",
-  "inputSchema": {
-   "properties": {},
-   "title": "rescore_track_limitsArguments",
-   "type": "object"
-  },
-  "name": "rescore_track_limits",
-  "title": "Rescore track limits"
- },
- {
-  "annotations": {
    "destructiveHint": true,
    "idempotentHint": false,
    "openWorldHint": false,
@@ -1465,14 +1262,35 @@
  },
  {
   "annotations": {
-   "destructiveHint": false,
+   "destructiveHint": true,
    "idempotentHint": false,
    "openWorldHint": false,
    "readOnlyHint": false
   },
-  "description": "Write the closing handoff document to the data folder's exports as\n<name>.md; name defaults to session-<id>-<track>-<car>. Never replaces\na file: an existing name gets -2, -3... Returns the path to hand to\nthe driver.",
+  "description": "Save the engineer's files in the data folder, never the repository.\n\nkind \"driver\" (what the driver prefers and has corrected) or \"car\"\n(setup lineage, verdicts, measured rates; car defaults to the\nsession's) replaces driver.md or <car>.md in notes: send the whole\nfile, read_notes first and edit it. The old file is kept as\n<name>.md.bak-<time>, the newest 5. kind \"handoff\" writes the closing\ndocument to exports as <name>.md (default\nsession-<id>-<track>-<car>) and never replaces a file: an existing\nname gets -2, -3... Returns the path to hand to the driver. Marked\ndestructive, as a notes save replaces a file, and not idempotent, as\neach handoff save is a new one.",
   "inputSchema": {
    "properties": {
+    "car": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Car"
+    },
+    "kind": {
+     "enum": [
+      "driver",
+      "car",
+      "handoff"
+     ],
+     "title": "Kind",
+     "type": "string"
+    },
     "markdown": {
      "title": "Markdown",
      "type": "string"
@@ -1491,50 +1309,6 @@
     }
    },
    "required": [
-    "markdown"
-   ],
-   "title": "save_handoffArguments",
-   "type": "object"
-  },
-  "name": "save_handoff",
-  "title": "Save the session handoff"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": false
-  },
-  "description": "Replace driver.md (kind \"driver\": what the driver prefers and has\ncorrected) or <car>.md (kind \"car\": setup lineage, verdicts, measured\nrates; car defaults to the session's) in the data folder's notes.\nSend the whole file: read_notes first and edit it. The old file is kept\nas <name>.md.bak-<time>, the newest 5.",
-  "inputSchema": {
-   "properties": {
-    "car": {
-     "anyOf": [
-      {
-       "type": "string"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Car"
-    },
-    "kind": {
-     "enum": [
-      "driver",
-      "car"
-     ],
-     "title": "Kind",
-     "type": "string"
-    },
-    "markdown": {
-     "title": "Markdown",
-     "type": "string"
-    }
-   },
-   "required": [
     "kind",
     "markdown"
    ],
@@ -1542,7 +1316,7 @@
    "type": "object"
   },
   "name": "save_notes",
-  "title": "Save the engineer's notes"
+  "title": "Save notes or the handoff"
  },
  {
   "annotations": {
@@ -1577,7 +1351,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Are we good to go? One call at session start: recorder state, the game\nnow, the session (setup tag, measured setup, best_clean_lap_id), which\nsaved setup is on the car, whether the in-game app is connected\n(`app.last_seen_s`), the suspension tier (\"worker\" 333 Hz, \"app\"\nrender-rate, null none), whether a restart or update is owed, and the\nnotes folder. `to_do`: what to fix before the first flying lap.",
+  "description": "Are we good to go? One call at session start: recorder state, the game\nnow, the session (setup tag, measured setup, best_clean_lap_id), which\nsaved setup is on the car, whether the in-game app is connected\n(`app.last_seen_s`), the suspension tier (\"worker\" 333 Hz, \"app\"\nrender-rate, null none), whether a restart or update is owed, the\nnotes folder, and `storage`: the database against its budget\n(ASSETTO_MCP_MAX_DB_BYTES, default 2 GB, 0 = no limit). Past it the\noldest sessions' traces are decimated, down to every 32nd sample; lap\ntimes, setup labels and track-limits evidence are kept, and\n`sample_stride` on a lap says how thinned it is. `to_do`: what to fix\nbefore the first flying lap.",
   "inputSchema": {
    "properties": {},
    "title": "session_checkArguments",
@@ -1629,7 +1403,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "What every stored A/B says each setup entry does to this car.\n\nRead it before proposing a change. Per entry: the latest experiments\nthat changed it alone, and per metric the effect per unit of the stored\nvalue (and `per_click`), pooled across all of them with its `se`.\n`within_noise`: the sign is not settled; say so, never quote it as an\neffect. `tracks_disagree`: the effect differs by layout; quote\n`by_track`. `changed_together`: the latest A/Bs that changed several\nentries, which cannot be split. car: default the current session's.\nentry: one setup entry, e.g. \"ARB_REAR\". track: one circuit's track\nfolder name, every layout.",
+  "description": "What every stored A/B says each setup entry does to this car, and\nhow many laps a side the next A/B needs.\n\nRead it before proposing a change. Per entry: the latest experiments\nthat changed it alone, and per metric the effect per unit of the stored\nvalue (and `per_click`), pooled across all of them with its `se`.\n`within_noise`: the sign is not settled; say so, never quote it as an\neffect. `tracks_disagree`: the effect differs by layout; quote\n`by_track`. `changed_together`: the latest A/Bs that changed several\nentries, which cannot be split. car: default the current session's.\nentry: one setup entry, e.g. \"ARB_REAR\". track: one circuit's track\nfolder name, every layout.\n\n`plan`, given `effect` (in the metric's units, e.g. 300 for 0.3 s of\nlap time) or `entry` and `change` (stored units, the effect taken from\nthe book): laps a side to see it, from this driver's spread in stored\nA/Bs at this circuit (default the session's layout), or at every\ncircuit when there are none. Run the sides interleaved, A B A, so\ntrack temperature, fuel and tyres do not read as the change. metric:\nthe plan's compare_runs metric.",
   "inputSchema": {
    "properties": {
     "car": {
@@ -1644,6 +1418,30 @@
      "default": null,
      "title": "Car"
     },
+    "change": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Change"
+    },
+    "effect": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Effect"
+    },
     "entry": {
      "anyOf": [
       {
@@ -1655,6 +1453,21 @@
      ],
      "default": null,
      "title": "Entry"
+    },
+    "metric": {
+     "default": "lap_time_ms",
+     "enum": [
+      "lap_time_ms",
+      "slip_balance",
+      "front_load_transfer_pct",
+      "fl_core_temp",
+      "fl_pressure_end",
+      "top_speed_kmh",
+      "peak_lat_g",
+      "coasting_pct"
+     ],
+     "title": "Metric",
+     "type": "string"
     },
     "track": {
      "anyOf": [
@@ -1796,142 +1609,51 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "What the telemetry database holds and its disk cost (~0.4 MB per lap).\n\nPast the budget (ASSETTO_MCP_MAX_DB_BYTES, default 2 GB, 0 = no limit)\nthe oldest sessions' traces are decimated, down to every 32nd sample;\nlap times, setup labels and track-limits evidence are kept. `sample_stride`\non a lap says how thinned it is. `data_dir` is the data folder;\n`notes_dir` is where notes about the driver go, never the repository.",
-  "inputSchema": {
-   "properties": {},
-   "title": "storage_reportArguments",
-   "type": "object"
-  },
-  "name": "storage_report",
-  "title": "Storage report"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Deprecated: session_check gives the tier. Whether suspension data is\narriving, from which tier, and what to do about it, for when\nsuspension_report has no data or damper numbers look implausible.",
-  "inputSchema": {
-   "properties": {},
-   "title": "suspension_capture_statusArguments",
-   "type": "object"
-  },
-  "name": "suspension_capture_status",
-  "title": "Suspension capture status"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Damper histograms, ride height and roll balance for one lap. Needs the\nin-game app.\n\n`source` is the capture tier: \"app\" (render rate) is fine for ride\nheight and load transfer, but its damper histograms are body motion,\nnot valving; \"worker\" (the CSP physics worker, 333 Hz) gives real\ndamper numbers. Pass lap_id from list_laps, or lap_number for a lap not\nstored (an out-lap, say); lap_id wins if both are given. lap_count (lap\nnumber minus one) is deprecated.",
+  "description": "The session's turns, T1, T2... in track order, pooled from every lap's\ndetected corners: the labels lap_summary uses. Given positions, it\nsays those instead, from the nearest corner (\"Turn 10A braking zone,\n60 m before turn-in\"): use it for a position found outside the tools.\n\nEach turn: start, apex, end, brake point (also in meters),\n`brake_before_turn_in_m` (negative = braking after turn-in),\n`direction` (left/right; `turn_sign` +1/-1), and laps cornered there.\nNot the circuit's numbering (flat kinks are skipped, a \"3A\" is numbered\nthrough) and not shared between sessions. With a track sections.ini\neach turn carries the circuit's `name`, to quote over the T-number, and\n`circuit_names` lists the named sections. `unnumbered`: road only one\nlap cornered on.\n\nmeters: distances past the start line, as a list or as text separated\nby spaces or \", \"; no thousands separators (\"3,335\" is refused).\nfractions: lap fractions 0-1 (`norm_pos` / `spline`), the same shapes.\nEither or both; the reply is then `places`.",
   "inputSchema": {
    "properties": {
-    "lap_count": {
+    "fractions": {
      "anyOf": [
       {
-       "type": "integer"
+       "type": "string"
+      },
+      {
+       "type": "number"
+      },
+      {
+       "items": {
+        "type": "number"
+       },
+       "type": "array"
       },
       {
        "type": "null"
       }
      ],
      "default": null,
-     "title": "Lap Count"
+     "title": "Fractions"
     },
-    "lap_id": {
+    "meters": {
      "anyOf": [
       {
-       "type": "integer"
+       "type": "string"
+      },
+      {
+       "type": "number"
+      },
+      {
+       "items": {
+        "type": "number"
+       },
+       "type": "array"
       },
       {
        "type": "null"
       }
      ],
      "default": null,
-     "title": "Lap Id"
+     "title": "Meters"
     },
-    "lap_number": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Lap Number"
-    },
-    "session_id": {
-     "anyOf": [
-      {
-       "type": "integer"
-      },
-      {
-       "type": "null"
-      }
-     ],
-     "default": null,
-     "title": "Session Id"
-    }
-   },
-   "title": "suspension_reportArguments",
-   "type": "object"
-  },
-  "name": "suspension_report",
-  "title": "Suspension report"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "Where lap b gained or lost time against lap a along the whole track,\nstraights and sweepers included.\n\nRead `b_lost_ms` per segment (positive = lap b slower there; null = not\nsampled on both laps); `b_lost_so_far_ms` and `b_slower_by_ms` only say\na gap exists. compare_lap_corners subtracts the other way, lap a minus\nlap b. segments: rows to split the track into.",
-  "inputSchema": {
-   "properties": {
-    "lap_id_a": {
-     "title": "Lap Id A",
-     "type": "integer"
-    },
-    "lap_id_b": {
-     "title": "Lap Id B",
-     "type": "integer"
-    },
-    "segments": {
-     "default": 20,
-     "maximum": 200,
-     "minimum": 1,
-     "title": "Segments",
-     "type": "integer"
-    }
-   },
-   "required": [
-    "lap_id_a",
-    "lap_id_b"
-   ],
-   "title": "time_delta_along_lapArguments",
-   "type": "object"
-  },
-  "name": "time_delta_along_lap",
-  "title": "Time delta along the lap"
- },
- {
-  "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": true
-  },
-  "description": "The session's turns, T1, T2... in track order, pooled from every lap's\ndetected corners: the labels lap_summary uses.\n\nEach turn: start, apex, end, brake point (also in meters),\n`brake_before_turn_in_m` (negative = braking after turn-in),\n`direction` (left/right; `turn_sign` +1/-1), and laps cornered there.\nNot the circuit's numbering (flat kinks are skipped, a \"3A\" is numbered\nthrough) and not shared between sessions. With a track sections.ini\neach turn carries the circuit's `name`, to quote over the T-number, and\n`circuit_names` lists the named sections. `unnumbered`: road only one lap cornered on.",
-  "inputSchema": {
-   "properties": {
     "session_id": {
      "anyOf": [
       {

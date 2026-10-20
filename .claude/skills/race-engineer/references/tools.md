@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Forty-nine tools. They fall into nine groups. For each: what to pass,
+Thirty-seven tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the traps.
 Every optional parameter takes null as "the default", so passing one
 explicitly is always safe; a call refused for a missing parameter is fixed
@@ -35,7 +35,10 @@ asks GitHub), and `notes` (the folder, and whether `driver.md` and the
 car's file exist). `to_do` is the list to work through before the first
 flying lap. An `app.bridge_error` with another chat open means that chat's
 server holds the in-game app: data still arrives, but
-`send_driver_message` from here does not reach the driver.
+`send_driver_message` from here does not reach the driver. `storage` is
+the database's size against its budget, and how many laps were thinned to
+stay under it: `sample_stride` above 1 on a lap means its trace was
+decimated; numbers are intact, resolution is not.
 
 **`start_recording()`** -- idempotent; recording starts with the server
 anyway, so this mostly undoes a `stop_recording`. If another instance holds
@@ -89,15 +92,6 @@ stored now) and returns its card: `lap_id`, `lap_number`, `lap_time`,
 `recording` state: call again with the same `after_lap_id`. A card with
 `more_waiting` has later laps behind it: call again with its `lap_id`.
 Laps in a later session count too, so a new session id shows up here.
-
-**`storage_report()`** -- database size and thinning. `sample_stride` above 1
-on a lap means its trace was decimated; numbers are intact, resolution is
-not.
-
-**`rescore_track_limits()`** -- re-derive ran-wide verdicts after changing
-the wheels-out threshold. Skips thinned laps and says so: a new threshold
-does not reach them, so do not describe the pass as covering the driver's
-whole history.
 
 ## 2. Setup attribution
 
@@ -175,7 +169,7 @@ points, the fractions, `corner_detection`). Read in this order:
 - `corner_detection` (full): which bar the corners were found against.
   With one lap in the reference it is that lap's own peak, and every other
   lap is judged against it; the numbering settles after a few laps.
-- `suspension` headlines when the app captured them; `suspension_report`
+- `suspension` headlines when the app captured them; `chassis_report`
   for the rest.
 
 Quote `where` and the `_m` fields, never the fraction beside them.
@@ -184,7 +178,7 @@ Quote `where` and the `_m` fields, never the fraction beside them.
 brake point, direction, and how many laps cornered there. Built per session
 from the laps driven, so the numbering is the session's, not the circuit's:
 a flat kink is not numbered, and 3A is numbered straight through. The
-numbering is also not the same in `compare_lap_corners` (built from those
+numbering is also not the same in `compare_laps` (built from those
 two laps only) or `compare_runs` (built from the laps compared). Quote the
 label with the tool that produced it, and prefer the circuit `name` or the
 driver's own name for a corner when the labels disagree. Each turn carries
@@ -197,16 +191,15 @@ corner whose apex sits near a section boundary can come back with no
 pieces of road only one lap cornered on, kept out so that a spin carved
 out as its own corner does not renumber every turn after it.
 
-**`describe_positions(meters, fractions, session_id)`** -- any position you
-found outside the tools (a script over `samples`, a rival trace) said the way the
-tools say it: "Turn 10A braking zone, 60 m before turn-in". `meters` is
-distance past the start line, comma-separated; `fractions` is `norm_pos`.
-Use it before quoting a position from a script to the driver.
+**`track_corners(session_id, meters, fractions)`** with positions -- any
+position you found outside the tools (a script over `samples`, a rival
+trace) said the way the tools say it: "Turn 10A braking zone, 60 m before
+turn-in", in `places` and in place of the turn table. `meters` is distance
+past the start line, comma-separated; `fractions` is `norm_pos`. Use it
+before quoting a position from a script to the driver.
 
-**`driving_line(lap_id, compare_lap_id, points)`** -- where the car was
-across the track, slice by slice, with speed, ride height and a bump map.
-With `compare_lap_id`, `separation_m` says how far apart the two lines
-were at each point: the answer to "was that a wider line".
+One lap's line across the track is `compare_laps` with `view="line"`
+and no `lap_id_b` (group 4).
 
 **`export_line_map(session_id, lap_ids)`** -- one HTML file in the data
 directory's `exports/` folder with every lap drawn, best lap picked out,
@@ -217,14 +210,36 @@ Hand the path to the driver; the file opens from disk and fetches nothing,
 and exporting the same session again replaces it.
 `scripts/driving_line_map.py` does the same from a shell.
 
-**`suspension_report(lap_id, lap_number, session_id)`** -- damper
-histograms, ride height, roll balance. `lap_number` is for a lap that was
-not stored (an out-lap); `lap_count` is its deprecated minus-one form.
-Read `source`: "app" is render-rate and the
-damper histograms are body motion, not valving; "worker" is 333 Hz and
-real. `session_check`'s `suspension.tier` says which tier is arriving;
-**`suspension_capture_status()`**, deprecated, still explains why and
-what to do about it. The worker is single-player only.
+**`chassis_report(lap_id, aspects, points, lap_number, session_id)`** --
+how the car behaved on one lap, by `aspects`: any of "braking",
+"attitude" and "suspension", default the first two. An aspect that cannot
+be read carries its own `error` and leaves the others.
+
+- "braking": slip per axle under straight-line braking (`points`
+  slices), which axle is nearer its limit (what brake bias moves),
+  lockup runs. The ABS and TC fields hold one value all lap and measure
+  nothing, so "is ABS aggressive enough" cannot be answered from them or
+  from the setup value; the axle slip is what the driver feels. The
+  straight-line filter matters: slip under combined braking and
+  cornering is high by construction, and every trail-braked entry would
+  read as a lockup. The lockup threshold is uncalibrated; read the
+  distribution.
+- "attitude": roll and pitch per g. The roll gradient measures total
+  roll stiffness: a bar or spring change should move it, and one that
+  does not did not do what it was meant to. A car-and-track number: AC
+  reports attitude against the world, and the fit's free intercept moves
+  the constant part of banking, camber and rake into
+  `static_offset_deg`, but banking that rises with cornering load stays
+  in the slope. It was useless at Kyalami and Interlagos and is only
+  comparable between laps at the same circuit. Check `fit_r2` before
+  quoting a gradient. Squat under power is left out of `dive_deg_per_g`;
+  it is a rear-suspension question.
+- "suspension": damper histograms, ride height, roll balance.
+  `lap_number` is for a lap that was not stored (an out-lap). Read
+  `source`: "app" is render-rate and the damper histograms are body
+  motion, not valving; "worker" is 333 Hz and real. `session_check`'s
+  `suspension.tier` says which tier is arriving. The worker is
+  single-player only: CSP runs no scripts on the physics thread online.
 
 **`lap_trace(lap_id, channels, from_m, to_m, step_m)`** -- the raw trace
 for what no report answers: shift rpm by gear, time in 6th, the slip
@@ -237,46 +252,31 @@ speed, pedals and gear. `from_m`/`to_m` are meters past the start line
 (the whole lap by default) and a row comes every `step_m` meters, at most
 300: a longer window gets a coarser step, and `step_m_requested` says so.
 Each row has `m` and `t_s` since the lap started. `from_where` and
-`to_where` place the window; any other `m` goes through `describe_positions` before it
-goes to the driver.
-
-**`attitude_report(lap_id)`** -- roll and pitch per g. The roll gradient
-measures total roll stiffness: a bar or spring change should move it, and
-one that does not did not do what it was meant to. A car-and-track
-number: AC reports attitude against the world, and the fit's free
-intercept moves the constant part of banking, camber and rake into
-`static_offset_deg`, but banking that rises with cornering load stays in
-the slope. It was useless at Kyalami and Interlagos and is only
-comparable between laps at the same circuit. Check `fit_r2` before
-quoting a gradient. Squat under power is left out of `dive_deg_per_g`; it
-is a rear-suspension question.
-
-**`braking_report(lap_id, points)`** -- slip per axle under straight-line
-braking, which axle is nearer its limit (what brake bias moves), lockup
-runs. The ABS and TC fields hold one value all lap and measure nothing,
-so "is ABS aggressive enough" cannot be answered from them or from the
-setup value; the axle slip is what the driver feels. The straight-line
-filter matters: slip under combined braking and cornering is high by
-construction, and every trail-braked entry would read as a lockup.
-The lockup threshold is uncalibrated; read the distribution.
+`to_where` place the window; any other `m` goes through `track_corners`
+before it goes to the driver.
 
 ## 4. Comparing laps and runs
 
-**`compare_lap_corners(lap_id_a, lap_id_b, detail)`** -- corner by corner:
-min speed delta, brake point delta in meters, slip balance delta. Deltas
-are a minus b; a negative `min_speed_delta_kmh` means lap b carried more
-speed, and `a_slower_by_ms` is lap a's time minus lap b's. Read
-`lap_time_warning` before quoting it. Its turn numbering is its own;
-`detail="full"` lists it in `turns`. An out-lap or a lap that ended in the
-barrier still has real corner speeds, so any two laps compare.
+**`compare_laps(lap_id_a, lap_id_b, view, detail, segments, points)`**
+-- two laps, one `view` at a time. Read `lap_time_warning` before quoting
+a lap-time difference. An out-lap or a lap that ended in the barrier still
+has real corner speeds and a real line, so any two laps compare.
 
-**`time_delta_along_lap(lap_id_a, lap_id_b, segments)`** -- where the time
-went, including straights and sweepers no corner detector flagged. Read
-`b_lost_ms` per segment (positive: lap b lost time there);
-`b_lost_so_far_ms` and `b_slower_by_ms` only say a gap exists. This one
-subtracts lap a from lap b, the other way round from
-`compare_lap_corners`; the key names say which lap is slower. 1 to 200
-segments.
+- `view="corners"` (the default) -- corner by corner: min speed delta,
+  brake point delta in meters, slip balance delta. Deltas are a minus b; a
+  negative `min_speed_delta_kmh` means lap b carried more speed, and
+  `a_slower_by_ms` is lap a's time minus lap b's. Its turn numbering is
+  its own; `detail="full"` lists it in `turns`.
+- `view="along_lap"` -- where the time went, including straights and
+  sweepers no corner detector flagged. Read `b_lost_ms` per segment
+  (positive: lap b lost time there); `b_lost_so_far_ms` and
+  `b_slower_by_ms` only say a gap exists. This view subtracts lap a from
+  lap b, the other way round from the corners; the key names say which
+  lap is slower. 1 to 200 `segments`.
+- `view="line"` -- where the car was across the track, slice by slice
+  (`points`), with speed, ride height and a bump map. With `lap_id_b`,
+  `separation_m` says how far apart the two lines were at each point: the
+  answer to "was that a wider line". Without it, one lap's line.
 
 **`compare_runs(baseline_laps, candidate_laps, clean_laps_only,
 include_invalid, baseline_setup, candidate_setup, session_id, detail)`**
@@ -338,12 +338,12 @@ at five and 77% at eight. Two laps a side is a real test on a quiet
 channel and none on lap time; a null lap-time answer from under five or
 six laps is not evidence the change did nothing.
 
-**`setup_book(car, entry, track)`** -- every stored A/B for the car, by
-setup entry. Read it before proposing a change. Per entry: the latest
-eight experiments that changed only that entry (with the driver's
-`conclusion` and `note`; `experiments_not_listed` counts the rest), and per
-metric the effect `per_unit` of the stored value (`per_click` when the step
-is known) pooled across all of them, with `se`. `within_noise: true`
+**`setup_book(car, entry, track, change, effect, metric)`** -- every
+stored A/B for the car, by setup entry. Read it before proposing a change.
+Per entry: the latest eight experiments that changed only that entry (with
+the driver's `conclusion` and `note`; `experiments_not_listed` counts the
+rest), and per metric the effect `per_unit` of the stored value
+(`per_click` when the step is known) pooled across all of them, with `se`. `within_noise: true`
 means the sign is not settled: say so, and never quote it as what the
 entry does. `tracks_disagree`: the layouts differ by more than noise;
 quote `by_track`, not the pool. Comparing laps that overlap an earlier
@@ -352,11 +352,10 @@ comparison replaces it, so re-running one as laps come in is safe.
 once, which cannot be attributed to any one of them. `track` is the track
 folder name and takes in every layout.
 
-**`plan_experiment(metric, effect, entry, change, car, track)`** -- laps a
-side for an 80% chance of seeing a change, from this driver's own spread in
-stored A/Bs. Give `effect` in the metric's units, or `entry` and `change`
-to take it from the setup book; `warning` says when the book's effect is
-itself within noise. If `laps_per_side` is more than the driver will drive,
+Its `plan` -- laps a side for an 80% chance of seeing a change, from this
+driver's own spread in stored A/Bs -- comes with the book when you give
+`effect` in the `metric`'s units, or `entry` and `change` to take it from
+the book; `warning` says when the book's effect is itself within noise. If `laps_per_side` is more than the driver will drive,
 test a quieter metric (load transfer, slip balance) or a bigger change,
 and say so before the run, not after.
 
@@ -397,20 +396,24 @@ server's remote-car lap times lag and repeat: at the Glen they ranked the
 driver ahead of two cars that were quicker. Each captured lap carries
 `lap_time_source`, "trace" or "server".
 
-**`compare_to_rival(car_index, lap_id, rival_lap_number, session_id)`** --
-where they carry more speed by track position; their brake and throttle
-points when the server transmits them (`rival_input_fields` says which
-are live). Take `rival_lap_number` from `list_rivals`' well-covered laps,
-quickest first, or omit it for their quickest; `rival_lap_count` (the
-number minus one) is its deprecated form. `time_by_turn` is the
-part to quote: seconds through each turn and on the road after it, with
-`where_they_gain` and `where_you_gain`. The road after the last turn
-runs across the line to the first turn-in, so the rows cover the whole lap
-and add up to the lap difference within a few hundredths; a stretch either
-lap's trace did not cover is left out, and the sum falls short by it.
+**`compare_to_rival(car_index, lap_id, rival_lap_number, session_id,
+lap_ids, car_indexes, laps_per_rival)`** -- one rival with `car_index`,
+the whole field without it.
 
-**`field_benchmark(session_id, lap_ids, car_indexes, laps_per_rival)`** --
-the coaching list. Per turn: your median time through it and on the road
+With `car_index`: where they carry more speed by track position
+(`rival_faster_by_kmh`); their brake and throttle points when the server
+transmits them (`rival_input_fields` says which are live). Take
+`rival_lap_number` from `list_rivals`' well-covered laps, quickest first,
+or omit it for their quickest. `time_by_turn` is the part to quote:
+seconds through each turn and on the road after it, `rival_faster_by_s`
+on each (negative where the driver was quicker), with `where_they_gain`
+and `where_you_gain`. The road after the last turn runs across the line
+to the first turn-in, so the rows cover the whole lap and add up to the
+lap difference within a few hundredths; a stretch either lap's trace did
+not cover is left out, and the sum falls short by it.
+
+Without `car_index`, the field benchmark: the coaching list. Per turn:
+your median time through it and on the road
 after it, the field's, `available_s` (how much quicker the field is
 there), minimum and exit speeds, and brake point in meters before
 turn-in, for you and the field. `priorities` sorts by time available.
@@ -418,9 +421,9 @@ The field defaults to every rival whose traced best beats yours, each on
 their three quickest laps within 2%. Their brake points read up to about
 7 m early (positions arrive late) and their minimum speeds a little high
 (10 Hz). Run it after practice and qualifying, not only after a race.
-`lap_ids` and `car_indexes` take "433, 434", a single number, or a list
-(`lap_ids` also "433-436"); the client often sends the text as a number
-or a list, and all three work.
+`lap_ids` (or `lap_id`) and `car_indexes` take "433, 434", a single
+number, or a list (`lap_ids` also "433-436"); the client often sends the
+text as a number or a list, and all three work.
 
 **`contacts_inferred`** (on `lap_summary`) and **`contacts`** (on
 `compare_runs`, only the `contact` verdicts) -- impacts without the damage
@@ -507,23 +510,19 @@ corner's slip balance and steer.
 
 **`send_driver_message(text)`** -- one sentence on the in-game overlay. Fails
 when the bridge port is held by an orphaned server; not worth chasing
-during a session.
+during a session. Without the app (`session_check`'s `app`): no
+opponents, no suspension, no setup-screen values, no messages.
 
-**`bridge_status()`** -- deprecated: `session_check`'s `app` says whether
-the in-game app is connected. Still answers with the port, the bind error,
-`app_last_seen_s` and the pending message. Without the app: no opponents,
-no suspension, no setup-screen values, no messages.
-
-**`read_notes(car)`**, **`save_notes(kind, markdown, car)`**,
-**`save_handoff(markdown, name)`** -- the notes and the handoff for a
-client with no filesystem tool; with one, edit the files directly. All
-three stay in the data folder. `read_notes` returns `driver.md`, the car's
-file (default: the session's car) and the newest handoff in `exports/`.
-`save_notes` replaces a whole file (`kind` "driver" or "car"), so read,
-edit and send it all back; the old file is kept as `.md.bak-<time>`.
-`save_handoff` writes `exports/<name>.md` (default
-`session-<id>-<track>-<car>`) and never replaces one: a name in use gets
-`-2`. Hand the driver the `path`.
+**`read_notes(car)`**, **`save_notes(kind, markdown, car, name)`** -- the
+notes and the handoff for a client with no filesystem tool; with one, edit
+the files directly. Both stay in the data folder. `read_notes` returns
+`driver.md`, the car's file (default: the session's car) and the newest
+handoff in `exports/`. `save_notes` with `kind` "driver" or "car" replaces
+a whole file, so read, edit and send it all back; the old file is kept as
+`.md.bak-<time>`, the newest five. With `kind` "handoff" it writes
+`exports/<name>.md` (default `session-<id>-<track>-<car>`) and never
+replaces one: a name in use gets `-2`. Hand the driver the `path`. It is
+marked destructive, for the notes: a client may ask before each save.
 
 ## 9. The server itself
 
@@ -573,6 +572,10 @@ Then `restart_server`, with the driver's OK, to load the new code.
   only, and only for what the driver acts on this lap. Runs on Windows and
   under WSL; anywhere else it prints the sentence instead.
 - `scripts/relabel_laps.py` -- the only way to overwrite a setup label.
+- `scripts/rescore_track_limits.py` -- re-derive ran-wide verdicts after
+  changing the wheels-out threshold in `assetto_mcp/db.py`. Skips thinned
+  laps and says so: a new threshold does not reach them, so do not
+  describe the pass as covering the driver's whole history.
 - The running server can predate the repository's code: a field this
   file describes (`contacts_inferred`, say) may be missing from a tool's
   reply until the server restarts -- `restart_server`, between sessions

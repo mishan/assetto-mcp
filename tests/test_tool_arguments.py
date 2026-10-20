@@ -91,13 +91,13 @@ def _text(r):
 def test_the_tools_take_a_number_or_a_list_through_mcp():
     """The client's coercion is refused before any parser runs unless the
     parameter's type admits it."""
-    calls = [("field_benchmark", {"lap_ids": v, "car_indexes": v})
+    calls = [("compare_to_rival", {"lap_ids": v, "car_indexes": v})
              for v in (14, [14, 5], "14,5")]
     calls += [("label_laps", {"lap_ids": v, "setup_name": "a"})
               for v in (87, [87, 88], "87-90")]
     calls += [("compare_runs", {"baseline_laps": v, "candidate_laps": v})
               for v in (87, [87, 88], "87,88")]
-    calls += [("describe_positions", {"meters": v, "fractions": v})
+    calls += [("track_corners", {"meters": v, "fractions": v})
               for v in (0.25, [0.25, 0.5], "0.25, 0.5")]
     for name, arguments in calls:
         try:
@@ -118,7 +118,7 @@ def test_every_lap_id_list_takes_the_same_shapes():
         assert s._lap_ids(given) == [999998, 999999], given
     params = [("compare_runs", "baseline_laps", {"candidate_laps": 999999}),
               ("export_line_map", "lap_ids", {}),
-              ("field_benchmark", "lap_ids", {}),
+              ("compare_to_rival", "lap_ids", {}),
               ("label_laps", "lap_ids", {"setup_name": "a"})]
     for name, param, others in params:
         for given in shapes:
@@ -132,21 +132,23 @@ def test_null_means_the_default():
     not refuse it."""
     calls = [("list_laps", {"session_id": None, "limit": None}),
              ("list_rivals", {"session_id": None, "limit": None}),
-             ("driving_line", {"lap_id": -1, "compare_lap_id": None,
-                               "points": None}),
-             ("braking_report", {"lap_id": -1, "points": None}),
-             ("time_delta_along_lap", {"lap_id_a": -1, "lap_id_b": -2,
-                                       "segments": None}),
-             ("field_benchmark", {"lap_ids": None, "laps_per_rival": None}),
+             ("compare_laps", {"lap_id_a": -1, "lap_id_b": None,
+                               "view": "line", "points": None}),
+             ("chassis_report", {"lap_id": -1, "aspects": None,
+                                 "points": None, "lap_number": None}),
+             ("compare_laps", {"lap_id_a": -1, "lap_id_b": -2,
+                               "view": None, "detail": None,
+                               "segments": None}),
+             ("compare_to_rival", {"lap_ids": None, "laps_per_rival": None}),
              ("compare_runs", {"baseline_laps": 999998,
                                "candidate_laps": 999999,
                                "clean_laps_only": None,
                                "baseline_setup": None}),
              ("list_driver_tags", {"limit": None, "all_sessions": None}),
              ("stint_wear", {"from_lap": None, "to_lap": None}),
-             ("setup_book", {"car": "x", "entry": None, "track": None}),
-             ("plan_experiment", {"metric": None, "effect": 300,
-                                  "car": "x", "track": None}),
+             ("setup_book", {"car": "x", "entry": None, "track": None,
+                             "change": None, "effect": 300,
+                             "metric": None}),
              ("annotate_experiment", {"experiment_id": 999999,
                                       "note": None, "conclusion": None})]
     for name, arguments in calls:
@@ -159,14 +161,15 @@ def test_null_means_the_default():
 def test_out_of_range_numbers_are_refused_by_the_schema():
     s = _server()
     for name, arguments in [("list_laps", {"limit": 0}),
-                            ("driving_line", {"lap_id": -1, "points": 5000}),
-                            ("field_benchmark", {"laps_per_rival": 50}),
+                            ("compare_laps", {"lap_id_a": -1,
+                                              "points": 5000}),
+                            ("compare_to_rival", {"laps_per_rival": 50}),
                             ("send_driver_message", {"text": "x" * 500}),
                             ("annotate_experiment", {"experiment_id": 0}),
                             ("annotate_experiment", {"experiment_id": 1,
                                                      "conclusion": "maybe"}),
-                            ("plan_experiment", {"metric": "lap_time",
-                                                 "effect": 300})]:
+                            ("setup_book", {"metric": "lap_time",
+                                            "effect": 300})]:
         try:
             reply = _call(name, arguments)
         except s.ToolError:

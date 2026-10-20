@@ -100,13 +100,6 @@ def _payload(result) -> dict | None:
     return None
 
 
-def _set_text(result, text: str) -> None:
-    content = getattr(result, "content", result)
-    if isinstance(content, tuple):
-        content = content[0]
-    content[0].text = text
-
-
 def _can_elicit(ctx) -> bool:
     try:
         from mcp.types import ClientCapabilities, ElicitationCapability
@@ -130,27 +123,12 @@ async def _ask(ctx, question: str) -> bool | None:
     return answer.action == "accept" and answer.data.confirm
 
 
-# Old tool names, still answered but left out of tools/list: listing each
-# under both names would grow the list every client loads on every request,
-# and some clients drop tools past a budget of about 40.
-_RENAMED = {
-    "get_driver_notes": "list_driver_tags",
-    "delta_by_position": "time_delta_along_lap",
-    "compare_laps": "compare_lap_corners",
-    "locate": "describe_positions",
-    "record_display_value": "record_setup_display",
-    "record_display_range": "record_setup_display",
-    "record_display_note": "record_setup_display",
-}
-
-
 class _Server(FastMCP):
     async def call_tool(self, name, arguments, *args, **kwargs):
         # A null is how many models say "the default", and a parameter that
         # has one would otherwise refuse it.
         arguments = {k: v for k, v in (arguments or {}).items()
                      if v is not None}
-        called, name = name, _RENAMED.get(name, name)
         ctx = args[0] if args else kwargs.get("context")
         if ctx is None and hasattr(self, "get_context"):  # 1.x
             ctx = self.get_context()
@@ -187,9 +165,6 @@ class _Server(FastMCP):
             result = await super().call_tool(name, arguments, *args,
                                              **kwargs)
             payload = _payload(result)
-        if payload is not None and called != name:
-            payload["deprecated"] = f"{called} is renamed; call {name}"
-            _set_text(result, _j(payload))
         # Tools answer a refusal with an {"error": ...} or {"refused": ...}
         # payload. Raising it instead marks the result isError, so the
         # client sees a failed call, and the payload stays the message.
@@ -296,12 +271,13 @@ def _j(obj) -> str:
 # small local model's context and for a client that caps its tool count.
 # Every name must be a tool; startup fails on one that is not.
 CORE_TOOLS = (
-    # start_recording, restart_server and setup_ranges are what the
-    # others' replies tell a model to call when something needs fixing.
+    # start_recording, restart_server, setup_ranges and the display tools
+    # are what the others' replies tell a model to call when something
+    # needs fixing.
     "session_check", "wait_for_lap", "recording_status", "start_recording",
-    "restart_server", "setup_ranges", "live_snapshot",
-    "list_laps", "lap_summary", "compare_lap_corners", "time_delta_along_lap",
-    "compare_runs", "setup_book", "set_session_setup", "label_laps",
+    "restart_server", "setup_ranges", "record_setup_display",
+    "forget_display_value", "live_snapshot",
+    "list_laps", "lap_summary", "compare_laps", "compare_runs", "setup_book", "set_session_setup", "label_laps",
     "fuel_plan", "list_setups", "read_setup", "write_setup",
 )
 _TOOLSET = config.env("TOOLSET", "full")
@@ -597,7 +573,8 @@ def recording_status() -> str:
         out["storage_thinned"] = _collector.last_retention.get("actions")
         out["storage_note"] = (
             "the database passed its size budget, so the oldest sessions' "
-            "traces were decimated. No lap was deleted. See storage_report.")
+            "traces were decimated. No lap was deleted. session_check's "
+            "`storage` has the figures.")
     migrations = db.MIGRATION_LOG.pop(str(DB_PATH), None)
     if migrations:
         out["database_upgraded"] = migrations
@@ -804,7 +781,7 @@ def _app_link() -> dict:
         out["note"] = (
             "this instance does not hold the bridge port. With another chat "
             "open, its server holds it: the app's data still arrives, but "
-            "send_driver_message from here does not reach the driver.")
+            "a message sent from here does not reach the driver.")
     return out
 
 
@@ -842,8 +819,13 @@ def session_check() -> str:
     now, the session (setup tag, measured setup, best_clean_lap_id), which
     saved setup is on the car, whether the in-game app is connected
     (`app.last_seen_s`), the suspension tier ("worker" 333 Hz, "app"
-    render-rate, null none), whether a restart or update is owed, and the
-    notes folder. `to_do`: what to fix before the first flying lap."""
+    render-rate, null none), whether a restart or update is owed, the
+    notes folder, and `storage`: the database against its budget
+    (ASSETTO_MCP_MAX_DB_BYTES, default 2 GB, 0 = no limit). Past it the
+    oldest sessions' traces are decimated, down to every 32nd sample; lap
+    times, setup labels and track-limits evidence are kept, and
+    `sample_stride` on a lap says how thinned it is. `to_do`: what to fix
+    before the first flying lap."""
     state, why = _collector_state()
     snap = _bridge.status_snapshot()
     sid = snap["session_id"]
@@ -908,6 +890,8 @@ def session_check() -> str:
                     "driver": (NOTES_DIR / "driver.md").exists(),
                     "car": bool(car and _is_file_name(car)
                                 and (NOTES_DIR / f"{car}.md").exists())}
+    out["storage"] = {**retention.storage_report(_conn, DB_PATH),
+                      "data_dir": str(DATA_DIR)}
     out["to_do"] = to_do
     return _j(out)
 
@@ -959,27 +943,44 @@ def _well_covered_rival_laps(sid: int, car_index: int) -> list[dict]:
     return db.well_covered_rival_laps(_conn, sid, car_index)
 
 
-@_tool("Compare to a rival lap")
-def compare_to_rival(car_index: int, lap_id: int,
+@_tool("Compare to a rival or the field")
+def compare_to_rival(car_index: int | None = None, lap_id: int | None = None,
                      rival_lap_number: int | None = None,
                      session_id: int | None = None,
-                     rival_lap_count: int | None = None) -> str:
-    """Compare one of the driver's laps with an opponent's (car_index), by
-    track position: where they carry more speed and, when the server sends
-    their pedals, where they brake and get on power.
+                     lap_ids: str | int | list[int] | None = None,
+                     car_indexes: str | int | list[int] | None = None,
+                     laps_per_rival: Annotated[int, Field(ge=1, le=10)] = 3
+                     ) -> str:
+    """Where an opponent, or the quicker field, finds time against you.
 
-    car_index and rival_lap_number: from list_rivals; default their
-    quickest captured lap. rival_lap_count (lap number minus one) is
-    deprecated. `time_by_turn`: seconds through each turn (turn-in to exit)
-    and on the road after it to the next turn-in, `delta_s` positive where
-    the rival is quicker, with `where_they_gain` / `where_you_gain`. Their
-    10 Hz trace is good to a few hundredths per stretch."""
-    if rival_lap_number is not None:
-        if rival_lap_count not in (None, rival_lap_number - 1):
-            return _j({"error": "rival_lap_number and rival_lap_count name "
-                                "different laps; pass rival_lap_number "
-                                "alone"})
-        rival_lap_count = rival_lap_number - 1
+    With car_index (from list_rivals): your lap_id against that rival's
+    lap (rival_lap_number, default their quickest captured), by track
+    position: where they carry more speed (`rival_faster_by_kmh`) and, when
+    the server sends their pedals, where they brake and get on power.
+    `time_by_turn`: seconds through each turn (turn-in to exit) and on the
+    road after it to the next turn-in, `rival_faster_by_s` per stretch,
+    with `where_they_gain` / `where_you_gain`. Their 10 Hz trace is good to
+    a few hundredths per stretch.
+
+    Without car_index, the field benchmark: per turn, yours and the
+    field's medians -- time through it and on the road after, minimum and
+    exit speeds, brake point in meters before turn-in -- and
+    `available_s` (positive: the field is quicker). `total_available_s`
+    sums the turns timed on both sides; `priorities`: rows by time
+    available, biggest first. lap_ids (or lap_id): your laps, default the
+    newest clean ones. car_indexes: default every rival whose trace-timed
+    best beats yours. Both take "433,434", a number or a list; lap_ids also
+    "433-436". laps_per_rival: each rival's quickest laps within 2% of
+    their best. Rival brake points read up to ~7 m early, slow-corner
+    minimum speeds a little high."""
+    if car_index is None:
+        return _field_benchmark(session_id, lap_id if lap_ids is None
+                                else lap_ids, car_indexes, laps_per_rival)
+    if lap_id is None:
+        return _j({"error": "pass lap_id, the driver's lap to compare with "
+                            f"car {car_index}"})
+    rival_lap_count = (None if rival_lap_number is None
+                       else rival_lap_number - 1)
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
@@ -1030,11 +1031,11 @@ def compare_to_rival(car_index: int, lap_id: int,
         if rows:
             result["time_by_turn"] = rows
             result["where_they_gain"] = sorted(
-                (r for r in rows if r["delta_s"] > 0),
-                key=lambda r: -r["delta_s"])[:5]
+                (r for r in rows if r["rival_faster_by_s"] > 0),
+                key=lambda r: -r["rival_faster_by_s"])[:5]
             result["where_you_gain"] = sorted(
-                (r for r in rows if r["delta_s"] < 0),
-                key=lambda r: r["delta_s"])[:5]
+                (r for r in rows if r["rival_faster_by_s"] < 0),
+                key=lambda r: r["rival_faster_by_s"])[:5]
     result["my_lap"] = {"id": lap_id,
                         "time_ms": lap["lap_time_ms"],
                         "setup": lap.get("setup_name") or None}
@@ -1103,26 +1104,8 @@ def _with_brake_distance(metrics: list[dict], turns: list[dict]) -> list[dict]:
     return metrics
 
 
-@_tool("Benchmark against the field")
-def field_benchmark(session_id: int | None = None,
-                    lap_ids: str | int | list[int] | None = None,
-                    car_indexes: str | int | list[int] | None = None,
-                    laps_per_rival: Annotated[int, Field(ge=1, le=10)] = 3
-                    ) -> str:
-    """Where the quicker cars find their time, turn by turn, against you.
-
-    Per turn, yours and the field's medians: time through it (turn-in to
-    exit) and on the road after to the next turn-in, minimum and exit
-    speeds, brake point in meters before turn-in, and `available_s`
-    (positive: the field is quicker). `total_available_s` sums the turns
-    timed on both sides. `priorities`: rows by time available, biggest
-    first.
-
-    lap_ids: your laps; default the newest clean ones. car_indexes: default
-    every rival whose trace-timed best beats yours. Both take "433,434", a
-    number or a list; lap_ids also "433-436". laps_per_rival: each rival's
-    quickest laps within 2% of their best. Rival brake points read up to
-    ~7 m early, slow-corner minimum speeds a little high."""
+def _field_benchmark(session_id: int | None, lap_ids, car_indexes,
+                     laps_per_rival: int) -> str:
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id"})
@@ -1752,50 +1735,6 @@ def label_laps(lap_ids: str | int | list[int], setup_name: str,
     return _j(out)
 
 
-@_tool("Storage report")
-def storage_report() -> str:
-    """What the telemetry database holds and its disk cost (~0.4 MB per lap).
-
-    Past the budget (ASSETTO_MCP_MAX_DB_BYTES, default 2 GB, 0 = no limit)
-    the oldest sessions' traces are decimated, down to every 32nd sample;
-    lap times, setup labels and track-limits evidence are kept. `sample_stride`
-    on a lap says how thinned it is. `data_dir` is the data folder;
-    `notes_dir` is where notes about the driver go, never the repository."""
-    out = retention.storage_report(_conn, DB_PATH)
-    # Where the driver's own files live: the notes the race-engineer skill
-    # keeps, and exports. Neither belongs in the repository.
-    out["data_dir"] = str(DATA_DIR)
-    out["notes_dir"] = str(DATA_DIR / "notes")
-    return _j(out)
-
-
-@_tool("Rescore track limits", writes=True)
-def rescore_track_limits() -> str:
-    """Re-derive every stored lap's track-limits verdict from its wheels-off
-    samples, after changing TRACK_LIMITS_WHEELS. Never deletes a lap or
-    touches a verdict that came from the game.
-
-    Laps with thinned traces are skipped (`laps_skipped_thinned`) and keep
-    their old verdict: do not describe the pass as covering every lap."""
-    changed = db.backfill_excursions(_conn)
-    flagged = db.backfill_outliers(_conn)
-    skipped = _conn.execute(
-        "SELECT COUNT(*) c FROM laps WHERE sample_stride > 1"
-        " AND invalid_source = 'inferred'").fetchone()["c"]
-    out = {"laps_rescored": changed, "outliers_reflagged": flagged,
-           "laps_skipped_thinned": skipped,
-           "threshold_wheels_off": db.TRACK_LIMITS_WHEELS,
-           "min_excursion_ms": db.MIN_EXCURSION_MS,
-           "note": "Nothing was deleted. A lap that no longer counts as "
-                   "running wide is readable and comparable again."}
-    if skipped:
-        out["skipped_note"] = (
-            f"{skipped} lap(s) were NOT re-scored because retention has "
-            f"thinned their traces; they keep the verdict measured at full "
-            f"resolution. A changed threshold does not reach them.")
-    return _j(out)
-
-
 def _lap_row(lap: dict) -> dict:
     """A list_laps row: what picking a lap needs, not the table's columns."""
     usable, why = db.lap_usability(lap)
@@ -1825,7 +1764,7 @@ def list_laps(session_id: int | None = None,
     """List recorded laps (most recent first). Defaults to the active
     session, or every session when none is recording; all_sessions=True
     for every session. Returns lap ids to use with lap_summary /
-    compare_lap_corners. `outlier`: far slower than the session's pace,
+    compare_laps. `outlier`: far slower than the session's pace,
     but still usable."""
     sid = None if all_sessions else _active_session(session_id)
     return _j([_lap_row(lap) for lap in db.list_laps(_conn, sid, limit)])
@@ -1998,7 +1937,7 @@ def lap_trace(lap_id: int,
     from_m/to_m: meters past the start line, default the whole lap. At most
     300 rows: a longer window gets a coarser `step_m`. Rows carry `m` and
     `t_s` (since the lap started); `from_where`/`to_where` place the
-    window, and describe_positions turns any other `m` into words for the
+    window, and track_corners turns any other `m` into words for the
     driver."""
     lap = db.get_lap(_conn, lap_id)
     if not lap:
@@ -2055,9 +1994,13 @@ def lap_trace(lap_id: int,
 
 
 @_tool("Track corners")
-def track_corners(session_id: int | None = None) -> str:
+def track_corners(session_id: int | None = None,
+                  meters: str | float | list[float] | None = None,
+                  fractions: str | float | list[float] | None = None) -> str:
     """The session's turns, T1, T2... in track order, pooled from every lap's
-    detected corners: the labels lap_summary uses.
+    detected corners: the labels lap_summary uses. Given positions, it
+    says those instead, from the nearest corner ("Turn 10A braking zone,
+    60 m before turn-in"): use it for a position found outside the tools.
 
     Each turn: start, apex, end, brake point (also in meters),
     `brake_before_turn_in_m` (negative = braking after turn-in),
@@ -2065,13 +2008,21 @@ def track_corners(session_id: int | None = None) -> str:
     Not the circuit's numbering (flat kinks are skipped, a "3A" is numbered
     through) and not shared between sessions. With a track sections.ini
     each turn carries the circuit's `name`, to quote over the T-number, and
-    `circuit_names` lists the named sections. `unnumbered`: road only one lap cornered on."""
+    `circuit_names` lists the named sections. `unnumbered`: road only one
+    lap cornered on.
+
+    meters: distances past the start line, as a list or as text separated
+    by spaces or ", "; no thousands separators ("3,335" is refused).
+    fractions: lap fractions 0-1 (`norm_pos` / `spline`), the same shapes.
+    Either or both; the reply is then `places`."""
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id"})
     session = db.get_session(_conn, sid)
     if not session:
         return _j({"error": f"no session with id {sid}"})
+    if meters is not None or fractions is not None:
+        return _j(_positions(sid, meters, fractions))
     cmap = _session_corner_map(sid)
     ref = cmap["reference"]
     out = {
@@ -2202,160 +2153,115 @@ def _whole_numbers(value) -> list[int]:
     return out
 
 
-@_tool("Describe track positions")
-def describe_positions(meters: str | float | list[float] | None = None,
-                       fractions: str | float | list[float] | None = None,
-                       session_id: int | None = None) -> str:
-    """Say positions from the nearest corner, the way the tools do ("Turn 10A
-    braking zone, 60 m before turn-in"), for positions found outside them.
-
-    meters: distances past the start line, as a list or as text separated
-    by spaces or ", "; no thousands separators ("3,335" is refused).
-    fractions: lap fractions 0-1 (`norm_pos` / `spline`), the same shapes.
-    Either or both."""
-    sid = _active_session(session_id)
-    if sid is None:
-        return _j({"error": "no active session; pass session_id"})
-    if not db.get_session(_conn, sid):
-        return _j({"error": f"no session with id {sid}"})
+def _positions(sid: int, meters, fractions) -> dict:
     try:
         ms, fs = _parse_numbers(meters), _parse_numbers(fractions)
     except ValueError as e:
-        return _j({"error": str(e)})
+        return {"error": str(e)}
     if not ms and not fs:
-        return _j({"error": "pass meters or fractions"})
+        return {"error": "pass meters or fractions"}
     length, _ = _track_length(sid)
     if not length:
-        return _j({"error": f"session {sid} has no track length, stored or "
-                            f"estimable, so meters cannot be placed"})
+        return {"error": f"session {sid} has no track length, stored or "
+                         f"estimable, so meters cannot be placed"}
     if any(not 0.0 <= f <= 1.0 for f in fs):
-        return _j({"error": "fractions are lap fractions between 0 and 1"})
+        return {"error": "fractions are lap fractions between 0 and 1"}
     positions = ([{"pos": (m % length) / length, "given_m": m} for m in ms]
                  + [{"pos": f} for f in fs])
-    return _j(_placed({"session_id": sid, "places": positions}, sid))
+    return _placed({"session_id": sid, "places": positions}, sid)
 
 
-@_tool("Suspension report")
-def suspension_report(lap_id: int | None = None,
-                      lap_number: int | None = None,
-                      session_id: int | None = None,
-                      lap_count: int | None = None) -> str:
-    """Damper histograms, ride height and roll balance for one lap. Needs the
-    in-game app.
+_ASPECTS = ("braking", "attitude", "suspension")
 
-    `source` is the capture tier: "app" (render rate) is fine for ride
-    height and load transfer, but its damper histograms are body motion,
-    not valving; "worker" (the CSP physics worker, 333 Hz) gives real
-    damper numbers. Pass lap_id from list_laps, or lap_number for a lap not
-    stored (an out-lap, say); lap_id wins if both are given. lap_count (lap
-    number minus one) is deprecated."""
-    if lap_number is not None:
-        lap_count = lap_number - 1
-    sid = _active_session(session_id)
+
+def _suspension(sid: int | None, lap_count: int | None) -> dict:
+    if sid is None:
+        return {"error": "no active session; pass session_id explicitly"}
+    if lap_count is None:
+        return {"error": "pass either lap_id or lap_number"}
+    samples = db.get_suspension_samples(_conn, sid, lap_count)
+    if not samples:
+        captured = db.suspension_lap_counts(_conn, sid)
+        return {"error": f"no suspension data for lap {lap_count + 1} "
+                         f"in session {sid}",
+                "captured_laps": [
+                    {"lap_number": r["lap_count"] + 1,
+                     "source": r["source"],
+                     "samples": r["n"]} for r in captured[-10:]],
+                "note": ("If this list is empty the in-game app either "
+                         "isn't running or predates suspension capture.")}
+    out = suspension.summarize(samples)
+    out["session_id"] = sid
+    out["lap_number"] = lap_count + 1
+    return out
+
+
+@_tool("Chassis report")
+def chassis_report(
+        lap_id: int | None = None,
+        aspects: Literal[_ASPECTS] | list[Literal[_ASPECTS]]
+        = ("braking", "attitude"),
+        points: Annotated[int, Field(ge=1, le=200)] = 20,
+        lap_number: int | None = None,
+        session_id: int | None = None) -> str:
+    """How the car behaved on one lap, by aspect (default braking and
+    attitude, which every lap has):
+
+    - "braking": tyre slip under straight-line braking -- slip per axle,
+      which axle is nearer its limit (what brake bias moves), and runs
+      where a front wheel ran away. The ABS/TC fields hold one value all
+      lap: a setting, not a measure of intervention. The lockup threshold
+      is uncalibrated, so the raw distribution comes with it. points:
+      track slices for `hardest_braking_slices`.
+    - "attitude": body roll and pitch, and how much per g. The roll
+      gradient includes banking and grade, so compare it only between
+      laps at one track. Check `fit_r2` first; `gradient_caveats` and
+      `dive_caveats` say why a fit is weak. `dive_deg_per_g` is braking
+      and coasting only. The sign of `fitted_slope_deg_per_g` is
+      unverified: use it only to check that laps of one car agree. Laps
+      before schema v8 have no attitude.
+    - "suspension": damper histograms, ride height and roll balance;
+      needs the in-game app. `source` is the capture tier: "app" (render
+      rate) is fine for ride height and load transfer, but its damper
+      histograms are body motion, not valving; "worker" (the CSP physics
+      worker, 333 Hz) gives real damper numbers. lap_number reads a lap
+      not stored (an out-lap, say); lap_id wins if both are given.
+
+    An aspect that cannot be read carries its own `error`."""
+    wanted = [aspects] if isinstance(aspects, str) else list(aspects)
+    if not wanted:
+        return _j({"error": f"pass one or more aspects: {list(_ASPECTS)}"})
+    lap = None
     if lap_id is not None:
         lap = db.get_lap(_conn, lap_id)
         if not lap:
             return _j({"error": f"no lap with id {lap_id}"})
-        sid = lap["session_id"]
-        # laps.lap_number counts from 1; suspension rows are stamped with
-        # AC's completed-lap count, which is one behind during the lap.
-        lap_count = lap["lap_number"] - 1
-    if sid is None:
-        return _j({"error": "no active session; pass session_id explicitly"})
-    if lap_count is None:
-        return _j({"error": "pass either lap_id or lap_number"})
-
-    samples = db.get_suspension_samples(_conn, sid, lap_count)
-    if not samples:
-        captured = db.suspension_lap_counts(_conn, sid)
-        return _j({"error": f"no suspension data for lap {lap_count + 1} "
-                            f"in session {sid}",
-                   "captured_laps": [
-                       {"lap_number": r["lap_count"] + 1,
-                        "source": r["source"],
-                        "samples": r["n"]} for r in captured[-10:]],
-                   "note": ("If this list is empty the in-game app either "
-                            "isn't running or predates suspension capture.")})
-
-    out = suspension.summarize(samples)
-    out["session_id"] = sid
-    out["lap_number"] = lap_count + 1
-    if lap_id is not None:
-        out["lap_id"] = lap_id
+    out = {"lap_id": lap_id}
+    for aspect in dict.fromkeys(wanted):
+        if aspect == "suspension":
+            if lap:
+                # laps.lap_number counts from 1; suspension rows are
+                # stamped with AC's completed-lap count, one behind.
+                part = _suspension(lap["session_id"], lap["lap_number"] - 1)
+            else:
+                part = _suspension(
+                    _active_session(session_id),
+                    None if lap_number is None else lap_number - 1)
+        elif not lap:
+            part = {"error": f"{aspect} reads a stored lap; pass lap_id"}
+        elif aspect == "braking":
+            part = _placed(analysis.braking_report(
+                lap, db.get_samples(_conn, lap_id), points),
+                lap["session_id"])
+        else:
+            part = _placed(analysis.attitude_report(
+                lap, db.get_samples(_conn, lap_id)), lap["session_id"])
+        out[aspect] = part
+    failed = [k for k in out if isinstance(out[k], dict)
+              and "error" in out[k]]
+    if failed and len(failed) == len(out) - 1:
+        out["error"] = "no aspect could be read; each says why"
     return _j(out)
-
-
-@_tool("Suspension capture status", status=True)
-def suspension_capture_status() -> str:
-    """Deprecated: session_check gives the tier. Whether suspension data is
-    arriving, from which tier, and what to do about it, for when
-    suspension_report has no data or damper numbers look implausible."""
-    sid = _active_session()
-    out = {"session_id": sid, "deprecated": "use session_check"}
-    if sid is None:
-        out["error"] = "no active session"
-        return _j(out)
-
-    by_source, captured = _suspension_sources(sid)
-    out["samples_by_source"] = by_source
-    out["laps_captured"] = captured
-
-    if not by_source:
-        out["status"] = "no suspension data in this session"
-        out["do_this"] = [
-            "Is the Assetto MCP app enabled in the in-game apps sidebar?",
-            "Is it the current version? Suspension capture was added after "
-            "the first release -- re-run install-windows.bat to update it.",
-            "Does the app's status window show a bridge connection?",
-        ]
-    elif "worker" in by_source:
-        out["status"] = "physics worker running: real damper velocity (333Hz)"
-    else:
-        out["status"] = ("render-rate capture only: ride height and load "
-                         "transfer are trustworthy, damper histograms show "
-                         "body motion rather than valving")
-        out["note"] = (
-            "The app tries to start a CSP physics worker for 333Hz damper "
-            "data and falls back to render-rate sampling when it can't. "
-            "The usual reason is multiplayer: CSP does not allow scripts on "
-            "the physics thread in an online session, because that thread "
-            "decides what the car does. Damper histograms are therefore a "
-            "single-player feature. Ride height, wheel loads and roll "
-            "balance never used the worker and are unaffected online.")
-        out["do_this"] = (
-            "Run the same car and track in a solo practice session. The "
-            "app's status window shows the tier: worker, online, "
-            "or render-rate fallback.")
-    return _j(out)
-
-
-@_tool("Driving line")
-def driving_line(lap_id: int, compare_lap_id: int | None = None,
-                 points: Annotated[int, Field(ge=10, le=200)] = 100) -> str:
-    """Where the car went across the track: per slice of the lap, world
-    position, speed, mean front ride height and its movement within the
-    slice (a bump map).
-
-    points: number of slices. compare_lap_id adds `separation_m`, the
-    distance between the two lines at each point. Laps from before position
-    logging report has_position: false."""
-    lap = db.get_lap(_conn, lap_id)
-    if not lap:
-        return _j({"error": f"no lap with id {lap_id}"})
-    other = other_samples = None
-    if compare_lap_id is not None:
-        other = db.get_lap(_conn, compare_lap_id)
-        if not other:
-            return _j({"error": f"no lap with id {compare_lap_id}"})
-        if (other["track"], other.get("track_config"), other["car"]) != (
-                lap["track"], lap.get("track_config"), lap["car"]):
-            return _j({"error": "those laps are not on the same car and "
-                                "layout, so their coordinates do not share "
-                                "an origin and cannot be subtracted"})
-        other_samples = db.get_samples(_conn, compare_lap_id)
-    return _j(_placed(analysis.driving_line(
-        lap, db.get_samples(_conn, lap_id), points, other, other_samples),
-        lap["session_id"]))
 
 
 @_tool("Export a line map", writes=True)
@@ -2483,64 +2389,74 @@ def stint_wear(session_id: int | None = None,
     return _j(out)
 
 
-@_tool("Braking report")
-def braking_report(lap_id: int,
-                   points: Annotated[int, Field(ge=1, le=200)] = 20) -> str:
-    """Tyre slip under straight-line braking: slip per axle, which axle is
-    nearer its limit (what brake bias moves), and runs where a front wheel
-    ran away.
+@_tool("Compare two laps")
+def compare_laps(lap_id_a: int, lap_id_b: int | None = None,
+                 view: Literal["corners", "along_lap", "line"] = "corners",
+                 detail: Literal["summary", "full"] = "summary",
+                 segments: Annotated[int, Field(ge=1, le=200)] = 20,
+                 points: Annotated[int, Field(ge=10, le=200)] = 100) -> str:
+    """Two laps on the same track, one view at a time:
 
-    The ABS/TC fields hold one value all lap: a setting, not a measure of
-    intervention. The lockup threshold is uncalibrated, so the raw
-    distribution comes with it. points: track slices for
-    `hardest_braking_slices`."""
-    lap = db.get_lap(_conn, lap_id)
-    if not lap:
-        return _j({"error": f"no lap with id {lap_id}"})
-    return _j(_placed(analysis.braking_report(
-        lap, db.get_samples(_conn, lap_id), points), lap["session_id"]))
+    - "corners": what each corner did differently -- min speed, brake
+      point and slip balance, all lap a minus lap b (`a_slower_by_ms` too).
+    - "along_lap": where the time went along the whole track, straights
+      and sweepers included -- `b_lost_ms` per segment (positive = lap b
+      slower there; null = not sampled on both laps).
+    - "line": where the car was across the track -- per slice, world
+      position, speed and front ride height with its movement (a bump
+      map), and `separation_m` between the two lines; lap_id_b optional.
 
-
-@_tool("Attitude report")
-def attitude_report(lap_id: int) -> str:
-    """Body roll and pitch for one lap, and how much per g.
-
-    The roll gradient includes banking and grade, so compare it only
-    between laps at one track. Check `fit_r2` first; `gradient_caveats` and
-    `dive_caveats` say why a fit is weak. `dive_deg_per_g` is braking and
-    coasting only. The sign of `fitted_slope_deg_per_g` is unverified: use
-    it only to check that laps of one car agree. Laps before schema v8 have
-    no attitude."""
-    lap = db.get_lap(_conn, lap_id)
-    if not lap:
-        return _j({"error": f"no lap with id {lap_id}"})
-    return _j(_placed(
-        analysis.attitude_report(lap, db.get_samples(_conn, lap_id)),
-        lap["session_id"]))
-
-
-@_tool("Compare two laps by corner")
-def compare_lap_corners(lap_id_a: int, lap_id_b: int,
-                        detail: Literal["summary", "full"] = "summary"
-                        ) -> str:
-    """Corner-by-corner comparison of two laps on the same track: min speed,
-    brake point and slip balance deltas, all lap a minus lap b
-    (`a_slower_by_ms` too).
-
-    `turn` labels come from these two laps alone, so they can differ from
-    lap_summary's; detail="full" adds `turns` (each apex), lap fractions
-    and `corner_detection`. Any two laps are compared, but read
-    `lap_time_warning` before quoting `a_slower_by_ms`: it says when either
-    time is not a real lap time."""
-    a, b = db.get_lap(_conn, lap_id_a), db.get_lap(_conn, lap_id_b)
-    if not a or not b:
+    corners: `turn` labels come from these two laps alone, so they can
+    differ from lap_summary's; detail="full" adds `turns` (each apex), lap
+    fractions and `corner_detection`. along_lap: `b_lost_so_far_ms` and
+    `b_slower_by_ms` only say a gap exists; segments: rows to split the
+    track into. line: points: slices; laps from before position logging
+    report has_position: false. Read `lap_time_warning` before quoting a
+    lap-time difference: it says when either time is not a real one."""
+    a = db.get_lap(_conn, lap_id_a)
+    b = db.get_lap(_conn, lap_id_b) if lap_id_b is not None else None
+    if not a or (lap_id_b is not None and not b):
         return _j({"error": "one or both lap ids not found"})
-    out = analysis.compare_laps(
-        a, db.get_samples(_conn, lap_id_a),
-        b, db.get_samples(_conn, lap_id_b))
+    if view == "line":
+        other_samples = None
+        if b:
+            if (b["track"], b.get("track_config"), b["car"]) != (
+                    a["track"], a.get("track_config"), a["car"]):
+                return _j({"error": "those laps are not on the same car "
+                                    "and layout, so their coordinates do "
+                                    "not share an origin and cannot be "
+                                    "subtracted"})
+            other_samples = db.get_samples(_conn, lap_id_b)
+        return _j(_placed(analysis.driving_line(
+            a, db.get_samples(_conn, lap_id_a), points, b, other_samples),
+            a["session_id"]))
+    if not b:
+        return _j({"error": f'view "{view}" compares two laps; pass '
+                            'lap_id_b'})
+    if view == "along_lap":
+        # Layout matters as much as track: 'mugello' and 'mugello_osrw' are
+        # the same folder and different circuits, so norm_pos 0.6 is not the
+        # same corner in both. Comparing them produces a delta trace that
+        # looks entirely plausible and means nothing.
+        if (a.get("track"), a.get("track_config")) != \
+                (b.get("track"), b.get("track_config")):
+            def _name(l):
+                cfg = l.get("track_config") or "(default layout)"
+                return f"{l.get('track')}/{cfg}"
+            return _j({"error": f"different track layouts: {_name(a)} vs "
+                                f"{_name(b)}; positions are not comparable"})
+        out = analysis.delta_by_position(
+            a, db.get_samples(_conn, lap_id_a),
+            b, db.get_samples(_conn, lap_id_b), segments=segments)
+    else:
+        out = analysis.compare_laps(
+            a, db.get_samples(_conn, lap_id_a),
+            b, db.get_samples(_conn, lap_id_b))
     warning = _lap_time_warning({"A": a, "B": b})
     if warning:
         out["lap_time_warning"] = warning
+    if view == "along_lap":
+        return _j(_placed(out, a["session_id"]))
     out = _placed(out, a["session_id"], out.get("turns"))
     if detail == "summary" and "corners" in out:
         for key in ("turns", "turns_note", "corner_detection"):
@@ -3105,8 +3021,12 @@ def annotate_experiment(
 
 @_tool("Setup book")
 def setup_book(car: str | None = None, entry: str | None = None,
-               track: str | None = None) -> str:
-    """What every stored A/B says each setup entry does to this car.
+               track: str | None = None, change: float | None = None,
+               effect: float | None = None,
+               metric: Literal[tuple(analysis.BOOK_METRICS)]
+               = "lap_time_ms") -> str:
+    """What every stored A/B says each setup entry does to this car, and
+    how many laps a side the next A/B needs.
 
     Read it before proposing a change. Per entry: the latest experiments
     that changed it alone, and per metric the effect per unit of the stored
@@ -3116,37 +3036,35 @@ def setup_book(car: str | None = None, entry: str | None = None,
     `by_track`. `changed_together`: the latest A/Bs that changed several
     entries, which cannot be split. car: default the current session's.
     entry: one setup entry, e.g. "ARB_REAR". track: one circuit's track
-    folder name, every layout."""
+    folder name, every layout.
+
+    `plan`, given `effect` (in the metric's units, e.g. 300 for 0.3 s of
+    lap time) or `entry` and `change` (stored units, the effect taken from
+    the book): laps a side to see it, from this driver's spread in stored
+    A/Bs at this circuit (default the session's layout), or at every
+    circuit when there are none. Run the sides interleaved, A B A, so
+    track temperature, fuel and tyres do not read as the change. metric:
+    the plan's compare_runs metric."""
     car = _resolve_car(car)
     if car is None:
         return _j({"error": "no active session; pass car explicitly"})
+    plan = ({"plan": _plan(car, metric, effect, entry, change, track)}
+            if effect is not None or change is not None else {})
     exps = db.experiments_for(_conn, car, track)
     if not exps:
         return _j({"car": car, "entries": {},
                    "note": "No A/B comparisons stored for this car yet. "
-                           "compare_runs files each one as it runs."})
+                           "compare_runs files each one as it runs.",
+                   **plan})
     steps = {k: v[2] for k, v in db.setup_ranges(_conn, car).items()
              if v[2]}
-    return _j({"car": car, **analysis.setup_book(exps, steps, entry)})
+    return _j({"car": car, **analysis.setup_book(exps, steps, entry),
+               **plan})
 
 
-@_tool("Plan an A/B")
-def plan_experiment(metric: Literal[tuple(analysis.BOOK_METRICS)]
-                    = "lap_time_ms", effect: float | None = None,
-                    entry: str | None = None, change: float | None = None,
-                    car: str | None = None, track: str | None = None) -> str:
-    """How many laps a side an A/B needs to see a change, before running it.
-
-    Give `effect` (in the metric's units, e.g. 300 for 0.3 s of lap time),
-    or `entry` and `change` (stored units) to take the effect from the
-    setup book. The spread and the book's effect are this driver's own, from
-    stored A/Bs on this car at this circuit (track: the track folder name,
-    default the current session's layout), or at every circuit when there
-    are none. Run the sides interleaved, A B A, so track temperature, fuel
-    and tyres do not read as the change. metric: a compare_runs metric."""
-    car = _resolve_car(car)
-    if car is None:
-        return _j({"error": "no active session; pass car explicitly"})
+def _plan(car: str, metric: str, effect: float | None, entry: str | None,
+          change: float | None, track: str | None) -> dict:
+    """How many laps a side an A/B needs to see a change."""
     exps = db.experiments_for(_conn, car)
     config = None
     if track is None:
@@ -3161,20 +3079,20 @@ def plan_experiment(metric: Literal[tuple(analysis.BOOK_METRICS)]
                if (r := e["results"].get(metric) or {}).get("sd")
                and r.get("df")]
     if not spreads:
-        return _j({"error": f"no stored A/B on {car} measured {metric} "
-                            f"with two or more laps a side, so this driver's "
-                            f"spread is not known yet"})
+        return {"error": f"no stored A/B on {car} measured {metric} with "
+                         f"two or more laps a side, so this driver's "
+                         f"spread is not known yet"}
     sd = (sum(s * s * d for s, d in spreads)
           / sum(d for _, d in spreads)) ** 0.5
     effect_basis, warning = "given", None
     if effect is None:
         if entry is None or change is None:
-            return _j({"error": "give effect, or entry and change"})
+            return {"error": "give effect, or entry and change"}
         book = analysis.setup_book(basis, entry=entry)["entries"].get(entry)
         m = (book or {}).get("effects", {}).get(metric)
         if not m:
-            return _j({"error": f"the setup book has no {metric} effect for "
-                                f"{entry} on {car}; give effect instead"})
+            return {"error": f"the setup book has no {metric} effect for "
+                             f"{entry} on {car}; give effect instead"}
         effect = m["per_unit"] * change
         effect_basis = (f"setup book: {m['per_unit']} per unit of {entry} "
                         f"x {change}, from {m['experiments']} experiment(s)"
@@ -3183,7 +3101,7 @@ def plan_experiment(metric: Literal[tuple(analysis.BOOK_METRICS)]
             warning = ("the book's effect is within noise, so this plans "
                        "for a change that may not exist")
     out = analysis.plan_experiment(sd, effect)
-    out.update({"car": car, "metric": metric, "effect": effect,
+    out.update({"metric": metric, "effect": effect,
                 "effect_basis": effect_basis, "spread_sd": round(sd, 3),
                 "spread_from": f"{len(spreads)} stored A/B(s)"
                                + (f" at {track}" if here else "")})
@@ -3192,7 +3110,7 @@ def plan_experiment(metric: Literal[tuple(analysis.BOOK_METRICS)]
     if out.get("laps_per_side") is None and "error" not in out:
         out["note"] = ("not reachable in 30 laps a side: the change is "
                        "small against this driver's lap-to-lap spread")
-    return _j(out)
+    return out
 
 
 def _measured_setups(base_laps: list[dict], cand_laps: list[dict]) -> dict:
@@ -3223,7 +3141,8 @@ def _measured_setups(base_laps: list[dict], cand_laps: list[dict]) -> dict:
             "both sides were driven on the SAME measured setup: whatever was "
             "changed between them did not reach the car. Do not read any "
             "difference below as the effect of a setup change -- ask whether "
-            "the new setup was loaded, and check identify_setup.")
+            "the new setup was loaded, and check session_check's "
+            "`setup_on_car`.")
     elif len(a) == 1 and len(b) == 1:
         values = db.setup_fingerprint_values(_conn, a | b)
         va, vb = values.get(next(iter(a))), values.get(next(iter(b)))
@@ -3240,40 +3159,6 @@ def _measured_setups(base_laps: list[dict], cand_laps: list[dict]) -> dict:
     if notes:
         out["measured_setup_note"] = "; ".join(notes)
     return out
-
-
-@_tool("Time delta along the lap")
-def time_delta_along_lap(
-        lap_id_a: int, lap_id_b: int,
-        segments: Annotated[int, Field(ge=1, le=200)] = 20) -> str:
-    """Where lap b gained or lost time against lap a along the whole track,
-    straights and sweepers included.
-
-    Read `b_lost_ms` per segment (positive = lap b slower there; null = not
-    sampled on both laps); `b_lost_so_far_ms` and `b_slower_by_ms` only say
-    a gap exists. compare_lap_corners subtracts the other way, lap a minus
-    lap b. segments: rows to split the track into."""
-    a, b = db.get_lap(_conn, lap_id_a), db.get_lap(_conn, lap_id_b)
-    if not a or not b:
-        return _j({"error": "one or both lap ids not found"})
-    # Layout matters as much as track: 'mugello' and 'mugello_osrw' are the
-    # same folder and different circuits, so norm_pos 0.6 is not the same
-    # corner in both. Comparing them produces a delta trace that looks
-    # entirely plausible and means nothing.
-    if (a.get("track"), a.get("track_config")) != \
-            (b.get("track"), b.get("track_config")):
-        def _name(l):
-            cfg = l.get("track_config") or "(default layout)"
-            return f"{l.get('track')}/{cfg}"
-        return _j({"error": f"different track layouts: {_name(a)} vs "
-                            f"{_name(b)}; positions are not comparable"})
-    out = analysis.delta_by_position(
-        a, db.get_samples(_conn, lap_id_a),
-        b, db.get_samples(_conn, lap_id_b), segments=segments)
-    warning = _lap_time_warning({"A": a, "B": b})
-    if warning:
-        out["lap_time_warning"] = warning
-    return _j(_placed(out, a["session_id"]))
 
 
 # --- in-game app bridge ------------------------------------------------
@@ -3316,17 +3201,6 @@ def send_driver_message(
         return _j({"error": _bridge.error if _bridge else "bridge not running"})
     return _j({"ok": True, "message_id": _bridge.set_message(text),
                "note": "displayed until driver dismisses it"})
-
-
-@_tool("In-game app bridge status", status=True)
-def bridge_status() -> str:
-    """Deprecated: session_check's `app` says whether the in-game app is
-    connected. Port, bind error and pending message of its HTTP bridge."""
-    return _j({"port": _bridge.port if _bridge else None,
-               "error": _bridge.error if _bridge else "not running",
-               "app_last_seen_s": _app_link()["last_seen_s"],
-               "pending_message": _bridge.get_message() if _bridge else None,
-               "deprecated": "use session_check"})
 
 
 # --- notes and the handoff -----------------------------------------------
@@ -3391,20 +3265,33 @@ def read_notes(car: str | None = None) -> str:
                "other_cars": others})
 
 
-# Replaces the file, but keeps the old one beside it.
-@_tool("Save the engineer's notes", writes=True)
-def save_notes(kind: Literal["driver", "car"], markdown: str,
-               car: str | None = None) -> str:
-    """Replace driver.md (kind "driver": what the driver prefers and has
-    corrected) or <car>.md (kind "car": setup lineage, verdicts, measured
-    rates; car defaults to the session's) in the data folder's notes.
-    Send the whole file: read_notes first and edit it. The old file is kept
-    as <name>.md.bak-<time>, the newest 5."""
+# The hints are the cautious one of each kind's: the notes replace a file
+# and prune its backups past five, so an old version is gone in the end
+# (destructive), and a handoff never replaces one, so saving it twice
+# leaves two files (not idempotent).
+@_tool("Save notes or the handoff", writes=True, destructive=True,
+       idempotent=False)
+def save_notes(kind: Literal["driver", "car", "handoff"], markdown: str,
+               car: str | None = None, name: str | None = None) -> str:
+    """Save the engineer's files in the data folder, never the repository.
+
+    kind "driver" (what the driver prefers and has corrected) or "car"
+    (setup lineage, verdicts, measured rates; car defaults to the
+    session's) replaces driver.md or <car>.md in notes: send the whole
+    file, read_notes first and edit it. The old file is kept as
+    <name>.md.bak-<time>, the newest 5. kind "handoff" writes the closing
+    document to exports as <name>.md (default
+    session-<id>-<track>-<car>) and never replaces a file: an existing
+    name gets -2, -3... Returns the path to hand to the driver. Marked
+    destructive, as a notes save replaces a file, and not idempotent, as
+    each handoff save is a new one."""
     if not isinstance(markdown, str) or not markdown.strip():
         return _j({"error": "markdown is empty"})
     if len(markdown) > NOTES_MAX_CHARS:
-        return _j({"error": f"notes are capped at {NOTES_MAX_CHARS} "
+        return _j({"error": f"{kind} files are capped at {NOTES_MAX_CHARS} "
                             f"characters, got {len(markdown)}"})
+    if kind == "handoff":
+        return _save_handoff(markdown, name)
     if kind == "driver":
         stem = "driver"
     else:
@@ -3441,17 +3328,7 @@ def _name_part(text) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(text or "")).strip("._")
 
 
-@_tool("Save the session handoff", writes=True, idempotent=False)
-def save_handoff(markdown: str, name: str | None = None) -> str:
-    """Write the closing handoff document to the data folder's exports as
-    <name>.md; name defaults to session-<id>-<track>-<car>. Never replaces
-    a file: an existing name gets -2, -3... Returns the path to hand to
-    the driver."""
-    if not isinstance(markdown, str) or not markdown.strip():
-        return _j({"error": "markdown is empty"})
-    if len(markdown) > NOTES_MAX_CHARS:
-        return _j({"error": f"a handoff is capped at {NOTES_MAX_CHARS} "
-                            f"characters, got {len(markdown)}"})
+def _save_handoff(markdown: str, name: str | None) -> str:
     if name is None:
         sid = _active_session()
         session = db.get_session(_conn, sid) if sid else None

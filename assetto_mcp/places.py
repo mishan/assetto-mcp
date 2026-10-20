@@ -147,7 +147,7 @@ def where(pos: float, length_m: float, turns: list[dict]) -> str:
         return f"{m(pos)} m past the start/finish line"
 
     # A turn list carrying apexes only -- the one compare_runs and
-    # compare_lap_corners put in their payloads -- has no turn-in to count
+    # compare_laps put in their payloads -- has no turn-in to count
     # from, so the nearest apex is the reference instead.
     if not all(t.get("entry_pos") is not None
                and t.get("exit_pos") is not None for t in usable):

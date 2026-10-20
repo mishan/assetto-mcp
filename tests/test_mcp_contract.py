@@ -21,25 +21,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import run_module  # noqa: E402
 from test_mcp_protocol import (  # noqa: E402
-    _client, _server, _session_with_laps, _wire)
+    _client, _session_with_laps, _wire)
 
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
 SNAPSHOT = TESTS / "golden" / "tools.json"
 EVAL_CASES = TESTS / "eval" / "cases.json"
 
-# Today's figures are 44.0k, 1.3k and 0.9k characters: these leave room to
+# Today's figures are 39.4k, 1.4k and 0.9k characters: these leave room to
 # grow a little, and make growing a lot a decision.
-TOOLS_LIST_BUDGET = 50_000
+TOOLS_LIST_BUDGET = 43_000
 DESCRIPTION_BUDGET = 1_500
 INSTRUCTIONS_BUDGET = 1_200
+# 37 today; some clients drop tools past about 40.
+TOOL_COUNT_BUDGET = 40
 
 # Characters of reply on a ten-corner lap, read on every lap of a live
 # session. Today: 2.8k, 7.6k, 1.3k and 0.2k.
 PER_LAP_BUDGETS = {
     ("lap_summary", "summary"): 3_500,
     ("lap_summary", "full"): 9_500,
-    ("compare_lap_corners", "summary"): 1_700,
+    ("compare_laps", "summary"): 1_700,
     ("wait_for_lap", None): 400,
 }
 TEN_CORNERS = tuple((0.05 + i * 0.09, 0.025, (2.4, 1.2, 2.8, 1.6, 2.0)[i % 5])
@@ -97,6 +99,7 @@ def test_the_tool_list_and_instructions_fit_their_budgets():
     tools = _normalized(surface["tools"])
     size = len(json.dumps(tools, separators=(",", ":"), ensure_ascii=False))
     assert size <= TOOLS_LIST_BUDGET, size
+    assert len(tools) <= TOOL_COUNT_BUDGET, len(tools)
     long = {t["name"]: len(t["description"]) for t in tools
             if len(t["description"]) > DESCRIPTION_BUDGET}
     assert not long, long
@@ -107,7 +110,7 @@ def test_the_tool_list_and_instructions_fit_their_budgets():
 def test_the_per_lap_reads_fit_their_budgets():
     sid, ids = _session_with_laps(4, samples=1200, corners=TEN_CORNERS)
     args = {"lap_summary": {"lap_id": ids[-1]},
-            "compare_lap_corners": {"lap_id_a": ids[-1], "lap_id_b": ids[0]},
+            "compare_laps": {"lap_id_a": ids[-1], "lap_id_b": ids[0]},
             "wait_for_lap": {"after_lap_id": ids[-2], "timeout_s": 1}}
 
     async def run():
@@ -140,8 +143,6 @@ _TOOLISH = re.compile(
     rf"(?:{_VERBS})_[a-z_]*[a-z]"
     r"|[a-z]+(?:_[a-z]+)*_(?:status|report|snapshot|summary|benchmark)"
     r"|[a-z]+(?:_[a-z]+)+(?=\())(?![\w/]|\.\w)")
-# Said near an old name, it is being named as old.
-_OLD = re.compile(r"renamed|formerly|deprecated|old name|\bwas\b", re.I)
 
 
 def _package_identifiers() -> set[str]:
@@ -170,10 +171,7 @@ def _server_strings() -> list[tuple[int, str]]:
 
 
 def test_every_tool_the_docs_and_replies_name_exists():
-    """A model told to call a tool that is gone guesses, or gives up. An
-    old name still answers, so the docs may say what a tool was called,
-    as long as they say it is old; text the model reads may not."""
-    s = _server()
+    """A model told to call a tool that is gone guesses, or gives up."""
     surface = _surface()
     tools = {t["name"] for t in surface["tools"]}
     model_reads = {"instructions": surface["instructions"].splitlines()}
@@ -186,27 +184,20 @@ def test_every_tool_the_docs_and_replies_name_exists():
             *sorted((ROOT / ".claude" / "skills" / "race-engineer")
                     .rglob("*.md"))]
     sources = {
-        **{k: (v, False) for k, v in model_reads.items()},
-        **{str(p.relative_to(ROOT)): (
-            p.read_text(encoding="utf-8").splitlines(), True) for p in docs},
-        **{f"server.py:{n}": ([text], False)
-           for n, text in _server_strings()},
+        **model_reads,
+        **{str(p.relative_to(ROOT)): p.read_text(encoding="utf-8")
+           .splitlines() for p in docs},
+        **{f"server.py:{n}": [text] for n, text in _server_strings()},
     }
     not_tools = (_package_identifiers() | set(surface["prompts"])
                  | {p for t in surface["tools"]
                     for p in t["inputSchema"].get("properties", {})})
-    old = re.compile(r"(?<![\w.])(" + "|".join(map(re.escape, s._RENAMED))
-                     + r")(?!\w)")
     bad = []
-    for where, (lines, may_name_old) in sources.items():
+    for where, lines in sources.items():
         for i, line in enumerate(lines, 1):
-            for name in old.findall(line):
-                if not (may_name_old and _OLD.search(line)):
-                    bad.append((where, i, name, s._RENAMED[name]))
             for name in _TOOLISH.findall(line):
-                if (name not in tools and name not in s._RENAMED
-                        and name not in not_tools):
-                    bad.append((where, i, name, None))
+                if name not in tools and name not in not_tools:
+                    bad.append((where, i, name))
     assert not bad, bad
 
 

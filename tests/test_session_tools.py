@@ -51,6 +51,7 @@ def test_session_check_says_what_is_missing_before_the_first_lap():
     assert after["app"]["connected"] is True, after["app"]
     assert 0 <= after["app"]["last_seen_s"] < 5, after["app"]
     assert not any("in-game app" in t for t in after["to_do"]), after
+    assert after["storage"]["laps"] >= len(ids), after["storage"]
 
 
 def test_wait_for_lap_returns_the_next_lap_and_blocks_nothing_else():
@@ -119,11 +120,14 @@ def test_notes_stay_in_their_folders_and_keep_what_they_replace():
                 ("save_notes", {"kind": "driver", "markdown": "# v2"}),
                 ("save_notes", {"kind": "car", "markdown": "# car"}),
                 ("read_notes", {}),
-                ("save_handoff", {"markdown": "# one", "name": "week"}),
-                ("save_handoff", {"markdown": "# two", "name": "week.md"}),
+                ("save_notes", {"kind": "handoff", "markdown": "# one",
+                                "name": "week"}),
+                ("save_notes", {"kind": "handoff", "markdown": "# two",
+                                "name": "week.md"}),
                 ("save_notes", {"kind": "car", "car": "../outside",
                                 "markdown": "x"}),
-                ("save_handoff", {"markdown": "x", "name": "../evil"}),
+                ("save_notes", {"kind": "handoff", "markdown": "x",
+                                "name": "../evil"}),
                 ("read_notes", {"car": "..\\outside"}))
         finally:
             s.NOTES_DIR, s.EXPORTS_DIR = saved

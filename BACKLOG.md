@@ -52,7 +52,7 @@ with extended physics.
 **ABS and TC intervention.** The stored `abs_active` and `tc_active` are a
 setting or threshold, constant across a lap. The real flags are
 `ac.CarState.absInAction` and `tractionControlInAction`, which are
-physics-only. With them, `braking_report` could say when ABS acted rather
+physics-only. With them, `chassis_report` could say when ABS acted rather
 than inferring it from slip.
 
 ---
@@ -84,7 +84,7 @@ than inferring it from slip.
 **Status:** partly done. Session-local numbering is built
 (`analysis.corner_map`, `label_corners`, `track_corners`). Where the track
 ships `data/sections.ini`, turns carry the circuit's own `name`
-(`circuit.py`), and `where` and `describe_positions` use it. Still open:
+(`circuit.py`), and `where` and `track_corners` use it. Still open:
 tracks with no `sections.ini`, and a hand-written override for them.
 
 Without names, turn numbers are the session's, not the circuit's:
@@ -142,7 +142,7 @@ the payload should say so.
 
 **Status:** open. Built: rival lap times from each car's own trace
 (`analysis.trace_lap_times`), `time_by_turn` on `compare_to_rival`, and
-`field_benchmark`. In rough order of payoff:
+its field benchmark. In rough order of payoff:
 
 - **Cost of trace timing.** `list_rivals` reads every rival sample of the
   session to time laps: about 150k rows for a 12-lap race with ten cars,
@@ -160,7 +160,7 @@ the payload should say so.
   the line with no lap completed, `lap_done` may read near 1 and make the
   laps to go one short. Both unverified. It also uses nominal consumption;
   a measured burn per lap would be better.
-- **Where to attack and defend.** From `field_benchmark` per rival: the
+- **Where to attack and defend.** From the field benchmark per rival: the
   driver's strong corners are where a pass is set up; a rival's strong exit
   onto a straight is where the driver is vulnerable.
 - **Car against driver.** Split each rival's gain into straights and
@@ -169,12 +169,13 @@ the payload should say so.
   say which gains are which.
 - **Rival habits.** Late-stint fade, lap-time spread, and where each rival
   goes off.
-- **Lines.** Rival `pos_x`/`pos_z` are stored; `driving_line` could overlay
-  the quickest rival's line through a corner the benchmark flags.
+- **Lines.** Rival `pos_x`/`pos_z` are stored; `compare_laps`' line view
+  could overlay the quickest rival's line through a corner the benchmark
+  flags.
 - **A pre-race brief** from practice and qualifying: one card per rival,
   and the quickest rival lap as a ghost in the line map.
 - **Rival data in the handoff.** The race-engineer skill should run
-  `field_benchmark` after practice, qualifying and each race, put
+  the field benchmark after practice, qualifying and each race, put
   `priorities` in the handoff, and quote only trace-timed rival laps
   (`lap_time_source: "trace"`).
 

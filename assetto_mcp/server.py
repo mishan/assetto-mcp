@@ -2514,13 +2514,20 @@ def apply_update(to_commit: str) -> str:
     """Fast-forward this server's checkout to `to_commit`, the `latest` sha
     from check_for_updates.
 
-    Only with the driver's explicit OK after they have seen the commit list,
-    and never mid-session. Refuses local edits, another branch, a checkout
-    ahead of or diverged from main, or a to_commit no longer main's tip
-    (check again). Reinstalls when pyproject.toml changed; copies the in-game
-    app unless the game is running (`lua.note`). The old code runs until
+    Only with the driver's explicit OK after they have seen the commit list.
+    Refuses a live session ("recording"), another apply ("in_progress"),
+    local edits, another branch, a checkout ahead of or diverged from main,
+    or a to_commit no longer main's tip (check again). Reinstalls when
+    pyproject.toml changed; copies the in-game app unless the game is
+    running (`lua.note`). `in_progress: true` means still running: call
+    again with the same to_commit for the result. The old code runs until
     restart_server. Pass any `warning` on as it is."""
-    return _j(update.apply(to_commit, data_dir=DATA_DIR))
+    snap = _bridge.status_snapshot()
+    live = (_collector.session_id
+            if _collector.holds_recorder and _collector.live
+            else snap["session_id"] if snap["by_other"] else None)
+    return _j(update.apply_in_background(to_commit, live_session=live,
+                                         data_dir=DATA_DIR))
 
 
 def _restart_soon() -> None:

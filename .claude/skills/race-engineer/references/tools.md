@@ -435,7 +435,10 @@ cached for an hour and may come back `stale`.
 
 **`apply_update(to_commit)`** -- `to_commit` is `latest` from the check.
 Only after the driver has seen the commit list and said yes, and never
-mid-session: a dependency reinstall can take minutes. A
+mid-session: a dependency reinstall can take minutes, and a live session
+is refused ("recording"). A reply with `in_progress: true` is still
+running: call again with the same `to_commit` to wait for the result; a
+refusal "in_progress" is another apply. A
 `commit_mismatch` refusal means main moved: check again and ask again. Read `pip` and `lua` in the reply and pass on any `warning` or
 `lua.note` as it is -- the in-game app is not copied while the game runs.
 Then `restart_server`, with the driver's OK, to load the new code.

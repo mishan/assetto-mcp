@@ -63,7 +63,7 @@
    "expect": ["label_laps"]},
   {"id": "ab-plan", "area": "A/B",
    "request": "How many laps would I need to tell whether a two-tenths gain is real?",
-   "expect": ["plan_experiment"]},
+   "expect": ["setup_book"]},
   {"id": "ab-note", "area": "A/B",
    "request": "Add to A/B number 7 that the car rotated better into T1 with it.",
    "expect": ["annotate_experiment"]},

@@ -146,9 +146,9 @@ def test_null_means_the_default():
                                "baseline_setup": None}),
              ("list_driver_tags", {"limit": None, "all_sessions": None}),
              ("stint_wear", {"from_lap": None, "to_lap": None}),
-             ("setup_book", {"car": "x", "entry": None, "track": None}),
-             ("plan_experiment", {"metric": None, "effect": 300,
-                                  "car": "x", "track": None}),
+             ("setup_book", {"car": "x", "entry": None, "track": None,
+                             "change": None, "effect": 300,
+                             "metric": None}),
              ("annotate_experiment", {"experiment_id": 999999,
                                       "note": None, "conclusion": None})]
     for name, arguments in calls:
@@ -168,8 +168,8 @@ def test_out_of_range_numbers_are_refused_by_the_schema():
                             ("annotate_experiment", {"experiment_id": 0}),
                             ("annotate_experiment", {"experiment_id": 1,
                                                      "conclusion": "maybe"}),
-                            ("plan_experiment", {"metric": "lap_time",
-                                                 "effect": 300})]:
+                            ("setup_book", {"metric": "lap_time",
+                                            "effect": 300})]:
         try:
             reply = _call(name, arguments)
         except s.ToolError:

@@ -3053,8 +3053,12 @@ def annotate_experiment(
 
 @_tool("Setup book")
 def setup_book(car: str | None = None, entry: str | None = None,
-               track: str | None = None) -> str:
-    """What every stored A/B says each setup entry does to this car.
+               track: str | None = None, change: float | None = None,
+               effect: float | None = None,
+               metric: Literal[tuple(analysis.BOOK_METRICS)]
+               = "lap_time_ms") -> str:
+    """What every stored A/B says each setup entry does to this car, and
+    how many laps a side the next A/B needs.
 
     Read it before proposing a change. Per entry: the latest experiments
     that changed it alone, and per metric the effect per unit of the stored
@@ -3064,37 +3068,35 @@ def setup_book(car: str | None = None, entry: str | None = None,
     `by_track`. `changed_together`: the latest A/Bs that changed several
     entries, which cannot be split. car: default the current session's.
     entry: one setup entry, e.g. "ARB_REAR". track: one circuit's track
-    folder name, every layout."""
+    folder name, every layout.
+
+    `plan`, given `effect` (in the metric's units, e.g. 300 for 0.3 s of
+    lap time) or `entry` and `change` (stored units, the effect taken from
+    the book): laps a side to see it, from this driver's spread in stored
+    A/Bs at this circuit (default the session's layout), or at every
+    circuit when there are none. Run the sides interleaved, A B A, so
+    track temperature, fuel and tyres do not read as the change. metric:
+    the plan's compare_runs metric."""
     car = _resolve_car(car)
     if car is None:
         return _j({"error": "no active session; pass car explicitly"})
+    plan = ({"plan": _plan(car, metric, effect, entry, change, track)}
+            if effect is not None or change is not None else {})
     exps = db.experiments_for(_conn, car, track)
     if not exps:
         return _j({"car": car, "entries": {},
                    "note": "No A/B comparisons stored for this car yet. "
-                           "compare_runs files each one as it runs."})
+                           "compare_runs files each one as it runs.",
+                   **plan})
     steps = {k: v[2] for k, v in db.setup_ranges(_conn, car).items()
              if v[2]}
-    return _j({"car": car, **analysis.setup_book(exps, steps, entry)})
+    return _j({"car": car, **analysis.setup_book(exps, steps, entry),
+               **plan})
 
 
-@_tool("Plan an A/B")
-def plan_experiment(metric: Literal[tuple(analysis.BOOK_METRICS)]
-                    = "lap_time_ms", effect: float | None = None,
-                    entry: str | None = None, change: float | None = None,
-                    car: str | None = None, track: str | None = None) -> str:
-    """How many laps a side an A/B needs to see a change, before running it.
-
-    Give `effect` (in the metric's units, e.g. 300 for 0.3 s of lap time),
-    or `entry` and `change` (stored units) to take the effect from the
-    setup book. The spread and the book's effect are this driver's own, from
-    stored A/Bs on this car at this circuit (track: the track folder name,
-    default the current session's layout), or at every circuit when there
-    are none. Run the sides interleaved, A B A, so track temperature, fuel
-    and tyres do not read as the change. metric: a compare_runs metric."""
-    car = _resolve_car(car)
-    if car is None:
-        return _j({"error": "no active session; pass car explicitly"})
+def _plan(car: str, metric: str, effect: float | None, entry: str | None,
+          change: float | None, track: str | None) -> dict:
+    """How many laps a side an A/B needs to see a change."""
     exps = db.experiments_for(_conn, car)
     config = None
     if track is None:
@@ -3109,20 +3111,20 @@ def plan_experiment(metric: Literal[tuple(analysis.BOOK_METRICS)]
                if (r := e["results"].get(metric) or {}).get("sd")
                and r.get("df")]
     if not spreads:
-        return _j({"error": f"no stored A/B on {car} measured {metric} "
-                            f"with two or more laps a side, so this driver's "
-                            f"spread is not known yet"})
+        return {"error": f"no stored A/B on {car} measured {metric} with "
+                         f"two or more laps a side, so this driver's "
+                         f"spread is not known yet"}
     sd = (sum(s * s * d for s, d in spreads)
           / sum(d for _, d in spreads)) ** 0.5
     effect_basis, warning = "given", None
     if effect is None:
         if entry is None or change is None:
-            return _j({"error": "give effect, or entry and change"})
+            return {"error": "give effect, or entry and change"}
         book = analysis.setup_book(basis, entry=entry)["entries"].get(entry)
         m = (book or {}).get("effects", {}).get(metric)
         if not m:
-            return _j({"error": f"the setup book has no {metric} effect for "
-                                f"{entry} on {car}; give effect instead"})
+            return {"error": f"the setup book has no {metric} effect for "
+                             f"{entry} on {car}; give effect instead"}
         effect = m["per_unit"] * change
         effect_basis = (f"setup book: {m['per_unit']} per unit of {entry} "
                         f"x {change}, from {m['experiments']} experiment(s)"
@@ -3131,7 +3133,7 @@ def plan_experiment(metric: Literal[tuple(analysis.BOOK_METRICS)]
             warning = ("the book's effect is within noise, so this plans "
                        "for a change that may not exist")
     out = analysis.plan_experiment(sd, effect)
-    out.update({"car": car, "metric": metric, "effect": effect,
+    out.update({"metric": metric, "effect": effect,
                 "effect_basis": effect_basis, "spread_sd": round(sd, 3),
                 "spread_from": f"{len(spreads)} stored A/B(s)"
                                + (f" at {track}" if here else "")})
@@ -3140,7 +3142,7 @@ def plan_experiment(metric: Literal[tuple(analysis.BOOK_METRICS)]
     if out.get("laps_per_side") is None and "error" not in out:
         out["note"] = ("not reachable in 30 laps a side: the change is "
                        "small against this driver's lap-to-lap spread")
-    return _j(out)
+    return out
 
 
 def _measured_setups(base_laps: list[dict], cand_laps: list[dict]) -> dict:

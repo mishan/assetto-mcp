@@ -127,8 +127,8 @@ def test_notes_stay_in_their_folders_and_keep_what_they_replace():
                 ("read_notes", {"car": "..\\outside"}))
         finally:
             s.NOTES_DIR, s.EXPORTS_DIR = saved
-        files = sorted(str(p.relative_to(root)) for p in root.rglob("*")
-                       if p.is_file())
+        files = sorted(p.relative_to(root).as_posix()
+                       for p in root.rglob("*") if p.is_file())
 
     first, second, car, read, one, two, *refusals = results
     assert "backup" not in first[1] and "backup" in second[1], second

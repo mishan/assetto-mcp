@@ -457,7 +457,11 @@ def test_a_long_apply_answers_in_progress_and_is_collected_later():
                   is_game_running=lambda: False)
         out = U.apply_in_background(tip, wait=0.2, pip=slow_pip, **kw)
         assert out["in_progress"] is True, out
-        assert "pip" in out["stage"], out
+        # The fetch comes first, and on a slow runner takes a while.
+        deadline = time.time() + 60
+        while "pip" not in out["stage"] and time.time() < deadline:
+            out = U.apply_in_background(tip, wait=0.2, **kw)
+        assert out["in_progress"] is True and "pip" in out["stage"], out
         other = U.apply_in_background("0" * 40, wait=0.2, **kw)
         assert other["refused"] == "in_progress", other
         elsewhere = w.apply(tip)

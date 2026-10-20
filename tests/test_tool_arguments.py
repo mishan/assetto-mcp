@@ -143,7 +143,12 @@ def test_null_means_the_default():
                                "clean_laps_only": None,
                                "baseline_setup": None}),
              ("list_driver_tags", {"limit": None, "all_sessions": None}),
-             ("stint_wear", {"from_lap": None, "to_lap": None})]
+             ("stint_wear", {"from_lap": None, "to_lap": None}),
+             ("setup_book", {"car": "x", "entry": None, "track": None}),
+             ("plan_experiment", {"metric": None, "effect": 300,
+                                  "car": "x", "track": None}),
+             ("annotate_experiment", {"experiment_id": 999999,
+                                      "note": None, "conclusion": None})]
     for name, arguments in calls:
         try:
             json.loads(_call(name, arguments))
@@ -156,7 +161,12 @@ def test_out_of_range_numbers_are_refused_by_the_schema():
     for name, arguments in [("list_laps", {"limit": 0}),
                             ("driving_line", {"lap_id": -1, "points": 5000}),
                             ("field_benchmark", {"laps_per_rival": 50}),
-                            ("send_driver_message", {"text": "x" * 500})]:
+                            ("send_driver_message", {"text": "x" * 500}),
+                            ("annotate_experiment", {"experiment_id": 0}),
+                            ("annotate_experiment", {"experiment_id": 1,
+                                                     "conclusion": "maybe"}),
+                            ("plan_experiment", {"metric": "lap_time",
+                                                 "effect": 300})]:
         try:
             reply = _call(name, arguments)
         except s.ToolError:

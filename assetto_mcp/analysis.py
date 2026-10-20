@@ -2946,6 +2946,12 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
     flagged = sum(1 for c in corners
                   if any(t.get("lead") == "worth a look" for t in c["tests"]))
 
+    # Kept for the setup book, which pools effects across experiments and
+    # needs each one's standard error; _report is about to drop them.
+    spreads = {k: {"se": e[_TEST]["se"], "sd": e[_TEST]["sd"],
+                   "df": e[_TEST]["df"]}
+               for k, e in metrics.items()
+               if _TEST in e and "se" in e[_TEST]}
     for entry in metrics.values():
         _report(entry)
 
@@ -3072,6 +3078,7 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
                            "floor for a physically meaningful change rather "
                            "than a statistic.",
         "summary": summary,
+        "_spreads": spreads,
         **({"lap_time_set_aside": set_aside,
             "lap_time_set_aside_note": (
                 f"laps more than {REPRESENTATIVE_FRACTION:.2%} slower than "
@@ -3083,6 +3090,178 @@ def compare_runs(baseline: list[dict], candidate: list[dict],
            if set_aside else {}),
     }
 
+
+# --- the setup book -----------------------------------------------------
+
+# Metrics the setup book pools: the run metrics, which carry a standard
+# error. lap_time_consistency is a permutation test and has none.
+BOOK_METRICS = [key for key, *_ in RUN_METRICS]
+
+
+def _pool(estimates: list[tuple[float, float]]) -> dict | None:
+    """Inverse-variance mean of (value, standard error) pairs.
+
+    `disagree` is Cochran's Q test at 5%: the estimates differ by more
+    than their own uncertainty explains, so they are not one effect.
+    """
+    usable = [(v, se) for v, se in estimates if se > 0 and math.isfinite(v)]
+    if not usable:
+        return None
+    w = [1 / se ** 2 for _, se in usable]
+    mean_ = sum(wi * v for wi, (v, _) in zip(w, usable)) / sum(w)
+    out = {"value": mean_, "se": math.sqrt(1 / sum(w)), "n": len(usable)}
+    if len(usable) > 1:
+        q = sum(wi * (v - mean_) ** 2 for wi, (v, _) in zip(w, usable))
+        out["disagree"] = q > _chi2_crit(len(usable) - 1)
+    return out
+
+
+# Chi-square 95th percentiles for 1-10 degrees of freedom.
+_CHI2_95 = (3.841, 5.991, 7.815, 9.488, 11.070, 12.592, 14.067, 15.507,
+            16.919, 18.307)
+
+
+def _chi2_crit(df: int) -> float:
+    if df <= len(_CHI2_95):
+        return _CHI2_95[df - 1]
+    # Wilson-Hilferty, within 0.1% of the exact figure past 10.
+    return df * (1 - 2 / (9 * df) + 1.6449 * math.sqrt(2 / (9 * df))) ** 3
+
+
+def _effect_card(p: dict, step: float | None = None) -> dict:
+    out = {"per_unit": _sig(p["value"]), "se": _sig(p["se"]),
+           "experiments": p["n"],
+           # Under two standard errors from zero the sign is not settled.
+           "within_noise": abs(p["value"]) < 1.96 * p["se"]}
+    if step:
+        out["per_click"] = _sig(p["value"] * step)
+        out["per_click_se"] = _sig(p["se"] * step)
+    return out
+
+
+def _layout(e: dict) -> str:
+    cfg = e.get("track_config")
+    return f"{e['track']}/{cfg}" if cfg else e["track"]
+
+
+# Most recent experiments listed per entry, and of those that changed
+# several entries at once; every one is still pooled or counted, but the
+# book is read before every change and must not grow with the car's
+# history.
+BOOK_EXPERIMENTS_LISTED = 8
+
+
+def setup_book(experiments: list[dict], steps: dict | None = None,
+               entry: str | None = None) -> dict:
+    """What a car's experiments say each setup entry does.
+
+    Only experiments that changed exactly one entry are pooled: the effect
+    of two entries changed together cannot be split between them, so those
+    are listed under `changed_together` instead. Effects are per unit of
+    the stored value, and per click where the entry's step is known, pooled
+    by precision across experiments and layouts. Where layouts disagree the
+    per-layout figures say so rather than being averaged away.
+    """
+    steps = steps or {}
+    singles, together, unknown = {}, [], 0
+    for e in experiments:
+        ch = e.get("changes")
+        if ch is None:
+            unknown += 1
+            continue
+        if len(ch) == 1:
+            singles.setdefault(ch[0]["entry"], []).append(e)
+        elif ch and (entry is None or entry in {c["entry"] for c in ch}):
+            together.append({
+                "experiment_id": e["id"], "track": _layout(e),
+                "entries": [c["entry"] for c in ch],
+                "lap_time_change_ms": (e["results"].get("lap_time_ms")
+                                       or {}).get("change"),
+                "conclusion": e.get("conclusion") or None})
+    entries = {}
+    for name, exps in sorted(singles.items()):
+        if entry and name != entry:
+            continue
+        step = steps.get(name)
+        metrics = {}
+        for key in BOOK_METRICS:
+            per_track: dict[str, list] = {}
+            for e in exps:
+                r = e["results"].get(key) or {}
+                c = e["changes"][0]
+                try:
+                    dv = float(c["candidate"]) - float(c["baseline"])
+                except (TypeError, ValueError):
+                    continue
+                if not dv or r.get("se") is None or r.get("change") is None:
+                    continue
+                per_track.setdefault(_layout(e), []).append(
+                    (r["change"] / dv, r["se"] / abs(dv)))
+            pooled = _pool([x for v in per_track.values() for x in v])
+            if not pooled:
+                continue
+            m = _effect_card(pooled, step)
+            if len(per_track) > 1:
+                tracks = {t: _pool(v) for t, v in per_track.items()}
+                m["by_track"] = {t: _effect_card(p)
+                                 for t, p in tracks.items() if p}
+                split = _pool([(p["value"], p["se"])
+                               for p in tracks.values() if p])
+                if split and split.get("disagree"):
+                    m["tracks_disagree"] = True
+            metrics[key] = m
+        listed = exps[-BOOK_EXPERIMENTS_LISTED:]
+        entries[name] = {
+            "experiments": [{
+                "experiment_id": e["id"], "track": _layout(e),
+                "from": e["changes"][0]["baseline"],
+                "to": e["changes"][0]["candidate"],
+                "lap_time_change_ms": (e["results"].get("lap_time_ms")
+                                       or {}).get("change"),
+                "verdicts": {k: r.get("verdict")
+                             for k, r in e["results"].items()
+                             if r.get("verdict") == "moved"},
+                "conclusion": e.get("conclusion") or None,
+                "note": e.get("note") or None} for e in listed],
+            "effects": metrics}
+        if len(exps) > len(listed):
+            entries[name]["experiments_not_listed"] = len(exps) - len(listed)
+        if step:
+            entries[name]["step"] = step
+    out = {"entries": entries,
+           "changed_together": together[-BOOK_EXPERIMENTS_LISTED:]}
+    if len(together) > BOOK_EXPERIMENTS_LISTED:
+        out["changed_together_not_listed"] = (len(together)
+                                              - BOOK_EXPERIMENTS_LISTED)
+    return {**out, "experiments_total": len(experiments),
+            "experiments_unmeasured": unknown}
+
+
+def plan_experiment(sd: float, effect: float, family: int = 8,
+                    max_laps: int = 30) -> dict:
+    """Laps a side for an 80% chance of seeing `effect`, given the spread.
+
+    Judged as compare_runs judges it: corrected across the family of run
+    metrics, at the strictest Holm step, counting lap_time_consistency once
+    there are laps enough for it to join.
+    """
+    if not (sd > 0 and effect):
+        return {"error": "need a positive spread and a non-zero effect"}
+    curve = []
+    need = None
+    for n in range(2, max_laps + 1):
+        df = 2 * n - 2
+        # The rule _measure_consistency uses to admit itself to the family.
+        joins = _smallest_permutation_p(n, n) <= FAMILY_ALPHA / (family + 1)
+        alpha = FAMILY_ALPHA / (family + joins)
+        p = _t_power(abs(effect) / (sd * math.sqrt(2 / n)), df,
+                     _t_crit(df, alpha))
+        curve.append((n, p))
+        if need is None and p >= 0.8:
+            need = n
+    return {"laps_per_side": need,
+            "power_at": {n: round(p, 2) for n, p in curve
+                         if n in (3, 5, 8, 12, 20)}}
 
 # How much of a change is worth reporting at all on a corner channel, the
 # corner-level sibling of the floors in RUN_METRICS. (name, where in the

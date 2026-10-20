@@ -380,6 +380,28 @@ CREATE TABLE IF NOT EXISTS rival_laps (
     PRIMARY KEY (session_id, car_index, lap_count)
 );
 
+-- Every compare_runs, kept so effects can be pooled across sessions: what
+-- changed on the car, under what conditions, and what it did. One row per
+-- set of laps; a comparison sharing any lap with an earlier one replaces it.
+CREATE TABLE IF NOT EXISTS experiments (
+    id INTEGER PRIMARY KEY,
+    lap_key TEXT NOT NULL UNIQUE,   -- sorted lap ids, baseline | candidate
+    car TEXT NOT NULL,
+    track TEXT NOT NULL,
+    track_config TEXT NOT NULL DEFAULT '',
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL,
+    -- [{entry, baseline, candidate}], or NULL when either side was not one
+    -- measured setup and what changed is not known.
+    changes_json TEXT,
+    laps_json TEXT NOT NULL,
+    conditions_json TEXT NOT NULL DEFAULT '{}',
+    results_json TEXT NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    conclusion TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_experiments_car ON experiments (car, track);
+
 -- Which process is allowed to record, and whether recording is wanted at
 -- all. One row, forever.
 --
@@ -633,6 +655,10 @@ def _migrate(conn) -> list[str]:
         if added:
             log.append(f"{', '.join(added)} added; laps recorded before "
                        "this have no measured setup")
+
+    # v16 adds experiments, a new table -- CREATE TABLE IF NOT EXISTS in
+    # SCHEMA covers it. Earlier comparisons were never stored, so there is
+    # nothing to backfill.
 
     if version < 17:
         # v17: laps.fuel_used_l. Nothing to backfill: no older lap recorded
@@ -2318,3 +2344,100 @@ def list_notes(conn, session_id: int | None = None, limit: int = 100):
     q += " ORDER BY id DESC LIMIT ?"
     args.append(limit)
     return [dict(r) for r in conn.execute(q, args)]
+
+
+# --- experiments --------------------------------------------------------
+
+EXPERIMENT_CONCLUSIONS = ("kept", "reverted", "undecided")
+
+
+def record_experiment(conn, rec: dict) -> int:
+    """Store one comparison, replacing any earlier one that shares a lap.
+
+    Re-comparing as laps come in, with the sides swapped, or with laps
+    dropped is the same evidence again; kept alongside, the setup book
+    would pool it as independent and grow certain of nothing. The newest
+    comparison stands, under the old one's id, and keeps what the driver
+    said about it.
+    """
+    laps = rec["laps"]
+    mine = set(laps["baseline"]) | set(laps["candidate"])
+    key = (",".join(map(str, sorted(laps["baseline"]))) + "|"
+           + ",".join(map(str, sorted(laps["candidate"]))))
+    now = time.time()
+    changes = rec.get("changes")
+    with conn:
+        old = [r for r in conn.execute(
+                   "SELECT id, laps_json, note, conclusion, created_at"
+                   " FROM experiments WHERE car = ? ORDER BY updated_at",
+                   (rec["car"],))
+               if mine & {*json.loads(r["laps_json"])["baseline"],
+                          *json.loads(r["laps_json"])["candidate"]}]
+        note = next((r["note"] for r in reversed(old) if r["note"]), "")
+        conclusion = next((r["conclusion"] for r in reversed(old)
+                           if r["conclusion"]), "")
+        conn.executemany("DELETE FROM experiments WHERE id = ?",
+                         [(r["id"],) for r in old])
+        cur = conn.execute(
+            "INSERT INTO experiments (id, lap_key, car, track, track_config,"
+            " created_at, updated_at, changes_json, laps_json,"
+            " conditions_json, results_json, note, conclusion)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (old[-1]["id"] if old else None,
+             key, rec["car"], rec["track"], rec.get("track_config") or "",
+             min([now] + [r["created_at"] for r in old]), now,
+             None if changes is None else json.dumps(changes),
+             json.dumps(laps), json.dumps(rec.get("conditions") or {}),
+             json.dumps(rec["results"]), note, conclusion))
+    return cur.lastrowid
+
+
+def _experiment(row) -> dict:
+    out = dict(row)
+    for k in ("changes", "laps", "conditions", "results"):
+        raw = out.pop(f"{k}_json")
+        out[k] = None if raw is None else json.loads(raw)
+    out.pop("lap_key", None)
+    return out
+
+
+def get_experiment(conn, experiment_id: int) -> dict | None:
+    r = conn.execute("SELECT * FROM experiments WHERE id = ?",
+                     (experiment_id,)).fetchone()
+    return _experiment(r) if r else None
+
+
+def experiments_for(conn, car: str, track: str | None = None,
+                    track_config: str | None = None) -> list[dict]:
+    """A car's experiments, oldest first, optionally at one layout."""
+    q, args = "SELECT * FROM experiments WHERE car = ?", [car]
+    if track:
+        q += " AND track = ?"
+        args.append(track)
+    if track_config is not None:
+        q += " AND track_config = ?"
+        args.append(track_config)
+    return [_experiment(r) for r in conn.execute(q + " ORDER BY created_at",
+                                                 args)]
+
+
+def annotate_experiment(conn, experiment_id: int, note: str | None,
+                        conclusion: str | None) -> bool:
+    """Set what the driver felt and what was decided. False if no such row."""
+    if conclusion is not None and conclusion not in EXPERIMENT_CONCLUSIONS:
+        raise ValueError(f"conclusion must be one of "
+                         f"{', '.join(EXPERIMENT_CONCLUSIONS)}")
+    sets, args = [], []
+    if note is not None:
+        sets.append("note = ?")
+        args.append(note)
+    if conclusion is not None:
+        sets.append("conclusion = ?")
+        args.append(conclusion)
+    if not sets:
+        return get_experiment(conn, experiment_id) is not None
+    with conn:
+        cur = conn.execute(
+            f"UPDATE experiments SET {', '.join(sets)}, updated_at = ?"
+            " WHERE id = ?", (*args, time.time(), experiment_id))
+    return cur.rowcount > 0

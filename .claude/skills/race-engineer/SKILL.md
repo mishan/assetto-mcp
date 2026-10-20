@@ -199,6 +199,13 @@ each step changes how the next one reads:
 
 ## Changing the setup
 
+Before proposing a change, read `setup_book` for that entry: what earlier
+A/Bs on this car found, and what the driver decided. Before the run,
+`plan_experiment` says how many laps a side it needs; drive the sides
+A B A where the session allows, so the track and fuel do not read as the
+change. After it, `annotate_experiment` with what the driver felt and
+whether the change stays.
+
 One variable at a time, three clean laps a side as the floor, four when the
 question is lap time. `compare_runs` judges against the driver's own spread;
 read `p_value_adjusted`, `resolution` and `power`, and treat "within noise"

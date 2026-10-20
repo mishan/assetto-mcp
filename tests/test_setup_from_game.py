@@ -319,9 +319,9 @@ def test_a_written_value_says_what_it_reads_as_on_the_setup_screen():
         rod = shown["ROD_LENGTH_LF"]
         assert rod["source"] == "unknown", rod
         assert rod["shown"] is None, "it must not state a displayed value"
-        assert "record_display_value" in rod["how_to_fix"], rod
+        assert "record_setup_display" in rod["how_to_fix"], rod
         assert report["display_unknown"] == ["ROD_LENGTH_LF"], report
-        assert "record_display_value" in report["display_note"], report
+        assert "record_setup_display" in report["display_note"], report
 
         # The game's multiplier is usable but flagged as the game's.
         camber = shown["CAMBER_LF"]

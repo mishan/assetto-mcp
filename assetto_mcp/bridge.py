@@ -476,7 +476,7 @@ class Bridge:
                     # sid is None when nothing is recording. Store the note
                     # anyway, against a NULL session: the input is real, and
                     # guessing a session for it is silent misattribution.
-                    # get_driver_notes surfaces these; the app toasts them
+                    # list_driver_tags surfaces these; the app toasts them
                     # differently.
                     return self._send(200, {"ok": True, "id": note_id,
                                             "session_id": sid,

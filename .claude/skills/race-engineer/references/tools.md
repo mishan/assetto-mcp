@@ -1,11 +1,11 @@
 # The assetto-mcp tools, by the question they answer
 
-Forty-two tools. They fall into nine groups. For each: what to pass,
+Forty tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the traps.
-Pass every parameter explicitly, including nulls: the schemas this client
-exposes have turned optional parameters into required ones between updates,
-and a call refused for a missing parameter is fixed by adding it, not by
-skipping the call.
+Every optional parameter takes null as "the default", so passing one
+explicitly is always safe; a call refused for a missing parameter is fixed
+by adding it, not by skipping the call. Every parameter that takes several
+lap ids takes the same shapes: one id, a list, "87,88", "87 88" or "87-90".
 
 ## Contents
 
@@ -146,9 +146,9 @@ Quote `where` and the `_m` fields, never the fraction beside them.
 brake point, sign, and how many laps cornered there. Built per session
 from the laps driven, so the numbering is the session's, not the circuit's:
 a flat kink is not numbered, and 3A is numbered straight through. The
-numbering is also not the same in `compare_laps` (built from those two laps
-only) or `compare_runs` (built from the laps compared). Quote the label
-with the tool that produced it, and prefer the circuit `name` or the
+numbering is also not the same in `compare_lap_corners` (built from those
+two laps only) or `compare_runs` (built from the laps compared). Quote the
+label with the tool that produced it, and prefer the circuit `name` or the
 driver's own name for a corner when the labels disagree. Each turn carries
 `name` when the track ships a sections.ini, and `circuit_names` lists every
 named section with the session turns inside it; a named section with no
@@ -159,8 +159,8 @@ corner whose apex sits near a section boundary can come back with no
 pieces of road only one lap cornered on, kept out so that a spin carved
 out as its own corner does not renumber every turn after it.
 
-**`locate(meters, fractions, session_id)`** -- any position you found
-outside the tools (a script over `samples`, a rival trace) said the way the
+**`describe_positions(meters, fractions, session_id)`** -- any position you
+found outside the tools (a script over `samples`, a rival trace) said the way the
 tools say it: "Turn 10A braking zone, 60 m before turn-in". `meters` is
 distance past the start line, comma-separated; `fractions` is `norm_pos`.
 Use it before quoting a position from a script to the driver.
@@ -173,13 +173,16 @@ were at each point: the answer to "was that a wider line".
 **`export_line_map(session_id, lap_ids)`** -- one HTML file in the data
 directory's `exports/` folder with every lap drawn, best lap picked out,
 coloring by setup or speed or pedals, tyre and rev charts, opponents'
-brake points. `lap_ids` is a JSON list, or null for the whole session.
+brake points. `lap_ids` takes the usual shapes, or null for the whole
+session.
 Hand the path to the driver; the file opens from disk and fetches nothing,
 and exporting the same session again replaces it.
 `scripts/driving_line_map.py` does the same from a shell.
 
-**`suspension_report(lap_id, lap_count, session_id)`** -- damper histograms,
-ride height, roll balance. Read `source`: "app" is render-rate and the
+**`suspension_report(lap_id, lap_number, session_id)`** -- damper
+histograms, ride height, roll balance. `lap_number` is for a lap that was
+not stored (an out-lap); `lap_count` is its deprecated minus-one form.
+Read `source`: "app" is render-rate and the
 damper histograms are body motion, not valving; "worker" is 333 Hz and
 real. **`suspension_capture_status()`** explains which tier is arriving.
 The worker is single-player only.
@@ -206,21 +209,24 @@ The lockup threshold is uncalibrated; read the distribution. Pass `points`.
 
 ## 4. Comparing laps and runs
 
-**`compare_laps(lap_id_a, lap_id_b)`** -- corner by corner: min speed delta,
-brake point delta, slip balance delta. Deltas are a minus b; a negative
+**`compare_lap_corners(lap_id_a, lap_id_b)`** -- corner by corner: min speed
+delta, brake point delta, slip balance delta. Deltas are a minus b; a negative
 `min_speed_delta_kmh` means lap b carried more speed. Read
 `lap_time_warning` before quoting `time_delta_ms`. Its turn numbering is
 its own. An out-lap or a lap that ended in the barrier still has real
 corner speeds, so any two laps compare.
 
-**`delta_by_position(lap_id_a, lap_id_b, segments)`** -- where the time went,
-including straights and sweepers no corner detector flagged. Read
-`gain_ms` per segment; the cumulative figure only says a gap exists. Up to
+**`time_delta_along_lap(lap_id_a, lap_id_b, segments)`** -- where the time
+went, including straights and sweepers no corner detector flagged. Read
+`gain_ms` per segment; the cumulative figure only says a gap exists. 1 to
 200 segments.
 
 **`compare_runs(baseline_laps, candidate_laps, clean_laps_only,
-include_invalid)`** -- the A/B judge. Two id lists, each "87,88", a
-single id, or a list. Read:
+include_invalid, baseline_setup, candidate_setup, session_id)`** -- the A/B
+judge. Each side is a lap id list, or a setup name: `baseline_setup` /
+`candidate_setup` take every lap in the session labeled with it, and
+`laps_by_setup` lists which: a name is only as right as the labels, so
+check that list before quoting the result. Read:
 
 - `metrics[*].verdict`, `p_value_adjusted` against 0.05 (the family is
   corrected together), `change`, `resolution` (smallest change these laps
@@ -300,11 +306,12 @@ server's remote-car lap times lag and repeat: at the Glen they ranked the
 driver ahead of two cars that were quicker. Each captured lap carries
 `lap_time_source`, "trace" or "server".
 
-**`compare_to_rival(car_index, lap_id, rival_lap_count, session_id)`** --
+**`compare_to_rival(car_index, lap_id, rival_lap_number, session_id)`** --
 where they carry more speed by track position; their brake and throttle
 points when the server transmits them (`rival_input_fields` says which
-are live). `rival_lap_count` is required by this client: take it from
-`list_rivals`' well-covered laps, quickest first. `time_by_turn` is the
+are live). Take `rival_lap_number` from `list_rivals`' well-covered laps,
+quickest first, or omit it for their quickest; `rival_lap_count` (the
+number minus one) is its deprecated form. `time_by_turn` is the
 part to quote: seconds through each turn and on the road after it, with
 `where_they_gain` and `where_you_gain`. The road after the last turn
 runs across the line to the first turn-in, so the rows cover the whole lap
@@ -320,9 +327,9 @@ The field defaults to every rival whose traced best beats yours, each on
 their three quickest laps within 2%. Their brake points read up to about
 7 m early (positions arrive late) and their minimum speeds a little high
 (10 Hz). Run it after practice and qualifying, not only after a race.
-`lap_ids` and `car_indexes` take "433, 434", a single number, or a list;
-the client often sends the text as a number or a list, and all three
-work.
+`lap_ids` and `car_indexes` take "433, 434", a single number, or a list
+(`lap_ids` also "433-436"); the client often sends the text as a number
+or a list, and all three work.
 
 **`contacts_inferred`** (on `lap_summary`) and **`contacts`** (on
 `compare_runs`, only the `contact` verdicts) -- impacts without the damage
@@ -364,7 +371,8 @@ reading: the zero is corrected, the scale is still the game's), "game"
 ladder from min and from max, not a grid.
 
 **`write_setup(car, track, name, values_json, base_setup, overwrite,
-allow_unclamped)`** -- `values_json` is a JSON object of section to number;
+allow_unclamped)`** -- `values_json` is an object of section to number
+(JSON text also works);
 unspecified sections come from `base_setup`. Clamped and snapped to what
 the spinner can reach; `clamped` lists what changed. `displays_as` says
 what the screen will show, with a source per entry. Refuses to reuse a
@@ -381,17 +389,17 @@ decides whatever the flags say; `declined` in a refusal means they said no.
 The same goes for `restart_server` mid-session and for starting
 `apply_update` (`refused: "declined"`).
 
-**`record_display_value(field, displayed, stored, car, note, session_id)`**,
-**`record_display_range(field, displayed_at_min, displayed_at_max, car,
-note, session_id)`**, **`record_display_note(field, note, car, session_id)`**,
+**`record_setup_display(field, displayed, stored, displayed_at_min,
+displayed_at_max, note, car, session_id)`**,
 **`forget_display_value(field, car, keep_note, session_id)`** -- what the
-screen shows for a stored value. Two readings pin scale, sign and zero;
-the range tool does it in one exchange at the spinner's ends. Notes are
-for what is not a number: TC and ABS count 1 as the most intervention.
-One reading fixes only the zero (`observed_offset`), which is enough when
-the game's scale is right; ask the driver for one number, since `stored`
-comes from the app. A second reading at another position, or one
-`record_display_range`, makes it `observed`. Where the game reports no
+screen shows for a stored value. Pass what you have: `displayed` (one
+reading), `displayed_at_min` and `displayed_at_max` (both ends of the
+spinner, which pin scale, sign and zero in one exchange), or `note` alone.
+Notes are for what is not a number: TC and ABS count 1 as the most
+intervention. One reading fixes only the zero (`observed_offset`), which
+is enough when the game's scale is right; ask the driver for one number,
+since `stored` comes from the app. A second reading at another position,
+or the two ends, makes it `observed`. Where the game reports no
 scale at all, one reading is kept but leaves it `still_unknown`. Forget a
 misreading at once: a wrong observation is worse than none, because the
 mapping fitted from it is stated with confidence.
@@ -401,7 +409,7 @@ is percent front.
 
 ## 8. The driver's side
 
-**`get_driver_notes(session_id, limit, all_sessions)`** -- complaint tags
+**`list_driver_tags(session_id, limit, all_sessions)`** -- complaint tags
 pressed on the wheel (understeer, oversteer, braking, traction, note) with
 a spline position comparable to `apex_pos` (with `at_m` and `where`
 beside it) and the lap they were pressed

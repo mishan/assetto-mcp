@@ -93,7 +93,7 @@ def test_parallel_calls_on_shared_data_answer_as_sequential_ones_do():
     calls = []
     for lap_id in ids:
         calls += [("lap_summary", {"lap_id": lap_id}),
-                  ("compare_laps", {"lap_id_a": ids[0], "lap_id_b": lap_id}),
+                  ("compare_lap_corners", {"lap_id_a": ids[0], "lap_id_b": lap_id}),
                   ("list_laps", {"session_id": sid}),
                   ("track_corners", {"session_id": sid})]
     calls *= 3
@@ -139,7 +139,7 @@ def test_a_status_report_is_not_a_failed_call_but_a_refusal_is():
     status = [("recording_status", {}), ("bridge_status", {}),
               ("suspension_capture_status", {}), ("check_for_updates", {})]
     refusals = [("lap_summary", {"lap_id": -1}),
-                ("compare_laps", {"lap_id_a": -1, "lap_id_b": -2}),
+                ("compare_lap_corners", {"lap_id_a": -1, "lap_id_b": -2}),
                 ("read_setup", {"car": "nope", "track": "nope",
                                 "name": "nope"})]
 
@@ -337,6 +337,54 @@ def test_the_core_toolset_serves_only_its_tools():
     assert proc.returncode == 0, proc.stderr
     served, core = json.loads(proc.stdout.strip().splitlines()[-1])
     assert served == sorted(core), (served, core)
+
+
+def test_a_renamed_tool_still_answers_under_its_old_name_unlisted():
+    """A client holding an old tool list keeps working, and is told the
+    new name; the list itself carries each tool once."""
+    s = _server()
+    calls = {"get_driver_notes": {},
+             "delta_by_position": {"lap_id_a": -1, "lap_id_b": -2},
+             "compare_laps": {"lap_id_a": -1, "lap_id_b": -2},
+             "locate": {"meters": 100},
+             "record_display_value": {"field": "X", "displayed": 1.0,
+                                      "stored": 1.0, "car": "alias_car"},
+             "record_display_range": {"field": "X", "displayed_at_min": 0,
+                                      "displayed_at_max": 1,
+                                      "car": "alias_car"},
+             "record_display_note": {"field": "X", "note": "n",
+                                     "car": "alias_car"}}
+    assert set(calls) == set(s._RENAMED)
+
+    async def run():
+        async with _client() as (session, _):
+            names = {t["name"]
+                     for t in _wire(await session.list_tools())["tools"]}
+            return names, {old: _wire(await session.call_tool(old, a))
+                           for old, a in calls.items()}
+
+    names, replies = asyncio.run(run())
+    assert not names & set(s._RENAMED), names & set(s._RENAMED)
+    assert set(s._RENAMED.values()) <= names
+    for old, r in replies.items():
+        reply = json.loads(r["content"][0]["text"])
+        assert s._RENAMED[old] in reply.get("deprecated", ""), (old, reply)
+
+
+def test_write_setup_takes_its_values_as_an_object_or_as_json_text():
+    values = {"PRESSURE_LF": 25}
+
+    async def run():
+        async with _client() as (session, _):
+            return [_wire(await session.call_tool("write_setup", {
+                "car": "no_ranges_car", "track": "t", "name": "x",
+                "values_json": v})) for v in (values, json.dumps(values))]
+
+    as_object, as_text = asyncio.run(run())
+    for r in (as_object, as_text):
+        assert json.loads(r["content"][0]["text"])["refused"] == \
+            "no_ranges", r
+    assert as_object == as_text
 
 
 if __name__ == "__main__":

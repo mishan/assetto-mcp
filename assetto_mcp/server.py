@@ -37,6 +37,9 @@ import statistics  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 from pathlib import Path  # noqa: E402
+from typing import Annotated  # noqa: E402
+
+from pydantic import Field  # noqa: E402
 
 try:  # mcp SDK 2.x
     from mcp.server.mcpserver import MCPServer as FastMCP
@@ -96,6 +99,13 @@ def _payload(result) -> dict | None:
     return None
 
 
+def _set_text(result, text: str) -> None:
+    content = getattr(result, "content", result)
+    if isinstance(content, tuple):
+        content = content[0]
+    content[0].text = text
+
+
 def _can_elicit(ctx) -> bool:
     try:
         from mcp.types import ClientCapabilities, ElicitationCapability
@@ -119,8 +129,27 @@ async def _ask(ctx, question: str) -> bool | None:
     return answer.action == "accept" and answer.data.confirm
 
 
+# Old tool names, still answered but left out of tools/list: listing each
+# under both names would grow the list every client loads on every request,
+# and some clients drop tools past a budget of about 40.
+_RENAMED = {
+    "get_driver_notes": "list_driver_tags",
+    "delta_by_position": "time_delta_along_lap",
+    "compare_laps": "compare_lap_corners",
+    "locate": "describe_positions",
+    "record_display_value": "record_setup_display",
+    "record_display_range": "record_setup_display",
+    "record_display_note": "record_setup_display",
+}
+
+
 class _Server(FastMCP):
     async def call_tool(self, name, arguments, *args, **kwargs):
+        # A null is how many models say "the default", and a parameter that
+        # has one would otherwise refuse it.
+        arguments = {k: v for k, v in (arguments or {}).items()
+                     if v is not None}
+        called, name = name, _RENAMED.get(name, name)
         ctx = args[0] if args else kwargs.get("context")
         if ctx is None and hasattr(self, "get_context"):  # 1.x
             ctx = self.get_context()
@@ -157,6 +186,9 @@ class _Server(FastMCP):
             result = await super().call_tool(name, arguments, *args,
                                              **kwargs)
             payload = _payload(result)
+        if payload is not None and called != name:
+            payload["deprecated"] = f"{called} is renamed; call {name}"
+            _set_text(result, _j(payload))
         # Tools answer a refusal with an {"error": ...} payload. Raising it
         # instead marks the result isError, so the client sees a failed call,
         # and the payload stays the message.
@@ -263,7 +295,7 @@ def _j(obj) -> str:
 CORE_TOOLS = (
     # session_check and wait_for_lap join here when they exist.
     "recording_status", "live_snapshot", "list_laps", "lap_summary",
-    "compare_laps", "delta_by_position", "compare_runs",
+    "compare_lap_corners", "time_delta_along_lap", "compare_runs",
     "set_session_setup", "label_laps", "fuel_plan",
     "list_setups", "read_setup", "write_setup",
 )
@@ -732,7 +764,8 @@ def list_sessions() -> str:
 
 
 @_tool("List rivals")
-def list_rivals(session_id: int | None = None, limit: int = 20) -> str:
+def list_rivals(session_id: int | None = None,
+                limit: Annotated[int, Field(ge=1, le=200)] = 20) -> str:
     """Opponents seen in a session, in best-lap order, with how much of their
     telemetry was captured.
 
@@ -755,7 +788,8 @@ def list_rivals(session_id: int | None = None, limit: int = 20) -> str:
         # quick ones, so report the count and show the best few.
         r["captured_lap_count"] = len(laps)
         r["best_captured_laps"] = [
-            {"lap_count": l["lap_count"], "lap_time_ms": l["lap_time_ms"],
+            {"lap_number": l["lap_count"] + 1,
+             "lap_time_ms": l["lap_time_ms"],
              "lap_time_source": l["lap_time_source"], "samples": l["n"]}
             for l in laps[:3]
         ]
@@ -769,17 +803,23 @@ def _well_covered_rival_laps(sid: int, car_index: int) -> list[dict]:
 
 @_tool("Compare to a rival lap")
 def compare_to_rival(car_index: int, lap_id: int,
-                     rival_lap_count: int | None = None,
-                     session_id: int | None = None) -> str:
+                     rival_lap_number: int | None = None,
+                     session_id: int | None = None,
+                     rival_lap_count: int | None = None) -> str:
     """Compare one of your laps against a rival's by track position: where
     they carry more speed and, when the server sends their pedals, where
     they brake and get on power.
 
-    car_index: from list_rivals. rival_lap_count: their completed-lap count
-    from list_rivals (lap number minus one); default their quickest
-    captured lap. `time_by_turn`:
-    seconds through each turn and on the road after it, with
-    `where_they_gain` / `where_you_gain`."""
+    car_index and rival_lap_number: from list_rivals; default their
+    quickest captured lap. rival_lap_count (lap number minus one) is
+    deprecated. `time_by_turn`: seconds through each turn and on the road
+    after it, with `where_they_gain` / `where_you_gain`."""
+    if rival_lap_number is not None:
+        if rival_lap_count not in (None, rival_lap_number - 1):
+            return _j({"error": "rival_lap_number and rival_lap_count name "
+                                "different laps; pass rival_lap_number "
+                                "alone"})
+        rival_lap_count = rival_lap_number - 1
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
@@ -809,9 +849,10 @@ def compare_to_rival(car_index: int, lap_id: int,
         chosen = next((l for l in laps
                        if l["lap_count"] == rival_lap_count), None)
         if chosen is None:
-            return _j({"error": f"lap_count {rival_lap_count} was not "
+            return _j({"error": f"lap {rival_lap_count + 1} was not "
                                 f"captured well enough for car {car_index}",
-                       "available": [l["lap_count"] for l in laps]})
+                       "available_lap_numbers": [l["lap_count"] + 1
+                                                 for l in laps]})
 
     rival_samples = db.get_rival_lap_samples(
         _conn, sid, car_index, rival_lap_count)
@@ -844,7 +885,7 @@ def compare_to_rival(car_index: int, lap_id: int,
                         "time_ms": lap["lap_time_ms"],
                         "setup": lap.get("setup_name") or None}
     result["rival"] = {"car_index": car_index,
-                       "lap_count": rival_lap_count,
+                       "lap_number": rival_lap_count + 1,
                        "lap_time_ms": chosen["lap_time_ms"],
                        "lap_time_source": chosen.get("lap_time_source")}
     if chosen["lap_time_ms"] is None:
@@ -912,7 +953,8 @@ def _with_brake_distance(metrics: list[dict], turns: list[dict]) -> list[dict]:
 def field_benchmark(session_id: int | None = None,
                     lap_ids: str | int | list[int] | None = None,
                     car_indexes: str | int | list[int] | None = None,
-                    laps_per_rival: int = 3) -> str:
+                    laps_per_rival: Annotated[int, Field(ge=1, le=10)] = 3
+                    ) -> str:
     """Where the quicker cars find their time, turn by turn, against you.
 
     Per turn, yours and the field's: median time through it and on the road
@@ -922,9 +964,9 @@ def field_benchmark(session_id: int | None = None,
 
     lap_ids: your laps; default the newest clean ones. car_indexes: default
     every rival whose trace-timed best beats yours. Both take "433,434", a
-    number or a list. laps_per_rival: each rival's quickest laps within 2%
-    of their best. Rival brake points read up to ~7 m early, slow-corner
-    minimum speeds a little high."""
+    number or a list; lap_ids also "433-436". laps_per_rival: each rival's
+    quickest laps within 2% of their best. Rival brake points read up to
+    ~7 m early, slow-corner minimum speeds a little high."""
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id"})
@@ -938,7 +980,7 @@ def field_benchmark(session_id: int | None = None,
         return _j({"error": f"session {sid} has no numbered turns yet"})
 
     try:
-        mine_ids = _whole_numbers(lap_ids)
+        mine_ids = _lap_ids(lap_ids)
         wanted = _whole_numbers(car_indexes)
     except ValueError as e:
         return _j({"error": f"lap_ids and car_indexes are lists of ids, "
@@ -1127,7 +1169,7 @@ def setup_ranges(car: str | None = None) -> str:
     `source`: "observed" (from screen readings), "observed_offset" (one
     reading: zero corrected, scale still the game's), "game" (the game's
     multiplier, can be wrong), "stored" (shows as stored), "unknown" (say
-    so; do not derive it; record_display_value fixes it)."""
+    so; do not derive it; record_setup_display fixes it)."""
     car = _resolve_car(car)
     if car is None:
         return _j({"error": "no active session; pass car explicitly"})
@@ -1171,7 +1213,7 @@ def setup_ranges(car: str | None = None) -> str:
         out["display_note"] = (
             f"{len(unknown)} entr(y/ies) have no known screen display. Say so "
             f"rather than deriving one from min/max/step, and offer to record "
-            f"what the driver reads with record_display_value.")
+            f"what the driver reads with record_setup_display.")
     return _j(out)
 
 
@@ -1183,21 +1225,44 @@ def _resolve_car(car: str | None, session_id: int | None = None) -> str | None:
     return session["car"] if session else None
 
 
-@_tool("Record a displayed setup value", writes=True,
+@_tool("Record what the setup screen shows", writes=True,
        idempotent=False)
-def record_display_value(field: str, displayed: float,
+def record_setup_display(field: str, displayed: float | None = None,
                          stored: float | None = None,
-                         car: str | None = None,
+                         displayed_at_min: float | None = None,
+                         displayed_at_max: float | None = None,
                          note: str | None = None,
+                         car: str | None = None,
                          session_id: int | None = None) -> str:
-    """Record what the setup screen shows for a stored value, for an entry
-    whose display is "unknown" or where the game's display_multiplier is
-    wrong.
+    """Record what the setup screen shows for an entry whose display is
+    "unknown" or where the game's display_multiplier is wrong.
 
-    field: setup section, e.g. "TOE_OUT_LF". displayed: the number on the
-    screen now. stored: omit to use the live value from the in-game app (the
-    usual case). note: for what is not a number. A second reading at another
-    position confirms the scale; `basis` says which you have."""
+    field: setup section, e.g. "TOE_OUT_LF". Pass what you have: displayed,
+    the number on the screen now (stored: omit to use the live value from
+    the in-game app, the usual case; a second reading at another position
+    confirms the scale, `basis` says which you have); or displayed_at_min
+    and displayed_at_max, the screen at both ends of the spinner, which pin
+    scale, sign and zero at once; and/or note, for what is not a number
+    (e.g. TC counts 1 as the MOST intervention)."""
+    ends = (displayed_at_min, displayed_at_max)
+    if ends != (None, None):
+        if None in ends or displayed is not None or stored is not None:
+            return _j({"error": "pass displayed_at_min and displayed_at_max "
+                                "together, without displayed or stored"})
+        return _record_display_range(field, displayed_at_min,
+                                     displayed_at_max, car, note, session_id)
+    if displayed is not None:
+        return _record_display_value(field, displayed, stored, car, note,
+                                     session_id)
+    if stored is not None or not note:
+        return _j({"error": "pass displayed, both displayed_at_min and "
+                            "displayed_at_max, or a note"})
+    return _record_display_note(field, note, car, session_id)
+
+
+def _record_display_value(field: str, displayed: float,
+                          stored: float | None, car: str | None,
+                          note: str | None, session_id: int | None) -> str:
     car = _resolve_car(car, session_id)
     if car is None:
         return _j({"error": "no active session; pass car explicitly"})
@@ -1246,8 +1311,8 @@ def record_display_value(field: str, displayed: float,
             f"Recorded, but one reading is not enough for {field}: the game "
             f"gives no scale for it, so there is nothing to anchor a single "
             f"point against. Ask for a reading at a DIFFERENT spinner "
-            f"position, or run the spinner to both ends and use "
-            f"record_display_range.")
+            f"position, or run the spinner to both ends and record "
+            f"displayed_at_min and displayed_at_max.")
     elif mapping["points"] < 2 or "why_partial" in mapping:
         out["next"] = (
             "One spinner position, so the zero is measured and the scale is "
@@ -1262,13 +1327,8 @@ def record_display_value(field: str, displayed: float,
     return _j(out)
 
 
-@_tool("Record a setup display note", writes=True,
-       idempotent=False)
-def record_display_note(field: str, note: str,
-                        car: str | None = None,
-                        session_id: int | None = None) -> str:
-    """Record a non-numeric fact about a setup entry, e.g. TC counts 1 as the
-    MOST intervention. Shown wherever that entry is reported."""
+def _record_display_note(field: str, note: str, car: str | None,
+                         session_id: int | None) -> str:
     car = _resolve_car(car, session_id)
     if car is None:
         return _j({"error": "no active session; pass car explicitly"})
@@ -1278,16 +1338,9 @@ def record_display_note(field: str, note: str,
                "display": setups.describe_display(conv)})
 
 
-@_tool("Record a setup display range", writes=True,
-       idempotent=False)
-def record_display_range(field: str, displayed_at_min: float,
-                         displayed_at_max: float,
-                         car: str | None = None,
-                         note: str | None = None,
-                         session_id: int | None = None) -> str:
-    """Record what the screen shows at both ends of a spinner; the two
-    readings pin scale, sign and zero at once. For one reading at the current
-    position, use record_display_value."""
+def _record_display_range(field: str, displayed_at_min: float,
+                          displayed_at_max: float, car: str | None,
+                          note: str | None, session_id: int | None) -> str:
     car = _resolve_car(car, session_id)
     if car is None:
         return _j({"error": "no active session; pass car explicitly"})
@@ -1297,8 +1350,8 @@ def record_display_range(field: str, displayed_at_min: float,
         return _j({"error": f"no range known for {field} on {car}, so there "
                             f"is nothing to anchor these readings to. Open "
                             f"the setup screen with the in-game app running, "
-                            f"or use record_display_value with an explicit "
-                            f"stored value."})
+                            f"or record one reading as displayed with an "
+                            f"explicit stored value."})
     lo, hi = sorted((entry["min_value"], entry["max_value"]))
     if lo == hi:
         return _j({"error": f"{field} has min == max ({lo}), so its two ends "
@@ -1313,7 +1366,7 @@ def record_display_range(field: str, displayed_at_min: float,
                      f"range, or the same number was read twice.",
             "what_to_do": "check the reading at each end again; if the "
                           "screen really does show one number throughout, "
-                          "say so with record_display_note instead."})
+                          "say so in a record_setup_display note instead."})
     db.record_display_observation(_conn, car, field, lo, displayed_at_min)
     db.record_display_observation(_conn, car, field, hi, displayed_at_max)
     if note:
@@ -1435,7 +1488,7 @@ def _parse_lap_ids(text: str) -> tuple[list[int], str]:
             continue
         m = _LAP_ID_TOKEN.match(token)
         if not m:
-            return [], ('lap_ids must be lap id numbers or ranges, '
+            return [], ('lap ids must be numbers or ranges, '
                         f'e.g. "87,88,89,90" or "87-90" -- not "{token}"')
         lo = int(m.group(1))
         if m.group(2) is None:
@@ -1447,13 +1500,25 @@ def _parse_lap_ids(text: str) -> tuple[list[int], str]:
         if hi - lo + 1 > MAX_LAP_ID_RANGE:
             return [], (f'"{token}" covers {hi - lo + 1} ids, more than the '
                         f'{MAX_LAP_ID_RANGE} this accepts. List them, or '
-                        f'label them in smaller runs.')
+                        f'split the range.')
         ids.extend(range(lo, hi + 1))
     if not ids:
         return [], "no lap ids given"
     # Duplicates would double-count in the report ("2 laps labeled" for one
     # lap named twice), and order is the driver's, so it is kept.
     return list(dict.fromkeys(ids)), ""
+
+
+def _lap_ids(value) -> list[int]:
+    """Lap ids in every shape a tool takes them: 87, [87, 88], "87,88",
+    "87 88" or "87-90". [] for none; ValueError says what is wrong."""
+    text = _as_id_text(value)
+    if not text.strip():
+        return []
+    ids, err = _parse_lap_ids(text)
+    if err:
+        raise ValueError(err)
+    return ids
 
 
 @_tool("Label laps with a setup", writes=True)
@@ -1584,9 +1649,10 @@ def rescore_track_limits() -> str:
 
 
 @_tool("List laps")
-def list_laps(session_id: int | None = None, limit: int = 20) -> str:
+def list_laps(session_id: int | None = None,
+              limit: Annotated[int, Field(ge=1, le=200)] = 20) -> str:
     """List recorded laps (most recent first), optionally for one session.
-    Returns lap ids to use with lap_summary / compare_laps."""
+    Returns lap ids to use with lap_summary / compare_lap_corners."""
     return _j(db.list_laps(_conn, session_id, limit))
 
 
@@ -1799,10 +1865,10 @@ def _whole_numbers(value) -> list[int]:
     return out
 
 
-@_tool("Locate positions on track")
-def locate(meters: str | float | list[float] | None = None,
-           fractions: str | float | list[float] | None = None,
-           session_id: int | None = None) -> str:
+@_tool("Describe track positions")
+def describe_positions(meters: str | float | list[float] | None = None,
+                       fractions: str | float | list[float] | None = None,
+                       session_id: int | None = None) -> str:
     """Say positions from the nearest corner, the way the tools do ("Turn 10A
     braking zone, 60 m before turn-in"), for positions found outside them.
 
@@ -1834,17 +1900,20 @@ def locate(meters: str | float | list[float] | None = None,
 
 @_tool("Suspension report")
 def suspension_report(lap_id: int | None = None,
-                      lap_count: int | None = None,
-                      session_id: int | None = None) -> str:
+                      lap_number: int | None = None,
+                      session_id: int | None = None,
+                      lap_count: int | None = None) -> str:
     """Damper histograms, ride height and roll balance for one lap. Needs the
     in-game app.
 
     `source` is the capture tier: render-rate is fine for ride height and
     load transfer, but its damper histograms are body motion, not valving;
     the CSP physics worker (333 Hz) gives real damper numbers. Pass lap_id
-    from list_laps, or lap_count for a lap not stored (an out-lap, say).
-    lap_count is the completed-lap count, lap number minus one; lap_id wins
-    if both are given."""
+    from list_laps, or lap_number for a lap not stored (an out-lap, say);
+    lap_id wins if both are given. lap_count (lap number minus one) is
+    deprecated."""
+    if lap_number is not None:
+        lap_count = lap_number - 1
     sid = _active_session(session_id)
     if lap_id is not None:
         lap = db.get_lap(_conn, lap_id)
@@ -1857,22 +1926,23 @@ def suspension_report(lap_id: int | None = None,
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
     if lap_count is None:
-        return _j({"error": "pass either lap_id or lap_count"})
+        return _j({"error": "pass either lap_id or lap_number"})
 
     samples = db.get_suspension_samples(_conn, sid, lap_count)
     if not samples:
         captured = db.suspension_lap_counts(_conn, sid)
-        return _j({"error": f"no suspension data for lap_count {lap_count} "
+        return _j({"error": f"no suspension data for lap {lap_count + 1} "
                             f"in session {sid}",
                    "captured_laps": [
-                       {"lap_count": r["lap_count"], "source": r["source"],
+                       {"lap_number": r["lap_count"] + 1,
+                        "source": r["source"],
                         "samples": r["n"]} for r in captured[-10:]],
                    "hint": ("If this list is empty the in-game app either "
                             "isn't running or predates suspension capture.")})
 
     out = suspension.summarize(samples)
     out["session_id"] = sid
-    out["lap_count"] = lap_count
+    out["lap_number"] = lap_count + 1
     if lap_id is not None:
         out["lap_id"] = lap_id
     return _j(out)
@@ -1927,7 +1997,7 @@ def suspension_capture_status() -> str:
 
 @_tool("Driving line")
 def driving_line(lap_id: int, compare_lap_id: int | None = None,
-                 points: int = 100) -> str:
+                 points: Annotated[int, Field(ge=10, le=200)] = 100) -> str:
     """Where the car went across the track: per slice of the lap, world
     position, speed, mean front ride height and its movement within the
     slice (a bump map).
@@ -1956,14 +2026,18 @@ def driving_line(lap_id: int, compare_lap_id: int | None = None,
 
 @_tool("Export a line map", writes=True)
 def export_line_map(session_id: int | None = None,
-                    lap_ids: list[int] | None = None) -> str:
+                    lap_ids: str | int | list[int] | None = None) -> str:
     """Draw laps as a driving-line map in one HTML file in the data
     directory's exports folder; returns the path to hand to the driver.
 
-    lap_ids: a list, or null for the whole session; laps from several
-    sessions (same car and layout) are drawn without turn numbers. Laps
-    without position data are listed in `skipped`. Exporting the same
-    session again replaces its file."""
+    lap_ids: "87,88", "87-90", one id or a list; null for the whole
+    session. Laps from several sessions (same car and layout) are drawn
+    without turn numbers. Laps without position data are listed in
+    `skipped`. Exporting the same session again replaces its file."""
+    try:
+        lap_ids = _lap_ids(lap_ids)
+    except ValueError as e:
+        return _j({"error": str(e)})
     sid = None
     if not lap_ids:
         sid = _active_session(session_id)
@@ -2082,7 +2156,8 @@ def stint_wear(session_id: int | None = None,
 
 
 @_tool("Braking report")
-def braking_report(lap_id: int, points: int = 20) -> str:
+def braking_report(lap_id: int,
+                   points: Annotated[int, Field(ge=1, le=200)] = 20) -> str:
     """Tyre slip under straight-line braking: slip per axle, which axle is
     nearer its limit (what brake bias moves), and runs where a front wheel
     ran away.
@@ -2117,7 +2192,7 @@ def attitude_report(lap_id: int) -> str:
 
 
 @_tool("Compare two laps by corner")
-def compare_laps(lap_id_a: int, lap_id_b: int) -> str:
+def compare_lap_corners(lap_id_a: int, lap_id_b: int) -> str:
     """Corner-by-corner comparison of two laps on the same track: min speed,
     brake point and slip balance deltas (a minus b).
 
@@ -2277,14 +2352,20 @@ def fuel_plan(race_laps: int, stops: int = 1,
 
 
 @_tool("Compare setup runs")
-def compare_runs(baseline_laps: str | int | list[int],
-                 candidate_laps: str | int | list[int],
+def compare_runs(baseline_laps: str | int | list[int] | None = None,
+                 candidate_laps: str | int | list[int] | None = None,
                  clean_laps_only: bool = False,
-                 include_invalid: bool | None = None) -> str:
+                 include_invalid: bool | None = None,
+                 baseline_setup: str | None = None,
+                 candidate_setup: str | None = None,
+                 session_id: int | None = None) -> str:
     """Did a setup change do anything, given lap-to-lap noise?
 
-    baseline_laps / candidate_laps: lap ids before and after, "87,88", one
-    id, or a list. Same car, track and layout on both sides.
+    baseline_laps / candidate_laps: lap ids before and after, "87,88",
+    "87-90", one id, or a list. Or, for a side, baseline_setup /
+    candidate_setup: every lap in the session (session_id, default the
+    active one) labeled with that setup name (`laps_by_setup`). Same car,
+    track and layout on both sides.
 
     Metrics are one corrected family: read `p_value_adjusted` against 0.05,
     not `p_value`. "suggestive" cleared 95% only uncorrected: run more laps.
@@ -2314,27 +2395,36 @@ def compare_runs(baseline_laps: str | int | list[int],
             f"clean_laps_only={str(clean_laps_only).lower()}. Pass "
             f"clean_laps_only instead.")
 
-    def ids(raw):
-        out = []
-        for part in str(raw).split(","):
-            # Strip before the emptiness check: a trailing separator leaves
-            # a whitespace part ("1,2,\n" from a wrapped list). Spaces are
-            # not removed up front, which would read "1 2" as lap 12.
-            part = part.strip()
-            if part:
-                try:
-                    out.append(int(part))
-                except ValueError:
-                    raise ValueError(f"not a lap id: {part!r}")
-        return out
+    by_setup = {}
+
+    def side_ids(side, laps, setup):
+        ids = _lap_ids(laps)
+        if not setup:
+            return ids
+        if ids:
+            raise ValueError(f"pass {side}_laps or {side}_setup, not both")
+        sid = _active_session(session_id)
+        if sid is None:
+            raise ValueError("no active session; pass session_id")
+        session_laps = db.list_laps(_conn, sid, limit=None)
+        ids = sorted(l["id"] for l in session_laps
+                     if l.get("setup_name") == setup)
+        if not ids:
+            names = sorted({l["setup_name"] for l in session_laps
+                            if l.get("setup_name")})
+            raise ValueError(f"no lap in session {sid} is labeled "
+                             f"'{setup}'; its setups: "
+                             f"{', '.join(names) or 'none'}")
+        by_setup[side] = {"setup": setup, "session_id": sid, "lap_ids": ids}
+        return ids
 
     try:
-        a_ids = ids(_as_id_text(baseline_laps))
-        b_ids = ids(_as_id_text(candidate_laps))
+        a_ids = side_ids("baseline", baseline_laps, baseline_setup)
+        b_ids = side_ids("candidate", candidate_laps, candidate_setup)
     except ValueError as e:
         return _j({"error": str(e)})
     if not a_ids or not b_ids:
-        return _j({"error": "need lap ids on both sides"})
+        return _j({"error": "need lap ids or a setup name on both sides"})
 
     def fetch(lap_ids):
         out = []
@@ -2528,6 +2618,8 @@ def compare_runs(baseline_laps: str | int | list[int],
     out["candidate_setups"] = sorted({s.get("setup") or "" for s in cand})
     out.update(_measured_setups([l for l, _ in base_loaded],
                                 [l for l, _ in cand_loaded]))
+    if by_setup:
+        out["laps_by_setup"] = by_setup
     if deprecated_note:
         out["deprecated"] = deprecated_note
     return _j(_placed(out, base_laps[0]["session_id"], out.get("turns")))
@@ -2581,14 +2673,15 @@ def _measured_setups(base_laps: list[dict], cand_laps: list[dict]) -> dict:
 
 
 @_tool("Time delta along the lap")
-def delta_by_position(lap_id_a: int, lap_id_b: int,
-                      segments: int = 20) -> str:
+def time_delta_along_lap(
+        lap_id_a: int, lap_id_b: int,
+        segments: Annotated[int, Field(ge=1, le=200)] = 20) -> str:
     """Where lap b gained or lost time against lap a along the whole track,
     straights and sweepers included.
 
     Read `gain_ms` per segment (positive = lap b slower there); the
     cumulative figure only says a gap exists. segments: rows to split the
-    track into, up to 200; more is clamped (`segments_requested`)."""
+    track into."""
     a, b = db.get_lap(_conn, lap_id_a), db.get_lap(_conn, lap_id_b)
     if not a or not b:
         return _j({"error": "one or both lap ids not found"})
@@ -2615,8 +2708,9 @@ def delta_by_position(lap_id_a: int, lap_id_b: int,
 # --- in-game app bridge ------------------------------------------------
 
 
-@_tool("Driver's in-game notes")
-def get_driver_notes(session_id: int | None = None, limit: int = 50,
+@_tool("Driver's in-game tags")
+def list_driver_tags(session_id: int | None = None,
+                     limit: Annotated[int, Field(ge=1, le=200)] = 50,
                      all_sessions: bool = False) -> str:
     """Complaint tags the driver pressed in-game (understeer, oversteer,
     braking, traction, note), each with a spline position (0-1) comparable
@@ -2640,7 +2734,8 @@ def get_driver_notes(session_id: int | None = None, limit: int = 50,
 
 @_tool("Message the driver in game", writes=True,
        idempotent=False)
-def send_driver_message(text: str) -> str:
+def send_driver_message(
+        text: Annotated[str, Field(min_length=1, max_length=200)]) -> str:
     """Show a sentence or two on the driver's in-game overlay, e.g.
     'claude_v2 saved: softer front ARB - pit and load it'. It stays up until
     dismissed or replaced by a newer message."""
@@ -2834,13 +2929,15 @@ def read_setup(car: str, track: str, name: str) -> str:
 
 @_tool("Write a setup", writes=True, destructive=True,
        idempotent=False)
-def write_setup(car: str, track: str, name: str, values_json: str,
+def write_setup(car: str, track: str, name: str,
+                values_json: dict[str, float] | str,
                 base_setup: str | None = None,
                 overwrite: bool = False,
                 allow_unclamped: bool = False) -> str:
     """Write a setup file the driver can load from the in-game setup menu.
 
-    values_json: JSON object {SECTION: number}, e.g. {"PRESSURE_LF": 25}.
+    values_json: {SECTION: number}, e.g. {"PRESSURE_LF": 25}, as an object
+    or JSON text.
     base_setup: setup to start from; unspecified sections carry over. Values
     are clamped and snapped to the legal min/max/step (`clamped` lists
     changes). `displays_as`: what each value reads as on the setup screen;
@@ -2853,7 +2950,8 @@ def write_setup(car: str, track: str, name: str, values_json: str,
     values; the fix is opening the setup screen once with the in-game app
     running."""
     try:
-        values = json.loads(values_json)
+        values = (json.loads(values_json) if isinstance(values_json, str)
+                  else values_json)
     except json.JSONDecodeError as e:
         return _j({"error": f"values_json is not valid JSON: {e}"})
     if not isinstance(values, dict):

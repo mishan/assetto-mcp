@@ -167,6 +167,13 @@ lap-to-lap spread, so "faster" has to beat "you were just quicker that lap",
 and it checks whether you got more *consistent* (that needs about six laps a
 side).
 
+Every comparison is filed in a **setup book** for the car, with what changed,
+the conditions, the result and what you decided. Before the next change, the
+engineer checks what earlier tests found, and works out how many laps a side
+the test needs to show anything:
+
+> *"What do we know about the rear anti-roll bar?"*
+
 **7. See where you drove.**
 
 > *"Draw me a map of this session's laps."*

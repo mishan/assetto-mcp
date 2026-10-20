@@ -371,6 +371,63 @@ def test_a_renamed_tool_still_answers_under_its_old_name_unlisted():
         assert s._RENAMED[old] in reply.get("deprecated", ""), (old, reply)
 
 
+def _results(calls):
+    async def run():
+        async with _client() as (session, _):
+            return [json.loads(_wire(await session.call_tool(n, a))
+                               ["content"][0]["text"]) for n, a in calls]
+    return asyncio.run(run())
+
+
+def test_the_per_lap_reads_are_compact_unless_asked_for_everything():
+    """Read after every lap, so by default they carry the lap read and no
+    lap fractions; detail="full" still has the rest."""
+    sid, ids = _session_with_laps(4)
+    calls = [("lap_summary", {"lap_id": ids[-1]}),
+             ("compare_lap_corners", {"lap_id_a": ids[-1],
+                                      "lap_id_b": ids[0]}),
+             ("compare_runs", {"baseline_laps": ids[:2],
+                               "candidate_laps": ids[2:]})]
+    out = _results([(n, {**a, **d}) for n, a in calls
+                    for d in ({}, {"detail": "full"})])
+    for (name, _), brief, full in zip(calls, out[::2], out[1::2]):
+        text = json.dumps(brief)
+        assert not re.search(r'"\w+_pos"', text), (name, text[:300])
+        assert len(text) * 2 < len(json.dumps(full)), name
+    lap, full_lap = out[0], out[1]
+    assert lap["corners"], lap
+    for c in lap["corners"]:
+        assert {"turn", "min_speed_kmh", "apex_m", "slip_balance"} <= set(c)
+    assert all("entry_phase" in c for c in full_lap["corners"]), full_lap
+    assert "metrics" in out[4] and "corner_leads" in out[5], out[4].keys()
+
+
+def test_both_lap_deltas_name_the_lap_that_was_slower():
+    """compare_lap_corners subtracts lap b from lap a, time_delta_along_lap
+    lap a from lap b; each key says which lap it measures as slower."""
+    sid, (fast, slow) = _session_with_laps(2)
+    corners, along = _results([
+        ("compare_lap_corners", {"lap_id_a": slow, "lap_id_b": fast}),
+        ("time_delta_along_lap", {"lap_id_a": slow, "lap_id_b": fast})])
+    assert corners["a_slower_by_ms"] == 150, corners
+    assert along["b_slower_by_ms"] == -150, along
+    assert along["segments"][-1]["b_lost_so_far_ms"] < 0, along["segments"]
+
+
+def test_list_laps_says_which_laps_have_a_lap_time():
+    from assetto_mcp import db
+    s = _server()
+    sid, (timed,) = _session_with_laps(1)
+    out_lap = db.store_lap(s._conn, sid, 2, 0, True, [], out_lap=True)
+    s._conn.commit()
+    (rows,) = _results([("list_laps", {"session_id": sid})])
+    by_id = {r["id"]: r for r in rows}
+    assert by_id[timed]["usable_for_timing"] is True, by_id[timed]
+    assert by_id[timed]["lap_time"] == "1:53.150", by_id[timed]
+    assert by_id[out_lap]["usable_for_timing"] is False, by_id[out_lap]
+    assert "out-lap" in by_id[out_lap]["not_usable_because"], by_id[out_lap]
+
+
 def test_write_setup_takes_its_values_as_an_object_or_as_json_text():
     values = {"PRESSURE_LF": 25}
 

@@ -170,9 +170,9 @@ of the earliest one that took at least a quarter of what the heaviest did.
 Taking the last run instead would make any touch of the pedal before the apex
 the brake point. The walk never crosses the start/finish line.
 
-The sign says which corners turn the same way — it is deliberately *not*
-labeled left or right, because AC does not document which sign is which, and a
-consistent sign is more useful than a label that is right half the time.
+The sign says which way the corner turns: lateral g is positive in a
+left-hander, checked against recorded laps, so `turn_sign` +1 is
+`direction` "left" and -1 is "right".
 
 **`corner_detection`** appears alongside every corner list and says which
 lateral-g bar produced it. It is not the same bar in every tool: `lap_summary`

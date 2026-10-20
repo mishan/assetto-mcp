@@ -1290,7 +1290,7 @@ def lap_summary(lap: dict, samples: list[dict],
                 reference_spread_g: float | None = None,
                 turns: list[dict] | None = None,
                 reference_basis: str | None = None) -> dict:
-    """Everything an engineer needs to know about one lap, in ~1KB.
+    """Everything an engineer needs to know about one lap.
 
     reference_peak_g comes from lat_g_reference over every lap being looked
     at together. Omit it for a lap read on its own; pass it whenever two
@@ -1902,8 +1902,9 @@ def delta_by_position(lap_a: dict, samples_a: list[dict],
     in that table covers the ground where it went.
 
     This is the standard delta trace: cumulative time at each point on
-    track, differenced. Positive means lap_b is behind lap_a there. The
-    per-segment `gain_ms` is what to read -- the cumulative figure only
+    track, differenced. Positive means lap_b is behind lap_a there; the
+    keys say so, because compare_laps subtracts the other way round. The
+    per-segment `b_lost_ms` is what to read -- the cumulative figure only
     says the gap exists, the segment figure says where it opened.
     """
     fine = 200
@@ -1950,16 +1951,16 @@ def delta_by_position(lap_a: dict, samples_a: list[dict],
             rows.append({
                 "from": round(start / fine, 3),
                 "to": round(end / fine, 3),
-                "gain_ms": None,
-                "cumulative_ms": None,
+                "b_lost_ms": None,
+                "b_lost_so_far_ms": None,
                 "covered": False,
             })
             continue
         row = {
             "from": round(start / fine, 3),
             "to": round(end / fine, 3),
-            "gain_ms": round(delta[i1] - delta[i0], 1),
-            "cumulative_ms": round(delta[i1], 1),
+            "b_lost_ms": round(delta[i1] - delta[i0], 1),
+            "b_lost_so_far_ms": round(delta[i1], 1),
         }
         if i0 != start or i1 != end:
             # Report the span actually measured rather than implying the
@@ -1968,17 +1969,17 @@ def delta_by_position(lap_a: dict, samples_a: list[dict],
             row["measured_to"] = round(i1 / fine, 3)
         rows.append(row)
 
-    timed = [r for r in rows if r["gain_ms"] is not None]
-    losses = sorted(timed, key=lambda r: -r["gain_ms"])[:3]
+    timed = [r for r in rows if r["b_lost_ms"] is not None]
+    losses = sorted(timed, key=lambda r: -r["b_lost_ms"])[:3]
     # Only rows that actually gained: a lap slower everywhere has no gains,
     # not three smallest losses.
-    gains = [r for r in sorted(timed, key=lambda r: r["gain_ms"])
-             if r["gain_ms"] < 0][:3]
+    gains = [r for r in sorted(timed, key=lambda r: r["b_lost_ms"])
+             if r["b_lost_ms"] < 0][:3]
 
     # The rows should account for the whole gap. When they don't -- a
     # telemetry dropout, or a span neither lap covered -- say so rather
     # than let the reader assume the segments add up.
-    accounted = round(sum(r["gain_ms"] for r in timed), 1)
+    accounted = round(sum(r["b_lost_ms"] for r in timed), 1)
     total = lap_b["lap_time_ms"] - lap_a["lap_time_ms"]
     unaccounted = round(total - accounted, 1)
 
@@ -1987,10 +1988,7 @@ def delta_by_position(lap_a: dict, samples_a: list[dict],
                   "setup": lap_a.get("setup_name", "")},
         "lap_b": {"id": lap_b["id"], "time": _fmt_time(lap_b["lap_time_ms"]),
                   "setup": lap_b.get("setup_name", "")},
-        "total_delta_ms": total,
-        "note": "positive = lap_b is slower there. gain_ms is time lost in "
-                "that segment alone; cumulative_ms is the running total. "
-                "A segment with gain_ms null was not sampled on both laps.",
+        "b_slower_by_ms": total,
         "track_covered_pct": round(100 * covered / (fine + 1), 1),
         "accounted_ms": accounted,
         "unaccounted_ms": unaccounted,
@@ -4260,7 +4258,7 @@ def compare_laps(lap_a: dict, samples_a: list[dict],
     return {
         "lap_a": {"id": lap_a["id"], "time": _fmt_time(lap_a["lap_time_ms"])},
         "lap_b": {"id": lap_b["id"], "time": _fmt_time(lap_b["lap_time_ms"])},
-        "time_delta_ms": lap_a["lap_time_ms"] - lap_b["lap_time_ms"],
+        "a_slower_by_ms": lap_a["lap_time_ms"] - lap_b["lap_time_ms"],
         "note": "deltas are lap_a minus lap_b; positive min_speed_delta means"
                 " lap_a carried more speed",
         # Which bar produced these corners, and how firm it is. Two laps is

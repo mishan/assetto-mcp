@@ -1030,7 +1030,7 @@ def test_a_run_with_no_cornering_does_not_claim_a_shared_reference():
     base = [_store(srv, sid, n, 113000 + n * 40) for n in (1, 2, 3)]
     cand = [_store(srv, sid, n, 113100 + n * 40) for n in (4, 5, 6)]
 
-    out = _run(srv, base, cand)
+    out = _run(srv, base, cand, detail="full")
     cd = out["corner_detection"]
     assert cd["basis"] == "this lap's own cornering load", cd
     assert "laps_in_reference" not in cd, cd
@@ -1286,7 +1286,7 @@ def test_the_tools_number_the_turns_and_label_every_laps_corners():
     assert turns["built_from_laps"], turns
     assert turns["turns"][2]["turn_sign"] == -1, turns["turns"][2]
 
-    lap = json.loads(_tool(srv, "lap_summary")(lap_id=thin))
+    lap = json.loads(_tool(srv, "lap_summary")(lap_id=thin, detail="full"))
     assert [c["turn"] for c in lap["corners"]] == ["T1", "T3"], lap["corners"]
     assert [c["corner"] for c in lap["corners"]] == [1, 2], lap["corners"]
     # Same numbering in both payloads, not two maps that happen to agree.
@@ -1310,7 +1310,7 @@ def test_a_lap_is_detected_against_the_bar_its_turn_numbers_came_from():
     ids = [db.store_lap(srv._conn, sid, n, 113000 + n, True, _cornering())
            for n in range(1, 4)]
 
-    lap = json.loads(_tool(srv, "lap_summary")(lap_id=ids[0]))
+    lap = json.loads(_tool(srv, "lap_summary")(lap_id=ids[0], detail="full"))
     detection = lap["corner_detection"]
     assert detection["basis"].startswith("shared across"), detection
     assert "turn numbers" in detection["basis"], detection

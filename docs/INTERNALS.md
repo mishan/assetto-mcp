@@ -61,6 +61,7 @@ Instead a lap records facts, and the verdicts are derived:
 | `max_tyres_out`, `excursions`, `off_track_ms` | the track-limits evidence |
 | `invalid_source` | `inferred`, or `game` if it came from the game itself |
 | `sample_stride` | 1 normally; higher if the trace has been thinned |
+| `fuel_used_l` | fuel at the starting line minus at the finish; null if the lap did not start at the line |
 
 Two questions are kept apart, because conflating them loses data:
 
@@ -535,8 +536,8 @@ The Lua app talks to the server over HTTP on `127.0.0.1:9666` (change with
 binds localhost only.
 
 Only one server instance can hold the port, which is the same instance that
-holds the recording claim — see [Recording](#recording). `bridge_status` says
-whether this instance is the one listening.
+holds the recording claim — see [Recording](#recording). `session_check`
+(its `app`) says whether this instance is the one listening.
 
 ---
 

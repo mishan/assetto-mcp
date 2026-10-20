@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Forty tools. They fall into nine groups. For each: what to pass,
+Forty-six tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the traps.
 Every optional parameter takes null as "the default", so passing one
 explicitly is always safe; a call refused for a missing parameter is fixed
@@ -23,9 +23,24 @@ lap ids takes the same shapes: one id, a list, "87,88", "87 88" or "87-90".
 
 ## 1. Recording and state
 
+**`session_check()`** -- the session-start call. `recording` (`state` as
+`recording_status` reads it), `game` (what shared memory says now),
+`session` (id, car, track, laps, `best_clean_lap_id`, `setup_name`,
+`measured_setup`), `setup_on_car` (`identify_setup`'s match or
+candidates), `app` (`connected` and `last_seen_s`: the in-game app polls
+every 2 s, so more than 10 s means it is not talking to this server),
+`suspension.tier` ("worker" 333 Hz, "app" render-rate, null nothing yet),
+`server` (`restart_needed`, `last_update_check` from the cache; it never
+asks GitHub), and `notes` (the folder, and whether `driver.md` and the
+car's file exist). `to_do` is the list to work through before the first
+flying lap. An `app.bridge_error` with another chat open means that chat's
+server holds the in-game app: data still arrives, but
+`send_driver_message` from here does not reach the driver.
+
 **`start_recording()`** -- idempotent; recording starts with the server
 anyway, so this mostly undoes a `stop_recording`. If another instance holds
-the recorder this one stands by and says so. Call it first every session.
+the recorder this one stands by and says so. `session_check`'s `to_do`
+says when it is needed.
 
 **`recording_status()`** -- read `state`, not `running`: "never_started" and
 "stopped_by_request" look identical otherwise. "standby" is healthy.
@@ -43,10 +58,12 @@ and best lap. Poll it at each lap boundary for fuel, and whenever you want
 the tyre state between laps. `status: "off"` means the game is not in a
 session. The `tyre_compound` reads garbage when the car is not live.
 Judge fuel against `laps_remaining`, not against the next lap or two:
-`fuel_to_finish` does that sum at the car's nominal consumption (not the
-measured burn), and its `margin_laps` is the number to call ("enough to
-the flag, 1.5 laps spare"; "short by half a lap"). "tight" is under 0.6
-laps spare: check the real burn before saying the car makes it.
+`fuel_to_finish` does that sum, and its `margin_laps` is the number to
+call ("enough to the flag, 1.5 laps spare"; "short by half a lap").
+`basis` "measured" is the session's median burn over its usable laps
+(three or more, `measured_laps`); "nominal" is the car's rated
+consumption, which traffic and lifting move. "tight" is under 0.6 laps
+spare: on a nominal basis, say that the real burn is not yet known.
 
 **`list_sessions()`** -- id, car, track, lap count, best time. Every tool
 that reports a position adds meters and a `where` beside it, and says
@@ -55,6 +72,19 @@ meters" in `analysis.md`.
 
 **`list_laps(session_id, limit)`** -- most recent first, with ids for the lap
 tools.
+
+**`wait_for_lap(after_lap_id, timeout_s)`** -- the live loop for a client
+that cannot run `scripts/watch_laps.py` in the background. Waits up to
+`timeout_s` (at most 45) for a lap after `after_lap_id` (null: the newest
+stored now) and returns its card: `lap_id`, `lap_number`, `lap_time`,
+`usable_for_timing` (`not_usable_because`), `ran_wide`, `outlier`,
+`setup_name`, `fuel_used_l` (null when the lap did not start at the line),
+`contacts` as counts per verdict (null: no acceleration data; read
+`lap_summary` before naming a cause), and the session's
+`best_clean_lap_id`. `new_lap: false` is a timeout, with the recorder's
+`recording` state: call again with the same `after_lap_id`. A card with
+`more_waiting` has later laps behind it: call again with its `lap_id`.
+Laps in a later session count too, so a new session id shows up here.
 
 **`storage_report()`** -- database size and thinning. `sample_stride` above 1
 on a lap means its trace was decimated; numbers are intact, resolution is
@@ -184,8 +214,23 @@ histograms, ride height, roll balance. `lap_number` is for a lap that was
 not stored (an out-lap); `lap_count` is its deprecated minus-one form.
 Read `source`: "app" is render-rate and the
 damper histograms are body motion, not valving; "worker" is 333 Hz and
-real. **`suspension_capture_status()`** explains which tier is arriving.
-The worker is single-player only.
+real. `session_check`'s `suspension.tier` says which tier is arriving;
+**`suspension_capture_status()`**, deprecated, still explains why and
+what to do about it. The worker is single-player only.
+
+**`lap_trace(lap_id, channels, from_m, to_m, step_m)`** -- the raw trace
+for what no report answers: shift rpm by gear, time in 6th, the slip
+ratio through one braking zone, entry speed against the brake point.
+`channels` is a list of sample columns (`speed_kmh`, `gas`, `brake`,
+`steer`, `gear`, `rpm`, `acc_lat`, `acc_lon`, `slip_*`, `press_*`,
+`core_*`, `ride_f`/`ride_r`, `tyres_out`, `pos_x/y/z`, `heading`, `pitch`,
+`roll`, `tc_active`, `abs_active`, `wear_*`, `damage`); the default is
+speed, pedals and gear. `from_m`/`to_m` are meters past the start line
+(the whole lap by default) and a row comes every `step_m` meters, at most
+300: a longer window gets a coarser step, and `step_m_requested` says so.
+Each row has `m` and `t_s` since the lap started. `from_where` and
+`to_where` place the window; any other `m` goes through `describe_positions` before it
+goes to the driver.
 
 **`attitude_report(lap_id)`** -- roll and pitch per g. The roll gradient
 measures total roll stiffness: a bar or spring change should move it, and
@@ -287,11 +332,13 @@ rate is. A session is not a stint, which is why it segments: differencing
 the first set's start against the last set's end can call a healthy tyre
 gone. AC counts remaining down from 100; `used` counts up.
 
-**`fuel_plan(race_laps, stops, session_id)`** -- needs the car's
-`km_per_liter` from the in-game app, which is almost never present, and
-then errors. When it does not run: per-lap rate from consecutive
-lap-boundary `live_snapshot` readings, or the in-game estimator's figure
-from the driver. Tank size is in `setup_ranges` under FUEL.
+**`fuel_plan(race_laps, stops, session_id, liters_per_lap)`** -- the burn
+per lap is, in order: `liters_per_lap` when passed (the in-game
+estimator's figure from the driver), the session's measured median once
+three usable laps measured it, or nominal from the car's `km_per_liter`,
+which the in-game app rarely has. `liters_per_lap_source` says which; quote
+it with the plan. With none of the three it refuses, and `do_this` says
+how to get one. Tank size is in `setup_ranges` under FUEL.
 
 ## 6. Opponents and contacts
 
@@ -420,8 +467,21 @@ balance and steer.
 when the bridge port is held by an orphaned server; not worth chasing
 during a session.
 
-**`bridge_status()`** -- whether the in-game app is connected. Without it:
-no opponents, no suspension, no setup-screen values, no messages.
+**`bridge_status()`** -- deprecated: `session_check`'s `app` says whether
+the in-game app is connected. Still answers with the port, the bind error,
+`app_last_seen_s` and the pending message. Without the app: no opponents,
+no suspension, no setup-screen values, no messages.
+
+**`read_notes(car)`**, **`save_notes(kind, markdown, car)`**,
+**`save_handoff(markdown, name)`** -- the notes and the handoff for a
+client with no filesystem tool; with one, edit the files directly. All
+three stay in the data folder. `read_notes` returns `driver.md`, the car's
+file (default: the session's car) and the newest handoff in `exports/`.
+`save_notes` replaces a whole file (`kind` "driver" or "car"), so read,
+edit and send it all back; the old file is kept as `.md.bak-<time>`.
+`save_handoff` writes `exports/<name>.md` (default
+`session-<id>-<track>-<car>`) and never replaces one: a name in use gets
+`-2`. Hand the driver the `path`.
 
 ## 9. The server itself
 
@@ -435,7 +495,7 @@ for when the driver has said yes. `refused: "updating"`: an
 `force` does not override it. `refused: "not_supervised"` means the
 server cannot restart itself, and then the driver does have to fully quit
 and reopen the client. Afterwards: give it a few seconds, an open session
-continues under a new session id (tag it again), and `bridge_status` may
+continues under a new session id (tag it again), and `session_check` may
 show the port retrying for a minute or more on Windows while the in-game
 app waits to reconnect.
 
@@ -479,12 +539,8 @@ Then `restart_server`, with the driver's OK, to load the new code.
   read-only database (`db.get_lap`, `db.get_samples`,
   `db.rival_samples_between`, `db.rival_names`, `analysis.infer_contacts`).
   Say in the answer when you did that.
-- The database at `~/.assetto-mcp/telemetry.db` is safe to read with
-  `mode=ro`. `samples` has the 25 Hz trace per lap (`norm_pos`,
-  `speed_kmh`, `gas`, `brake`, `steer`, `gear`, `rpm`, `acc_lat`,
-  `acc_lon`, `slip_*`, `press_*`, `core_*`, `tyres_out`, `pos_x/y/z`,
-  `heading`, `damage`); `laps` has the verdicts and `completed_at`;
-  `rival_samples` has opponents (`spline`, not `norm_pos`); `sessions` has
-  `track_length_m`. Reach for it when a tool does not answer the question:
-  brake points in meters with entry speed, shift rpm by gear, time spent
-  in 6th, per-zone slip ratios.
+- `lap_trace` answers most questions the reports do not. Past it, and
+  only with a shell, the database at `~/.assetto-mcp/telemetry.db` is safe
+  to read with `mode=ro`: `samples` has the 25 Hz trace per lap,
+  `laps` the verdicts, `completed_at` and `fuel_used_l`, `rival_samples`
+  opponents (`spline`, not `norm_pos`), `sessions` `track_length_m`.

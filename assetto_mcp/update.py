@@ -318,6 +318,19 @@ def _write_cache(path: Path | None, local: str, result: dict) -> None:
         pass
 
 
+def cached_status(local: str | None,
+                  data_dir: Path | None = None) -> str | None:
+    """The last check's `status` for commit `local`, without asking GitHub.
+
+    None when that commit was never checked.
+    """
+    cached = _read_cache(_cache_path(data_dir))
+    if (not local or not cached or cached.get("repo") != _repo()
+            or cached.get("local") != local):
+        return None
+    return (cached.get("result") or {}).get("status")
+
+
 def _when(epoch: float | None) -> str | None:
     if epoch is None:
         return None

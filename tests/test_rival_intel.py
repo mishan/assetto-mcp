@@ -3,7 +3,7 @@
 The server's lap time for a remote car can lag its lap counter, so the
 time it reports for a lap is often the previous lap's. These pin the timing
 taken from the trace instead, the ranking built on it, and the per-turn time
-split that compare_to_rival reports, against a rival or the field.
+split that compare_to_rival and field_benchmark report.
 """
 
 import atexit
@@ -304,7 +304,7 @@ def test_field_benchmark_ranks_the_corner_where_the_field_is_quicker():
     ids = srv.turns.basis_lap_ids(srv._conn, sid)
     srv._corner_maps[sid] = (tuple(ids), {"turns": [TURN]})
 
-    out = json.loads(srv.compare_to_rival(session_id=sid))
+    out = json.loads(srv.field_benchmark(session_id=sid))
     assert "error" not in out, out
     row = out["turns"][0]
     assert row["turn"] == "T1", row
@@ -356,7 +356,7 @@ def test_a_stretch_only_one_side_timed_is_not_counted_as_time_available():
     _store_rival(srv._conn, sid, 5, 125.0, 0.39, 3, server_ms=999_999)
     _set_turns(srv, sid, [TURN])
 
-    out = json.loads(srv.compare_to_rival(
+    out = json.loads(srv.field_benchmark(
         session_id=sid, lap_ids=",".join(map(str, ids))))
     assert "error" not in out, out
     row = out["turns"][0]
@@ -379,7 +379,7 @@ def test_field_benchmark_says_why_when_there_is_nothing_to_measure():
                for t, pos, v, b, lap in trace]
     lap = db.store_lap(srv._conn, sid, 2, 0, True, samples)
     _set_turns(srv, sid, [TURN])
-    out = json.loads(srv.compare_to_rival(session_id=sid, lap_ids=str(lap)))
+    out = json.loads(srv.field_benchmark(session_id=sid, lap_ids=str(lap)))
     assert "lap time" in out.get("error", ""), out
 
         # Rival samples without a clock: no trace timing, which is not the
@@ -394,7 +394,7 @@ def test_field_benchmark_says_why_when_there_is_nothing_to_measure():
         [{"car_index": 5, "lap_count": l, "spline": pos, "speed_kmh": v,
           "brake": b} for t, pos, v, b, l in trace])
     _set_turns(srv, sid, [TURN])
-    out = json.loads(srv.compare_to_rival(session_id=sid, lap_id=lap))
+    out = json.loads(srv.field_benchmark(session_id=sid, lap_ids=str(lap)))
     assert "trace" in out.get("error", ""), out
     assert "quicker" not in out["error"], out
 

@@ -33,10 +33,12 @@ import functools  # noqa: E402
 import json  # noqa: E402
 import math  # noqa: E402
 import re  # noqa: E402
+import shutil  # noqa: E402
 import statistics  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 from pathlib import Path  # noqa: E402
+from typing import Literal  # noqa: E402
 
 try:  # mcp SDK 2.x
     from mcp.server.mcpserver import MCPServer as FastMCP
@@ -187,7 +189,8 @@ def _tool(title: str, *, writes: bool = False, destructive: bool = False,
     defaults to the worst case, so a tool that says nothing reads as
     destructive. `status`: its `error` field reports a state, so a reply
     carrying one is not a failed call. `locks_conn=False` is for the tools
-    that never touch the database, so a slow one holds no other call up.
+    that never touch the database, or take the lock only around the part
+    that does, so a slow one holds no other call up.
 
     Structured output is off: every tool returns JSON text, which the SDK
     would otherwise send a second time as an escaped string. Options this
@@ -644,6 +647,131 @@ def _fuel_to_finish(snap: dict) -> dict | None:
             out["note"] = ("the game's fuel-usage multiplier was not read, "
                            "so this assumes normal consumption")
     return out
+
+
+# The in-game app polls /status every 2 s; this much silence means it is
+# not running, or not talking to this instance.
+APP_SILENT_S = 10.0
+
+
+def _app_link() -> dict:
+    """Whether the in-game app is talking to this server, and how lately."""
+    seen = _bridge.app_seen_at
+    age = None if seen is None else time.monotonic() - seen
+    out = {"connected": age is not None and age < APP_SILENT_S,
+           "last_seen_s": None if age is None else round(age, 1),
+           "port": _bridge.port}
+    if _bridge.error:
+        out["bridge_error"] = _bridge.error
+        out["note"] = (
+            "this instance does not hold the bridge port. With another chat "
+            "open, its server holds it: the app's data still arrives, but "
+            "send_driver_message from here does not reach the driver.")
+    return out
+
+
+def _game_now() -> dict:
+    """What shared memory says the game is doing, or why it cannot say."""
+    from .sim_info import SimInfo
+    try:
+        sim = SimInfo()
+    except Exception as e:  # noqa: BLE001 - AC not running, not Windows
+        return {"status": "not running", "why": str(e)}
+    try:
+        g, s = sim.graphics, sim.static
+        return {"status": AC_STATUS.get(g.status, f"unknown ({g.status})"),
+                "car": s.carModel, "track": s.track,
+                "track_config": s.trackConfiguration,
+                "session_type": AC_SESSION.get(g.session,
+                                               f"unknown ({g.session})")}
+    finally:
+        g = s = None
+        sim.close()
+
+
+def _suspension_sources(sid: int) -> tuple[dict[str, int], int]:
+    """Suspension samples per capture tier, and laps captured, in a session."""
+    laps = db.suspension_lap_counts(_conn, sid)
+    by_source: dict[str, int] = {}
+    for r in laps:
+        by_source[r["source"]] = by_source.get(r["source"], 0) + r["n"]
+    return by_source, len({r["lap_count"] for r in laps})
+
+
+@_tool("Session check", status=True)
+def session_check() -> str:
+    """Are we good to go? One call at session start: recorder state, the game
+    now, the session (setup tag, measured setup, best_clean_lap_id), which
+    saved setup is on the car, whether the in-game app is connected
+    (`app.last_seen_s`), the suspension tier ("worker" 333 Hz, "app"
+    render-rate, null none), whether a restart or update is owed, and the
+    notes folder. `to_do`: what to fix before the first flying lap."""
+    state, why = _collector_state()
+    snap = _bridge.status_snapshot()
+    sid = snap["session_id"]
+    to_do = []
+    out = {"recording": {"state": state, "session_id": sid,
+                         "recording_elsewhere": snap["by_other"]},
+           "game": _game_now()}
+    if why:
+        out["recording"]["state_note"] = why
+    if state in ("never_started", "died"):
+        to_do.append("nothing is recording: start_recording")
+    elif state == "stopped_by_request":
+        to_do.append("recording was stopped on request: ask the driver "
+                     "before start_recording")
+
+    session = db.get_session(_conn, sid) if sid else None
+    if session:
+        tag = session.get("setup_name") or None
+        out["session"] = {
+            "id": sid, "car": session["car"], "track": session["track"],
+            "track_config": session["track_config"],
+            "laps": db.count_laps(_conn, sid),
+            "best_clean_lap_id": db.best_clean_lap_id(_conn, sid),
+            "setup_name": tag,
+            "measured_setup": db.measured_setup_at(_conn, sid) or None}
+        try:
+            found = setups.identify_setup(
+                AC_DOCS_DIR, session["car"],
+                session.get("track_config") or session["track"],
+                db.setup_values(_conn, sid), track_folder=session["track"])
+            out["setup_on_car"] = {k: found[k] for k in
+                                   ("match", "candidates", "reason")
+                                   if found.get(k) is not None}
+        except ValueError as e:
+            out["setup_on_car"] = {"match": None, "reason": str(e)}
+        if not tag:
+            to_do.append("no setup tag: set_session_setup with the setup "
+                         "the driver names")
+        by_source, captured = _suspension_sources(sid)
+        out["suspension"] = {
+            "tier": ("worker" if "worker" in by_source
+                     else next(iter(by_source), None)),
+            "laps_captured": captured}
+
+    out["app"] = _app_link()
+    if not out["app"]["connected"] and not _bridge.error:
+        to_do.append("the in-game app is not connected: no opponents, "
+                     "suspension, setup values or messages. Is it enabled "
+                     "in the apps sidebar?")
+
+    disk = update.installed_commit()
+    restart = bool(_RUNNING_COMMIT and disk and disk != _RUNNING_COMMIT)
+    out["server"] = {"version": _version(), "restart_needed": restart,
+                     "last_update_check": update.cached_status(disk,
+                                                               DATA_DIR)}
+    if restart:
+        to_do.append("newer code is on disk: restart_server between "
+                     "sessions, with the driver's OK")
+
+    car = session["car"] if session else None
+    out["notes"] = {"dir": str(NOTES_DIR),
+                    "driver": (NOTES_DIR / "driver.md").exists(),
+                    "car": bool(car and _is_file_name(car)
+                                and (NOTES_DIR / f"{car}.md").exists())}
+    out["to_do"] = to_do
+    return _j(out)
 
 
 # --- stored telemetry --------------------------------------------------
@@ -1575,6 +1703,159 @@ def lap_summary(lap_id: int) -> str:
     return _j(_placed(out, lap["session_id"], cmap["turns"]))
 
 
+def _lap_card(lap_id: int) -> dict:
+    """One stored lap, compact enough to read after every lap."""
+    lap = db.get_lap(_conn, lap_id)
+    usable, why = db.lap_usability(lap)
+    contacts = _contacts_inferred(lap, db.get_samples(_conn, lap_id))
+    if contacts is not None:
+        verdicts = [c["verdict"] for c in contacts]
+        contacts = {v: verdicts.count(v) for v in dict.fromkeys(verdicts)}
+    card = {"new_lap": True, "lap_id": lap_id,
+            "session_id": lap["session_id"],
+            "lap_number": lap["lap_number"],
+            "lap_time": analysis._fmt_time(lap["lap_time_ms"]),
+            "lap_time_ms": lap["lap_time_ms"],
+            "usable_for_timing": usable, "ran_wide": bool(lap["invalid"]),
+            "outlier": bool(lap["outlier"]),
+            "setup_name": lap["setup_name"] or None,
+            "fuel_used_l": lap.get("fuel_used_l"),
+            "contacts": contacts,
+            "best_clean_lap_id": db.best_clean_lap_id(_conn,
+                                                      lap["session_id"])}
+    if why:
+        card["not_usable_because"] = why
+    more = _conn.execute("SELECT COUNT(*) c FROM laps WHERE id > ?",
+                         (lap_id,)).fetchone()["c"]
+    if more:
+        card["more_waiting"] = more
+    return card
+
+
+def _next_lap(after: int | None) -> tuple[int, dict | None]:
+    """(the id waited after, the card of the first lap past it, or None)."""
+    with _conn_lock:
+        if after is None:
+            after = _conn.execute(
+                "SELECT COALESCE(MAX(id), 0) m FROM laps").fetchone()["m"]
+        r = _conn.execute("SELECT id FROM laps WHERE id > ? ORDER BY id"
+                          " LIMIT 1", (after,)).fetchone()
+        return after, (_lap_card(r["id"]) if r else None)
+
+
+# Under the 60 s many clients allow a call before giving up on it.
+WAIT_FOR_LAP_MAX_S = 45
+WAIT_FOR_LAP_POLL_S = 1.0
+
+
+@_tool("Wait for the next lap", locks_conn=False)
+async def wait_for_lap(after_lap_id: int | None = None,
+                       timeout_s: int = 40) -> str:
+    """Wait until a lap after after_lap_id is stored (null: the newest one
+    now), up to timeout_s (at most 45), and return it as a card: time,
+    usable, ran_wide, contact verdicts, setup, fuel used, and the session's
+    best_clean_lap_id. For live mode in a client with no background watcher.
+    {"new_lap": false} is a timeout: call again with the same after_lap_id.
+    `more_waiting`: later laps already stored; call again with this lap_id."""
+    import anyio
+
+    timeout = min(max(timeout_s, 1), WAIT_FOR_LAP_MAX_S)
+    deadline = time.monotonic() + timeout
+    after = after_lap_id
+    while True:
+        # The database work runs on a worker thread and the wait is an
+        # async sleep: SDK 1.x runs tools on the event loop, where a
+        # blocking wait would hold up every other call.
+        after, card = await anyio.to_thread.run_sync(_next_lap, after)
+        if card or time.monotonic() >= deadline:
+            break
+        await anyio.sleep(WAIT_FOR_LAP_POLL_S)
+    if card:
+        return _j(card)
+    with _conn_lock:
+        state, _ = _collector_state()
+    return _j({"new_lap": False, "after_lap_id": after,
+               "waited_s": timeout, "recording": state})
+
+
+TRACE_CHANNELS = (
+    "speed_kmh", "gas", "brake", "steer", "gear", "rpm", "acc_lat",
+    "acc_lon", "slip_fl", "slip_fr", "slip_rl", "slip_rr", "press_fl",
+    "press_fr", "press_rl", "press_rr", "core_fl", "core_fr", "core_rl",
+    "core_rr", "ride_f", "ride_r", "tyres_out", "pos_x", "pos_y", "pos_z",
+    "heading", "pitch", "roll", "tc_active", "abs_active", "wear_fl",
+    "wear_fr", "wear_rl", "wear_rr", "damage")
+TRACE_MAX_ROWS = 300
+
+
+@_tool("Lap trace window")
+def lap_trace(lap_id: int,
+              channels: list[Literal[TRACE_CHANNELS]] | None = None,
+              from_m: float | None = None, to_m: float | None = None,
+              step_m: float = 10) -> str:
+    """Raw telemetry along one stretch of one lap, a row every step_m
+    meters, for what no report answers: shift rpm by gear, time in 6th,
+    slip through one braking zone, entry speed against the brake point.
+
+    channels: sample columns (default speed_kmh, gas, brake, gear).
+    from_m/to_m: meters past the start line, default the whole lap. At most
+    300 rows: a longer window gets a coarser `step_m`. Rows carry `m` and
+    `t_s` (since the lap started); `from_where`/`to_where` place the
+    window, and locate turns any other `m` into words for the driver."""
+    lap = db.get_lap(_conn, lap_id)
+    if not lap:
+        return _j({"error": f"no lap with id {lap_id}"})
+    sid = lap["session_id"]
+    length, source = _track_length(sid)
+    if not length:
+        return _j({"error": f"session {sid} has no track length, stored or "
+                            f"estimable, so meters cannot be placed"})
+    lo = 0.0 if from_m is None else float(from_m)
+    hi = length if to_m is None else float(to_m)
+    if not (math.isfinite(lo) and math.isfinite(hi) and 0 <= lo < hi):
+        return _j({"error": f"from_m must be below to_m, both from 0 to "
+                            f"{length:.0f} m"})
+    if not (math.isfinite(step_m) and step_m > 0):
+        return _j({"error": f"step_m must be above 0, got {step_m!r}"})
+    step = max(float(step_m), (hi - lo) / TRACE_MAX_ROWS)
+    channels = list(dict.fromkeys(
+        channels or ("speed_kmh", "gas", "brake", "gear")))
+
+    rows, high, next_m = [], -math.inf, lo
+    for smp in db.get_samples(_conn, lap_id):
+        pos = smp["norm_pos"]
+        # Forward progress only: ticks past the line before the lap
+        # counter moved would read as the start of the lap again.
+        if pos is None or pos <= high:
+            continue
+        high = pos
+        m = pos * length
+        if m > hi:
+            break
+        if m < next_m:
+            continue
+        row = {"m": round(m, 1), "t_s": round(smp["t_ms"] / 1000.0, 2)}
+        for c in channels:
+            v = smp.get(c)
+            row[c] = round(v, 3) if isinstance(v, float) else v
+        rows.append(row)
+        next_m = lo + (math.floor((m - lo) / step) + 1) * step
+    turns = _named_turns(sid)
+    out = {"lap_id": lap_id, "session_id": sid,
+           "lap_number": lap["lap_number"],
+           "from_m": round(lo), "to_m": round(hi),
+           "from_where": places.where(lo / length % 1.0, length, turns),
+           "to_where": places.where(hi / length % 1.0, length, turns),
+           "step_m": round(step, 1), "channels": channels,
+           "rows": rows[:TRACE_MAX_ROWS],
+           "track_length": {"m": round(length), "source": source}}
+    if step > step_m:
+        out["step_m_requested"] = step_m
+    if lap.get("sample_stride", 1) > 1:
+        out["sample_stride"] = lap["sample_stride"]
+    return _j(out)
+
+
 @_tool("Track corners")
 def track_corners(session_id: int | None = None) -> str:
     """The session's turns, T1, T2... in track order, pooled from every lap's
@@ -1804,23 +2085,20 @@ def suspension_report(lap_id: int | None = None,
 
 @_tool("Suspension capture status", status=True)
 def suspension_capture_status() -> str:
-    """Whether suspension data is arriving, from which tier, and what to do
-    about it. Call it when suspension_report has no data or damper numbers
-    look implausible."""
+    """Deprecated: session_check gives the tier. Whether suspension data is
+    arriving, from which tier, and what to do about it, for when
+    suspension_report has no data or damper numbers look implausible."""
     sid = _active_session()
-    out = {"session_id": sid}
+    out = {"session_id": sid, "deprecated": "use session_check"}
     if sid is None:
         out["error"] = "no active session"
         return _j(out)
 
-    laps = db.suspension_lap_counts(_conn, sid)
-    by_source: dict[str, int] = {}
-    for r in laps:
-        by_source[r["source"]] = by_source.get(r["source"], 0) + r["n"]
+    by_source, captured = _suspension_sources(sid)
     out["samples_by_source"] = by_source
-    out["laps_captured"] = len({r["lap_count"] for r in laps})
+    out["laps_captured"] = captured
 
-    if not laps:
+    if not by_source:
         out["status"] = "no suspension data in this session"
         out["what_to_check"] = [
             "Is the Assetto MCP app enabled in the in-game apps sidebar?",
@@ -2592,10 +2870,159 @@ def send_driver_message(text: str) -> str:
 
 @_tool("In-game app bridge status", status=True)
 def bridge_status() -> str:
-    """Health of the HTTP bridge the in-game app connects to."""
+    """Deprecated: session_check's `app` says whether the in-game app is
+    connected. Port, bind error and pending message of its HTTP bridge."""
     return _j({"port": _bridge.port if _bridge else None,
                "error": _bridge.error if _bridge else "not running",
-               "pending_message": _bridge.get_message() if _bridge else None})
+               "app_last_seen_s": _app_link()["last_seen_s"],
+               "pending_message": _bridge.get_message() if _bridge else None,
+               "deprecated": "use session_check"})
+
+
+# --- notes and the handoff -----------------------------------------------
+
+# The race-engineer skill's own files, for clients that have no filesystem
+# tool. Both folders are the driver's, outside the repository.
+NOTES_DIR = DATA_DIR / "notes"
+EXPORTS_DIR = DATA_DIR / "exports"
+NOTES_MAX_CHARS = 100_000
+_KEEP_NOTE_BACKUPS = 5
+
+# One file name and nothing else: no separator, no "..", no drive letter,
+# and not ending in a dot or space, which Windows drops.
+_FILE_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_.\- ]{0,98}"
+                           r"[A-Za-z0-9_\-])?$")
+
+
+def _is_file_name(name) -> bool:
+    return (isinstance(name, str) and bool(_FILE_NAME_RE.match(name))
+            and ".." not in name)
+
+
+def _note_path(folder: Path, stem: str) -> Path:
+    path = folder / f"{stem}.md"
+    # The name is checked already; this catches a symlink leading out.
+    if not path.resolve().is_relative_to(folder.resolve()):
+        raise ValueError(f"{path} is outside {folder}")
+    return path
+
+
+def _read_md(path: Path) -> dict | None:
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8", errors="replace")
+    out = {"name": path.name, "markdown": text[:NOTES_MAX_CHARS]}
+    if len(text) > NOTES_MAX_CHARS:
+        out["truncated_at_chars"] = NOTES_MAX_CHARS
+    return out
+
+
+@_tool("Read the engineer's notes")
+def read_notes(car: str | None = None) -> str:
+    """The driver's notes (driver.md), the car's (<car>.md; default the
+    session's car) and the newest handoff in exports, from the data folder.
+    Read them at session start; the newest handoff wins where they differ.
+    null means none yet. `other_cars`: cars with notes of their own."""
+    car = _resolve_car(car)
+    if car is not None and not _is_file_name(car):
+        return _j({"error": f"car must be a car folder name, got {car!r}"})
+    handoffs = sorted(EXPORTS_DIR.glob("*.md"),
+                      key=lambda p: p.stat().st_mtime) \
+        if EXPORTS_DIR.is_dir() else []
+    others = sorted(p.stem for p in NOTES_DIR.glob("*.md")
+                    if p.stem not in ("driver", car)) \
+        if NOTES_DIR.is_dir() else []
+    return _j({"notes_dir": str(NOTES_DIR),
+               "driver": _read_md(NOTES_DIR / "driver.md"),
+               "car": car,
+               "car_notes": _read_md(_note_path(NOTES_DIR, car))
+               if car else None,
+               "latest_handoff": _read_md(handoffs[-1]) if handoffs else None,
+               "other_cars": others})
+
+
+# Replaces the file, but keeps the old one beside it.
+@_tool("Save the engineer's notes", writes=True)
+def save_notes(kind: Literal["driver", "car"], markdown: str,
+               car: str | None = None) -> str:
+    """Replace driver.md (kind "driver": what the driver prefers and has
+    corrected) or <car>.md (kind "car": setup lineage, verdicts, measured
+    rates; car defaults to the session's) in the data folder's notes.
+    Send the whole file: read_notes first and edit it. The old file is kept
+    as <name>.md.bak-<time>, the newest 5."""
+    if not isinstance(markdown, str) or not markdown.strip():
+        return _j({"error": "markdown is empty"})
+    if len(markdown) > NOTES_MAX_CHARS:
+        return _j({"error": f"notes are capped at {NOTES_MAX_CHARS} "
+                            f"characters, got {len(markdown)}"})
+    if kind == "driver":
+        stem = "driver"
+    else:
+        stem = _resolve_car(car)
+        if stem is None:
+            return _j({"error": "no active session to take the car from; "
+                                "pass car"})
+        if not _is_file_name(stem) or stem.lower() == "driver":
+            return _j({"error": f"car must be a car folder name, "
+                                f"got {stem!r}"})
+    NOTES_DIR.mkdir(parents=True, exist_ok=True)
+    path = _note_path(NOTES_DIR, stem)
+    out = {"path": str(path)}
+    if path.exists():
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = path.with_name(f"{path.name}.bak-{stamp}")
+        n = 1
+        while backup.exists():
+            backup = path.with_name(f"{path.name}.bak-{stamp}-{n}")
+            n += 1
+        shutil.copy2(path, backup)
+        out["backup"] = str(backup)
+        for old in sorted(NOTES_DIR.glob(f"{path.name}.bak-*"))[
+                :-_KEEP_NOTE_BACKUPS]:
+            try:
+                old.unlink()
+            except OSError:
+                pass  # a stale backup is not worth failing the save over
+    path.write_text(markdown, encoding="utf-8")
+    return _j(out)
+
+
+def _name_part(text) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(text or "")).strip("._")
+
+
+@_tool("Save the session handoff", writes=True, idempotent=False)
+def save_handoff(markdown: str, name: str | None = None) -> str:
+    """Write the closing handoff document to the data folder's exports as
+    <name>.md; name defaults to session-<id>-<track>-<car>. Never replaces
+    a file: an existing name gets -2, -3... Returns the path to hand to
+    the driver."""
+    if not isinstance(markdown, str) or not markdown.strip():
+        return _j({"error": "markdown is empty"})
+    if len(markdown) > NOTES_MAX_CHARS:
+        return _j({"error": f"a handoff is capped at {NOTES_MAX_CHARS} "
+                            f"characters, got {len(markdown)}"})
+    if name is None:
+        sid = _active_session()
+        session = db.get_session(_conn, sid) if sid else None
+        if not session:
+            return _j({"error": "no active session to name it after; "
+                                "pass name"})
+        name = "-".join(p for p in (
+            f"session-{sid}", _name_part(session["track"]),
+            _name_part(session["car"])) if p)
+    stem = name[:-3] if name.endswith(".md") else name
+    if not _is_file_name(stem):
+        return _j({"error": f"name must be a file name with no folder, "
+                            f"got {name!r}"})
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    path, n = _note_path(EXPORTS_DIR, stem), 2
+    while path.exists():
+        path, n = _note_path(EXPORTS_DIR, f"{stem}-{n}"), n + 1
+    # "x": a file that appeared since the check is not overwritten either.
+    with open(path, "x", encoding="utf-8") as f:
+        f.write(markdown)
+    return _j({"path": str(path), "url": path.resolve().as_uri()})
 
 
 # --- the server itself -------------------------------------------------
@@ -2723,7 +3150,7 @@ def restart_server(force: bool = False) -> str:
                    "connection; give it a few seconds before the next call. "
                    "The in-game app reconnects on its own, but on Windows "
                    "the bridge may take a while to get its port back -- "
-                   "bridge_status says when it has."}
+                   "session_check's `app` says when it has."}
     if _collector.session_id is not None:
         out["session_note"] = ("recording resumes under a new session id; "
                                "tag it with set_session_setup again")

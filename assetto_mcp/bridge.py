@@ -238,6 +238,9 @@ class Bridge:
         self._bind_stop = threading.Event()
         self._susp_writes = 0
         self.error: str | None = None
+        # time.monotonic() of the in-game app's latest request. The app polls
+        # /status every couple of seconds, so a stale one means it is gone.
+        self.app_seen_at: float | None = None
 
     # -- session resolution ---------------------------------------------
 
@@ -429,6 +432,7 @@ class Bridge:
             def do_GET(self):
                 if self._from_web_page():
                     return self._send(403, {"error": "forbidden"})
+                bridge.app_seen_at = time.monotonic()
                 if self.path != "/status":
                     return self._send(404, {"error": "unknown path"})
                 self._send(200, {**bridge.status_snapshot(),
@@ -445,6 +449,7 @@ class Bridge:
             def _do_post(self):
                 if self._from_web_page():
                     return self._send(403, {"error": "forbidden"})
+                bridge.app_seen_at = time.monotonic()
                 body = self._body()
                 if body is None:
                     return self._send(400, {"error": "bad JSON"})

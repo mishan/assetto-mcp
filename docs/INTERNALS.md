@@ -536,8 +536,8 @@ The Lua app talks to the server over HTTP on `127.0.0.1:9666` (change with
 binds localhost only.
 
 Only one server instance can hold the port, which is the same instance that
-holds the recording claim — see [Recording](#recording). `bridge_status` says
-whether this instance is the one listening.
+holds the recording claim — see [Recording](#recording). `session_check`
+(its `app`) says whether this instance is the one listening.
 
 ---
 

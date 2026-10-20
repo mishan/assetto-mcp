@@ -21,8 +21,9 @@ Read the reference files when you need them, not all at once:
   entry phase, spins and contacts, brake bias, tyres, fuel, wear, gearing.
 - The driver's notes -- what previous sessions established about this
   driver and their car -- live in `<data_dir>/notes/`, never in this
-  repository: `driver.md`, and one `<car id>.md` per car. `data_dir` comes
-  from `storage_report`. Read both at the start of a session. They are the
+  repository: `driver.md`, and one `<car id>.md` per car. `session_check`
+  gives the folder as `notes.dir`. Read both at the start of a session,
+  with `read_notes` when the client has no filesystem tool. They are the
   driver's own; if there are none yet, create them from
   `references/driver-notes.example.md` when there is something to record.
   Dated facts, not laws; the newest handoff in `exports/` wins.
@@ -94,29 +95,34 @@ mitigation, not a habit. A spin that looks like a driving error can be a
 Do these in the first minute, before the first flying lap lands. Several can
 go in one round of calls.
 
-1. `start_recording` and `recording_status`. Read `state`; "standby" means
-   another server instance holds the recorder and that is fine.
-2. `live_snapshot` for car, track, layout, air and road temperature, fuel.
-3. `identify_setup` with the session id. If the driver has told you what they
-   loaded, `set_session_setup` with that name now; it applies forward only,
-   and every lap before it stays unlabeled. If laps were already driven on
-   it, `label_laps` with the ids the driver names, never inferred -- the
-   reply's `unlabelled_laps_on_the_setup_measured_now` is the list to
-   confirm with them.
+1. `session_check`: recording `state` ("standby" means another server
+   instance holds the recorder, and that is fine), the session, its setup
+   tag, which saved setup is on the car (`setup_on_car`), whether the
+   in-game app is connected, the suspension tier, and whether a restart is
+   owed. Work through its `to_do`. Render-rate suspension is fine for ride
+   height and load transfer; damper histograms need the physics worker
+   ("worker"), which is single-player only.
+2. `live_snapshot` for air and road temperature, fuel and tyres.
+3. If the driver has told you what they loaded, `set_session_setup` with
+   that name now; it applies forward only, and every lap before it stays
+   unlabeled. If laps were already driven on it, `label_laps` with the ids
+   the driver names, never inferred -- the reply's
+   `unlabelled_laps_on_the_setup_measured_now` is the list to confirm with
+   them. `identify_setup` has the detail when `setup_on_car` is unclear.
 4. If the setup is new to you, `read_setup` and `setup_ranges`, and note
    every display entry whose `source` is "unknown" -- you will want the
    driver to read those off the screen at some quiet moment.
-5. `suspension_capture_status` once, so you know which suspension tier is
-   arriving. Render-rate is fine for ride height and load transfer; damper
-   histograms need the physics worker, which is single-player only.
-6. Arm the lap watcher so each lap wakes you:
+5. Arm the lap watcher so each lap wakes you:
    `python scripts/watch_laps.py --session <id> --interval 3` under a Monitor
    with the maximum timeout. It prints one line per stored lap, for this
    session and any later one. Monitors expire after 30 minutes: re-arm on
    every expiry notice, and the moment a race weekend moves to a new session
    id (server rejoin, qualifying, race) tag it with `set_session_setup`
-   again because the tag does not carry over.
-7. Say what you found in three lines: what is on the car, what is different
+   again because the tag does not carry over. A client with no background
+   commands calls `wait_for_lap` instead, in live mode, again after every
+   reply: it returns the next lap's card, or `new_lap: false` after at most
+   45 s, and then you call it again with the same `after_lap_id`.
+6. Say what you found in three lines: what is on the car, what is different
    from last time, and what the first laps should establish.
 
 The MCP tool schemas drift between code updates. Parameters that were
@@ -139,7 +145,8 @@ and only between sessions; then `restart_server`.
 
 A lap lands. In one round of calls: `lap_summary` for it, `live_snapshot`
 for fuel and the current tyre state, and, from the second flying lap on,
-`compare_laps` against the best clean lap so far. In debrief mode, note
+`compare_laps` against the best clean lap so far (`best_clean_lap_id` on
+the `wait_for_lap` card and in `session_check`). In debrief mode, note
 the four things below and say nothing. In live mode, say them, briefly:
 
 - **The time, and where it came from.** Corner min-speed deltas and brake
@@ -163,10 +170,11 @@ Rules that hold on every lap:
   samples if something happened in it; never compare its time.
 - A practice start lap (car stopped on the line with others alongside)
   reads as a contact at the grid. Say so and move on.
-- Fuel: read `fuel_l` from `live_snapshot` at each lap boundary and
-  difference consecutive readings taken at the same point in the lap. A
-  reading mid-lap against one at the boundary gives nonsense; the first
-  pair you take is often exactly that, so wait for the second.
+- Fuel: every lap from line to line carries its measured `fuel_used_l`
+  (on the `wait_for_lap` card), and from three usable laps `fuel_plan` and
+  `live_snapshot`'s `fuel_to_finish` run on the session's median burn
+  (`basis: "measured"`). Before that they use the car's nominal figure;
+  say which you quoted.
 - Track the session id. Laps in a new session id are invisible to a watcher
   bound to the old one; the shipped watcher follows later ids, but the setup
   tag does not.
@@ -279,16 +287,20 @@ answer is usually the contact list and the tyre wear, not the setup:
 ## Closing a session
 
 1. Write the handoff to `exports/session-<first>-<last>-<track>-<car>.md`
-   following `references/handoff-template.md`. Setup lineage with verdicts,
-   what the week established, open items in priority order, display
-   mappings observed, fuel and tyre numbers, rivals. In debrief mode this
-   is also the driver's report, so it opens with the lap-by-lap story and
-   the incidents before the engineering sections.
+   following `references/handoff-template.md` (`save_handoff` when the
+   client has no filesystem tool; it never replaces a file). Setup
+   lineage with verdicts, what the week established, open items in
+   priority order, display mappings observed, fuel and tyre numbers,
+   rivals. In debrief mode this is also the driver's report, so it opens
+   with the lap-by-lap story and the incidents before the engineering
+   sections.
 2. `export_line_map` for the session so the driver has the picture.
 3. Update the notes in `<data_dir>/notes/`: anything the driver corrected
    you on or said they prefer goes in `driver.md`; setup lineage and
    verdicts, car behavior confirmed a second time, open items and measured
    rates go in the car's file. Never write them anywhere in the repository.
+   Without a filesystem tool, `save_notes` replaces a whole file, keeping
+   the old one: `read_notes`, edit, and send it all back.
 4. Leave repo changes uncommitted unless asked; this repository forbids any
    attribution to an assistant in commits and files.
 

@@ -2627,7 +2627,8 @@ def fuel_to_finish(fuel_l: float, laps_remaining: int,
 def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
               tank_liters: float | None = None, stops: int = 1,
               margin_laps: float = FUEL_MARGIN_LAPS,
-              fuel_rate: float | None = None) -> dict:
+              fuel_rate: float | None = None,
+              liters_per_lap: float | None = None) -> dict:
     """Fuel for a race distance, and whether a stop is forced.
 
     margin_laps is deliberately fractional: arriving at the flag with two
@@ -2644,23 +2645,31 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
     fuel_rate is AC's fuel-usage multiplier. None means it was not reported,
     which is said in the payload rather than assumed away: at 200% every
     figure here is half what the car needs.
+
+    liters_per_lap is a burn measured or given rather than computed: it
+    replaces the track length, km_per_liter and fuel_rate, all of which it
+    already includes.
     """
     bad = (_fuel_input_error("race_laps", race_laps, 1, 100_000, integer=True)
            or _fuel_input_error("stops", stops, 0, 1000, integer=True)
            or _fuel_input_error("margin_laps", margin_laps, 0, 100))
     if bad:
         return {"error": bad}
-    if not km_per_liter or not track_length_m:
+    if liters_per_lap is not None:
+        bad = _fuel_input_error("liters_per_lap", liters_per_lap, 0, 1000)
+    elif not km_per_liter or not track_length_m:
         return {"error": "no fuel basis recorded for this session; the "
                          "in-game app supplies track length and the car's "
                          "km_per_liter"}
-    # The floors are the module constants above, which is what
-    # db.set_fuel_basis writes against: a basis the database accepted cannot
-    # then be refused here.
-    bad = (_fuel_input_error("km_per_liter", km_per_liter,
-                             MIN_KM_PER_LITER, 1000)
-           or _fuel_input_error("track_length_m", track_length_m,
-                                MIN_TRACK_LENGTH_M, 1e6)
+    else:
+        # The floors are the module constants above, which is what
+        # db.set_fuel_basis writes against: a basis the database accepted
+        # cannot then be refused here.
+        bad = (_fuel_input_error("km_per_liter", km_per_liter,
+                                 MIN_KM_PER_LITER, 1000)
+               or _fuel_input_error("track_length_m", track_length_m,
+                                    MIN_TRACK_LENGTH_M, 1e6))
+    bad = (bad
            or (tank_liters is not None
                and _fuel_input_error("tank_liters", tank_liters,
                                      MIN_TANK_LITERS, 100_000))
@@ -2678,7 +2687,8 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
     # otherwise carry into a range() call and a lap count of 11.0.
     race_laps, stops = int(race_laps), int(stops)
     rate = 1.0 if fuel_rate is None else float(fuel_rate)
-    per_lap = (track_length_m / 1000.0) / km_per_liter * rate
+    per_lap = (float(liters_per_lap) if liters_per_lap is not None else
+               (track_length_m / 1000.0) / km_per_liter * rate)
     out = {
         "liters_per_lap": round(per_lap, 3),
         "race_laps": race_laps,
@@ -2694,11 +2704,15 @@ def fuel_plan(race_laps: int, km_per_liter: float, track_length_m: float,
             f"alone. The margin covers a burn rate above the nominal figure "
             f"-- traffic, a restart -- and not a formation lap, which is a "
             f"whole lap more."),
-        "track_length_km": round(track_length_m / 1000.0, 3),
-        "km_per_liter": km_per_liter,
-        "fuel_rate_pct": None if fuel_rate is None else round(rate * 100, 1),
     }
-    if fuel_rate is None:
+    if liters_per_lap is None:
+        out.update({
+            "track_length_km": round(track_length_m / 1000.0, 3),
+            "km_per_liter": km_per_liter,
+            "fuel_rate_pct": (None if fuel_rate is None
+                              else round(rate * 100, 1)),
+        })
+    if liters_per_lap is None and fuel_rate is None:
         out["fuel_rate_unknown"] = (
             "AC's fuel-usage multiplier was not reported, so every figure "
             "here assumes 100%. A 50% session needs half of this and a 200% "

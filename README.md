@@ -212,7 +212,8 @@ While recording, at 25 Hz:
 
 Per session it also stores the car, track, tyre compound, temperatures, fuel
 figures, and a copy of every setup value on the car, which is how it works
-out later which setup a lap was driven on.
+out later which setup a lap was driven on. Per lap it stores the fuel burned
+from line to line, so race fuel is planned on what your car actually uses.
 
 Worth knowing:
 

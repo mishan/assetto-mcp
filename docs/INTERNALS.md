@@ -61,6 +61,7 @@ Instead a lap records facts, and the verdicts are derived:
 | `max_tyres_out`, `excursions`, `off_track_ms` | the track-limits evidence |
 | `invalid_source` | `inferred`, or `game` if it came from the game itself |
 | `sample_stride` | 1 normally; higher if the trace has been thinned |
+| `fuel_used_l` | fuel at the starting line minus at the finish; null if the lap did not start at the line |
 
 Two questions are kept apart, because conflating them loses data:
 

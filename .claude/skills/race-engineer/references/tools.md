@@ -43,10 +43,12 @@ and best lap. Poll it at each lap boundary for fuel, and whenever you want
 the tyre state between laps. `status: "off"` means the game is not in a
 session. The `tyre_compound` reads garbage when the car is not live.
 Judge fuel against `laps_remaining`, not against the next lap or two:
-`fuel_to_finish` does that sum at the car's nominal consumption (not the
-measured burn), and its `margin_laps` is the number to call ("enough to
-the flag, 1.5 laps spare"; "short by half a lap"). "tight" is under 0.6
-laps spare: check the real burn before saying the car makes it.
+`fuel_to_finish` does that sum, and its `margin_laps` is the number to
+call ("enough to the flag, 1.5 laps spare"; "short by half a lap").
+`basis` "measured" is the session's median burn over its usable laps
+(three or more, `measured_laps`); "nominal" is the car's rated
+consumption, which traffic and lifting move. "tight" is under 0.6 laps
+spare: on a nominal basis, say that the real burn is not yet known.
 
 **`list_sessions()`** -- id, car, track, lap count, best time. Every tool
 that reports a position adds meters and a `where` beside it, and says
@@ -281,11 +283,13 @@ rate is. A session is not a stint, which is why it segments: differencing
 the first set's start against the last set's end can call a healthy tyre
 gone. AC counts remaining down from 100; `used` counts up.
 
-**`fuel_plan(race_laps, stops, session_id)`** -- needs the car's
-`km_per_liter` from the in-game app, which is almost never present, and
-then errors. When it does not run: per-lap rate from consecutive
-lap-boundary `live_snapshot` readings, or the in-game estimator's figure
-from the driver. Tank size is in `setup_ranges` under FUEL.
+**`fuel_plan(race_laps, stops, session_id, liters_per_lap)`** -- the burn
+per lap is, in order: `liters_per_lap` when passed (the in-game
+estimator's figure from the driver), the session's measured median once
+three usable laps measured it, or nominal from the car's `km_per_liter`,
+which the in-game app rarely has. `liters_per_lap_source` says which; quote
+it with the plan. With none of the three it refuses, and `do_this` says
+how to get one. Tank size is in `setup_ranges` under FUEL.
 
 ## 6. Opponents and contacts
 

@@ -548,8 +548,9 @@ def live_snapshot() -> str:
     live or paused. `race_laps` and `laps_remaining` are null in a timed
     session. A lapped car may have a lap fewer than `laps_remaining` until
     `checkered_flag`. `fuel_to_finish`, in a race of laps: fuel on board
-    against the laps to go at the car's nominal consumption, with
-    `margin_laps` and a `verdict` ("tight" under 0.6 laps spare)."""
+    against the laps to go, with `margin_laps` and a `verdict` ("tight"
+    under 0.6 laps spare); `basis` "measured" is this session's median burn,
+    "nominal" the car's rated consumption."""
     from .sim_info import SimInfo
     sim = SimInfo()
     try:
@@ -595,12 +596,27 @@ def live_snapshot() -> str:
     return _j(payload)
 
 
-def _fuel_to_finish(snap: dict) -> dict | None:
-    """Fuel on board against the laps still to run, at nominal consumption.
+# Usable laps of measured burn before it replaces the nominal figure: one
+# lap can be behind a safety car or an experiment in lifting.
+MIN_MEASURED_FUEL_LAPS = 3
 
-    Only from the session being driven: another session's track length
-    would give a confident wrong answer. Reads, never writes, since a
-    snapshot is polled every lap.
+
+def _measured_burn(sid: int) -> dict | None:
+    """The session's median fuel per lap over its usable laps, if enough."""
+    burns = db.measured_fuel_burns(_conn, sid)
+    if len(burns) < MIN_MEASURED_FUEL_LAPS:
+        return None
+    return {"liters_per_lap": round(statistics.median(burns), 3),
+            "laps": len(burns)}
+
+
+def _fuel_to_finish(snap: dict) -> dict | None:
+    """Fuel on board against the laps still to run.
+
+    At the session's measured burn when it has one, else at nominal
+    consumption. Only from the session being driven: another session's
+    track length would give a confident wrong answer. Reads, never writes,
+    since a snapshot is polled every lap.
     """
     if snap.get("laps_remaining") is None:
         return None
@@ -610,15 +626,21 @@ def _fuel_to_finish(snap: dict) -> dict | None:
                           for k in ("car", "track", "track_config")):
         return None
     rate = session.get("fuel_rate")
-    plan = analysis.fuel_plan(1, session.get("km_per_liter"),
-                              session.get("track_length_m"), stops=0,
-                              fuel_rate=rate)
+    measured = _measured_burn(sid)
+    if measured:
+        per_lap = measured["liters_per_lap"]
+    else:
+        per_lap = analysis.fuel_plan(
+            1, session.get("km_per_liter"), session.get("track_length_m"),
+            stops=0, fuel_rate=rate).get("liters_per_lap")
     out = analysis.fuel_to_finish(snap["fuel_l"], snap["laps_remaining"],
-                                  snap.get("lap_done"),
-                                  plan.get("liters_per_lap"))
+                                  snap.get("lap_done"), per_lap)
     if out and "laps_to_go" in out:
-        out["liters_per_lap"] = plan["liters_per_lap"]
-        if rate is None:
+        out["liters_per_lap"] = per_lap
+        out["basis"] = "measured" if measured else "nominal"
+        if measured:
+            out["measured_laps"] = measured["laps"]
+        elif rate is None:
             out["note"] = ("the game's fuel-usage multiplier was not read, "
                            "so this assumes normal consumption")
     return out
@@ -2124,11 +2146,15 @@ def _fuel_basis(sid: int, session: dict) -> tuple[dict, dict]:
 
 @_tool("Fuel plan")
 def fuel_plan(race_laps: int, stops: int = 1,
-              session_id: int | None = None) -> str:
-    """Fuel for a race distance and the stint splits, from track length and
-    the car's km_per_liter (both from the in-game app); tank size from the
+              session_id: int | None = None,
+              liters_per_lap: float | None = None) -> str:
+    """Fuel for a race distance and the stint splits; tank size from the
     setup ranges or shared memory.
 
+    The burn per lap is `liters_per_lap` when given (the in-game
+    estimator's figure, say), else this session's measured median once 3
+    usable laps measured it, else nominal from track length and the car's
+    km_per_liter (in-game app). `liters_per_lap_source` says which.
     stops is a floor: a distance needing more stops is planned with more,
     and says so. Reports whether a stop is forced by fuel."""
     # The MCP argument is annotated int, which is a description of the tool
@@ -2153,10 +2179,21 @@ def fuel_plan(race_laps: int, stops: int = 1,
         return _j({"error": f"no session with id {sid}"})
 
     basis, source = _fuel_basis(sid, session)
+    measured = None if liters_per_lap is not None else _measured_burn(sid)
+    burn = liters_per_lap if measured is None else measured["liters_per_lap"]
     out = analysis.fuel_plan(
         race_laps, session.get("km_per_liter"),
         session.get("track_length_m"), tank_liters=basis["tank"],
-        stops=stops, fuel_rate=basis["rate"])
+        stops=stops, fuel_rate=basis["rate"], liters_per_lap=burn)
+    out["liters_per_lap_source"] = (
+        "given" if liters_per_lap is not None else
+        f"measured: median of {measured['laps']} usable laps this session"
+        if measured else "nominal: track length and km_per_liter")
+    if burn is None and "no fuel basis" in out.get("error", ""):
+        out["do_this"] = (
+            f"pass liters_per_lap (the in-game fuel estimator, or the "
+            f"difference of lap-boundary live_snapshot fuel_l readings), or "
+            f"drive {MIN_MEASURED_FUEL_LAPS} usable laps for a measured burn")
     out["session_id"] = sid
     out["track"] = session["track"]
     out["car"] = session["car"]
@@ -2169,9 +2206,10 @@ def fuel_plan(race_laps: int, stops: int = 1,
             "seen the setup menu, or from shared memory while AC is running"
             + (f". Reading it here failed: {source['why_not']}"
                if source["why_not"] else "."))
-    if basis["rate"] is not None:
+    # A burn per lap already includes the fuel-usage multiplier.
+    if burn is None and basis["rate"] is not None:
         out["fuel_rate_source"] = source["rate_source"]
-    elif source["why_not"] and basis["tank"] is not None:
+    elif burn is None and source["why_not"] and basis["tank"] is not None:
         # Only when it is not already the headline above: one cause,
         # reported once.
         out["fuel_rate_not_read"] = source["why_not"]

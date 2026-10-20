@@ -239,10 +239,11 @@ What to change, in the order it has paid off with this driver:
 
 ## Preparing for the race
 
-- **Fuel.** The session almost never has `km_per_liter`, so `fuel_plan`
-  cannot run. Use the measured per-lap rate from lap-boundary readings, or
-  better, the in-game estimator's "laps at N liters" figure the driver can
-  read off the fuel screen. Plan the race laps plus one lap of margin and no
+- **Fuel.** `fuel_plan` runs on the session's measured burn once three
+  usable laps have one, which practice in the race car gives you. Without
+  it, pass `liters_per_lap`: the in-game estimator's figure the driver can
+  read off the fuel screen. `liters_per_lap_source` says which it used;
+  say it with the number. Plan the race laps plus one lap of margin and no
   more; the driver trims anything beyond that. Say what margin the number
   carries. A race lap count is a thing to ask for; the tool cannot read it.
 - **Tyres over a race distance.** `stint_wear` with the lap range. This car's

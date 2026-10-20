@@ -1235,22 +1235,6 @@
  },
  {
   "annotations": {
-   "destructiveHint": false,
-   "idempotentHint": true,
-   "openWorldHint": false,
-   "readOnlyHint": false
-  },
-  "description": "Re-derive every stored lap's track-limits verdict from its wheels-off\nsamples, after changing TRACK_LIMITS_WHEELS. Never deletes a lap or\ntouches a verdict that came from the game.\n\nLaps with thinned traces are skipped (`laps_skipped_thinned`) and keep\ntheir old verdict: do not describe the pass as covering every lap.",
-  "inputSchema": {
-   "properties": {},
-   "title": "rescore_track_limitsArguments",
-   "type": "object"
-  },
-  "name": "rescore_track_limits",
-  "title": "Rescore track limits"
- },
- {
-  "annotations": {
    "destructiveHint": true,
    "idempotentHint": false,
    "openWorldHint": false,

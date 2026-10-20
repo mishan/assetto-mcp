@@ -1,6 +1,6 @@
 # The assetto-mcp tools, by the question they answer
 
-Thirty-eight tools. They fall into nine groups. For each: what to pass,
+Thirty-seven tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the traps.
 Every optional parameter takes null as "the default", so passing one
 explicitly is always safe; a call refused for a missing parameter is fixed
@@ -90,11 +90,6 @@ stored now) and returns its card: `lap_id`, `lap_number`, `lap_time`,
 `recording` state: call again with the same `after_lap_id`. A card with
 `more_waiting` has later laps behind it: call again with its `lap_id`.
 Laps in a later session count too, so a new session id shows up here.
-
-**`rescore_track_limits()`** -- re-derive ran-wide verdicts after changing
-the wheels-out threshold. Skips thinned laps and says so: a new threshold
-does not reach them, so do not describe the pass as covering the driver's
-whole history.
 
 ## 2. Setup attribution
 
@@ -575,6 +570,10 @@ Then `restart_server`, with the driver's OK, to load the new code.
   only, and only for what the driver acts on this lap. Runs on Windows and
   under WSL; anywhere else it prints the sentence instead.
 - `scripts/relabel_laps.py` -- the only way to overwrite a setup label.
+- `scripts/rescore_track_limits.py` -- re-derive ran-wide verdicts after
+  changing the wheels-out threshold in `assetto_mcp/db.py`. Skips thinned
+  laps and says so: a new threshold does not reach them, so do not
+  describe the pass as covering the driver's whole history.
 - The running server can predate the repository's code: a field this
   file describes (`contacts_inferred`, say) may be missing from a tool's
   reply until the server restarts -- `restart_server`, between sessions

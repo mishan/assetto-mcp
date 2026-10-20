@@ -1733,33 +1733,6 @@ def label_laps(lap_ids: str | int | list[int], setup_name: str,
     return _j(out)
 
 
-@_tool("Rescore track limits", writes=True)
-def rescore_track_limits() -> str:
-    """Re-derive every stored lap's track-limits verdict from its wheels-off
-    samples, after changing TRACK_LIMITS_WHEELS. Never deletes a lap or
-    touches a verdict that came from the game.
-
-    Laps with thinned traces are skipped (`laps_skipped_thinned`) and keep
-    their old verdict: do not describe the pass as covering every lap."""
-    changed = db.backfill_excursions(_conn)
-    flagged = db.backfill_outliers(_conn)
-    skipped = _conn.execute(
-        "SELECT COUNT(*) c FROM laps WHERE sample_stride > 1"
-        " AND invalid_source = 'inferred'").fetchone()["c"]
-    out = {"laps_rescored": changed, "outliers_reflagged": flagged,
-           "laps_skipped_thinned": skipped,
-           "threshold_wheels_off": db.TRACK_LIMITS_WHEELS,
-           "min_excursion_ms": db.MIN_EXCURSION_MS,
-           "note": "Nothing was deleted. A lap that no longer counts as "
-                   "running wide is readable and comparable again."}
-    if skipped:
-        out["skipped_note"] = (
-            f"{skipped} lap(s) were NOT re-scored because retention has "
-            f"thinned their traces; they keep the verdict measured at full "
-            f"resolution. A changed threshold does not reach them.")
-    return _j(out)
-
-
 def _lap_row(lap: dict) -> dict:
     """A list_laps row: what picking a lap needs, not the table's columns."""
     usable, why = db.lap_usability(lap)

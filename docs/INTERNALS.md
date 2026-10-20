@@ -83,18 +83,18 @@ rather than an assumed rate, because a thinned lap isn't 25 Hz any more.
 
 A lap whose trace has been thinned is never re-scored: its evidence was
 computed at full resolution and the samples behind it no longer are. So a
-changed threshold does not reach those laps, and `rescore_track_limits`
-reports how many it skipped for that reason rather than describing the pass
-as covering everything.
+changed threshold does not reach those laps, and
+`scripts/rescore_track_limits.py` reports how many it skipped for that reason
+rather than describing the pass as covering everything.
 
 The threshold is four wheels, not three: on circuits with flat kerbs, such
 as Sebring, three wheels over the line is routine on laps the game counts.
 
 **Because the evidence is stored, the verdict is re-derivable.** Change
-`TRACK_LIMITS_WHEELS` and run `rescore_track_limits`, and every lap still
-holding a full-resolution trace is re-scored from its own samples, without
-re-driving anything. That's the point of storing evidence rather than a
-decision.
+`TRACK_LIMITS_WHEELS` and run `scripts/rescore_track_limits.py`, and every
+lap still holding a full-resolution trace is re-scored from its own samples,
+without re-driving anything. That's the point of storing evidence rather than
+a decision.
 
 **It is still inference, not the game's verdict.** Vanilla AC doesn't expose
 lap validity in shared memory. CSP does — `ac.onLapCompleted` hands a
@@ -577,6 +577,7 @@ run_tests.py         run and summarize the suite, no pytest needed
 tests/               behavior-named test modules + shared harness
 scripts/
   relabel_laps.py    fix laps stamped with the wrong setup name
+  rescore_track_limits.py  re-score track limits after a threshold change
   driving_line_map.py  write a session's line map without a server
   watch_laps.py      print a line as each lap is stored
   say.py             read a message aloud to the driver

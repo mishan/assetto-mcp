@@ -227,6 +227,30 @@ def test_changing_the_threshold_re_scores_laps_already_driven():
             conn.close()
 
 
+def test_the_rescore_script_re_scores_the_database_it_is_given():
+    import importlib.util
+    path = (Path(__file__).resolve().parents[1] / "scripts"
+            / "rescore_track_limits.py")
+    spec = importlib.util.spec_from_file_location("rescore", path)
+    script = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    with tempfile.TemporaryDirectory() as d:
+        conn = db.connect(Path(d) / "t.db")
+        try:
+            sid = make_session(conn)
+            three = db.store_lap(conn, sid, 1, 113000, True,
+                                 _lap_samples([0] * 20 + [3] * 25 + [0] * 55))
+            original = db.TRACK_LIMITS_WHEELS
+            db.TRACK_LIMITS_WHEELS = 3
+            try:
+                assert script.main(["--db", str(Path(d) / "t.db")]) == 0
+            finally:
+                db.TRACK_LIMITS_WHEELS = original
+            assert db.get_lap(conn, three)["invalid"] == 1
+        finally:
+            conn.close()
+
+
 def test_re_scoring_never_overrides_a_verdict_that_came_from_the_game():
     # invalid_source = 'game' is reserved for the game's own answer, via a
     # CSP physics worker. Inference must not overwrite a measurement.

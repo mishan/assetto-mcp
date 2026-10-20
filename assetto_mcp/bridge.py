@@ -394,7 +394,8 @@ class Bridge:
                 self._dash_conn = db.connect(self._db_path)
             return fn(self._dash_conn, *args)
 
-    def note_cars(self, drivers: list[dict], samples: list[dict]):
+    def note_cars(self, drivers: list[dict], samples: list[dict],
+                  pit: list[dict] = ()):
         """Where each opponent was at the end of a batch, for the small map."""
         now = time.monotonic()
         names = {}
@@ -402,13 +403,13 @@ class Bridge:
             if d["driver_name"]:
                 names.setdefault(d["car_index"], d["driver_name"])
         with self._lock:
-            for smp in samples:
+            for smp in [*samples, *({**p, "pit": True} for p in pit)]:
                 if smp["pos_x"] is not None and smp["pos_z"] is not None:
                     i = smp["car_index"]
                     prev = self._cars.get(i, {})
                     self._cars[i] = {"name": names.get(i, prev.get("name")),
                                      "x": smp["pos_x"], "z": smp["pos_z"],
-                                     "at": now}
+                                     "pit": smp.get("pit", False), "at": now}
 
     def _dash_live(self) -> dict:
         try:
@@ -417,12 +418,12 @@ class Bridge:
             live = {"error": str(e)}
         now = time.monotonic()
         with self._lock:
-            cars = [{k: c[k] for k in ("name", "x", "z")}
+            cars = [{k: c[k] for k in ("name", "x", "z", "pit")}
                     for c in self._cars.values()
                     if now - c["at"] < CAR_FRESH_S]
         return {"live": live, "cars": cars,
                 "focus": self._dash_db(db.pit_wall_focus),
-                "recording": self.status_snapshot()}
+                "recording": self.status_snapshot(), "lan_url": self.lan_url}
 
     def _dash_track(self) -> dict:
         return self._dash_db(_track_outline, self.active_session_id())
@@ -698,7 +699,17 @@ class Bridge:
                         n = db.store_rival_batch(conn, sid, drivers, samples)
                     finally:
                         conn.close()
-                    bridge.note_cars(drivers, samples)
+                    # Cars in the pit lane, for the overlay's map only.
+                    raw_pit = body.get("pit")
+                    pit = [{"car_index": i,
+                            **{k: _opt_float(p.get(k), -MAX_WORLD_M,
+                                             MAX_WORLD_M)
+                               for k in ("pos_x", "pos_z")}}
+                           for p in (raw_pit if isinstance(raw_pit, list)
+                                     else ())
+                           if isinstance(p, dict) and (i := _opt_int(
+                               p.get("car_index"), 0, 255)) is not None]
+                    bridge.note_cars(drivers, samples, pit)
                     return self._send(200, {"ok": True, "stored": n,
                                             "skipped": skipped})
 

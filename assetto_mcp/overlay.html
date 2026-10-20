@@ -101,7 +101,8 @@ function draw(){
   ctx.beginPath(); track.x.forEach((x, i) => i ? ctx.lineTo(px(x), pz(track.z[i])) : ctx.moveTo(px(x), pz(track.z[i])));
   ctx.closePath(); ctx.stroke();
   const dot = (x, z, r, fill) => { ctx.beginPath(); ctx.arc(px(x), pz(z), r, 0, 7); ctx.fillStyle = fill; ctx.fill(); };
-  cars.forEach(c => dot(c.x, c.z, H*0.022, css("--car")));
+  cars.forEach(c => { ctx.globalAlpha = c.pit ? 0.35 : 1; dot(c.x, c.z, H*0.022, css("--car")); });
+  ctx.globalAlpha = 1;
   const l = live && !live.error ? live : null;
   if (l && l.car_x != null && l.status !== "off"){
     dot(l.car_x, l.car_z, H*0.042, css("--ink"));

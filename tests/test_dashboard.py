@@ -2,6 +2,7 @@
 
 import http.client
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -209,13 +210,38 @@ def test_opponents_show_where_their_latest_sample_put_them():
                     for s in (1, 2, 3)]
             cars.append({"car_index": 2, "lap_count": 2, "spline": 0.5,
                          "speed_kmh": 150})
-            assert post(br.port, "/rivals", {"cars": cars})[0] == 200
+            pit = [{"car_index": 3, "pos_x": 4.0, "pos_z": 2.0},
+                   {"car_index": "x"}, "junk"]
+            assert post(br.port, "/rivals", {"cars": cars, "pit": pit})[0] == 200
             live = json.loads(_get(br.port, "/dash/live")[2])
-            assert live["cars"] == [{"name": "Ann", "x": 30.0, "z": -5.0}]
-            print("  each opponent at its last placed sample, named")
+            assert live["cars"] == [
+                {"name": "Ann", "x": 30.0, "z": -5.0, "pit": False},
+                {"name": None, "x": 4.0, "z": 2.0, "pit": True}], live["cars"]
+            print("  each opponent at its last placed sample, named;"
+                  " the pit lane marked")
         finally:
             br.stop()
             conn.close()
+
+
+def test_the_pit_wall_runs_without_a_chat():
+    from test_supervisor import _server_env
+    with temp_db() as path:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "assetto_mcp.pit_wall"],
+            cwd=Path(__file__).resolve().parent.parent, text=True,
+            env=_server_env(str(Path(path).parent)), stdout=subprocess.PIPE)
+        try:
+            lines = [proc.stdout.readline() for _ in range(3)]
+            assert lines[-1].startswith("Ctrl+C"), lines
+            port = int(lines[0].split(":")[3].split("/")[0])
+            code, _, body = _get(port, "/dash/live")
+            assert code == 200 and "recording" in json.loads(body)
+            print(f"  serving the pit wall on its own, port {port}")
+        finally:
+            proc.terminate()
+            proc.wait(10)
+            proc.stdout.close()
 
 
 def test_delta_is_against_the_sessions_best_clean_lap_at_that_point():

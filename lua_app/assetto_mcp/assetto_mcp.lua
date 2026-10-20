@@ -78,6 +78,8 @@ local rivalSent = 0
 local rivalClock = {}      -- [car_index] = { lap, spline, t, start }
 local rivalTimes = {}      -- [car_index] = { best = ms, last = ms }
 local rivalSession = nil
+-- Kept off the speed traces, but the stream overlay's map still shows them.
+local rivalPit = {}        -- [car_index] = where a car in the pit lane is
 local message = nil        -- { id, text } from Claude, shown until dismissed
 local ackedId = 0          -- last message id we dismissed (poll may race ack)
 local pollTimer = 0
@@ -624,7 +626,7 @@ local function sampleRivals()
   -- Anything still queued belongs to the session it was sampled in, so it
   -- is dropped. The status-line counters reset with it.
   if status.sessionId ~= rivalSession then
-    rivalBuffer, rivalMeta = {}, {}
+    rivalBuffer, rivalMeta, rivalPit = {}, {}, {}
     rivalClock, rivalTimes, rivalSession = {}, {}, status.sessionId
     rivalSent, rivalDropped = 0, 0
   end
@@ -676,6 +678,10 @@ local function sampleRivals()
           rivalMeta[i].last_lap_ms = times and times.last or nil
           rivalMeta[i].lap_count = lapCount
         end
+        rivalPit[i] = nil
+      elseif c and c.isConnected and c.position then
+        rivalPit[i] = { car_index = i, pos_x = num(c.position.x, nil),
+                        pos_z = num(c.position.z, nil) }
       end
     end
   end
@@ -697,8 +703,11 @@ local function postRivals()
   -- late, and the HTTP round trip lands later still, so a batch can arrive
   -- after the server has moved on.
   local sampledIn = rivalSession
+  local pit = {}
+  for _, p in pairs(rivalPit) do pit[#pit + 1] = p end
   rivalBuffer = {}
   rivalMeta = {}
+  rivalPit = {}
   -- Fold each car's metadata onto its first sample in this batch, so the
   -- server still gets it without it riding on every sample.
   local seen = {}
@@ -713,7 +722,7 @@ local function postRivals()
     end
   end
   web.post(BASE .. '/rivals', { ['Content-Type'] = 'application/json' },
-    JSON.stringify{ cars = batch, session_id = sampledIn },
+    JSON.stringify{ cars = batch, pit = pit, session_id = sampledIn },
     function(err, response)
       rivalBusy = false
       if err or not response then

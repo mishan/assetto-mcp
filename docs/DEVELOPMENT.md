@@ -68,6 +68,39 @@ A budget that fails is a question about context cost, not a number to
 raise by reflex. It also checks that every tool the docs, the skill, the
 prompts and the server's own replies name exists.
 
+### Tool-selection eval
+
+`tests/eval/tool_choice.py` asks a model which tool it would call first
+for each request in `tests/eval/cases.json`, given only `tools/list` and
+the server's instructions, and prints each case (expected tools against
+the one chosen) and the score, for the full toolset and for
+`ASSETTO_MCP_TOOLSET=core`. Run it after renaming a tool or rewriting a
+description. It needs a model, so it is not part of the suite or CI;
+without one configured it says so and exits.
+
+Against a local model on an OpenAI-compatible server (llama-server, LM
+Studio, Ollama):
+
+```
+llama-server -m Qwen3-30B-A3B-Instruct.gguf --jinja --port 8080
+ASSETTO_MCP_EVAL_BASE_URL=http://127.0.0.1:8080 python tests/eval/tool_choice.py
+```
+
+`--jinja` is what makes llama-server accept tools. LM Studio and Ollama
+want the model's name as well: `ASSETTO_MCP_EVAL_MODEL=<name>`.
+`ASSETTO_MCP_EVAL_API_KEY`, if set, is sent as a bearer token.
+
+Against the Anthropic API (`claude-haiku-5-5` unless
+`ASSETTO_MCP_EVAL_MODEL` says otherwise):
+
+```
+pip install -e ".[eval]"
+ASSETTO_MCP_EVAL=anthropic ANTHROPIC_API_KEY=... python tests/eval/tool_choice.py
+```
+
+`--toolset full|core` runs one toolset, `-k fuel` only the matching cases,
+and `--json results.json` keeps every answer for comparing runs.
+
 ## CI
 
 `.github/workflows/ci.yml` runs four jobs:

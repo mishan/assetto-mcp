@@ -26,6 +26,7 @@ from test_mcp_protocol import (  # noqa: E402
 TESTS = Path(__file__).resolve().parent
 ROOT = TESTS.parent
 SNAPSHOT = TESTS / "golden" / "tools.json"
+EVAL_CASES = TESTS / "eval" / "cases.json"
 
 # Today's figures are 44.0k, 1.3k and 0.9k characters: these leave room to
 # grow a little, and make growing a lot a decision.
@@ -207,6 +208,17 @@ def test_every_tool_the_docs_and_replies_name_exists():
                         and name not in not_tools):
                     bad.append((where, i, name, None))
     assert not bad, bad
+
+
+def test_every_expected_tool_in_the_eval_is_a_tool():
+    """tests/eval/cases.json grades a model's first call against these."""
+    tools = {t["name"] for t in _surface()["tools"]}
+    cases = json.loads(EVAL_CASES.read_text(encoding="utf-8"))
+    assert cases, EVAL_CASES
+    unknown = {(c["id"], n) for c in cases for n in c["expect"]
+               if n not in tools}
+    assert not unknown, unknown
+    assert len({c["id"] for c in cases}) == len(cases), "duplicate ids"
 
 
 if __name__ == "__main__":

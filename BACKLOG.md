@@ -218,3 +218,53 @@ and `showClicksMode` but no formatted display string;
 `acc-lua-internal/lua-module/src/_hotlap_utils.lua:265` computes
 `e[1] * sd.displayMultiplier` itself, with the same arithmetic and the same
 exposure to being wrong. Revisit if CSP exposes the rendered value.
+
+---
+
+## 9. Coaching in the car
+
+**Status:** idea.
+
+The engineer writes a plan for a session ("brake 10 m later at T1, carry
+5 km/h more through T7") and the in-game app shows it: brake markers at
+the agreed points, a per-corner delta to a reference lap (the driver's
+best or a rival's quickest), and a short cue before each target corner.
+After each lap the engineer gets which targets were hit and by how much,
+turning analysis after the fact into practice with a goal. Needs a plan
+format the bridge serves to the Lua app, world-space markers from the
+recorded line, and a per-corner live delta in the app.
+
+---
+
+## 10. Two-way radio
+
+**Status:** idea.
+
+`scripts/say.py` speaks to the driver; nothing listens. A wheel button
+bound in the in-game app would record a question ("how's my fuel?", "was
+that lap better?") for local speech recognition, handed to the assistant
+as text, with the answer spoken back. Speech recognition is the new part;
+it should run locally and cope with engine noise.
+
+---
+
+## 11. League integration
+
+**Status:** idea.
+
+The league runs on Assetto Server Manager, which the champctl MCP server
+reads. Together: race prep from the next round's track, car and rules;
+after a race, the driver's own telemetry around an incident (inferred
+contacts, positions, inputs) as evidence for stewards; and comparing laps
+with league mates who also run assetto-mcp.
+
+---
+
+## 12. Driver development over time
+
+**Status:** idea.
+
+A profile across sessions: consistency, braking style, trail braking, the
+corner types the driver is weakest in (slow hairpins, fast sweepers), and
+how each is trending, with a periodic report. Answers "am I getting
+better?" from the stored laps, which already carry everything it needs.

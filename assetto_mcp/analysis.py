@@ -3132,7 +3132,10 @@ def _layout(e: dict) -> str:
     return f"{e['track']}/{cfg}" if cfg else e["track"]
 
 
-# Most recent experiments listed per entry; all of them are pooled.
+# Most recent experiments listed per entry, and of those that changed
+# several entries at once; every one is still pooled or counted, but the
+# book is read before every change and must not grow with the car's
+# history.
 BOOK_EXPERIMENTS_LISTED = 8
 
 
@@ -3213,8 +3216,12 @@ def setup_book(experiments: list[dict], steps: dict | None = None,
             entries[name]["experiments_not_listed"] = len(exps) - len(listed)
         if step:
             entries[name]["step"] = step
-    return {"entries": entries, "changed_together": together,
-            "experiments_total": len(experiments),
+    out = {"entries": entries,
+           "changed_together": together[-BOOK_EXPERIMENTS_LISTED:]}
+    if len(together) > BOOK_EXPERIMENTS_LISTED:
+        out["changed_together_not_listed"] = (len(together)
+                                              - BOOK_EXPERIMENTS_LISTED)
+    return {**out, "experiments_total": len(experiments),
             "experiments_unmeasured": unknown}
 
 

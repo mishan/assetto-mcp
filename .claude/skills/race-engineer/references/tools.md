@@ -281,22 +281,26 @@ channel and none on lap time; a null lap-time answer from under five or
 six laps is not evidence the change did nothing.
 
 **`setup_book(car, entry, track)`** -- every stored A/B for the car, by
-setup entry. Read it before proposing a change. Per entry: the experiments
-that changed only that entry (with the driver's `conclusion` and `note`),
-and per metric the effect `per_unit` of the stored value (`per_click` when
-the step is known) pooled across them, with `se`. `within_noise: true`
+setup entry. Read it before proposing a change. Per entry: the latest
+eight experiments that changed only that entry (with the driver's
+`conclusion` and `note`; `experiments_not_listed` counts the rest), and per
+metric the effect `per_unit` of the stored value (`per_click` when the step
+is known) pooled across all of them, with `se`. `within_noise: true`
 means the sign is not settled: say so, and never quote it as what the
 entry does. `tracks_disagree`: the layouts differ by more than noise;
 quote `by_track`, not the pool. Comparing laps that overlap an earlier
-comparison replaces it, so re-running one as laps come in is safe. `changed_together`: A/Bs that changed several entries at
-once, which cannot be attributed to any one of them.
+comparison replaces it, so re-running one as laps come in is safe.
+`changed_together`: the latest eight A/Bs that changed several entries at
+once, which cannot be attributed to any one of them. `track` is the track
+folder name and takes in every layout.
 
 **`plan_experiment(metric, effect, entry, change, car, track)`** -- laps a
 side for an 80% chance of seeing a change, from this driver's own spread in
 stored A/Bs. Give `effect` in the metric's units, or `entry` and `change`
-to take it from the setup book. If `laps_per_side` is more than the driver
-will drive, test a quieter metric (load transfer, slip balance) or a bigger
-change, and say so before the run, not after.
+to take it from the setup book; `warning` says when the book's effect is
+itself within noise. If `laps_per_side` is more than the driver will drive,
+test a quieter metric (load transfer, slip balance) or a bigger change,
+and say so before the run, not after.
 
 **`annotate_experiment(experiment_id, note, conclusion)`** -- after an A/B,
 what the driver felt and whether the change was "kept", "reverted" or left

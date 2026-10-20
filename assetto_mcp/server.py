@@ -37,7 +37,7 @@ import statistics  # noqa: E402
 import threading  # noqa: E402
 import time  # noqa: E402
 from pathlib import Path  # noqa: E402
-from typing import Annotated  # noqa: E402
+from typing import Annotated, Literal  # noqa: E402
 
 from pydantic import Field  # noqa: E402
 
@@ -206,7 +206,8 @@ INSTRUCTIONS = (
     "and \"waiting\" are healthy states, not faults.\n"
     "Tag laps with the setup the driver is on (set_session_setup) at the "
     "start of a session and after every garage stop, so comparisons know "
-    "what changed.\n"
+    "what changed. Before proposing a setup change, read setup_book: what "
+    "earlier A/Bs on this car found.\n"
     "Quote positions as the `where` text a reply gives (corner name plus "
     "meters), never as lap fractions.\n"
     "Ask the driver before overwriting a setup or writing one unclamped, "
@@ -296,7 +297,7 @@ CORE_TOOLS = (
     # session_check and wait_for_lap join here when they exist.
     "recording_status", "live_snapshot", "list_laps", "lap_summary",
     "compare_lap_corners", "time_delta_along_lap", "compare_runs",
-    "set_session_setup", "label_laps", "fuel_plan",
+    "setup_book", "set_session_setup", "label_laps", "fuel_plan",
     "list_setups", "read_setup", "write_setup",
 )
 _TOOLSET = config.env("TOOLSET", "full")
@@ -2351,6 +2352,8 @@ def fuel_plan(race_laps: int, stops: int = 1,
     return _j(out)
 
 
+# Read-only although it files the comparison for setup_book: the row is
+# derived from laps already stored, and comparing again replaces it.
 @_tool("Compare setup runs")
 def compare_runs(baseline_laps: str | int | list[int] | None = None,
                  candidate_laps: str | int | list[int] | None = None,
@@ -2382,7 +2385,8 @@ def compare_runs(baseline_laps: str | int | list[int] | None = None,
     time (abandoned, out-lap, pit stop) are in `excluded_laps`. With three
     or more laps a side, laps over 1.75% slower than their side's median
     are left out of the lap-time mean only, listed in
-    `lap_time_set_aside`."""
+    `lap_time_set_aside`. `experiment_id`: the comparison as filed in the
+    setup book."""
     deprecated_note = None
     if include_invalid is not None:
         if clean_laps_only and include_invalid:
@@ -2713,12 +2717,13 @@ def _record_experiment(out, spreads, conditions, base_loaded,
 
 
 @_tool("Annotate an A/B", writes=True)
-def annotate_experiment(experiment_id: int, note: str | None = None,
-                        conclusion: str | None = None) -> str:
-    """Record what the driver felt about an A/B and what was decided.
-
-    experiment_id: from compare_runs. conclusion: "kept", "reverted" or
-    "undecided". note: the driver's words, briefly."""
+def annotate_experiment(
+        experiment_id: Annotated[int, Field(ge=1)],
+        note: Annotated[str, Field(max_length=500)] | None = None,
+        conclusion: Literal[db.EXPERIMENT_CONCLUSIONS] | None = None) -> str:
+    """Record what the driver felt about an A/B and whether the change
+    stays. experiment_id: from compare_runs. note: the driver's words,
+    briefly. Either one alone leaves the other as it was."""
     try:
         found = db.annotate_experiment(_conn, experiment_id, note,
                                        conclusion)
@@ -2734,14 +2739,15 @@ def setup_book(car: str | None = None, entry: str | None = None,
                track: str | None = None) -> str:
     """What every stored A/B says each setup entry does to this car.
 
-    Check it before proposing a change. Per entry: the experiments that
-    changed it alone, and per metric the effect per unit of the stored value
-    (and `per_click`), pooled across them with its `se`. `within_noise`:
-    the sign is not settled; say so, never quote it as an effect.
-    `tracks_disagree`: the effect differs by layout; quote `by_track`.
-    `changed_together` lists A/Bs that changed several entries, which cannot
-    be split. car: default the current session's. entry: one setup entry,
-    e.g. "ARB_REAR". track: only that circuit's experiments."""
+    Read it before proposing a change. Per entry: the latest experiments
+    that changed it alone, and per metric the effect per unit of the stored
+    value (and `per_click`), pooled across all of them with its `se`.
+    `within_noise`: the sign is not settled; say so, never quote it as an
+    effect. `tracks_disagree`: the effect differs by layout; quote
+    `by_track`. `changed_together`: the latest A/Bs that changed several
+    entries, which cannot be split. car: default the current session's.
+    entry: one setup entry, e.g. "ARB_REAR". track: one circuit's track
+    folder name, every layout."""
     car = _resolve_car(car)
     if car is None:
         return _j({"error": "no active session; pass car explicitly"})
@@ -2756,7 +2762,8 @@ def setup_book(car: str | None = None, entry: str | None = None,
 
 
 @_tool("Plan an A/B")
-def plan_experiment(metric: str = "lap_time_ms", effect: float | None = None,
+def plan_experiment(metric: Literal[tuple(analysis.BOOK_METRICS)]
+                    = "lap_time_ms", effect: float | None = None,
                     entry: str | None = None, change: float | None = None,
                     car: str | None = None, track: str | None = None) -> str:
     """How many laps a side an A/B needs to see a change, before running it.
@@ -2764,15 +2771,10 @@ def plan_experiment(metric: str = "lap_time_ms", effect: float | None = None,
     Give `effect` (in the metric's units, e.g. 300 for 0.3 s of lap time),
     or `entry` and `change` (stored units) to take the effect from the
     setup book. The spread and the book's effect are this driver's own, from
-    stored A/Bs on this car at this layout (track defaults to the current
-    session's), or at every layout when there are none. Run the sides
-    interleaved, A B A, so track temperature, fuel and tyres do not read as
-    the change.
-    metric: one of the compare_runs metrics, e.g. "lap_time_ms",
-    "slip_balance", "front_load_transfer_pct"."""
-    if metric not in analysis.BOOK_METRICS:
-        return _j({"error": f"metric must be one of "
-                            f"{', '.join(analysis.BOOK_METRICS)}"})
+    stored A/Bs on this car at this circuit (track: the track folder name,
+    default the current session's layout), or at every circuit when there
+    are none. Run the sides interleaved, A B A, so track temperature, fuel
+    and tyres do not read as the change. metric: a compare_runs metric."""
     car = _resolve_car(car)
     if car is None:
         return _j({"error": "no active session; pass car explicitly"})
@@ -2795,7 +2797,7 @@ def plan_experiment(metric: str = "lap_time_ms", effect: float | None = None,
                             f"spread is not known yet"})
     sd = (sum(s * s * d for s, d in spreads)
           / sum(d for _, d in spreads)) ** 0.5
-    effect_basis = "given"
+    effect_basis, warning = "given", None
     if effect is None:
         if entry is None or change is None:
             return _j({"error": "give effect, or entry and change"})
@@ -2809,13 +2811,15 @@ def plan_experiment(metric: str = "lap_time_ms", effect: float | None = None,
                         f"x {change}, from {m['experiments']} experiment(s)"
                         + (" at this layout" if here else ""))
         if m["within_noise"]:
-            effect_basis += ("; the book's effect is within noise, so this "
-                             "plans for a change that may not exist")
+            warning = ("the book's effect is within noise, so this plans "
+                       "for a change that may not exist")
     out = analysis.plan_experiment(sd, effect)
     out.update({"car": car, "metric": metric, "effect": effect,
                 "effect_basis": effect_basis, "spread_sd": round(sd, 3),
                 "spread_from": f"{len(spreads)} stored A/B(s)"
                                + (f" at {track}" if here else "")})
+    if warning:
+        out["warning"] = warning
     if out.get("laps_per_side") is None and "error" not in out:
         out["note"] = ("not reachable in 30 laps a side: the change is "
                        "small against this driver's lap-to-lap spread")

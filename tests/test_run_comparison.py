@@ -1465,6 +1465,29 @@ def test_a_side_with_unmeasured_laps_is_not_filed_as_a_known_change():
     assert book["entries"] == {} and book["experiments_unmeasured"] == 1, book
 
 
+def test_a_comparison_the_book_cannot_file_is_still_answered():
+    import asyncio
+    srv = _server()
+    sid = make_session(srv._conn, track="sebring", car="unfiled_car")
+    base = [_store(srv, sid, n, 113000 + n) for n in (1, 2, 3)]
+    cand = [_store(srv, sid, n, 112800 + n) for n in (4, 5, 6)]
+
+    def full(_conn, _rec):
+        raise db.sqlite3.OperationalError("database or disk is full")
+
+    real, db.record_experiment = db.record_experiment, full
+    try:
+        r = asyncio.run(srv.mcp.call_tool("compare_runs", {
+            "baseline_laps": base, "candidate_laps": cand}))
+    finally:
+        db.record_experiment = real
+    content = getattr(r, "content", r)
+    out = json.loads((content[0] if isinstance(content, tuple)
+                      else content)[0].text)
+    assert "metrics" in out and "experiment_id" not in out, out
+    assert "disk is full" in out["experiment_not_stored"], out
+
+
 def _exp(eid, track, entry, frm, to, change, se, extra=None):
     ch = [{"entry": entry, "baseline": frm, "candidate": to}]
     if extra:
@@ -1485,6 +1508,21 @@ def test_the_book_pools_single_changes_and_never_splits_joint_ones():
     assert lt["per_click"] == -200, lt
     assert [t["experiment_id"] for t in book["changed_together"]] == [3]
     assert book["experiments_unmeasured"] == 1
+
+
+def test_the_book_lists_only_the_latest_experiments_however_many_are_stored():
+    n = analysis.BOOK_EXPERIMENTS_LISTED + 4
+    exps = [_exp(i, "sebring", "ARB_REAR", 3, 4, -100, 50,
+                 extra="WING_1" if i % 2 else None) for i in range(2 * n)]
+    book = analysis.setup_book(exps)
+    arb = book["entries"]["ARB_REAR"]
+    for listed, rest, last in (
+            (arb["experiments"], arb["experiments_not_listed"], 2 * n - 2),
+            (book["changed_together"], book["changed_together_not_listed"],
+             2 * n - 1)):
+        assert len(listed) == analysis.BOOK_EXPERIMENTS_LISTED, listed
+        assert rest == 4 and listed[-1]["experiment_id"] == last, listed
+    assert arb["effects"]["lap_time_ms"]["experiments"] == n, arb
 
 
 def test_tracks_that_disagree_are_reported_apart():

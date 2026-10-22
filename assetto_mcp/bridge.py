@@ -412,7 +412,7 @@ class Bridge:
                     for c in self._cars.values()
                     if now - c["at"] < CAR_FRESH_S]
         return {"live": live, "cars": cars,
-                "focus": self._dash_db(db.pit_wall_focus),
+                "focus": self._dash_db(_focus),
                 "recording": self.status_snapshot(),
                 "lan": self._lan_server is not None}
 
@@ -999,6 +999,15 @@ class Bridge:
             # refcounting closes it, which on Windows stretches the TIME_WAIT
             # window our own restart has to wait out.
             server.server_close()
+
+
+def _focus(conn) -> dict:
+    """The pit wall focus, with the laps as the driver numbers them."""
+    f = db.pit_wall_focus(conn)
+    number = dict(conn.execute(
+        "SELECT id, lap_number FROM laps WHERE id IN (SELECT value FROM"
+        " json_each(?))", (json.dumps(f["lap_ids"]),)).fetchall())
+    return {**f, "laps": [number.get(i, i) for i in f["lap_ids"]]}
 
 
 def _track_outline(conn, sid: int | None) -> dict:

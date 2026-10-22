@@ -14,6 +14,8 @@ appear straight in your in-game setup menu.
 Then you drive again, and it tells you whether the change actually worked or
 whether you just had a good lap.
 
+![The pit wall: lap time, gap to best, fuel and tyres along the top, the engineer's caption, and two laps on the line map](docs/pit-wall.png)
+
 > Runs on the Windows PC that runs Assetto Corsa. **Original AC only** — it uses
 > the `acpmf_*` shared memory layout, not ACC's.
 
@@ -123,6 +125,8 @@ and the assistant gets it with the next thing it reads.
   Browser source with that URL at the size of the space it fills (it scales
   to any size), and leave its custom CSS empty so the background stays
   transparent.
+
+  ![The stream overlay: position, lap clock and gap, fuel and tyres, and a track map with the cars](docs/overlay.png)
 
 Without the skill you still get every tool; you just ask for each step
 yourself, as below.

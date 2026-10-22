@@ -41,6 +41,7 @@ def test_a_finished_race_says_so():
 def test_a_lapped_car_has_one_lap_left_once_the_flag_is_out():
     # A lap down on lap 15 of 16: the leader has taken the flag, so this
     # crossing is the driver's last, though the lap count says two.
+    _state(completedLaps=14)  # the lap before the flag
     s = _state(completedLaps=14, flag=5)
     assert s["laps_remaining"] == 1 and s["checkered_flag"] is True, s
     assert "finished" not in s, s

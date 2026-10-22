@@ -599,6 +599,9 @@ AC_SESSION = {0: "practice", 1: "qualifying", 2: "race", 3: "hotlap",
 
 # AC's flag enum; only the checkered flag is read.
 AC_CHECKERED_FLAG = 5
+# Laps completed when the checkered flag came out: the driver's next
+# crossing is the finish, in a timed race or a car a lap down.
+_laps_at_flag: int | None = None
 
 
 def _race_state(g) -> dict:
@@ -616,6 +619,9 @@ def _race_state(g) -> dict:
     checkered flag from that moment, so with the flag out `laps_remaining`
     is at most the lap being driven.
 
+    `finished` once the driver has crossed the line under the flag; the
+    game's lap clock runs on through the cool-down lap and the wait after.
+
     Outside live running or pause -- the menu, a replay -- the graphics
     page still holds the last session's lap and position, so those come
     back null rather than read as current.
@@ -629,6 +635,11 @@ def _race_state(g) -> dict:
     left = g.sessionTimeLeft
     done = g.completedLaps
     checkered = g.flag == AC_CHECKERED_FLAG
+    global _laps_at_flag
+    if not checkered:
+        _laps_at_flag = None
+    elif _laps_at_flag is None:
+        _laps_at_flag = done
     remaining = max(laps - done, 0) if laps is not None else None
     if checkered and remaining is not None:
         remaining = min(remaining, 1)
@@ -645,7 +656,8 @@ def _race_state(g) -> dict:
     }
     if checkered:
         out["checkered_flag"] = True
-    if laps is not None and done >= laps:
+    if laps is not None and done >= laps or (
+            checkered and done > _laps_at_flag):
         out["finished"] = True
     return out
 
@@ -664,8 +676,8 @@ def live_snapshot() -> str:
     against the laps to go, with `margin_laps` and a `verdict` ("tight"
     under 0.6 laps spare); `basis` "measured" is this session's median burn,
     "nominal" the car's rated consumption. `lap_time` is the lap being
-    driven; `delta_to_best_s` sets it against the session's best clean lap
-    at the same point, + slower."""
+    driven, null once `finished`; `delta_to_best_s` sets it against the
+    session's best clean lap at the same point, + slower."""
     return _j(_live())
 
 
@@ -703,10 +715,14 @@ def _live(dash: bool = False) -> dict:
                 w: round(p.tyreCoreTemperature[i], 1)
                 for i, w in enumerate(("fl", "fr", "rl", "rr"))},
         }
-        driving = g.status == 2 and g.iCurrentTime > 0
+        finished = payload.get("finished", False)
+        if finished:
+            payload["lap_time"] = None
+        driving = g.status == 2 and g.iCurrentTime > 0 and not finished
         at = (g.normalizedCarPosition, g.iCurrentTime)
         if dash:
-            payload.update(lap_time_ms=g.iCurrentTime, car_x=g.carCoordinates[0],
+            payload.update(lap_time_ms=0 if finished else g.iCurrentTime,
+                           car_x=g.carCoordinates[0],
                            car_z=g.carCoordinates[2])
     finally:
         # Release the ctypes views before closing the mapping.

@@ -46,6 +46,17 @@ def test_a_lapped_car_has_one_lap_left_once_the_flag_is_out():
     assert "finished" not in s, s
 
 
+def test_a_car_behind_finishes_at_its_first_crossing_under_the_flag():
+    # A timed race, or a lap down: the flag comes out mid-lap and the next
+    # crossing ends the driver's race, wherever the lap count stands.
+    for laps in (0, 16):
+        _state(numberOfLaps=laps, completedLaps=11)
+        assert "finished" not in _state(numberOfLaps=laps, completedLaps=11,
+                                        flag=5)
+        assert _state(numberOfLaps=laps, completedLaps=12,
+                      flag=5)["finished"] is True
+
+
 def test_no_flag_means_no_flag_key():
     assert "checkered_flag" not in _state(), _state()
 

@@ -588,6 +588,8 @@ scripts/
   driving_line_map.py  write a session's line map without a server
   watch_laps.py      print a line as each lap is stored
   say.py             read a message aloud to the driver
+  pit_wall_demo.py   the pit wall on recorded laps, without the game
+  shoot_pit_wall.sh  the README's pit wall pictures, with shotbox
 BACKLOG.md           open work
 ```
 

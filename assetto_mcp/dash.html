@@ -96,7 +96,7 @@ async function poll(){
     $("phone").hidden = !d.lan;
     const r = d.recording;
     $("state").textContent = (r.running ? r.status + " · " + r.laps_recorded + " laps" : "not recording") +
-      (d.focus.lap_ids.length ? " · showing laps " + d.focus.lap_ids.join(", ") : "");
+      (d.focus.laps.length ? " · showing laps " + d.focus.laps.join(", ") : "");
     // Reload the map only when what it should draw changes, so a driver
     // reading it, or zoomed into a turn, is not reset.
     const key = d.focus.lap_ids.length ? String(d.focus.id)

@@ -6,7 +6,7 @@
 <style>
 :root{
   --ground:#eeeff0; --surface:#ffffff; --ink:#1b1e23; --muted:#646a74; --line:#d6d9dd; --track:#c9ccd1;
-  --best:#6a37e8; --ramp0:#b9d5e3; --ramp1:#0d4a72;
+  --best:#6a37e8; --ramp0:#4583aa; --ramp1:#0d4a72;
   --spd0:#f4d9a6; --spd1:#8a2d04;
   --bump0:#e6e0f3; --bump1:#4b2a9b;
   --brake:#cf3b2f; --throttle:#2a9a5c; --coast:#8d939c;
@@ -20,7 +20,7 @@
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
     --ground:#14171b; --surface:#1c2026; --ink:#e7e9e6; --muted:#98a0a9; --line:#2b3138; --track:#353c45;
-    --best:#a88cff; --ramp0:#22485f; --ramp1:#a8dcf2;
+    --best:#a88cff; --ramp0:#3a7ba3; --ramp1:#a8dcf2;
     --spd0:#4a2a10; --spd1:#ffc27a;
     --bump0:#2b2540; --bump1:#cbb8ff;
     --brake:#ff6a5c; --throttle:#4fd48a; --coast:#6c737d;
@@ -31,7 +31,7 @@
 }
 :root[data-theme="dark"]{
   --ground:#14171b; --surface:#1c2026; --ink:#e7e9e6; --muted:#98a0a9; --line:#2b3138; --track:#353c45;
-  --best:#a88cff; --ramp0:#22485f; --ramp1:#a8dcf2;
+  --best:#a88cff; --ramp0:#3a7ba3; --ramp1:#a8dcf2;
   --spd0:#4a2a10; --spd1:#ffc27a;
   --bump0:#2b2540; --bump1:#cbb8ff;
   --brake:#ff6a5c; --throttle:#4fd48a; --coast:#6c737d;
@@ -350,11 +350,13 @@ function startFinish(){
 // Labels beside the line, on the side facing away from the middle of the map, where
 // they are least likely to sit on another stretch of track. Turns close together --
 // a hairpin, a chicane -- would stack their labels, so a label that lands on an
-// earlier one moves further out. Kept inside the map, so none is cut off at an edge.
+// earlier one moves further out. Kept inside the map, so none is cut off at an edge;
+// one whose place is off the map, zoomed into a turn, is left out.
 function labeler(){
   const placed=[], cx=W/2, cy=H/2;
   return (l, pos, text, color) => {
     const k=at(l,pos), x=px(l.x[k]), y=py(l.z[k]);
+    if (x<0 || x>W || y<0 || y>H) return;
     let [nx,ny]=normalAt(l,k);
     if ((x-cx)*nx+(y-cy)*ny<0){ nx=-nx; ny=-ny; }
     let off=20, lx, ly;

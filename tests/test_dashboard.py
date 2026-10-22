@@ -79,14 +79,15 @@ def test_the_map_draws_what_claude_put_on_screen():
             assert code == 200 and "no session" in page.lower(), page[:200]
 
             sid = make_session(conn)
+            # Stored out of order, so lap ids are not the lap numbers.
+            c = _store(conn, sid, 3, 98_000)
             a = _store(conn, sid, 1, 100_000)
             b = _store(conn, sid, 2, 99_000)
-            c = _store(conn, sid, 3, 98_000)
             focus = db.set_pit_wall_focus(conn, [a, b], "T2",
                                           "lap 1 vs 2: T2 entry")
             live = json.loads(_get(br.port, "/dash/live")[2])["focus"]
-            assert live == {"id": focus, "lap_ids": [a, b], "turn": "T2",
-                            "caption": "lap 1 vs 2: T2 entry"}, live
+            assert live == {"id": focus, "lap_ids": [a, b], "laps": [1, 2],
+                            "turn": "T2", "caption": "lap 1 vs 2: T2 entry"}, live
 
             data = _get(br.port, "/dash/map")[2]
             drawn = json.loads(data.split("const DATA = ", 1)[1]

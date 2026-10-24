@@ -137,12 +137,15 @@ Not sure where Assetto Corsa is installed? In Steam, right-click Assetto Corsa
 ## Updating
 
 The server can update its own checkout. `check_for_updates` asks GitHub's API
-how this clone compares with `main` (cached for an hour), and `apply_update`,
+how this clone compares with what it follows (cached for an hour): the latest
+GitHub release on the "stable" channel, the default, or `main`'s tip on
+"latest". The choice is kept in `update_channel` in the data directory, and
+set with `check_for_updates(channel=...)` or `--channel`. `apply_update`,
 given the commit that check named, does the following:
 
 1. refuses unless the clone is on `main`, has no edited tracked files, and is
    strictly behind — never ahead, never diverged — and the commit is still
-   `main`'s tip;
+   the one the check named;
 2. `git fetch https://github.com/mishan/assetto-mcp main`, then
    `git merge --ff-only` to that commit;
 3. `pip install -e .` if `pyproject.toml` changed. On Windows this can fail
@@ -164,6 +167,7 @@ The same from a terminal:
 python -m assetto_mcp.update --check
 python -m assetto_mcp.update --apply      # shows the commits and asks
 python -m assetto_mcp.update --sync-lua   # just the in-game app, game closed
+python -m assetto_mcp.update --channel latest   # or stable; then checks
 ```
 
 `git` has to be installed — it is found on `PATH` or in Git for Windows'

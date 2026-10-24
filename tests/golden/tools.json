@@ -171,11 +171,24 @@
    "destructiveHint": false,
    "idempotentHint": true,
    "openWorldHint": true,
-   "readOnlyHint": true
+   "readOnlyHint": false
   },
-  "description": "Whether a newer version of this server is on GitHub. Read-only.\n\n`status`: \"identical\", \"behind\" (update waiting), \"ahead\", \"diverged\",\nor \"unknown\" with an `error`: \"local_commit_not_on_github\" (local\nchanges; leave them), \"offline\" or \"rate_limited\". `commits`: the\nupdate, newest first, to show the driver. `needs_pip`, `needs_lua_copy`,\n`installer_changed`: what applying involves. `restart_needed`: the disk\nis newer than the running code. Cached up to an hour; \"offline\" and\n\"rate_limited\" are not faults and may carry a `stale` answer.",
+  "description": "Whether a newer version of this server is on GitHub.\n\n`channel` is what updates follow, kept until changed: \"stable\" (the\ndefault), tested releases; or \"latest\", each change as soon as it is\nfinished, for a driver who wants new things first and doesn't mind the\nodd rough edge. Pass it only when the driver chooses; describe the\nchoice in those words, not git's.\n\n`status`: \"identical\", \"behind\" (update waiting), \"ahead\" (on stable:\nnewer than the latest release, see `note`), \"diverged\", or \"unknown\"\nwith an `error`: \"local_commit_not_on_github\" (local changes; leave\nthem), \"no_release\", \"offline\" or \"rate_limited\". On stable, `release`\nhas the `version` and its `notes` to show the driver; otherwise show\n`commits`, newest first. `needs_pip`, `needs_lua_copy`,\n`installer_changed`: what applying involves. `restart_needed`: the disk\nis newer than the running code. Cached up to an hour; \"offline\" and\n\"rate_limited\" are not faults and may carry a `stale` answer.",
   "inputSchema": {
-   "properties": {},
+   "properties": {
+    "channel": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "title": "Channel"
+    }
+   },
    "title": "check_for_updatesArguments",
    "type": "object"
   },

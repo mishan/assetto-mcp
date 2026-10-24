@@ -70,7 +70,8 @@ The first tagged release, covering everything since the project began.
   which tool answers which question, how to read the numbers and run an A/B,
   with a spoken channel for live sessions.
 - The engineer can restart the server itself, and check for and apply
-  updates when the driver says so.
+  updates when the driver says so. Updates follow tested releases by
+  default, or each change as soon as it's finished, if the driver asks.
 
 ### Install
 

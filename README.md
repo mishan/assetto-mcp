@@ -70,6 +70,10 @@ Ask the assistant *"Is there an update?"* It checks GitHub with
 say yes, then restarts itself. From a terminal, the same thing is
 `python -m assetto_mcp.update --check` and `--apply`.
 
+Updates come as releases, tested and listed in [CHANGELOG.md](CHANGELOG.md).
+To get each change as soon as it's finished instead, tell the assistant
+*"I want the latest changes"*; *"Back to releases"* switches back.
+
 Updating needs the install to be a `git clone`, and leaves it alone if you
 have edited files, switched branches or made commits of your own. A copy
 downloaded as a ZIP can't be updated this way. The manual route always

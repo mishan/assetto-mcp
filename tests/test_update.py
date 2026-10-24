@@ -47,7 +47,8 @@ def _no_git() -> bool:
 
 
 class FakeGitHub:
-    """The compare endpoint, answered by git from the bare repository."""
+    """The compare and latest-release endpoints, answered by git from the
+    bare repository; its newest tag is the latest release."""
 
     def __init__(self, bare: Path):
         self.bare = bare
@@ -65,6 +66,8 @@ class FakeGitHub:
                     return self._send(403, {"message": "rate limit"}, {
                         "X-RateLimit-Remaining": "0",
                         "X-RateLimit-Reset": str(int(time.time()) + 1800)})
+                if self.path == f"/repos/{REPO}/releases/latest":
+                    return outer._release(self)
                 prefix = f"/repos/{REPO}/compare/"
                 if not self.path.startswith(prefix):
                     return self._send(404, {"message": "Not Found"})
@@ -110,6 +113,16 @@ class FakeGitHub:
                       "commits": commits,
                       "files": [{"filename": f} for f in files]})
 
+    def _release(self, h):
+        tags = subprocess.run(
+            ["git", "tag", "--sort=-creatordate"], cwd=self.bare,
+            capture_output=True, text=True,
+            stdin=subprocess.DEVNULL).stdout.split()
+        if not tags:
+            return h._send(404, {"message": "Not Found"})
+        h._send(200, {"tag_name": tags[0], "html_url": f"/r/{tags[0]}",
+                      "body": f"What's new in {tags[0]}"})
+
     def close(self):
         self.server.shutdown()
         self.server.server_close()
@@ -140,6 +153,7 @@ class World:
         os.environ["ASSETTO_MCP_UPDATE_API"] = self.github.url
         os.environ["ASSETTO_MCP_UPDATE_REPO"] = REPO
         os.environ["ASSETTO_MCP_UPDATE_GIT_URL"] = self.bare.as_uri()
+        U.set_channel("latest", self.data)
         self.pip_calls: list[Path] = []
 
     def write(self, name, text, where=None):
@@ -152,6 +166,10 @@ class World:
         _git(self.dev, "commit", "-q", "-m", message)
         _git(self.dev, "push", "-q", "origin", "main")
         return _git(self.dev, "rev-parse", "HEAD")
+
+    def release(self, tag) -> None:
+        _git(self.dev, "tag", tag)
+        _git(self.dev, "push", "-q", "origin", tag)
 
     def head(self) -> str:
         return _git(self.install, "rev-parse", "HEAD")
@@ -230,6 +248,39 @@ def test_behind_is_listed_flagged_and_fast_forwarded():
         assert "installer_note" in done, done
         assert w.check()["status"] == "identical"
         print("  2 behind, flags right, fast-forwarded, pip run once")
+    _world(go)
+
+
+def test_stable_offers_releases_and_latest_offers_every_change():
+    def go(w):
+        (w.data / U.CHANNEL_FILE).unlink()
+        assert U.channel(w.data) == "stable"
+        assert w.check()["error"] == "no_release"
+
+        w.write("assetto_mcp/server.py", "# v2\n")
+        released = w.push("Released")
+        w.release("v0.2.0")
+        w.write("assetto_mcp/server.py", "# v3\n")
+        tip = w.push("Not released yet")
+
+        out = w.check(force=True)
+        assert out["status"] == "behind" and out["latest"] == released, out
+        assert out["release"]["version"] == "v0.2.0", out
+        assert out["release"]["notes"] == "What's new in v0.2.0", out
+        assert w.apply(released)["updated"] and w.head() == released
+        assert w.check()["status"] == "identical"
+
+        U.set_channel("latest", w.data)
+        out = w.check()
+        assert out["latest"] == tip and "release" not in out, out
+        assert w.apply(tip)["updated"] and w.head() == tip
+
+        # Back on stable past the release: nothing to offer, nor to undo.
+        U.set_channel("stable", w.data)
+        out = w.check()
+        assert out["status"] == "ahead" and "v0.2.0" in out["note"], out
+        assert w.apply(released)["refused"] == "not_behind"
+        print("  stable: no release, then the release; latest: the tip")
     _world(go)
 
 
@@ -524,7 +575,9 @@ def apply_update():
         return json.loads(str(e))
     raise AssertionError("a refused apply was not a failed call")
 
-out = {"check": json.loads(s.check_for_updates())}
+out = {"check": json.loads(s.check_for_updates()),
+       "beta": json.loads(s.check_for_updates(channel="beta")),
+       "chose": json.loads(s.check_for_updates(channel="latest"))}
 c = s._collector
 c.holds_recorder, c.session_id, c.live = True, 42, True
 out["here"] = apply_update()
@@ -539,8 +592,8 @@ print(json.dumps(out))
 
 
 def test_the_server_tools_as_the_model_calls_them():
-    """Offline is an answer, and a live session here or in another
-    instance refuses an apply."""
+    """Offline is an answer, the driver's channel is kept, and a live
+    session here or in another instance refuses an apply."""
     try:
         import mcp  # noqa: F401
     except ImportError:
@@ -561,6 +614,8 @@ def test_the_server_tools_as_the_model_calls_them():
         # A CI checkout may not be a clone at all; either answer is fine,
         # as long as it is an answer.
         assert check.get("error") in ("offline", "not_a_git_checkout"), out
+        assert "stable, latest" in out["beta"]["error"], out
+        assert U.channel(Path(d)) == "latest", out["chose"]
         for where, sid in (("here", 42), ("elsewhere", out["elsewhere_id"])):
             assert out[where]["refused"] == "recording", out
             assert out[where]["session_id"] == sid, out

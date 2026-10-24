@@ -538,13 +538,17 @@ continues under a new session id (tag it again), and `session_check` may
 show the port retrying for a minute or more on Windows while the in-game
 app waits to reconnect.
 
-**`check_for_updates()`** -- read-only. `status` "behind" means an update
-is waiting; `commits` is what it contains, newest first, and is what you
-show the driver. `needs_pip`, `needs_lua_copy` and `installer_changed` say
+**`check_for_updates(channel=None)`** -- `channel` "stable" (the default)
+follows releases, "latest" every change as it is finished; pass it only when
+the driver chooses, and it is kept. `status` "behind" means an update is
+waiting. On stable, show the driver `release.notes`; on latest, `commits`,
+newest first. `needs_pip`, `needs_lua_copy` and `installer_changed` say
 what applying involves. `restart_needed` means the disk is already newer
-than the running server. "ahead", "diverged" and
-`local_commit_not_on_github` are a checkout with its own changes: say so
-and leave it. "offline" and "rate_limited" are not faults; answers are
+than the running server. "ahead" on stable with a `note` is an install
+newer than the latest release, after following latest: nothing to do.
+Otherwise "ahead", "diverged" and `local_commit_not_on_github` are a
+checkout with its own changes: say so and leave it. "no_release": nothing
+is published yet; offer latest. "offline" and "rate_limited" are not faults; answers are
 cached for an hour and may come back `stale`.
 
 **`apply_update(to_commit)`** -- `to_commit` is `latest` from the check.
@@ -553,7 +557,7 @@ mid-session: a dependency reinstall can take minutes, and a live session
 is refused ("recording"). A reply with `in_progress: true` is still
 running: call again with the same `to_commit` to wait for the result; a
 refusal "in_progress" is another apply. A
-`commit_mismatch` refusal means main moved: check again and ask again. Read `pip` and `lua` in the reply and pass on any `warning` or
+`commit_mismatch` refusal means the update moved: check again and ask again. Read `pip` and `lua` in the reply and pass on any `warning` or
 `lua.note` as it is -- the in-game app is not copied while the game runs.
 Then `restart_server`, with the driver's OK, to load the new code.
 

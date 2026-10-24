@@ -3480,18 +3480,31 @@ def _shutdown() -> None:
             pass
 
 
-@_tool("Check for updates", open_world=True, status=True,
+@_tool("Check for updates", writes=True, open_world=True, status=True,
        locks_conn=False)
-def check_for_updates() -> str:
-    """Whether a newer version of this server is on GitHub. Read-only.
+def check_for_updates(channel: str | None = None) -> str:
+    """Whether a newer version of this server is on GitHub.
 
-    `status`: "identical", "behind" (update waiting), "ahead", "diverged",
-    or "unknown" with an `error`: "local_commit_not_on_github" (local
-    changes; leave them), "offline" or "rate_limited". `commits`: the
-    update, newest first, to show the driver. `needs_pip`, `needs_lua_copy`,
+    `channel` is what updates follow, kept until changed: "stable" (the
+    default), tested releases; or "latest", each change as soon as it is
+    finished, for a driver who wants new things first and doesn't mind the
+    odd rough edge. Pass it only when the driver chooses; describe the
+    choice in those words, not git's.
+
+    `status`: "identical", "behind" (update waiting), "ahead" (on stable:
+    newer than the latest release, see `note`), "diverged", or "unknown"
+    with an `error`: "local_commit_not_on_github" (local changes; leave
+    them), "no_release", "offline" or "rate_limited". On stable, `release`
+    has the `version` and its `notes` to show the driver; otherwise show
+    `commits`, newest first. `needs_pip`, `needs_lua_copy`,
     `installer_changed`: what applying involves. `restart_needed`: the disk
     is newer than the running code. Cached up to an hour; "offline" and
     "rate_limited" are not faults and may carry a `stale` answer."""
+    if channel is not None:
+        try:
+            update.set_channel(channel, DATA_DIR)
+        except (ValueError, OSError) as e:
+            return _j({"error": str(e)})
     return _j(update.check(data_dir=DATA_DIR,
                            running_commit=_RUNNING_COMMIT))
 

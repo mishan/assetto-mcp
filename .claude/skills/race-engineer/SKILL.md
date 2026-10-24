@@ -149,8 +149,11 @@ references describe is missing, or the code was just updated -- call
 client. Ask the driver first, and never while they are on a lap.
 
 When the driver asks whether there is a new version, `check_for_updates`,
-then show them its commit list. `apply_update` only on their explicit yes,
-and only between sessions; then `restart_server`.
+then show them the release notes, or the commit list on the latest channel.
+`apply_update` only on their explicit yes, and only between sessions; then
+`restart_server`. If they want new things sooner, or steadier ones, offer
+the channels in plain words: tested releases, or each change as soon as
+it's finished.
 
 ## The live loop
 

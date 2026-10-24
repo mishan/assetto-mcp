@@ -1,5 +1,9 @@
 """Check GitHub for a newer version, and fast-forward to it when told to.
 
+Two channels, the driver's choice, kept in the data directory: "stable"
+(the default) offers the latest GitHub release, and "latest" every change
+merged to `main`. Either way the update is a commit on `main`.
+
 The install is a git clone that pip points at in place (`pip install -e .`
 from windows/install-windows.ps1), so an update is a fast-forward of that clone,
 plus the two things a pull alone does not do: reinstalling when
@@ -18,6 +22,7 @@ driver, not a terminal.
     python -m assetto_mcp.update --check
     python -m assetto_mcp.update --apply        asks before applying
     python -m assetto_mcp.update --sync-lua     copy the in-game app only
+    python -m assetto_mcp.update --channel latest   follow every change
 """
 
 import argparse
@@ -38,6 +43,9 @@ from . import circuit, config
 DEFAULT_REPO = "mishan/assetto-mcp"
 DEFAULT_API = "https://api.github.com"
 BRANCH = "main"
+CHANNELS = ("stable", "latest")
+CHANNEL_FILE = "update_channel"
+MAX_NOTES = 3000
 
 # GitHub allows sixty unauthenticated requests an hour per address, and a
 # driver asking "anything new?" twice in a session should not spend two.
@@ -240,14 +248,28 @@ def _flags(files: list[str]) -> dict:
     }
 
 
-def _compare(local: str) -> dict:
-    """GitHub's view of the install against main, from the install's side.
+def _latest_release() -> dict | None:
+    """The newest GitHub release, or None when none is published."""
+    try:
+        data = json.loads(_get(
+            f"{_api()}/repos/{_repo()}/releases/latest"))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    return {"version": data["tag_name"], "url": data.get("html_url"),
+            "notes": (data.get("body") or "")[:MAX_NOTES]}
+
+
+def _compare(local: str, target: str = BRANCH) -> dict:
+    """GitHub's view of the install against `target`, from the install's
+    side.
 
     GitHub's compare is phrased from the head's side: `local...main` is
     "ahead" when main has commits the install lacks. Everything returned
     here is turned around to say what the install is.
     """
-    url = f"{_api()}/repos/{_repo()}/compare/{local}...{BRANCH}"
+    url = f"{_api()}/repos/{_repo()}/compare/{local}...{target}"
     data = json.loads(_get(url))
     flipped = {"ahead": "behind", "behind": "ahead"}
     status = flipped.get(data.get("status"), data.get("status"))
@@ -262,7 +284,7 @@ def _compare(local: str) -> dict:
                   (data.get("merge_base_commit") or {}).get("sha", ""))
     else:
         # More commits than one page of compare carries: ask for the tip.
-        latest = _get(f"{_api()}/repos/{_repo()}/commits/{BRANCH}",
+        latest = _get(f"{_api()}/repos/{_repo()}/commits/{target}",
                       accept="application/vnd.github.sha"
                       ).decode().strip()
     files = [f.get("filename", "") for f in data.get("files") or []]
@@ -306,13 +328,36 @@ def _read_cache(path: Path | None) -> dict | None:
         return None
 
 
+def channel(data_dir: Path | None = None) -> str:
+    """The channel the driver chose, "stable" until they choose."""
+    path = _cache_path(data_dir, CHANNEL_FILE)
+    try:
+        name = path.read_text(encoding="utf-8").strip() if path else ""
+    except OSError:
+        name = ""
+    return name if name in CHANNELS else CHANNELS[0]
+
+
+def set_channel(name: str, data_dir: Path | None = None) -> None:
+    if name not in CHANNELS:
+        raise ValueError(f"channel is one of {', '.join(CHANNELS)}, "
+                         f"not {name!r}")
+    path = _cache_path(data_dir, CHANNEL_FILE)
+    if path is None:
+        raise OSError("no data directory to keep the choice in")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(name, encoding="utf-8")
+
+
 def _write_cache(path: Path | None, local: str, result: dict) -> None:
     if path is None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"checked_at": time.time(), "local": local,
-                                    "repo": _repo(), "result": result}),
+                                    "repo": _repo(),
+                                    "channel": result.get("channel"),
+                                    "result": result}),
                         encoding="utf-8")
     except OSError:
         pass
@@ -339,7 +384,8 @@ def _when(epoch: float | None) -> str | None:
 
 def check(root: Path | None = None, data_dir: Path | None = None,
           running_commit: str | None = None, force: bool = False) -> dict:
-    """Where the install stands against GitHub's main. Never raises."""
+    """Where the install stands against its channel on GitHub. Never
+    raises."""
     try:
         return _check(root or repo_root(), data_dir, running_commit, force)
     except Exception as e:  # noqa: BLE001 - this answers a driver, not a log
@@ -374,16 +420,24 @@ def _check(root: Path, data_dir, running_commit, force) -> dict:
 
 
 def _check_remote(local: str, data_dir, force) -> dict:
+    ch = channel(data_dir)
     cache_path = _cache_path(data_dir)
     cached = _read_cache(cache_path)
     usable = (cached and cached.get("local") == local
-              and cached.get("repo") == _repo())
+              and cached.get("repo") == _repo()
+              and cached.get("channel") == ch)
     if usable and not force and \
             time.time() - cached.get("checked_at", 0) < CACHE_SECONDS:
         return dict(cached["result"], cached=True,
                     checked_at=_when(cached["checked_at"]))
     try:
-        result = _compare(local)
+        release = _latest_release() if ch == "stable" else None
+        if ch == "stable" and release is None:
+            return {"status": "unknown", "channel": ch, "installed": local,
+                    "error": "no_release",
+                    "detail": "no release has been published yet; the "
+                              "\"latest\" channel offers every change"}
+        result = _compare(local, release["version"] if release else BRANCH)
     except _RateLimited as e:
         out = {"error": "rate_limited",
                "detail": "GitHub allows 60 checks an hour from one address "
@@ -415,6 +469,13 @@ def _check_remote(local: str, data_dir, force) -> dict:
         else:
             out["status"] = "unknown"
         return out
+    result["channel"] = ch
+    if release:
+        result["release"] = release
+        if result["status"] == "ahead":
+            result["note"] = (f"newer than the latest release, "
+                              f"{release['version']}; the next one will be "
+                              "offered")
     _write_cache(cache_path, local, result)
     return dict(result, cached=False, checked_at=_when(time.time()))
 
@@ -739,14 +800,15 @@ def _apply(to_commit, root, data_dir, ac, pip, is_game_running) -> dict:
     if now.get("status") != "behind":
         return _refuse(
             "not_behind",
-            f"the install is {now.get('status')} against GitHub's "
-            f"{BRANCH}" + (f" ({now['error']})" if now.get("error") else "")
+            f"the install is {now.get('status')} against its "
+            f"{now.get('channel')} channel on GitHub"
+            + (f" ({now['error']})" if now.get("error") else "")
             + "; only a plain fast-forward is applied",
             check=now)
     latest = now["latest"]
     if len(to_commit) < 7 or not latest.startswith(to_commit.lower()):
         return _refuse("commit_mismatch",
-                       f"{BRANCH} is at {latest[:7]} now, not {to_commit}. "
+                       f"the update is to {latest[:7]} now, not {to_commit}. "
                        "Show the driver the new list from check_for_updates "
                        "and ask again.", latest=latest)
 
@@ -827,6 +889,9 @@ def main(argv: list[str] | None = None) -> int:
                         "given or --yes is set")
     g.add_argument("--sync-lua", action="store_true",
                    help="copy the in-game app into Assetto Corsa")
+    g.add_argument("--channel", choices=CHANNELS,
+                   help="follow releases (stable) or every change (latest), "
+                        "then check")
     ap.add_argument("--yes", action="store_true",
                     help="with --apply, do not ask")
     args = ap.parse_args(argv)
@@ -838,6 +903,8 @@ def main(argv: list[str] | None = None) -> int:
         out = sync_lua()
         show(out)
         return 0
+    if args.channel:
+        set_channel(args.channel)
     if args.apply is None:
         out = check(force=True)
         show(out)
@@ -849,7 +916,10 @@ def main(argv: list[str] | None = None) -> int:
         if now.get("status") != "behind":
             show(now)
             return 0 if now.get("status") == "identical" else 1
-        print(f"{now['behind_by']} new commit(s) on {BRANCH}:")
+        if now.get("release"):
+            print(f"Release {now['release']['version']}:\n"
+                  f"{now['release']['notes']}\n")
+        print(f"{now['behind_by']} new commit(s):")
         for c in now["commits"]:
             print(f"  {c['sha']} {c['message']}")
         target = now["latest"]

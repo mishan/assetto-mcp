@@ -8,6 +8,7 @@ support for it.
 
     python -m assetto_mcp.sims.recording record lap.simrec
     python -m assetto_mcp.sims.recording info lap.simrec
+    python -m assetto_mcp.sims.recording replay lap.simrec --db out.db
 
 The file is MAGIC, then one lzma stream: a length-prefixed JSON header, then
 records of (seconds since the start, page index, length, bytes). A page is
@@ -21,6 +22,7 @@ import json
 import lzma
 import struct
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -97,6 +99,87 @@ def _ticks(z, f, pages):
         f.close()
 
 
+class Replay:
+    """A recording standing in for the game, with the pages SimInfo has.
+
+    Time is the recording's own: wait() moves it on, sleeping as long only
+    when `realtime`, and the pages are those of the last tick at or before
+    it. Once past the end, wait() raises as if the game had closed.
+    """
+
+    def __init__(self, path, realtime: bool = False):
+        from .. import sim_info
+        header, self._ticks = read(path)
+        if header.get("sim") != "ac":
+            self._ticks.close()
+            raise ValueError(f"{path} is a {header.get('sim')} recording; "
+                             "only Assetto Corsa can be replayed")
+        self._decode = sim_info.from_raw
+        self._ended = sim_info.SharedMemoryUnavailable
+        self._realtime = realtime
+        self.done = threading.Event()
+        first = next(self._ticks, None)
+        if first is None:
+            raise ValueError(f"{path} holds no data")
+        self._start, self._t = first[0], 0.0
+        self._pages = self._decode(first[1])
+        self._next = next(self._ticks, None)
+
+    physics = property(lambda self: self._pages.physics)
+    graphics = property(lambda self: self._pages.graphics)
+    static = property(lambda self: self._pages.static)
+
+    def now(self) -> float:
+        return self._t
+
+    def wait(self, seconds: float) -> None:
+        if self._next is None:
+            self.done.set()
+            raise self._ended("the recording has ended")
+        if self._realtime:
+            time.sleep(seconds)
+        self._t += seconds
+        while (self._next is not None
+               and self._next[0] - self._start <= self._t):
+            self._pages = self._decode(self._next[1])
+            self._next = next(self._ticks, None)
+
+    def view(self):
+        """The pages now, to read while the collector moves the replay on."""
+        if self.done.is_set():
+            raise self._ended("the recording has ended")
+        pages = self._pages
+        pages.close = lambda: None
+        return pages
+
+    def close(self) -> None:
+        self._ticks.close()
+
+
+def replay_into(path, db_path, timeout: float = 600) -> None:
+    """Record a recording's laps into the database at `db_path`, as fast as
+    the collector stores them."""
+    from .. import sim_info
+    from ..collector import Collector
+
+    replay = Replay(path)
+    opened = []
+
+    def once():
+        if opened:
+            raise sim_info.SharedMemoryUnavailable("the recording has ended")
+        opened.append(replay)
+        return replay
+
+    col = Collector(db_path, once)
+    col.start()
+    try:
+        if not replay.done.wait(timeout):
+            raise TimeoutError(f"{path} had not finished after {timeout} s")
+    finally:
+        col.stop()
+
+
 # --- command line -------------------------------------------------------
 
 
@@ -169,9 +252,15 @@ def main(argv: list[str] | None = None) -> int:
                      help="keep the driver's name in the file")
     desc = sub.add_parser("info", help="what a recording holds")
     desc.add_argument("file", type=Path)
+    rep = sub.add_parser("replay", help="store a recording's laps in a "
+                                        "database, as fast as it can")
+    rep.add_argument("file", type=Path)
+    rep.add_argument("--db", type=Path, required=True)
     args = ap.parse_args(argv)
     if args.command == "record":
         record(args.out, args.hz, args.keep_names)
+    elif args.command == "replay":
+        replay_into(args.file, args.db)
     else:
         print(json.dumps(info(args.file), indent=2))
     return 0

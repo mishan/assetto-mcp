@@ -56,6 +56,14 @@ from .collector import Collector  # noqa: E402
 
 AC_DOCS_DIR = Path(os.environ.get(
     "AC_DOCS_DIR", Path.home() / "Documents" / "Assetto Corsa"))
+# A recording replayed as the game, for trying the pit wall and the tools
+# without it. Its laps would be stored like any others, so never into the
+# real ones.
+REPLAY_FILE = config.env("REPLAY")
+if REPLAY_FILE and not config.env("DATA"):
+    raise RuntimeError("ASSETTO_MCP_REPLAY needs ASSETTO_MCP_DATA set to a "
+                       "directory of its own, so a replay never adds to "
+                       "your real laps")
 DATA_DIR = config.data_dir()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 RANGES_DIR = DATA_DIR / "ranges"
@@ -234,9 +242,29 @@ _conn = db.connect(DB_PATH)
 _conn_lock = threading.RLock()
 
 
+_replay = None
+
+
 def _sim_factory():
-    from .sim_info import SimInfo
-    return SimInfo()
+    from .sim_info import SharedMemoryUnavailable, SimInfo
+    global _replay
+    if not REPLAY_FILE:
+        return SimInfo()
+    if _replay is not None:
+        raise SharedMemoryUnavailable("the recording has ended")
+    from .sims.recording import Replay
+    _replay = Replay(REPLAY_FILE, realtime=True)
+    return _replay
+
+
+def _open_sim():
+    """The game's pages for a tool to read, the replay's when replaying."""
+    from .sim_info import SharedMemoryUnavailable, SimInfo
+    if not REPLAY_FILE:
+        return SimInfo()
+    if _replay is None:
+        raise SharedMemoryUnavailable("the recording has not started")
+    return _replay.view()
 
 
 _collector = Collector(DB_PATH, _sim_factory)
@@ -684,8 +712,7 @@ def live_snapshot() -> str:
 def _live(dash: bool = False) -> dict:
     """live_snapshot's payload; the dashboard polls it from bridge threads,
     with where the car is for its maps."""
-    from .sim_info import SimInfo
-    sim = SimInfo()
+    sim = _open_sim()
     try:
         p, g, s = sim.physics, sim.graphics, sim.static
         payload = {
@@ -847,9 +874,8 @@ def _app_link() -> dict:
 
 def _game_now() -> dict:
     """What shared memory says the game is doing, or why it cannot say."""
-    from .sim_info import SimInfo
     try:
-        sim = SimInfo()
+        sim = _open_sim()
     except Exception as e:  # noqa: BLE001 - AC not running, not Windows
         return {"status": "not running", "why": str(e)}
     try:
@@ -2577,7 +2603,7 @@ def _live_fuel_facts() -> tuple[dict, str | None]:
     """
     try:
         from .sim_info import fuel_facts
-        return fuel_facts(), None
+        return fuel_facts(_open_sim), None
     except Exception as e:  # AC not running, or not Windows
         return {}, f"{type(e).__name__}: {e}"
 

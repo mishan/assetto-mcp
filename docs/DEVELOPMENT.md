@@ -51,6 +51,15 @@ both directions: `7 // 2` runs there and is a syntax error in the game, and
 `string.format('%d', 1.5)` raises there and works in the game. The harness asks
 for LuaJIT by name.
 
+### Recordings of the game
+
+`python -m assetto_mcp.sims.recording record lap.simrec` on the gaming PC
+records the game's shared memory until Ctrl+C. `replay lap.simrec --db out.db`
+stores its laps into a database as fast as the collector can, on any OS, in
+the recording's own time, so two replays store identical rows: replay before
+and after a change to the collector and compare. `ASSETTO_MCP_REPLAY` runs the
+whole server from one in real time instead.
+
 ### The tool surface
 
 `tests/test_mcp_contract.py` compares `tools/list` (names, input schemas,

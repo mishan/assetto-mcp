@@ -407,6 +407,10 @@ class Collector:
 
     def _loop(self, sim, AC_LIVE):
         interval = 1.0 / TARGET_HZ
+        # A recording keeps its own time, so a replay is the same every run
+        # and need not take as long as the driving did.
+        now = getattr(sim, "now", time.monotonic)
+        pause = getattr(sim, "wait", time.sleep)
         session_started = False
         lap_samples: list[tuple] = []
         wide_since = None        # t_ms the current excursion began
@@ -457,7 +461,7 @@ class Collector:
                     lap_samples = []
                     # Not "recording (session 7)" while AC sits in the menus.
                     self._announce("waiting for AC to go live")
-                time.sleep(0.25)
+                pause(0.25)
                 continue
 
             # Restarting a session from the in-game menu resets completedLaps
@@ -505,7 +509,7 @@ class Collector:
                 lap_samples = []
                 wide_since = None
                 lap_pitted = False
-                lap_start_wall = time.monotonic()
+                lap_start_wall = now()
                 lap_start_fuel = None
                 self.sessions_started += 1
                 self.current_lap_dirty = False
@@ -561,7 +565,7 @@ class Collector:
                 lap_samples = []
                 wide_since = None
                 lap_pitted = False
-                lap_start_wall = time.monotonic()
+                lap_start_wall = now()
                 lap_start_fuel = fuel_now
                 # Forget the previous position too. The lap counter and the
                 # position wrap do not land on the same tick, so ~0.98 then
@@ -583,7 +587,7 @@ class Collector:
             if (lap_samples and last_pos is not None and not wrapped
                     and not g.isInPitLane
                     and last_pos - pos > ABANDON_JUMP):
-                elapsed = int((time.monotonic() - lap_start_wall) * 1000)
+                elapsed = int((now() - lap_start_wall) * 1000)
                 db.store_lap(self._conn, self.session_id,
                              last_completed + 1, elapsed, False,
                              lap_samples, complete=False, pitted=lap_pitted)
@@ -592,7 +596,7 @@ class Collector:
                 lap_samples = []
                 wide_since = None
                 lap_pitted = False
-                lap_start_wall = time.monotonic()
+                lap_start_wall = now()
                 lap_start_fuel = None
                 self.current_lap_dirty = False
                 self.current_lap_pitted = False
@@ -607,7 +611,7 @@ class Collector:
             # New physics tick since last sample?
             if p.packetId != last_packet and not g.isInPitLane:
                 last_packet = p.packetId
-                t_ms = int((time.monotonic() - lap_start_wall) * 1000)
+                t_ms = int((now() - lap_start_wall) * 1000)
                 # Drives the in-game overlay's "running wide" indicator
                 # only; the stored verdict is scored at store time. It uses
                 # the same rule, wheel count AND minimum duration, so the
@@ -652,4 +656,4 @@ class Collector:
                     _damage(p),
                 ))
 
-            time.sleep(interval)
+            pause(interval)

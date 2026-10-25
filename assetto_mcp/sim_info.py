@@ -13,6 +13,7 @@ import ctypes
 import mmap
 import sys
 from ctypes import c_float, c_int32, c_wchar
+from types import SimpleNamespace
 
 AC_OFF = 0
 AC_REPLAY = 1
@@ -170,6 +171,25 @@ class SPageFileStatic(ctypes.Structure):
     ]
 
 
+PAGES = {"physics": SPageFilePhysics, "graphics": SPageFileGraphic,
+         "static": SPageFileStatic}
+# Who drove: blanked in a recording unless its maker keeps them.
+PLAYER_FIELDS = ("playerName", "playerSurname", "playerNick")
+
+
+def from_raw(raw: dict[str, bytes]) -> SimpleNamespace:
+    """The three pages, as SimInfo shows them, from their raw bytes."""
+    return SimpleNamespace(**{name: cls.from_buffer_copy(raw[name])
+                              for name, cls in PAGES.items()})
+
+
+def scrub(static: bytes) -> bytes:
+    page = SPageFileStatic.from_buffer_copy(static)
+    for field in PLAYER_FIELDS:
+        setattr(page, field, "")
+    return bytes(page)
+
+
 class _Page:
     """One mmap'd shared memory page, viewed through a ctypes struct."""
 
@@ -235,6 +255,12 @@ class SimInfo:
                 "Assetto Corsa's shared memory is empty -- the game does "
                 "not appear to be running. (The mapping opened, but Windows "
                 "creates it on demand, so that proves nothing.)")
+
+    def raw(self) -> dict[str, bytes]:
+        """Each page's bytes as they are now, for a recording."""
+        return {"physics": self._physics._mm[:],
+                "graphics": self._graphics._mm[:],
+                "static": self._static._mm[:]}
 
     @property
     def physics(self) -> SPageFilePhysics:

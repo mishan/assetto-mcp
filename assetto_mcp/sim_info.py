@@ -287,7 +287,7 @@ class SimInfo:
 MAX_FUEL_RATE = 10.0
 
 
-def fuel_facts() -> dict:
+def fuel_facts(open_sim=None) -> dict:
     """Tank capacity and the session's fuel-usage multiplier.
 
     maxFuel is the capacity when the car's FUEL setup entry is read-only,
@@ -299,7 +299,7 @@ def fuel_facts() -> dict:
     cannot be one, and `fuel_rate` of 0 is a real setting -- a session that
     burns nothing -- so callers must test it against None, not for truth.
     """
-    sim = SimInfo()
+    sim = (open_sim or SimInfo)()
     try:
         s = sim.static
         out: dict = {}

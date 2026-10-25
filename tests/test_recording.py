@@ -79,5 +79,53 @@ def test_a_recording_leaves_the_driver_out_and_the_car_in():
     assert page.physics.speedKmh == 1.0
 
 
+def _two_laps(path):
+    """Half a lap from the pits, then a 20-second lap, at 25 Hz."""
+    hz, lap_s = 25, 20.0
+    ticks, done, last_ms = [], 0, 0
+    for i in range(int(hz * (lap_s * 1.5 + 2))):
+        t = i / hz
+        pos = (0.5 + t / lap_s) % 1.0
+        laps = int(0.5 + t / lap_s)
+        if laps != done:
+            done, last_ms = laps, 0 if laps == 1 else int(lap_s * 1000)
+        phys = sim_info.SPageFilePhysics(packetId=i, speedKmh=150.0)
+        graph = sim_info.SPageFileGraphic(
+            status=sim_info.AC_LIVE, completedLaps=done, iLastTime=last_ms,
+            normalizedCarPosition=pos)
+        graph.carCoordinates[0] = pos * 1000
+        ticks.append((t, {"physics": bytes(phys), "graphics": bytes(graph),
+                          "static": _static(trackSPlineLength=4000.0)}))
+    _write(path, ticks)
+
+
+def test_a_replay_stores_the_laps_the_same_way_every_time():
+    from assetto_mcp import db
+    with tempfile.TemporaryDirectory() as d:
+        rec = Path(d) / "two.simrec"
+        _two_laps(rec)
+        stored = []
+        for run in ("a", "b"):
+            path = Path(d) / f"{run}.db"
+            recording.replay_into(rec, path)
+            conn = db.connect(path)
+            laps = [tuple(r) for r in conn.execute(
+                "SELECT lap_number, lap_time_ms, out_lap, complete FROM laps"
+                " ORDER BY id")]
+            samples = conn.execute(
+                "SELECT l.lap_number, s.t_ms, s.norm_pos, s.pos_x FROM samples"
+                " s JOIN laps l ON l.id = s.lap_id ORDER BY s.rowid"
+            ).fetchall()
+            conn.close()
+            stored.append((laps, [tuple(r) for r in samples]))
+        laps, samples = stored[0]
+        assert laps == [(1, 0, 1, 1), (2, 20000, 0, 1)], laps
+        # The replay's clock is the recording's: the timed lap's samples
+        # span its 20 seconds.
+        timed = [t for n, t, *_ in samples if n == 2]
+        assert len(timed) == 500 and 19900 <= timed[-1] < 20000, timed[-3:]
+        assert stored[1] == stored[0]
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

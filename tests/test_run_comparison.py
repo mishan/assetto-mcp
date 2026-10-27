@@ -1450,6 +1450,71 @@ def test_comparing_overlapping_laps_again_replaces_rather_than_adds():
     assert arb["experiments"][0]["conclusion"] == "kept", arb
 
 
+def test_a_chain_of_tests_through_one_setup_keeps_both():
+    """A to B, then B to C: B's laps are in both, and both are tests.
+
+    At Fuji the front bar went 14400 to 12000 (stock to v1) and then the
+    final drive 2 to 3 (v1 to v2), with v1's laps the candidate of the
+    first and the baseline of the second. Filing the second replaced the
+    first, and filing the first again replaced the second.
+    """
+    srv = _server()
+    car = "chain_car"
+    sid = make_session(srv._conn, track="fuji", car=car)
+    stock = {"ARB_FRONT": 14400.0, "FINAL_RATIO": 2.0}
+    db.record_measured_setup(srv._conn, sid, car, stock, now=1.0)
+    srv._conn.commit()
+    a = [_store(srv, sid, n, 113200 + 90 * n) for n in (1, 2, 3)]
+    db.record_measured_setup(srv._conn, sid, car,
+                             {**stock, "ARB_FRONT": 12000.0})
+    srv._conn.commit()
+    b = [_store(srv, sid, n, 112500 + 90 * n) for n in (4, 5, 6)]
+    db.record_measured_setup(srv._conn, sid, car,
+                             {**stock, "ARB_FRONT": 12000.0,
+                              "FINAL_RATIO": 3.0})
+    srv._conn.commit()
+    c = [_store(srv, sid, n, 112100 + 90 * n) for n in (7, 8, 9)]
+
+    bar = _run(srv, a, b)["experiment_id"]
+    srv.annotate_experiment(bar, note="front bar", conclusion="kept")
+    gear = _run(srv, b, c)["experiment_id"]
+    assert gear != bar, (bar, gear)
+    assert _run(srv, a, b)["experiment_id"] == bar
+    assert _run(srv, b, c)["experiment_id"] == gear
+
+    book = json.loads(srv.setup_book(car=car))
+    assert book["experiments_total"] == 2, book
+    arb = book["entries"]["ARB_FRONT"]["experiments"]
+    assert [e["experiment_id"] for e in arb] == [bar], arb
+    assert arb[0]["conclusion"] == "kept" and arb[0]["note"] == "front bar"
+    ratio = book["entries"]["FINAL_RATIO"]["experiments"]
+    assert [e["experiment_id"] for e in ratio] == [gear], ratio
+
+
+def test_one_baseline_against_two_candidates_is_two_tests():
+    srv = _server()
+    car = "fork_car"
+    sid = make_session(srv._conn, track="sebring", car=car)
+    db.record_measured_setup(srv._conn, sid, car, {"ARB_REAR": 3.0,
+                                                   "WING_1": 5.0}, now=1.0)
+    srv._conn.commit()
+    base = [_store(srv, sid, n, 113000 + 90 * n) for n in (1, 2, 3)]
+    db.record_measured_setup(srv._conn, sid, car, {"ARB_REAR": 5.0,
+                                                   "WING_1": 5.0})
+    srv._conn.commit()
+    arb = [_store(srv, sid, n, 112700 + 90 * n) for n in (4, 5, 6)]
+    db.record_measured_setup(srv._conn, sid, car, {"ARB_REAR": 3.0,
+                                                   "WING_1": 7.0})
+    srv._conn.commit()
+    wing = [_store(srv, sid, n, 112900 + 90 * n) for n in (7, 8, 9)]
+    first = _run(srv, base, arb)["experiment_id"]
+    second = _run(srv, base, wing)["experiment_id"]
+    assert first != second, (first, second)
+    book = json.loads(srv.setup_book(car=car))
+    assert book["experiments_total"] == 2, book
+    assert set(book["entries"]) == {"ARB_REAR", "WING_1"}, book
+
+
 def test_a_side_with_unmeasured_laps_is_not_filed_as_a_known_change():
     srv = _server()
     car = "half_measured_car"

@@ -1,8 +1,8 @@
-"""Background collector: samples AC shared memory into SQLite, one lap at a time.
+"""Background collector: samples the game into SQLite, one lap at a time.
 
-Runs as a daemon thread inside the MCP server process. Lap boundaries are
-detected via graphics.completedLaps incrementing; the finished lap's official
-time comes from graphics.iLastTime.
+Runs as a daemon thread inside the MCP server process, reading the game
+through a reader (sims/). Lap boundaries are the completed-lap count going
+up; the finished lap's official time is the game's own.
 """
 
 import os
@@ -12,6 +12,7 @@ import time
 import uuid
 
 from . import analysis, db, retention
+from .sims import calibration
 
 TARGET_HZ = 25  # plenty for setup work; keeps the DB small
 
@@ -37,61 +38,16 @@ WRAP_LOW = 0.1
 _is_outlier = analysis.lap_is_outlier
 
 
-# Reads of AC's fixed-size arrays go through getattr, because an older
-# shared-memory layout or a test stub may not carry the field, and then check
-# its length. They run inside the sampling loop: an IndexError there ends the
-# recording session, so a layout one element short would cost every lap of
-# the run rather than one nullable field.
-WHEELS_PER_CAR = 4
-DAMAGE_ZONES = 5
-WORLD_AXES = 3
-
 # Why a collector that was recording stopped. A sentinel so callers can tell
 # it apart: being switched off is not a failure and must not be reported as
 # last_error, while losing the claim is.
 SWITCHED_OFF = "recording was switched off by stop_recording"
 
 
-def _seq(p, field: str, n: int) -> tuple | None:
-    """`n` values from a fixed-size shared-memory array, or None.
-
-    None means "not recorded", as distinct from a real zero. A short array
-    is treated the same way rather than padded: a partial read of a
-    per-corner channel is not a measurement of anything.
-    """
-    v = getattr(p, field, None)
-    if v is None:
-        return None
-    try:
-        if len(v) < n:
-            return None
-    except TypeError:      # a ctypes array without __len__
-        pass
-    try:
-        return tuple(v[i] for i in range(n))
-    except (IndexError, TypeError):
-        return None
-
-
-def _wear(p) -> tuple:
-    """Per-corner tyre wear, or four Nones if this layout lacks it."""
-    return _seq(p, "tyreWear", WHEELS_PER_CAR) or (None,) * WHEELS_PER_CAR
-
-
-def _damage(p):
-    """Bodywork damage as one number: AC's five zones summed.
-
-    Nothing here asks where the car was hit, only whether it was, and the
-    sum answers that in one field that can be differenced between samples.
-    Zero throughout when the server has damage disabled.
-    """
-    zones = _seq(p, "carDamage", DAMAGE_ZONES)
-    return float(sum(zones)) if zones is not None else None
-
-
 class Collector:
     def __init__(self, db_path, sim_info_factory):
-        """sim_info_factory: zero-arg callable returning a SimInfo-like object.
+        """sim_info_factory: zero-arg callable returning a game reader
+        (sims.ac.Reader), raising while the game is not running.
 
         Injected so tests can run without Windows/AC. The collector opens its
         own SQLite connection inside its thread; sharing one connection across
@@ -270,8 +226,6 @@ class Collector:
         host owns -- and when its claim goes stale this loop is what picks
         the session up.
         """
-        from .sim_info import AC_LIVE  # local import keeps module testable
-
         try:
             self._conn = db.connect(self._db_path)
         except Exception as e:      # unwritable data dir, corrupt file
@@ -334,7 +288,7 @@ class Collector:
                 self._announce("waiting for AC to go live")
                 self.last_error = None
                 try:
-                    self._loop(sim, AC_LIVE)
+                    self._loop(sim)
                 except Exception as e:
                     # Keep the reason, then go round again.
                     self.last_error = str(e)
@@ -405,12 +359,13 @@ class Collector:
         except Exception:
             return None
 
-    def _loop(self, sim, AC_LIVE):
+    def _loop(self, sim):
         interval = 1.0 / TARGET_HZ
-        # A recording keeps its own time, so a replay is the same every run
-        # and need not take as long as the driving did.
-        now = getattr(sim, "now", time.monotonic)
-        pause = getattr(sim, "wait", time.sleep)
+        now, pause = sim.now, sim.wait
+        wide_wheels = calibration(sim.name, "TRACK_LIMITS_WHEELS",
+                                  db.TRACK_LIMITS_WHEELS)
+        wide_ms = calibration(sim.name, "MIN_EXCURSION_MS",
+                              db.MIN_EXCURSION_MS)
         session_started = False
         lap_samples: list[tuple] = []
         wide_since = None        # t_ms the current excursion began
@@ -448,13 +403,12 @@ class Collector:
                     self.session_id = None
                 return
 
-            g = sim.graphics
-            p = sim.physics
+            f = sim.read()
 
-            self.live = g.status == AC_LIVE
+            self.live = f.status == "live"
             if not self.live:
                 # Session ended / paused / menu: drop the partial lap.
-                if g.status == 0:  # AC_OFF -> back to waiting
+                if f.status == "off":  # back to waiting
                     session_started = False
                     last_completed = None
                     session_best = None
@@ -468,7 +422,7 @@ class Collector:
             # without passing through AC_OFF. A lap counter that goes
             # backwards can only mean a restart, so roll a fresh session.
             if (session_started and last_completed is not None
-                    and g.completedLaps < last_completed):
+                    and f.completed_laps < last_completed):
                 session_started = False
                 last_completed = None
                 session_best = None
@@ -477,17 +431,16 @@ class Collector:
                 lap_pitted = False
 
             if not session_started:
-                s = sim.static
+                s = sim.session()
                 self.session_id = db.create_session(
-                    self._conn,
-                    car=s.carModel, track=s.track,
-                    track_config=s.trackConfiguration,
-                    tyre_compound=g.tyreCompound,
-                    air_temp=p.airTemp, road_temp=p.roadTemp,
+                    self._conn, sim=sim.name,
+                    car=s.car, track=s.track, track_config=s.track_config,
+                    tyre_compound=f.tyre_compound,
+                    air_temp=f.air_temp, road_temp=f.road_temp,
                 )
                 # The game's own length, so every position can be given in
                 # meters even for sessions recorded without the in-game app.
-                length = getattr(s, "trackSPlineLength", 0) or 0
+                length = s.track_length_m or 0
                 if length >= analysis.MIN_TRACK_LENGTH_M:
                     db.set_fuel_basis(self._conn, self.session_id,
                                       track_length_m=length)
@@ -504,7 +457,7 @@ class Collector:
                         self.last_session_id = self.session_id
                         self.session_id = None
                     return
-                last_completed = g.completedLaps
+                last_completed = f.completed_laps
                 last_pos = None
                 lap_samples = []
                 wide_since = None
@@ -521,11 +474,11 @@ class Collector:
                 self._beat(force=True)
 
             # Lap boundary?
-            if g.completedLaps != last_completed:
-                lap_time = g.iLastTime
-                fuel_now = getattr(p, "fuel", None)
+            if f.completed_laps != last_completed:
+                lap_time = f.last_lap_ms
+                fuel_now = f.fuel_l
                 # First crossing of the line after leaving the pits produces
-                # an out-lap with no meaningful time; iLastTime is 0 then.
+                # an out-lap with no meaningful time; the game gives 0 then.
                 # The driving after pit exit is real telemetry; only its lap
                 # time is not, so an out-lap is stored and flagged.
                 if lap_samples:
@@ -561,7 +514,7 @@ class Collector:
                         # reference (or none). Re-scoring is a handful of
                         # rows and only happens on a new best.
                         db.backfill_outliers(self._conn, self.session_id)
-                last_completed = g.completedLaps
+                last_completed = f.completed_laps
                 lap_samples = []
                 wide_since = None
                 lap_pitted = False
@@ -581,11 +534,11 @@ class Collector:
             # that lap, marked incomplete: it is often the one the driver
             # most wants to look at. The wrap window keeps a line crossing
             # out of this check when the counter lags a tick.
-            pos = g.normalizedCarPosition
+            pos = f.norm_pos
             wrapped = (last_pos is not None
                        and last_pos > WRAP_HIGH and pos < WRAP_LOW)
             if (lap_samples and last_pos is not None and not wrapped
-                    and not g.isInPitLane
+                    and not f.in_pit_lane
                     and last_pos - pos > ABANDON_JUMP):
                 elapsed = int((now() - lap_start_wall) * 1000)
                 db.store_lap(self._conn, self.session_id,
@@ -604,56 +557,26 @@ class Collector:
 
             # A lap containing a pit visit has a meaningless time. Note it
             # before the sampling guard below, which skips pit-lane ticks.
-            if g.isInPitLane:
+            if f.in_pit_lane:
                 lap_pitted = True
                 self.current_lap_pitted = True
 
             # New physics tick since last sample?
-            if p.packetId != last_packet and not g.isInPitLane:
-                last_packet = p.packetId
+            if f.tick != last_packet and not f.in_pit_lane:
+                last_packet = f.tick
                 t_ms = int((now() - lap_start_wall) * 1000)
                 # Drives the in-game overlay's "running wide" indicator
                 # only; the stored verdict is scored at store time. It uses
                 # the same rule, wheel count AND minimum duration, so the
                 # overlay and the database agree.
-                if p.numberOfTyresOut >= db.TRACK_LIMITS_WHEELS:
+                if f.tyres_out >= wide_wheels:
                     if wide_since is None:
                         wide_since = t_ms
-                    elif t_ms - wide_since >= db.MIN_EXCURSION_MS:
+                    elif t_ms - wide_since >= wide_ms:
                         self.current_lap_dirty = True
                 else:
                     wide_since = None
                 self.samples_taken += 1
-                # Position, attitude and electronics activity, read through
-                # getattr/_seq because a test stub or an older shared-memory
-                # layout may not carry them. A missing field records None,
-                # not 0: a zero coordinate is the track origin, a place on
-                # the map.
-                pos_x, pos_y, pos_z = _seq(g, "carCoordinates",
-                                           WORLD_AXES) or (None, None, None)
-                lap_samples.append((
-                    t_ms,
-                    g.normalizedCarPosition,
-                    p.speedKmh, p.gas, p.brake, p.steerAngle,
-                    p.gear - 1,  # shift so 0=N, -1=R, 1=1st: matches HUD
-                    p.rpms,
-                    p.accG[0], p.accG[2],  # lateral, longitudinal
-                    p.wheelSlip[0], p.wheelSlip[1],
-                    p.wheelSlip[2], p.wheelSlip[3],
-                    p.wheelsPressure[0], p.wheelsPressure[1],
-                    p.wheelsPressure[2], p.wheelsPressure[3],
-                    p.tyreCoreTemperature[0], p.tyreCoreTemperature[1],
-                    p.tyreCoreTemperature[2], p.tyreCoreTemperature[3],
-                    p.rideHeight[0], p.rideHeight[1],
-                    p.numberOfTyresOut,
-                    pos_x, pos_y, pos_z,
-                    getattr(p, "heading", None),
-                    getattr(p, "pitch", None),
-                    getattr(p, "roll", None),
-                    getattr(p, "tc", None),
-                    getattr(p, "abs", None),
-                    *_wear(p),
-                    _damage(p),
-                ))
+                lap_samples.append(f.sample(t_ms))
 
             pause(interval)

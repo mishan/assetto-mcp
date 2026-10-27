@@ -581,12 +581,13 @@ conn.execute("UPDATE sessions SET km_per_liter = 2.5, track_length_m = 5000,"
              " fuel_rate = 1.0 WHERE id = ?", (sid,))
 conn.commit()
 server._active_session = lambda explicit=None: sid
-snap = {"car": "nsx", "track": "mugello", "track_config": "",
+snap = {"sim": "ac", "car": "nsx", "track": "mugello", "track_config": "",
         "fuel_l": 9.0, "laps_remaining": 3, "lap_done": 0.5}
 print(json.dumps({
     "race": server._fuel_to_finish(snap),
     "other_car": server._fuel_to_finish({**snap, "car": "f4"}),
     "other_track": server._fuel_to_finish({**snap, "track": "monza"}),
+    "other_game": server._fuel_to_finish({**snap, "sim": "ams2"}),
     "timed": server._fuel_to_finish({**snap, "laps_remaining": None}),
 }))
 """
@@ -598,6 +599,8 @@ def test_live_snapshot_fuel_uses_the_driven_sessions_consumption():
     assert race["liters_per_lap"] == 2.0, race
     assert race["laps_to_go"] == 2.5 and race["margin_laps"] == 2.0, race
     assert got["other_car"] is None and got["other_track"] is None, got
+    # The same names in another game are another car and track.
+    assert got["other_game"] is None, got
     assert got["timed"] is None, got
     print(f"  {race['verdict']}, {race['margin_laps']} laps spare")
 
@@ -676,7 +679,7 @@ conn.execute("UPDATE sessions SET km_per_liter = 2.5, track_length_m = 5000,"
 conn.commit()
 server._active_session = lambda explicit=None: sid
 tool = getattr(server.fuel_plan, "fn", server.fuel_plan)
-snap = {"car": "nsx", "track": "mugello", "track_config": "",
+snap = {"sim": "ac", "car": "nsx", "track": "mugello", "track_config": "",
         "fuel_l": 9.0, "laps_remaining": 3, "lap_done": 0.5}
 
 

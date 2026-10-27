@@ -31,6 +31,7 @@ from pathlib import Path
 from statistics import median
 
 from . import analysis, db, turns
+from .sims import calibration
 
 TEMPLATE = Path(__file__).with_name("line_map.html")
 
@@ -286,7 +287,7 @@ def bump_profile(rows: list[dict], keys, pos_key: str = "norm_pos",
             if len(b) >= 4 else None for b in buckets]
 
 
-def off_track(samples: list[dict]) -> list[dict]:
+def off_track(samples: list[dict], sim: str = "ac") -> list[dict]:
     """Where all the wheels the track-limits rule counts were off, and for how long.
 
     The rule db.score_excursions applies -- TRACK_LIMITS_WHEELS out for at
@@ -296,16 +297,18 @@ def off_track(samples: list[dict]) -> list[dict]:
     gaps = [b["t_ms"] - a["t_ms"] for a, b in zip(samples, samples[1:])
             if a.get("t_ms") is not None and b.get("t_ms") is not None]
     step = median(gaps) if gaps else 0
+    wheels = calibration(sim, "TRACK_LIMITS_WHEELS", db.TRACK_LIMITS_WHEELS)
+    min_ms = calibration(sim, "MIN_EXCURSION_MS", db.MIN_EXCURSION_MS)
     runs, start = [], None
     for i in range(len(samples) + 1):
         out = (i < len(samples) and (samples[i].get("tyres_out") or 0)
-               >= db.TRACK_LIMITS_WHEELS)
+               >= wheels)
         if out and start is None:
             start = i
         elif not out and start is not None:
             a, b = samples[start], samples[i - 1]
             if ((b.get("t_ms") or 0) - (a.get("t_ms") or 0) + step
-                    >= db.MIN_EXCURSION_MS and a.get("norm_pos") is not None):
+                    >= min_ms and a.get("norm_pos") is not None):
                 runs.append({"from": round(a["norm_pos"], 4),
                              "to": round(b.get("norm_pos") or a["norm_pos"], 4)})
             start = None
@@ -568,13 +571,14 @@ def build(conn, session_id: int | None = None,
         # height where it was not. Suspension rows are keyed by laps
         # completed when sampled, so this lap is the one before its number.
         lc = lap["lap_number"] - 1
+        sim = db.session_sim(conn, lap["session_id"])
         src = db.best_suspension_source(conn, lap["session_id"], lc)
         if src:
             surf = bump_profile(db.get_suspension_samples(
                 conn, lap["session_id"], lc, src), TRAVEL_KEYS, "spline")
         if not src or not any(v is not None for v in surf):
             src, surf = "ride", bump_profile(samples, RIDE_KEYS)
-        lockups = analysis.braking_report(lap, samples).get(
+        lockups = analysis.braking_report(lap, samples, sim=sim).get(
             "front_lockup_runs", [])
         contacts = db.contacts_inferred(conn, lap, samples,
                                         names[lap["session_id"]]) or []
@@ -601,7 +605,7 @@ def build(conn, session_id: int | None = None,
             "shifts": lap_shifts,
             "surf": surf,
             "surface_src": src,
-            "off": off_track(samples),
+            "off": off_track(samples, sim),
             "lockups": [{"from": r["from_pos"], "to": r["to_pos"]}
                         for r in lockups],
             # Kerb strikes are on every lap; marked, they would bury the one
@@ -736,9 +740,10 @@ def build(conn, session_id: int | None = None,
                     "sources": sorted({l["surface_src"] for l in drawn})},
         "notes": notes,
         "orphan_notes": db.count_orphan_notes(conn),
-        "lockup_slip": analysis.LOCKUP_SLIP,
-        "contact_g": analysis.CONTACT_G,
-        "contact_near_m": analysis.CONTACT_NEAR_M,
+        **{key: calibration(session["sim"], name, getattr(analysis, name))
+           for key, name in (("lockup_slip", "LOCKUP_SLIP"),
+                             ("contact_g", "CONTACT_G"),
+                             ("contact_near_m", "CONTACT_NEAR_M"))},
         "rivals": rival_data,
         "rival_grid": RIVAL_GRID,
         "track_length_m": session.get("track_length_m"),

@@ -1404,7 +1404,7 @@
    "openWorldHint": false,
    "readOnlyHint": true
   },
-  "description": "Are we good to go? One call at session start: recorder state, the game\nnow, the session (setup tag, measured setup, best_clean_lap_id), which\nsaved setup is on the car, whether the in-game app is connected\n(`app.last_seen_s`), the suspension tier (\"worker\" 333 Hz, \"app\"\nrender-rate, null none), whether a restart or update is owed, the\nnotes folder, and `storage`: the database against its budget\n(ASSETTO_MCP_MAX_DB_BYTES, default 2 GB, 0 = no limit). Past it the\noldest sessions' traces are decimated, down to every 32nd sample; lap\ntimes, setup labels and track-limits evidence are kept, and\n`sample_stride` on a lap says how thinned it is. `to_do`: what to fix\nbefore the first flying lap.",
+  "description": "Are we good to go? One call at session start: recorder state, the game\nnow (`sim`, and the `capabilities` it has past recording laps), the\nsession (setup tag, measured setup, best_clean_lap_id), which\nsaved setup is on the car, whether the in-game app is connected\n(`app.last_seen_s`), the suspension tier (\"worker\" 333 Hz, \"app\"\nrender-rate, null none), whether a restart or update is owed, the\nnotes folder, and `storage`: the database against its budget\n(ASSETTO_MCP_MAX_DB_BYTES, default 2 GB, 0 = no limit). Past it the\noldest sessions' traces are decimated, down to every 32nd sample; lap\ntimes, setup labels and track-limits evidence are kept, and\n`sample_stride` on a lap says how thinned it is. `to_do`: what to fix\nbefore the first flying lap.",
   "inputSchema": {
    "properties": {},
    "title": "session_checkArguments",

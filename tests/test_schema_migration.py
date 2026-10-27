@@ -810,5 +810,21 @@ def test_v20_sets_aside_laps_whose_trace_misses_part_of_the_lap():
             conn.close()
 
 
+def test_v21_gives_every_earlier_session_to_assetto_corsa():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "v20.db"
+        conn = db.connect(path)
+        sid = make_session(conn)
+        conn.execute("ALTER TABLE sessions DROP COLUMN sim")
+        conn.execute("PRAGMA user_version = 20")
+        conn.commit()
+        conn.close()
+        conn = db.connect(path)
+        try:
+            assert db.get_session(conn, sid)["sim"] == "ac"
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

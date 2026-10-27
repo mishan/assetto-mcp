@@ -51,7 +51,7 @@ except ImportError:  # mcp SDK 1.x
 
 from . import analysis, config, db, line_map, retention  # noqa: E402
 from . import circuit, places, setups, supervisor, suspension  # noqa: E402
-from . import guide, turns, update  # noqa: E402
+from . import guide, sims, turns, update  # noqa: E402
 from .collector import Collector  # noqa: E402
 from .sims.base import WHEELS  # noqa: E402
 
@@ -249,13 +249,14 @@ _replay = None
 def _sim_factory():
     from .sim_info import SharedMemoryUnavailable, SimInfo
     global _replay
+    from .sims import ac
     if not REPLAY_FILE:
-        return SimInfo()
+        return ac.Reader(SimInfo())
     if _replay is not None:
         raise SharedMemoryUnavailable("the recording has ended")
     from .sims.recording import Replay
     _replay = Replay(REPLAY_FILE, realtime=True)
-    return _replay
+    return ac.Reader(_replay)
 
 
 def _open_sim():
@@ -418,6 +419,12 @@ def _active_session(explicit: int | None = None) -> int | None:
     return _bridge.active_session_id()
 
 
+def _current_sim() -> str:
+    """The game the active session is in; Assetto Corsa with none."""
+    sid = _active_session()
+    return db.session_sim(_conn, sid) if sid else "ac"
+
+
 # The numbering itself lives in turns.py, so a script can draw the same
 # turn numbers without starting a server. These are its budget, named here
 # too for anything that reads them off the server.
@@ -480,7 +487,7 @@ def _circuit_sections(session_id: int) -> tuple[list[dict], str | None]:
     this session's detector happened to number them.
     """
     session = db.get_session(_conn, session_id)
-    if not session:
+    if not session or sims.unsupported(session["sim"], "track_sections"):
         return [], None
     return circuit.sections_for(session.get("track"),
                                 session.get("track_config"))
@@ -709,6 +716,7 @@ def _live(dash: bool = False) -> dict:
     finally:
         sim.close()
     payload = {
+        "sim": sim.name,
         "car": s.car,
         "track": s.track,
         "track_config": s.track_config,
@@ -716,7 +724,7 @@ def _live(dash: bool = False) -> dict:
         "tyre_compound": f.tyre_compound,
         "air_temp": round(f.air_temp, 1),
         "road_temp": round(f.road_temp, 1),
-        "fuel_l": round(f.fuel_l, 1),
+        "fuel_l": None if f.fuel_l is None else round(f.fuel_l, 1),
         "speed_kmh": round(f.speed_kmh, 1),
         "lap_time": f.clock_text[0],
         "last_lap": f.clock_text[1],
@@ -734,8 +742,9 @@ def _live(dash: bool = False) -> dict:
         payload["lap_time"] = None
     driving = f.status == "live" and f.lap_time_ms > 0 and not finished
     if dash:
+        x, _, z = f.world_pos or (None, None, None)
         payload.update(lap_time_ms=0 if finished else f.lap_time_ms,
-                       car_x=f.world_pos[0], car_z=f.world_pos[2])
+                       car_x=x, car_z=z)
     try:
         with _conn_lock:
             fuel = _fuel_to_finish(payload)
@@ -760,12 +769,17 @@ def _live(dash: bool = False) -> dict:
 _delta_ref: dict[int, list] = {}
 
 
+def _same_session(session: dict | None, snap: dict) -> bool:
+    """Whether the stored session is the one the game is in now."""
+    return bool(session) and all(session.get(k) == snap.get(k) for k in (
+        "sim", "car", "track", "track_config"))
+
+
 def _delta_to_best(snap: dict, pos: float, lap_ms: int) -> float | None:
     """Seconds behind (+) the session's best clean lap at this point."""
     sid = _active_session()
     session = db.get_session(_conn, sid) if sid else None
-    if not session or any(session.get(k) != snap.get(k)
-                          for k in ("car", "track", "track_config")):
+    if not _same_session(session, snap):
         return None
     best = db.best_clean_lap_id(_conn, sid)
     if best is None:
@@ -807,8 +821,7 @@ def _fuel_to_finish(snap: dict) -> dict | None:
         return None
     sid = _active_session()
     session = db.get_session(_conn, sid) if sid else None
-    if not session or any(session.get(k) != snap.get(k)
-                          for k in ("car", "track", "track_config")):
+    if not _same_session(session, snap):
         return None
     rate = session.get("fuel_rate")
     measured = _measured_burn(sid)
@@ -864,8 +877,9 @@ def _game_now() -> dict:
         f, s = sim.read(), sim.session()
     finally:
         sim.close()
-    return {"status": f.status, "car": s.car, "track": s.track,
-            "track_config": s.track_config, "session_type": f.session_type}
+    return {"status": f.status, "sim": sim.name, "car": s.car,
+            "track": s.track, "track_config": s.track_config,
+            "session_type": f.session_type}
 
 
 def _suspension_sources(sid: int) -> tuple[dict[str, int], int]:
@@ -880,7 +894,8 @@ def _suspension_sources(sid: int) -> tuple[dict[str, int], int]:
 @_tool("Session check", status=True)
 def session_check() -> str:
     """Are we good to go? One call at session start: recorder state, the game
-    now, the session (setup tag, measured setup, best_clean_lap_id), which
+    now (`sim`, and the `capabilities` it has past recording laps), the
+    session (setup tag, measured setup, best_clean_lap_id), which
     saved setup is on the car, whether the in-game app is connected
     (`app.last_seen_s`), the suspension tier ("worker" 333 Hz, "app"
     render-rate, null none), whether a restart or update is owed, the
@@ -894,9 +909,14 @@ def session_check() -> str:
     snap = _bridge.status_snapshot()
     sid = snap["session_id"]
     to_do = []
+    game = _game_now()
+    # The game running now; else the one the session was recorded in.
+    sim = game.get("sim") or (db.session_sim(_conn, sid) if sid
+                              else _current_sim())
     out = {"recording": {"state": state, "session_id": sid,
                          "recording_elsewhere": snap["by_other"]},
-           "game": _game_now()}
+           "game": {**game, "sim": sim,
+                    "capabilities": sorted(sims.capabilities(sim))}}
     if why:
         out["recording"]["state_note"] = why
     if state in ("never_started", "died"):
@@ -935,7 +955,8 @@ def session_check() -> str:
             "laps_captured": captured}
 
     out["app"] = _app_link()
-    if not out["app"]["connected"] and not _bridge.error:
+    if (not out["app"]["connected"] and not _bridge.error
+            and "app" in sims.capabilities(sim).values()):
         to_do.append("the in-game app is not connected: no opponents, "
                      "suspension, setup values or messages. Is it enabled "
                      "in the apps sidebar?")
@@ -2328,7 +2349,8 @@ def chassis_report(
             part = {"error": f"{aspect} reads a stored lap; pass lap_id"}
         elif aspect == "braking":
             part = _placed(analysis.braking_report(
-                lap, db.get_samples(_conn, lap_id), points),
+                lap, db.get_samples(_conn, lap_id), points,
+                db.session_sim(_conn, lap["session_id"])),
                 lap["session_id"])
         else:
             part = _placed(analysis.attitude_report(
@@ -3283,6 +3305,8 @@ def send_driver_message(
     """Show a sentence or two on the driver's in-game overlay, e.g.
     'claude_v2 saved: softer front ARB - pit and load it'. It stays up until
     dismissed or replaced by a newer message."""
+    if no := sims.unsupported(_current_sim(), "messages"):
+        return _j(no)
     return _j({"ok": True, "message_id": _bridge.set_message(text),
                "note": "displayed until driver dismisses it"})
 
@@ -3638,6 +3662,8 @@ def restart_server(force: bool = False) -> str:
 def list_setups(car: str, track: str) -> str:
     """List saved setup names for a car/track combo. Use the internal car
     folder name (e.g. 'ks_mazda_mx5_cup') and track folder name."""
+    if no := sims.unsupported(_current_sim(), "setup_files"):
+        return _j(no)
     try:
         return _j(setups.list_setups(AC_DOCS_DIR, car, track))
     except ValueError as e:
@@ -3648,6 +3674,8 @@ def list_setups(car: str, track: str) -> str:
 def read_setup(car: str, track: str, name: str) -> str:
     """Read a saved setup file. Returns each setting section and its value
     (e.g. PRESSURE_LF: 26)."""
+    if no := sims.unsupported(_current_sim(), "setup_files"):
+        return _j(no)
     try:
         return _j(setups.read_setup(AC_DOCS_DIR, car, track, name))
     except (ValueError, FileNotFoundError) as e:
@@ -3676,6 +3704,8 @@ def write_setup(car: str, track: str, name: str,
     allow_unclamped: no ranges known, and AC silently ignores out-of-range
     values; the fix is opening the setup screen once with the in-game app
     running."""
+    if no := sims.unsupported(_current_sim(), "setup_files"):
+        return _j(no)
     try:
         values = (json.loads(values_json) if isinstance(values_json, str)
                   else values_json)

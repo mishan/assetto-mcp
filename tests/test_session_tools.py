@@ -145,5 +145,28 @@ def test_notes_stay_in_their_folders_and_keep_what_they_replace():
         f"notes/{Path(second[1]['backup']).name}"]), files
 
 
+def test_a_game_without_a_feature_says_so_rather_than_guessing():
+    from types import SimpleNamespace
+    from assetto_mcp import db, sims
+    s = _server()
+    sims.GAMES["bare"] = SimpleNamespace(TITLE="Bare Racer", CAPABILITIES={})
+    sid = db.create_session(s._conn, sim="bare", car="c", track="t",
+                            track_config="", tyre_compound="", air_temp=20,
+                            road_temp=25)
+    active, s._active_session = s._active_session, lambda *_: sid
+    try:
+        for name, args, cap in (
+                ("write_setup", ("c", "t", "x", {"PRESSURE_LF": 25}),
+                 "setup_files"),
+                ("list_setups", ("c", "t"), "setup_files"),
+                ("send_driver_message", ("box this lap",), "messages")):
+            out = json.loads(getattr(s, name)(*args))
+            assert out["unsupported"] == cap, (name, out)
+            assert out["error"].startswith("Bare Racer does not provide"), out
+    finally:
+        s._active_session = active
+        del sims.GAMES["bare"]
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

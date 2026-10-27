@@ -437,7 +437,7 @@ def test_only_a_tank_from_maxfuel_is_stored_as_maxfuel():
     """The session column holds what the static page said, or nothing.
 
     db.tank_liters answers from the car's FUEL setup range, a property of
-    the car; sim_info.fuel_facts answers from static.maxFuel, a property of
+    the car; the AC reader's session() answers from static.maxFuel, a property of
     the session. Only the second belongs in sessions.max_fuel_liters, or a
     setup-range number reads back as "the game's maxFuel".
     """

@@ -53,6 +53,7 @@ from . import analysis, config, db, line_map, retention  # noqa: E402
 from . import circuit, places, setups, supervisor, suspension  # noqa: E402
 from . import guide, turns, update  # noqa: E402
 from .collector import Collector  # noqa: E402
+from .sims.base import WHEELS  # noqa: E402
 
 AC_DOCS_DIR = Path(os.environ.get(
     "AC_DOCS_DIR", Path.home() / "Documents" / "Assetto Corsa"))
@@ -258,13 +259,14 @@ def _sim_factory():
 
 
 def _open_sim():
-    """The game's pages for a tool to read, the replay's when replaying."""
+    """The game for a tool to read, the replay's when replaying."""
     from .sim_info import SharedMemoryUnavailable, SimInfo
+    from .sims import ac
     if not REPLAY_FILE:
-        return SimInfo()
+        return ac.Reader(SimInfo())
     if _replay is None:
         raise SharedMemoryUnavailable("the recording has not started")
-    return _replay.view()
+    return ac.Reader(_replay.view())
 
 
 _collector = Collector(DB_PATH, _sim_factory)
@@ -617,26 +619,16 @@ def stop_recording() -> str:
 
 # --- live state --------------------------------------------------------
 
-AC_STATUS = {0: "off", 1: "replay", 2: "live", 3: "pause"}
-
-
-# AC's session types, from the shared-memory documentation.
-AC_SESSION = {0: "practice", 1: "qualifying", 2: "race", 3: "hotlap",
-              4: "time attack", 5: "drift", 6: "drag"}
-
-
-# AC's flag enum; only the checkered flag is read.
-AC_CHECKERED_FLAG = 5
 # Laps completed when the checkered flag came out: the driver's next
 # crossing is the finish, in a timed race or a car a lap down.
 _laps_at_flag: int | None = None
 
 
-def _race_state(g) -> dict:
+def _race_state(f) -> dict:
     """Where the driver is in the session: type, position, lap N of M.
 
     A fuel call is only useful against the laps still to run, and the game
-    knows the race distance (`numberOfLaps`). `race_laps` is null in a timed
+    knows the race distance. `race_laps` is null in a timed
     session, where the game reports no lap count; `session_time_left_s`
     is what counts there. `current_lap` is the lap being driven,
     `laps_remaining` counts it.
@@ -650,19 +642,18 @@ def _race_state(g) -> dict:
     `finished` once the driver has crossed the line under the flag; the
     game's lap clock runs on through the cool-down lap and the wait after.
 
-    Outside live running or pause -- the menu, a replay -- the graphics
-    page still holds the last session's lap and position, so those come
-    back null rather than read as current.
+    Outside live running or pause -- the menu, a replay -- the game still
+    holds the last session's lap and position, so those come back null
+    rather than read as current.
     """
-    session = AC_SESSION.get(g.session, f"unknown ({g.session})")
-    if g.status not in (2, 3):
+    session = f.session_type
+    if f.status not in ("live", "pause"):
         return {"session_type": session, "position": None,
                 "current_lap": None, "race_laps": None,
                 "laps_remaining": None, "session_time_left_s": None}
-    laps = g.numberOfLaps if g.numberOfLaps and g.numberOfLaps > 0 else None
-    left = g.sessionTimeLeft
-    done = g.completedLaps
-    checkered = g.flag == AC_CHECKERED_FLAG
+    laps, left = f.race_laps, f.time_left_ms
+    done = f.completed_laps
+    checkered = f.checkered
     global _laps_at_flag
     if not checkered:
         _laps_at_flag = None
@@ -673,14 +664,14 @@ def _race_state(g) -> dict:
         remaining = min(remaining, 1)
     out = {
         "session_type": session,
-        "position": g.position if g.position and g.position > 0 else None,
+        "position": f.position,
         # Past the flag there is no lap being driven; lap 17 of 16 reads
         # as nonsense, so the count stops at the race distance.
         "current_lap": min(done + 1, laps) if laps is not None else done + 1,
         "race_laps": laps,
         "laps_remaining": remaining,
         "session_time_left_s": (round(left / 1000.0)
-                                if left and left > 0 else None),
+                                if left is not None else None),
     }
     if checkered:
         out["checkered_flag"] = True
@@ -714,47 +705,37 @@ def _live(dash: bool = False) -> dict:
     with where the car is for its maps."""
     sim = _open_sim()
     try:
-        p, g, s = sim.physics, sim.graphics, sim.static
-        payload = {
-            "car": s.carModel,
-            "track": s.track,
-            "track_config": s.trackConfiguration,
-            # Mapped, not indexed: a partial or corrupt shared-memory read
-            # gives an out-of-range status, and an IndexError here takes the
-            # whole tool call down -- on exactly the call the driver makes
-            # to find out whether shared memory is readable at all.
-            "status": AC_STATUS.get(g.status, f"unknown ({g.status})"),
-            "tyre_compound": g.tyreCompound,
-            "air_temp": round(p.airTemp, 1),
-            "road_temp": round(p.roadTemp, 1),
-            "fuel_l": round(p.fuel, 1),
-            "speed_kmh": round(p.speedKmh, 1),
-            "lap_time": g.currentTime,
-            "last_lap": g.lastTime,
-            "best_lap": g.bestTime,
-            "completed_laps": g.completedLaps,
-            "lap_done": round(g.normalizedCarPosition, 3),
-            **_race_state(g),
-            "tyre_pressures_psi": {
-                w: round(p.wheelsPressure[i], 1)
-                for i, w in enumerate(("fl", "fr", "rl", "rr"))},
-            "tyre_core_temps_c": {
-                w: round(p.tyreCoreTemperature[i], 1)
-                for i, w in enumerate(("fl", "fr", "rl", "rr"))},
-        }
-        finished = payload.get("finished", False)
-        if finished:
-            payload["lap_time"] = None
-        driving = g.status == 2 and g.iCurrentTime > 0 and not finished
-        at = (g.normalizedCarPosition, g.iCurrentTime)
-        if dash:
-            payload.update(lap_time_ms=0 if finished else g.iCurrentTime,
-                           car_x=g.carCoordinates[0],
-                           car_z=g.carCoordinates[2])
+        f, s = sim.read(), sim.session()
     finally:
-        # Release the ctypes views before closing the mapping.
-        p = g = s = None
         sim.close()
+    payload = {
+        "car": s.car,
+        "track": s.track,
+        "track_config": s.track_config,
+        "status": f.status,
+        "tyre_compound": f.tyre_compound,
+        "air_temp": round(f.air_temp, 1),
+        "road_temp": round(f.road_temp, 1),
+        "fuel_l": round(f.fuel_l, 1),
+        "speed_kmh": round(f.speed_kmh, 1),
+        "lap_time": f.clock_text[0],
+        "last_lap": f.clock_text[1],
+        "best_lap": f.clock_text[2],
+        "completed_laps": f.completed_laps,
+        "lap_done": round(f.norm_pos, 3),
+        **_race_state(f),
+        "tyre_pressures_psi": {
+            w: round(f.pressure_psi[i], 1) for i, w in enumerate(WHEELS)},
+        "tyre_core_temps_c": {
+            w: round(f.core_temp_c[i], 1) for i, w in enumerate(WHEELS)},
+    }
+    finished = payload.get("finished", False)
+    if finished:
+        payload["lap_time"] = None
+    driving = f.status == "live" and f.lap_time_ms > 0 and not finished
+    if dash:
+        payload.update(lap_time_ms=0 if finished else f.lap_time_ms,
+                       car_x=f.world_pos[0], car_z=f.world_pos[2])
     try:
         with _conn_lock:
             fuel = _fuel_to_finish(payload)
@@ -767,7 +748,8 @@ def _live(dash: bool = False) -> dict:
     if driving:
         try:
             with _conn_lock:
-                payload["delta_to_best_s"] = _delta_to_best(payload, *at)
+                payload["delta_to_best_s"] = _delta_to_best(
+                    payload, f.norm_pos, f.lap_time_ms)
         except Exception:  # noqa: BLE001 - a delta is not worth the call
             pass
     return payload
@@ -879,15 +861,11 @@ def _game_now() -> dict:
     except Exception as e:  # noqa: BLE001 - AC not running, not Windows
         return {"status": "not running", "why": str(e)}
     try:
-        g, s = sim.graphics, sim.static
-        return {"status": AC_STATUS.get(g.status, f"unknown ({g.status})"),
-                "car": s.carModel, "track": s.track,
-                "track_config": s.trackConfiguration,
-                "session_type": AC_SESSION.get(g.session,
-                                               f"unknown ({g.session})")}
+        f, s = sim.read(), sim.session()
     finally:
-        g = s = None
         sim.close()
+    return {"status": f.status, "car": s.car, "track": s.track,
+            "track_config": s.track_config, "session_type": f.session_type}
 
 
 def _suspension_sources(sid: int) -> tuple[dict[str, int], int]:
@@ -2602,10 +2580,16 @@ def _live_fuel_facts() -> tuple[dict, str | None]:
     arrives if the in-game app happens to be installed.
     """
     try:
-        from .sim_info import fuel_facts
-        return fuel_facts(_open_sim), None
+        sim = _open_sim()
+        try:
+            s = sim.session()
+        finally:
+            sim.close()
     except Exception as e:  # AC not running, or not Windows
         return {}, f"{type(e).__name__}: {e}"
+    return {k: v for k, v in (
+        ("max_fuel_liters", s.max_fuel_liters), ("fuel_rate", s.fuel_rate),
+        ("fuel_rate_unusable", s.fuel_rate_unusable)) if v is not None}, None
 
 
 def _fuel_basis(sid: int, session: dict) -> tuple[dict, dict]:

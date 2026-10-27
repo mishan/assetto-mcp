@@ -877,8 +877,9 @@ def _game_now() -> dict:
         f, s = sim.read(), sim.session()
     finally:
         sim.close()
-    return {"status": f.status, "car": s.car, "track": s.track,
-            "track_config": s.track_config, "session_type": f.session_type}
+    return {"status": f.status, "sim": sim.name, "car": s.car,
+            "track": s.track, "track_config": s.track_config,
+            "session_type": f.session_type}
 
 
 def _suspension_sources(sid: int) -> tuple[dict[str, int], int]:
@@ -908,10 +909,13 @@ def session_check() -> str:
     snap = _bridge.status_snapshot()
     sid = snap["session_id"]
     to_do = []
-    sim = db.session_sim(_conn, sid) if sid else _current_sim()
+    game = _game_now()
+    # The game running now; else the one the session was recorded in.
+    sim = game.get("sim") or (db.session_sim(_conn, sid) if sid
+                              else _current_sim())
     out = {"recording": {"state": state, "session_id": sid,
                          "recording_elsewhere": snap["by_other"]},
-           "game": {**_game_now(), "sim": sim,
+           "game": {**game, "sim": sim,
                     "capabilities": sorted(sims.capabilities(sim))}}
     if why:
         out["recording"]["state_note"] = why

@@ -362,6 +362,10 @@ class Collector:
     def _loop(self, sim):
         interval = 1.0 / TARGET_HZ
         now, pause = sim.now, sim.wait
+        wide_wheels = calibration(sim.name, "TRACK_LIMITS_WHEELS",
+                                  db.TRACK_LIMITS_WHEELS)
+        wide_ms = calibration(sim.name, "MIN_EXCURSION_MS",
+                              db.MIN_EXCURSION_MS)
         session_started = False
         lap_samples: list[tuple] = []
         wide_since = None        # t_ms the current excursion began
@@ -565,14 +569,10 @@ class Collector:
                 # only; the stored verdict is scored at store time. It uses
                 # the same rule, wheel count AND minimum duration, so the
                 # overlay and the database agree.
-                if f.tyres_out >= calibration(
-                        sim.name, "TRACK_LIMITS_WHEELS",
-                        db.TRACK_LIMITS_WHEELS):
+                if f.tyres_out >= wide_wheels:
                     if wide_since is None:
                         wide_since = t_ms
-                    elif t_ms - wide_since >= calibration(
-                            sim.name, "MIN_EXCURSION_MS",
-                            db.MIN_EXCURSION_MS):
+                    elif t_ms - wide_since >= wide_ms:
                         self.current_lap_dirty = True
                 else:
                     wide_since = None

@@ -79,5 +79,14 @@ def test_a_recording_leaves_the_driver_out_and_the_car_in():
     assert page.physics.speedKmh == 1.0
 
 
+def test_a_page_written_on_windows_reads_anywhere():
+    # AC's static page as Windows lays it out: two 15-character versions,
+    # two ints, then the car, in UTF-16.
+    raw = bytearray(596)
+    raw[68:68 + 32] = "ks_mazda_mx5_cup".encode("utf-16-le")
+    page = sim_info.SPageFileStatic.from_buffer_copy(raw)
+    assert page.carModel == "ks_mazda_mx5_cup"
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

@@ -58,7 +58,9 @@ records the game's shared memory until Ctrl+C. `replay lap.simrec --db out.db`
 stores its laps into a database as fast as the collector can, on any OS, in
 the recording's own time, so two replays store identical rows: replay before
 and after a change to the collector and compare. `ASSETTO_MCP_REPLAY` runs the
-whole server from one in real time instead.
+whole server from one in real time instead, and `trim lap.simrec out.simrec
+START END` keeps the seconds between two times. Recordings in
+`tests/recordings/` replay in the suite against the lap times the game showed.
 
 ### The tool surface
 

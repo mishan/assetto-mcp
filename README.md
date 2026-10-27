@@ -3,6 +3,8 @@
 [![CI](https://github.com/mishan/assetto-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/mishan/assetto-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+<img align="right" width="112" alt="" src="docs/logo.png">
+
 Turn an AI assistant into a race engineer for Assetto Corsa.
 
 Drive a few laps, then ask it what the car is doing. It reads AC's live

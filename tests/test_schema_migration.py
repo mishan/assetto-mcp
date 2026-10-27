@@ -785,5 +785,30 @@ def test_a_failed_sample_write_leaves_no_half_stored_lap():
         conn.close()
 
 
+def test_v20_sets_aside_laps_whose_trace_misses_part_of_the_lap():
+    """A lap recording joined partway round carries the game's whole lap
+    time over a fraction of its corners; its samples show that already."""
+    from test_lap_evidence import _lap_samples
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "v19.db"
+        conn = db.connect(path)
+        sid = make_session(conn)
+        whole = db.store_lap(conn, sid, 1, 120000, True, _lap_samples([0] * 40))
+        joined = db.store_lap(conn, sid, 2, 120000, True, [
+            (t, 0.96 + p, *rest) for t, p, *rest in _lap_samples([0] * 40)
+            if p < 0.04])
+        conn.execute("ALTER TABLE laps DROP COLUMN partial_trace")
+        conn.execute("PRAGMA user_version = 19")
+        conn.commit()
+        conn.close()
+        conn = db.connect(path)
+        try:
+            assert db.lap_usability(dict(db.get_lap(conn, whole)))[0]
+            usable, why = db.lap_usability(dict(db.get_lap(conn, joined)))
+            assert not usable and "partway" in why, why
+        finally:
+            conn.close()
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

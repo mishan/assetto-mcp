@@ -433,7 +433,7 @@ def test_only_one_of_two_collectors_records():
             wait_for(lambda: holder.session_id is not None, "a session")
             tick(sim, holder)
             complete_lap(sim, holder, 0)          # out-lap, kept + flagged
-            tick(sim, holder)
+            tick(sim, holder, 11)                 # all the way round
             complete_lap(sim, holder, 113000)
 
             conn = db.connect(path)

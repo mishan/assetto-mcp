@@ -160,11 +160,17 @@ def test_a_lap_driven_in_the_game_replays_to_the_time_it_showed():
         conn = db.connect(path)
         lap = conn.execute("SELECT * FROM laps WHERE lap_number = 17"
                            ).fetchone()
+        joined = conn.execute("SELECT * FROM laps WHERE lap_number = 16"
+                              ).fetchone()
         rows = conn.execute("SELECT * FROM samples WHERE lap_id = ?",
                             (lap["id"],)).fetchall()
         conn.close()
     # The game's lap screen read 2:01.087, and the lap was clean.
     assert (lap["lap_time_ms"], lap["invalid"]) == (121087, 0), dict(lap)
+    assert db.lap_usability(dict(lap)) == (True, None)
+    # Recording began five seconds before lap 16 ended: the game's time for
+    # it, over almost none of its corners.
+    assert not db.lap_usability(dict(joined))[0], dict(joined)
     assert len(rows) > 0.95 * 121.087 * 25, len(rows)
     assert 121087 - 100 < rows[-1]["t_ms"] < 121087
     ranges = {"norm_pos": (0, 1), "speed_kmh": (0, 450), "gas": (0, 1),

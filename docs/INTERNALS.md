@@ -57,6 +57,7 @@ Instead a lap records facts, and the verdicts are derived:
 | `out_lap` | left the pits, so `lap_time_ms` is not a lap time |
 | `pitted` | pit visit during the lap, so the time is wall clock |
 | `outlier` | grossly slower than the session's own reference |
+| `partial_trace` | the samples span under 95% of the lap: recording began partway round |
 | `invalid` | exceeded track limits |
 | `max_tyres_out`, `excursions`, `off_track_ms` | the track-limits evidence |
 | `invalid_source` | `inferred`, or `game` if it came from the game itself |
@@ -69,7 +70,8 @@ Two questions are kept apart, because conflating them loses data:
   still a lap — the corner speeds and brake points happened — so it is
   compared, and reported in `ran_wide`.
 - **Is its time a lap time?** `lap_usability()`. An out-lap, a pit lap or an
-  abandoned lap can't be ranked or averaged. Those are excluded from
+  abandoned lap can't be ranked or averaged, nor can a lap whose trace
+  misses part of it. Those are excluded from
   comparisons, always by name and with a reason.
 
 ### How track limits are scored

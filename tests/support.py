@@ -5,6 +5,7 @@ no Windows, no Assetto Corsa, no network beyond localhost. The collector is
 driven through a fake SimInfo and the bridge is exercised over real HTTP.
 """
 
+import atexit
 import contextlib
 import http.client
 import json
@@ -26,6 +27,20 @@ AC_LIVE = 2
 
 
 # --- temp databases, and the handles that outlive them ------------------
+
+
+def lasting_dir(prefix: str) -> str:
+    """A directory removed when the process exits.
+
+    For a data directory handed to the server module: sys.modules keeps it,
+    and its open database, for the rest of the process. Call this before
+    importing the server so that atexit, last in first out, stops the
+    server's bridge before removing the directory. Errors are ignored
+    because Windows will not delete the database the server still holds.
+    """
+    tmp = tempfile.TemporaryDirectory(prefix=prefix, ignore_cleanup_errors=True)
+    atexit.register(tmp.cleanup)
+    return tmp.name
 
 
 def _open_handles(directory: Path) -> list[str]:

@@ -14,12 +14,11 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import make_session, run_module, temp_db  # noqa: E402
+from support import lasting_dir, make_session, run_module, temp_db  # noqa: E402
 
 from assetto_mcp import analysis, db, line_map, turns  # noqa: E402
 
@@ -796,7 +795,7 @@ _SERVER = None
 def _server():
     global _SERVER
     if _SERVER is None:
-        d = tempfile.mkdtemp(prefix="ac-line-map-")
+        d = lasting_dir("ac-line-map-")
         os.environ["ASSETTO_MCP_DATA"] = d
         os.environ["AC_DOCS_DIR"] = d
         os.environ["ASSETTO_MCP_BRIDGE_PORT"] = "0"

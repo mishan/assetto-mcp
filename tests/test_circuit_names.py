@@ -10,12 +10,11 @@ import atexit
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import run_module  # noqa: E402
+from support import lasting_dir, run_module  # noqa: E402
 
 from assetto_mcp import circuit, places  # noqa: E402
 
@@ -75,7 +74,7 @@ class _AcRoot:
     """Point ASSETTO_MCP_AC_ROOT at a fake install for one test."""
 
     def __init__(self, ini=SECTIONS_INI):
-        self.dir = Path(tempfile.mkdtemp(prefix="ac-root-"))
+        self.dir = Path(lasting_dir("ac-root-"))
         _fake_install(self.dir, ini=ini)
 
     def __enter__(self):
@@ -224,7 +223,7 @@ def test_a_layout_without_its_own_file_does_not_borrow_the_roots():
 
 
 def _write(text: str, encoding="utf-8") -> Path:
-    path = Path(tempfile.mkdtemp(prefix="ac-sections-")) / "sections.ini"
+    path = Path(lasting_dir("ac-sections-")) / "sections.ini"
     path.write_text(text, encoding=encoding)
     return path
 
@@ -264,7 +263,7 @@ def test_a_mod_tracks_names_are_short_printable_text():
 
 
 def test_steam_libraries_are_read_from_either_vdf_form():
-    steam = Path(tempfile.mkdtemp(prefix="steam-"))
+    steam = Path(lasting_dir("steam-"))
     (steam / "steamapps").mkdir()
     (steam / "steamapps" / "libraryfolders.vdf").write_text(
         '"LibraryFolders"\n{\n'
@@ -313,7 +312,7 @@ _SERVER = None
 def _server():
     global _SERVER
     if _SERVER is None:
-        d = tempfile.mkdtemp(prefix="ac-circuit-")
+        d = lasting_dir("ac-circuit-")
         os.environ.setdefault("ASSETTO_MCP_DATA", d)
         os.environ.setdefault("AC_DOCS_DIR", d)
         os.environ.setdefault("ASSETTO_MCP_BRIDGE_PORT", "0")

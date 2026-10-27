@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import run_module  # noqa: E402
+from support import lasting_dir, run_module  # noqa: E402
 from test_delta_and_corners import _lap  # noqa: E402
 
 _SERVER = None
@@ -27,7 +27,7 @@ _SERVER = None
 def _server():
     global _SERVER
     if _SERVER is None:
-        d = tempfile.mkdtemp(prefix="ac-protocol-")
+        d = lasting_dir("ac-protocol-")
         os.environ.setdefault("ASSETTO_MCP_DATA", d)
         os.environ.setdefault("AC_DOCS_DIR", d)
         os.environ.setdefault("ASSETTO_MCP_BRIDGE_PORT", "0")
@@ -262,7 +262,7 @@ def test_the_driver_confirms_where_the_client_can_ask():
     from mcp import types
     from assetto_mcp import supervisor, update
     s = _server()
-    docs = Path(tempfile.mkdtemp(prefix="ac-confirm-"))
+    docs = Path(lasting_dir("ac-confirm-"))
     write = {"car": "c", "track": "t", "name": "v1",
              "values_json": '{"PRESSURE_LF": 25}', "allow_unclamped": True}
     (docs / "setups" / "c" / "t").mkdir(parents=True)

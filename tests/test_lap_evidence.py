@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import make_session, run_module  # noqa: E402
+from support import lasting_dir, make_session, run_module  # noqa: E402
 
 from assetto_mcp import db  # noqa: E402
 
@@ -323,14 +323,7 @@ def test_every_tool_that_subtracts_lap_times_says_when_it_should_not():
     import atexit
     import json
     import os
-    # The directory has to outlive the test: importing the server opens a
-    # database inside it and sys.modules keeps that module -- and its open
-    # connection -- for the rest of the process. So it is torn down at exit
-    # instead, registered *before* the import so that atexit's LIFO order
-    # stops the bridge first and removes the directory second.
-    tmp = tempfile.TemporaryDirectory(prefix="ac-deltas-")
-    atexit.register(tmp.cleanup)
-    d = tmp.name
+    d = lasting_dir("ac-deltas-")
     env = {"ASSETTO_MCP_DATA": d, "AC_DOCS_DIR": d,
            "ASSETTO_MCP_BRIDGE_PORT": "0", "ASSETTO_MCP_NO_AUTOSTART": "1"}
     prior = {k: os.environ.get(k) for k in env}

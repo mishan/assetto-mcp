@@ -10,13 +10,12 @@ import atexit
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import (FakeSim, complete_lap, make_session,  # noqa: E402
-                     run_collector, run_module, temp_db, tick)
+from support import (FakeSim, complete_lap, lasting_dir,  # noqa: E402
+                     make_session, run_collector, run_module, temp_db, tick)
 
 from assetto_mcp import db, places  # noqa: E402
 
@@ -199,7 +198,7 @@ _SERVER = None
 def _server():
     global _SERVER
     if _SERVER is None:
-        d = tempfile.mkdtemp(prefix="ac-places-")
+        d = lasting_dir("ac-places-")
         os.environ["ASSETTO_MCP_DATA"] = d
         os.environ["AC_DOCS_DIR"] = d
         os.environ["ASSETTO_MCP_BRIDGE_PORT"] = "0"

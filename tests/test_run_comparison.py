@@ -36,12 +36,11 @@ import json
 import os
 import random
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import make_session, run_module  # noqa: E402
+from support import lasting_dir, make_session, run_module  # noqa: E402
 
 from assetto_mcp import analysis, db  # noqa: E402
 
@@ -744,7 +743,7 @@ _SERVER = None
 def _server():
     global _SERVER
     if _SERVER is None:
-        d = tempfile.mkdtemp(prefix="ac-compare-runs-")
+        d = lasting_dir("ac-compare-runs-")
         os.environ["ASSETTO_MCP_DATA"] = d
         os.environ["AC_DOCS_DIR"] = d
         os.environ["ASSETTO_MCP_BRIDGE_PORT"] = "0"

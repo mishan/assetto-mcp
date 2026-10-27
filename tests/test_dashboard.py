@@ -284,7 +284,8 @@ def test_delta_is_against_the_sessions_best_clean_lap_at_that_point():
     sid, ids = _session_with_laps()
     from assetto_mcp import analysis
     t = analysis._time_at_positions(db.get_samples(s._conn, ids[0]), [0.5])[0]
-    snap = {"car": "ks_mazda_mx5_cup", "track": "mugello", "track_config": ""}
+    snap = {"sim": "ac", "car": "ks_mazda_mx5_cup", "track": "mugello",
+            "track_config": ""}
     active, s._active_session = s._active_session, lambda *_: sid
     try:
         assert s._delta_to_best(snap, 0.5, round(t) + 400) == 0.4

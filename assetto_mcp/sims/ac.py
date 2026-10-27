@@ -71,6 +71,8 @@ class Reader:
     """AC's three pages read as Frames: `pages` is a SimInfo, or anything
     with the same physics, graphics and static pages."""
 
+    name = "ac"
+
     def __init__(self, pages):
         self._pages = pages
 

@@ -710,6 +710,7 @@ def _live(dash: bool = False) -> dict:
     finally:
         sim.close()
     payload = {
+        "sim": sim.name,
         "car": s.car,
         "track": s.track,
         "track_config": s.track_config,
@@ -761,12 +762,17 @@ def _live(dash: bool = False) -> dict:
 _delta_ref: dict[int, list] = {}
 
 
+def _same_session(session: dict | None, snap: dict) -> bool:
+    """Whether the stored session is the one the game is in now."""
+    return bool(session) and all(session.get(k) == snap.get(k) for k in (
+        "sim", "car", "track", "track_config"))
+
+
 def _delta_to_best(snap: dict, pos: float, lap_ms: int) -> float | None:
     """Seconds behind (+) the session's best clean lap at this point."""
     sid = _active_session()
     session = db.get_session(_conn, sid) if sid else None
-    if not session or any(session.get(k) != snap.get(k)
-                          for k in ("car", "track", "track_config")):
+    if not _same_session(session, snap):
         return None
     best = db.best_clean_lap_id(_conn, sid)
     if best is None:
@@ -808,8 +814,7 @@ def _fuel_to_finish(snap: dict) -> dict | None:
         return None
     sid = _active_session()
     session = db.get_session(_conn, sid) if sid else None
-    if not session or any(session.get(k) != snap.get(k)
-                          for k in ("car", "track", "track_config")):
+    if not _same_session(session, snap):
         return None
     rate = session.get("fuel_rate")
     measured = _measured_burn(sid)

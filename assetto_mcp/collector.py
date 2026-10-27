@@ -428,7 +428,7 @@ class Collector:
             if not session_started:
                 s = sim.session()
                 self.session_id = db.create_session(
-                    self._conn,
+                    self._conn, sim=sim.name,
                     car=s.car, track=s.track, track_config=s.track_config,
                     tyre_compound=f.tyre_compound,
                     air_temp=f.air_temp, road_temp=f.road_temp,

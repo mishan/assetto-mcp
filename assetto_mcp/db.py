@@ -18,7 +18,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 # How many wheels have to be off the valid surface before a lap counts as
 # having exceeded track limits. Four is the count AC itself treats as
@@ -53,6 +53,9 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY,
     started_at REAL NOT NULL,
+    -- The game that recorded it (sims/): car and track names are that
+    -- game's, and so are its units and thresholds.
+    sim TEXT NOT NULL DEFAULT 'ac',
     car TEXT NOT NULL,
     track TEXT NOT NULL,
     track_config TEXT NOT NULL DEFAULT '',
@@ -717,6 +720,12 @@ def _migrate(conn) -> list[str]:
             log.append(f"laps.partial_trace added; {len(partial)} stored "
                        "laps cover too little of the lap to analyze")
 
+    if version < 21:
+        # v21: sessions.sim. Every session before it was Assetto Corsa's.
+        if _add_column(conn, "sessions", "sim", "TEXT NOT NULL DEFAULT 'ac'"):
+            log.append("sessions.sim added; every earlier session is "
+                       "Assetto Corsa's")
+
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     return log
@@ -1051,13 +1060,13 @@ MIGRATION_LOG: dict[str, list[str]] = {}
 
 
 def create_session(conn, *, car, track, track_config, tyre_compound,
-                   air_temp, road_temp) -> int:
+                   air_temp, road_temp, sim="ac") -> int:
     now = time.time()
     cur = conn.execute(
-        "INSERT INTO sessions (started_at, car, track, track_config,"
+        "INSERT INTO sessions (started_at, sim, car, track, track_config,"
         " tyre_compound, air_temp, road_temp, last_seen_at)"
-        " VALUES (?,?,?,?,?,?,?,?)",
-        (now, car, track, track_config, tyre_compound,
+        " VALUES (?,?,?,?,?,?,?,?,?)",
+        (now, sim, car, track, track_config, tyre_compound,
          air_temp, road_temp, now),
     )
     conn.commit()

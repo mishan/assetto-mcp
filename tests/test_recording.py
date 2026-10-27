@@ -79,6 +79,15 @@ def test_a_recording_leaves_the_driver_out_and_the_car_in():
     assert page.physics.speedKmh == 1.0
 
 
+def test_a_page_written_on_windows_reads_anywhere():
+    # AC's static page as Windows lays it out: two 15-character versions,
+    # two ints, then the car, in UTF-16.
+    raw = bytearray(596)
+    raw[68:68 + 32] = "ks_mazda_mx5_cup".encode("utf-16-le")
+    page = sim_info.SPageFileStatic.from_buffer_copy(raw)
+    assert page.carModel == "ks_mazda_mx5_cup"
+
+
 def _two_laps(path):
     """Half a lap from the pits, then a 20-second lap, at 25 Hz."""
     hz, lap_s = 25, 20.0

@@ -572,6 +572,8 @@ assetto_mcp/
   supervisor.py keeps the client connection open across restarts
   update.py     update check and fast-forward from GitHub
   suspension.py damper histograms, ride height, roll balance
+  sims/base.py  what a game's reader gives the server, in one set of units
+  sims/ac.py    Assetto Corsa's reader
   sims/recording.py  the game's shared memory to a file and back
 lua_app/
   assetto_mcp/  CSP Lua in-game app (copy to apps/lua/)

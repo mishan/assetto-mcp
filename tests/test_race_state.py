@@ -18,10 +18,14 @@ def _state(**g):
     os.environ.setdefault("ASSETTO_MCP_NO_AUTOSTART", "1")
     os.environ.setdefault("ASSETTO_MCP_BRIDGE_PORT", "0")
     from assetto_mcp import server
+    from assetto_mcp import sim_info
+    from assetto_mcp.sims import ac
     base = dict(session=2, position=7, completedLaps=14, numberOfLaps=16,
                 sessionTimeLeft=-1.0, status=2, flag=0)
     base.update(g)
-    return server._race_state(SimpleNamespace(**base))
+    pages = SimpleNamespace(physics=sim_info.SPageFilePhysics(),
+                            graphics=sim_info.SPageFileGraphic(**base))
+    return server._race_state(ac.Reader(pages).read())
 
 
 def test_a_race_reports_lap_of_laps_and_position():

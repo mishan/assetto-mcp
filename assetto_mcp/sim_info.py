@@ -12,7 +12,7 @@ Field order matters; do not reorder.
 import ctypes
 import mmap
 import sys
-from ctypes import c_float, c_int32, c_wchar
+from ctypes import c_float, c_int32, c_uint16
 from types import SimpleNamespace
 
 AC_OFF = 0
@@ -22,6 +22,31 @@ AC_PAUSE = 3
 
 # Wheel index order everywhere in AC: FL, FR, RL, RR
 WHEELS = ("fl", "fr", "rl", "rr")
+
+
+def _text_fields(cls):
+    """Text the way AC writes it: UTF-16, two bytes a character.
+
+    Declared as 16-bit units, not c_wchar, which is four bytes on Linux: a
+    recording made on Windows has to read back anywhere. Each `_name` field
+    is read and set as the string `name`.
+    """
+    def field(name, length):
+        def get(self):
+            raw = bytes(getattr(self, name)).decode("utf-16-le", "replace")
+            return raw.split("\0", 1)[0]
+
+        def put(self, value):
+            units = value.encode("utf-16-le")[:2 * (length - 1)]
+            buf = (c_uint16 * length)()
+            ctypes.memmove(buf, units, len(units))
+            setattr(self, name, buf)
+        return property(get, put)
+
+    for name, typ in cls._fields_:
+        if name.startswith("_") and getattr(typ, "_type_", None) is c_uint16:
+            setattr(cls, name[1:], field(name, typ._length_))
+    return cls
 
 
 class SPageFilePhysics(ctypes.Structure):
@@ -93,6 +118,7 @@ class SPageFilePhysics(ctypes.Structure):
     ]
 
 
+@_text_fields
 class SPageFileGraphic(ctypes.Structure):
     _pack_ = 4
     _layout_ = "ms"
@@ -100,10 +126,10 @@ class SPageFileGraphic(ctypes.Structure):
         ("packetId", c_int32),
         ("status", c_int32),  # AC_OFF / AC_REPLAY / AC_LIVE / AC_PAUSE
         ("session", c_int32),
-        ("currentTime", c_wchar * 15),
-        ("lastTime", c_wchar * 15),
-        ("bestTime", c_wchar * 15),
-        ("split", c_wchar * 15),
+        ("_currentTime", c_uint16 * 15),
+        ("_lastTime", c_uint16 * 15),
+        ("_bestTime", c_uint16 * 15),
+        ("_split", c_uint16 * 15),
         ("completedLaps", c_int32),
         ("position", c_int32),
         ("iCurrentTime", c_int32),  # ms
@@ -115,7 +141,7 @@ class SPageFileGraphic(ctypes.Structure):
         ("currentSectorIndex", c_int32),
         ("lastSectorTime", c_int32),
         ("numberOfLaps", c_int32),
-        ("tyreCompound", c_wchar * 33),
+        ("_tyreCompound", c_uint16 * 33),
         ("replayTimeMultiplier", c_float),
         ("normalizedCarPosition", c_float),  # 0.0 -> 1.0 along track spline
         ("carCoordinates", c_float * 3),
@@ -128,19 +154,20 @@ class SPageFileGraphic(ctypes.Structure):
     ]
 
 
+@_text_fields
 class SPageFileStatic(ctypes.Structure):
     _pack_ = 4
     _layout_ = "ms"
     _fields_ = [
-        ("smVersion", c_wchar * 15),
-        ("acVersion", c_wchar * 15),
+        ("_smVersion", c_uint16 * 15),
+        ("_acVersion", c_uint16 * 15),
         ("numberOfSessions", c_int32),
         ("numCars", c_int32),
-        ("carModel", c_wchar * 33),
-        ("track", c_wchar * 33),
-        ("playerName", c_wchar * 33),
-        ("playerSurname", c_wchar * 33),
-        ("playerNick", c_wchar * 33),
+        ("_carModel", c_uint16 * 33),
+        ("_track", c_uint16 * 33),
+        ("_playerName", c_uint16 * 33),
+        ("_playerSurname", c_uint16 * 33),
+        ("_playerNick", c_uint16 * 33),
         ("sectorCount", c_int32),
         ("maxTorque", c_float),
         ("maxPower", c_float),
@@ -166,7 +193,7 @@ class SPageFileStatic(ctypes.Structure):
         ("engineBrakeSettingsCount", c_int32),
         ("ersPowerControllerCount", c_int32),
         ("trackSPlineLength", c_float),
-        ("trackConfiguration", c_wchar * 33),
+        ("_trackConfiguration", c_uint16 * 33),
         ("ersMaxJ", c_float),
     ]
 

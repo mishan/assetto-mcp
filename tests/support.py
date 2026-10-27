@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from assetto_mcp import db  # noqa: E402
 from assetto_mcp.collector import Collector  # noqa: E402
+from assetto_mcp.sims import ac  # noqa: E402
 
 AC_OFF = 0
 AC_LIVE = 2
@@ -156,8 +157,15 @@ class _Phys:
 class _Graph:
     def __init__(self):
         self.status = AC_LIVE
+        self.session = 0
+        self.position = 0
+        self.numberOfLaps = 0
+        self.sessionTimeLeft = 0.0
+        self.flag = 0
         self.completedLaps = 0
         self.iLastTime = 0
+        self.iCurrentTime = 0
+        self.currentTime = self.lastTime = self.bestTime = ""
         self.normalizedCarPosition = 0.0
         self.isInPitLane = 0
         self.tyreCompound = "F200 (S)"
@@ -170,6 +178,8 @@ class _Static:
     carModel = "rss_formula_rss_4"
     track = "mugello"
     trackConfiguration = "mugello_osrw"
+    maxFuel = 0.0
+    aidFuelRate = 1.0
 
 
 class FakeSim:
@@ -230,7 +240,7 @@ def run_collector(script, db_path, sim=None):
     """
     if sim is None:
         sim = FakeSim()
-    col = Collector(db_path, lambda: sim)
+    col = Collector(db_path, lambda: ac.Reader(sim))
     col.start()
     try:
         wait_for(lambda: col.sessions_started > 0, "the first session")

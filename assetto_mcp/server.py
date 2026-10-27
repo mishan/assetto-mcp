@@ -249,13 +249,14 @@ _replay = None
 def _sim_factory():
     from .sim_info import SharedMemoryUnavailable, SimInfo
     global _replay
+    from .sims import ac
     if not REPLAY_FILE:
-        return SimInfo()
+        return ac.Reader(SimInfo())
     if _replay is not None:
         raise SharedMemoryUnavailable("the recording has ended")
     from .sims.recording import Replay
     _replay = Replay(REPLAY_FILE, realtime=True)
-    return _replay
+    return ac.Reader(_replay)
 
 
 def _open_sim():

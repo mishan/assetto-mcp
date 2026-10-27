@@ -162,6 +162,7 @@ def replay_into(path, db_path, timeout: float = 600) -> None:
     the collector stores them."""
     from .. import sim_info
     from ..collector import Collector
+    from .ac import Reader
 
     replay = Replay(path)
     opened = []
@@ -170,7 +171,7 @@ def replay_into(path, db_path, timeout: float = 600) -> None:
         if opened:
             raise sim_info.SharedMemoryUnavailable("the recording has ended")
         opened.append(replay)
-        return replay
+        return Reader(replay)
 
     col = Collector(db_path, once)
     col.start()

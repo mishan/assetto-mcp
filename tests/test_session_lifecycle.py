@@ -19,6 +19,7 @@ from support import (FakeSim, complete_lap, go_live, go_off,  # noqa: E402
 
 from assetto_mcp import db, retention  # noqa: E402
 from assetto_mcp.collector import Collector  # noqa: E402
+from assetto_mcp.sims import ac  # noqa: E402
 
 
 def test_restart_from_the_menu_starts_a_new_session():
@@ -90,7 +91,7 @@ def test_stopping_clears_the_current_session():
     """
     with temp_db() as path:
         sim = FakeSim()
-        col = Collector(path, lambda: sim)
+        col = Collector(path, lambda: ac.Reader(sim))
         col.start()
         try:
             wait_for(lambda: col.session_id is not None, "a session to open")
@@ -232,7 +233,7 @@ def test_start_does_not_return_the_status_it_had_before_starting():
     """
     with tempfile.TemporaryDirectory() as d:
         sim = FakeSim()
-        col = Collector(Path(d) / "t.db", lambda: sim)
+        col = Collector(Path(d) / "t.db", lambda: ac.Reader(sim))
         try:
             col.start()
             assert col.status != "stopped", (
@@ -279,7 +280,7 @@ def test_a_fresh_collector_is_distinguishable_from_a_stopped_one():
     """
     with tempfile.TemporaryDirectory() as d:
         sim = FakeSim()
-        col = Collector(Path(d) / "t.db", lambda: sim)
+        col = Collector(Path(d) / "t.db", lambda: ac.Reader(sim))
 
         # Never asked to run: the state a restarted server presents.
         assert col.ever_started is False
@@ -304,7 +305,7 @@ def test_restarting_clears_the_previous_runs_error():
     """
     with tempfile.TemporaryDirectory() as d:
         sim = FakeSim()
-        col = Collector(Path(d) / "t.db", lambda: sim)
+        col = Collector(Path(d) / "t.db", lambda: ac.Reader(sim))
         col.last_error = "something that already happened"
         try:
             col.start()
@@ -331,7 +332,7 @@ def test_a_missing_game_is_waited_for_rather_than_fatal():
             attempts["n"] += 1
             if attempts["n"] < 3:
                 raise RuntimeError("shared memory not available")
-            return sim
+            return ac.Reader(sim)
 
         col = Collector(path, factory)
         col.SIM_RETRY_SECONDS = 0.05
@@ -387,7 +388,7 @@ def test_a_crash_in_the_recording_loop_is_not_the_end_of_recording():
 
         def factory():
             made["n"] += 1
-            return Exploding() if made["n"] == 1 else good
+            return ac.Reader(Exploding() if made["n"] == 1 else good)
 
         col = Collector(path, factory)
         col.SIM_RETRY_SECONDS = 0.05
@@ -413,8 +414,8 @@ def test_a_crash_in_the_recording_loop_is_not_the_end_of_recording():
 def test_only_one_of_two_collectors_records():
     with temp_db() as path:
         sim = FakeSim()
-        a = Collector(path, lambda: sim)
-        b = Collector(path, lambda: sim)
+        a = Collector(path, lambda: ac.Reader(sim))
+        b = Collector(path, lambda: ac.Reader(sim))
         try:
             a.start()
             b.start()
@@ -465,8 +466,8 @@ def test_a_standby_takes_over_when_the_holder_stops():
     """
     with temp_db() as path:
         sim = FakeSim()
-        a = Collector(path, lambda: sim)
-        b = Collector(path, lambda: sim)
+        a = Collector(path, lambda: ac.Reader(sim))
+        b = Collector(path, lambda: ac.Reader(sim))
         a.STANDBY_RETRY_SECONDS = b.STANDBY_RETRY_SECONDS = 0.05
         try:
             a.start()
@@ -556,7 +557,7 @@ def test_a_collector_that_loses_its_claim_stops_writing():
     """
     with temp_db() as path:
         sim = FakeSim()
-        col = Collector(path, lambda: sim)
+        col = Collector(path, lambda: ac.Reader(sim))
         col.HEARTBEAT_SECONDS = 0.01
         col.STANDBY_RETRY_SECONDS = 30.0     # so it cannot re-claim and hide
         try:
@@ -600,7 +601,7 @@ def test_a_shared_stop_reaches_the_instance_actually_recording():
     """
     with temp_db() as path:
         sim = FakeSim()
-        holder = Collector(path, lambda: sim)
+        holder = Collector(path, lambda: ac.Reader(sim))
         holder.HEARTBEAT_SECONDS = 0.01
         holder.STANDBY_RETRY_SECONDS = 0.05
         try:
@@ -662,7 +663,7 @@ def test_stopping_recording_is_shared_and_survives_a_restart():
         conn = db.connect(path)
         db.set_recorder_enabled(conn, False)
 
-        col = Collector(path, lambda: sim)
+        col = Collector(path, lambda: ac.Reader(sim))
         col.STANDBY_RETRY_SECONDS = 0.05
         try:
             col.start()
@@ -687,7 +688,7 @@ def test_a_database_that_cannot_be_opened_says_so():
         # A directory where the database file should be.
         path = Path(d) / "t.db"
         path.mkdir()
-        col = Collector(path, FakeSim)
+        col = Collector(path, lambda: ac.Reader(FakeSim()))
         col.start()
         # The thread announces the error, then returns.
         wait_for(lambda: not col.running, "the collector thread to exit")
@@ -707,8 +708,8 @@ def test_standing_aside_does_not_keep_reporting_an_old_error():
     """
     with temp_db() as path:
         sim = FakeSim()
-        holder = Collector(path, lambda: sim)
-        standby = Collector(path, lambda: sim)
+        holder = Collector(path, lambda: ac.Reader(sim))
+        standby = Collector(path, lambda: ac.Reader(sim))
         standby.STANDBY_RETRY_SECONDS = 0.05
         try:
             holder.start()
@@ -752,7 +753,7 @@ def test_a_retention_pass_that_loses_the_claim_stops_the_collector():
     """
     with temp_db() as path:
         sim = FakeSim()
-        col = Collector(path, lambda: sim)
+        col = Collector(path, lambda: ac.Reader(sim))
         col._conn = db.connect(path)
         try:
             # Hold the claim, then hand it to somebody else mid-pass.
@@ -788,7 +789,7 @@ def test_a_retention_report_does_not_outlive_its_pass():
     """
     with temp_db() as path:
         sim = FakeSim()
-        col = Collector(path, lambda: sim)
+        col = Collector(path, lambda: ac.Reader(sim))
         col._conn = db.connect(path)
         try:
             db.claim_recorder(col._conn, col._owner)

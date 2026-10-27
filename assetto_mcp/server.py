@@ -724,7 +724,7 @@ def _live(dash: bool = False) -> dict:
         "tyre_compound": f.tyre_compound,
         "air_temp": round(f.air_temp, 1),
         "road_temp": round(f.road_temp, 1),
-        "fuel_l": round(f.fuel_l, 1),
+        "fuel_l": None if f.fuel_l is None else round(f.fuel_l, 1),
         "speed_kmh": round(f.speed_kmh, 1),
         "lap_time": f.clock_text[0],
         "last_lap": f.clock_text[1],
@@ -742,8 +742,9 @@ def _live(dash: bool = False) -> dict:
         payload["lap_time"] = None
     driving = f.status == "live" and f.lap_time_ms > 0 and not finished
     if dash:
+        x, _, z = f.world_pos or (None, None, None)
         payload.update(lap_time_ms=0 if finished else f.lap_time_ms,
-                       car_x=f.world_pos[0], car_z=f.world_pos[2])
+                       car_x=x, car_z=z)
     try:
         with _conn_lock:
             fuel = _fuel_to_finish(payload)

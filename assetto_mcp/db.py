@@ -18,7 +18,7 @@ from pathlib import Path
 from . import analysis
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 # How many wheels have to be off the valid surface before a lap counts as
 # having exceeded track limits. Four is the count AC itself treats as
@@ -130,6 +130,10 @@ CREATE TABLE IF NOT EXISTS laps (
     -- Grossly slower than the session's own reference. A judgment about
     -- representativeness, deliberately separate from track limits.
     outlier INTEGER NOT NULL DEFAULT 0,
+    -- The trace covers too little of the lap to stand for it: recording
+    -- began partway round, or the car skipped ahead. The time is the
+    -- game's, but the corners before the trace starts were never sampled.
+    partial_trace INTEGER NOT NULL DEFAULT 0,
 
     -- Track limits. Derived from the evidence below rather than asserted,
     -- so the threshold can change and be re-applied to laps already driven.
@@ -696,6 +700,23 @@ def _migrate(conn) -> list[str]:
     # creates; there was no pit wall before them. v19 adds driver_message
     # the same way; the message used to live in the bridge's memory.
 
+    if version < 20:
+        # v20: laps.partial_trace, worked out for every stored lap from its
+        # samples, which already show how much of the lap they cover.
+        if _add_column(conn, "laps", "partial_trace",
+                       "INTEGER NOT NULL DEFAULT 0") and \
+                "norm_pos" in _columns(conn, "samples"):
+            partial = [
+                lap_id for (lap_id,) in conn.execute("SELECT id FROM laps")
+                if (trace_coverage([p for (p,) in conn.execute(
+                    "SELECT norm_pos FROM samples WHERE lap_id = ?"
+                    " ORDER BY t_ms", (lap_id,))]) or 1)
+                < MIN_TRACE_COVERAGE]
+            conn.executemany("UPDATE laps SET partial_trace = 1 WHERE id = ?",
+                             [(i,) for i in partial])
+            log.append(f"laps.partial_trace added; {len(partial)} stored "
+                       "laps cover too little of the lap to analyze")
+
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     return log
@@ -854,6 +875,24 @@ def score_excursions(pairs: list[tuple]) -> dict:
             "off_track_ms": total_ms, "invalid": episodes > 0}
 
 
+# A lap's trace must span this much of it to stand for the lap. Whole laps
+# span 0.98 and more; one recording joined five seconds from the line
+# spans 0.04.
+MIN_TRACE_COVERAGE = 0.95
+
+
+def trace_coverage(positions: list[float]) -> float | None:
+    """How much of the lap, 0..1, a trace's positions span; None if empty.
+
+    From the first sample to the last, counting the wrap at the line; a lap
+    with gaps inside it -- a pit visit, a decimated trace -- still spans it.
+    """
+    if not positions:
+        return None
+    laps = sum(1 for a, b in zip(positions, positions[1:]) if b - a < -0.5)
+    return positions[-1] + laps - positions[0]
+
+
 def lap_usability(lap: dict) -> tuple[bool, str | None]:
     """Whether a lap belongs in an analysis, and why not if it doesn't.
 
@@ -874,6 +913,9 @@ def lap_usability(lap: dict) -> tuple[bool, str | None]:
         return False, "pit visit during the lap, so the time is wall clock"
     if not (lap.get("lap_time_ms") or 0) > 0:
         return False, "no lap time recorded"
+    if lap.get("partial_trace"):
+        return False, ("the trace covers only part of the lap: recording "
+                       "began partway round")
     return True, None
 
 
@@ -1714,17 +1756,19 @@ def _store_lap(conn, session_id, lap_number, lap_time_ms, samples,
                setup_name, complete, out_lap, pitted, outlier,
                setup_fp="", setup_changed=False, fuel_used_l=None):
     ex = score_excursions(excursion_pairs(samples))
+    coverage = trace_coverage([s[1] for s in samples])
     cur = conn.execute(
         "INSERT INTO laps (session_id, lap_number, lap_time_ms, valid,"
         " completed_at, setup_name, complete, out_lap, pitted, outlier,"
         " invalid, invalid_source, max_tyres_out, excursions, off_track_ms,"
-        " setup_fp, setup_changed, fuel_used_l)"
-        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " setup_fp, setup_changed, fuel_used_l, partial_trace)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (session_id, lap_number, lap_time_ms, int(not ex["invalid"]),
          time.time(), setup_name or "", int(complete), int(out_lap),
          int(pitted), int(outlier), int(ex["invalid"]), "inferred",
          ex["max_tyres_out"], ex["excursions"], ex["off_track_ms"],
-         setup_fp or "", int(bool(setup_changed)), fuel_used_l),
+         setup_fp or "", int(bool(setup_changed)), fuel_used_l,
+         int(coverage is not None and coverage < MIN_TRACE_COVERAGE)),
     )
     lap_id = cur.lastrowid
     placeholders = ",".join("?" * len(SAMPLE_COLUMNS))

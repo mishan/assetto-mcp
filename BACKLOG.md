@@ -3,7 +3,7 @@
 Open work, roughly in the order it is worth doing: cheap checks first, then
 work that needs a real session, then larger builds, then what is waiting on
 CSP. Each item says what is wrong, why it matters, where the code lives,
-and its status. Written against the database schema at v19.
+and its status. Written against the database schema at v20.
 
 ---
 

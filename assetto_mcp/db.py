@@ -382,7 +382,7 @@ CREATE TABLE IF NOT EXISTS rival_laps (
 
 -- Every compare_runs, kept so effects can be pooled across sessions: what
 -- changed on the car, under what conditions, and what it did. One row per
--- set of laps; a comparison sharing any lap with an earlier one replaces it.
+-- test; running the same comparison again replaces it (_same_comparison).
 CREATE TABLE IF NOT EXISTS experiments (
     id INTEGER PRIMARY KEY,
     lap_key TEXT NOT NULL UNIQUE,   -- sorted lap ids, baseline | candidate
@@ -2481,28 +2481,65 @@ def list_notes(conn, session_id: int | None = None, limit: int = 100):
 EXPERIMENT_CONCLUSIONS = ("kept", "reverted", "undecided")
 
 
+def _change_set(changes) -> frozenset | None:
+    if changes is None:
+        return None
+    return frozenset((c["entry"], c["baseline"], c["candidate"])
+                     for c in changes)
+
+
+def _swapped(changes: frozenset) -> frozenset:
+    return frozenset((e, b, a) for e, a, b in changes)
+
+
+def _same_comparison(new_laps: dict, new_changes, old_laps: dict,
+                     old_changes) -> bool:
+    """Whether an earlier comparison is this one again.
+
+    It is when it compares the same two runs: laps in common on the same
+    side, or on both sides with the sides swapped. Sharing laps across
+    sides only -- one test's candidate as the next one's baseline -- is a
+    chain of two tests, A to B then B to C, and both stand. When both
+    comparisons know what changed on the car, they must also have changed
+    the same thing: a baseline compared with two different candidates is
+    two tests too.
+    """
+    nb, nc = set(new_laps["baseline"]), set(new_laps["candidate"])
+    ob, oc = set(old_laps["baseline"]), set(old_laps["candidate"])
+    straight = bool(nb & ob or nc & oc)
+    swapped = bool(nb & oc and nc & ob)
+    if not (straight or swapped):
+        return False
+    new, old = _change_set(new_changes), _change_set(old_changes)
+    if new is None or old is None:
+        return True
+    return (straight and new == old) or (swapped and new == _swapped(old))
+
+
 def record_experiment(conn, rec: dict) -> int:
-    """Store one comparison, replacing any earlier one that shares a lap.
+    """Store one comparison, replacing an earlier run of the same one.
 
     Re-comparing as laps come in, with the sides swapped, or with laps
     dropped is the same evidence again; kept alongside, the setup book
     would pool it as independent and grow certain of nothing. The newest
     comparison stands, under the old one's id, and keeps what the driver
-    said about it.
+    said about it. A different test that happens to share laps -- the
+    middle setup of A to B to C -- is left alone (_same_comparison).
     """
     laps = rec["laps"]
-    mine = set(laps["baseline"]) | set(laps["candidate"])
     key = (",".join(map(str, sorted(laps["baseline"]))) + "|"
            + ",".join(map(str, sorted(laps["candidate"]))))
     now = time.time()
     changes = rec.get("changes")
     with conn:
         old = [r for r in conn.execute(
-                   "SELECT id, laps_json, note, conclusion, created_at"
-                   " FROM experiments WHERE car = ? ORDER BY updated_at",
-                   (rec["car"],))
-               if mine & {*json.loads(r["laps_json"])["baseline"],
-                          *json.loads(r["laps_json"])["candidate"]}]
+                   "SELECT id, laps_json, changes_json, note, conclusion,"
+                   " created_at FROM experiments WHERE car = ?"
+                   " ORDER BY updated_at", (rec["car"],))
+               if _same_comparison(
+                   laps, changes, json.loads(r["laps_json"]),
+                   None if r["changes_json"] is None
+                   else json.loads(r["changes_json"]))]
         note = next((r["note"] for r in reversed(old) if r["note"]), "")
         conclusion = next((r["conclusion"] for r in reversed(old)
                            if r["conclusion"]), "")

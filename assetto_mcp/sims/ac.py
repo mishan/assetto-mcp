@@ -126,8 +126,9 @@ class Reader:
 
     def session(self) -> SessionInfo:
         s = self._pages.static
-        rate = float(s.aidFuelRate)
+        rate = float(getattr(s, "aidFuelRate", 1.0))
         usable = 0 <= rate <= MAX_FUEL_RATE
+        tank = getattr(s, "maxFuel", 0)
         return SessionInfo(
             car=s.carModel, track=s.track,
             track_config=s.trackConfiguration,
@@ -135,8 +136,7 @@ class Reader:
             # maxFuel is the capacity when the car's FUEL setup entry is
             # read-only, and is what lets a fuel plan say whether a stop is
             # forced.
-            max_fuel_liters=(round(float(s.maxFuel), 2)
-                             if s.maxFuel and s.maxFuel > 0 else None),
+            max_fuel_liters=round(float(tank), 2) if tank and tank > 0 else None,
             fuel_rate=rate if usable else None,
             fuel_rate_unusable=None if usable else rate)
 

@@ -7,6 +7,7 @@ reader is fixed. It is also what lets someone without the game test
 support for it.
 
     python -m assetto_mcp.sims.recording record lap.simrec
+    python -m assetto_mcp.sims.recording record lap.simrec --game ams2
     python -m assetto_mcp.sims.recording info lap.simrec
     python -m assetto_mcp.sims.recording replay lap.simrec --db out.db
     python -m assetto_mcp.sims.recording trim lap.simrec one.simrec 895 1026
@@ -26,6 +27,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 MAGIC = b"SIMREC\x00\x01"
 FORMAT = 1
@@ -185,35 +187,52 @@ def replay_into(path, db_path, timeout: float = 600) -> None:
 # --- command line -------------------------------------------------------
 
 
-def record(out: Path, hz: float, keep_names: bool) -> None:
+def _game(name: str) -> SimpleNamespace:
+    """How to open, scrub and describe one game's pages."""
+    if name == "ams2":
+        from . import ams2
+        return SimpleNamespace(title=ams2.TITLE, open=ams2.Pages,
+                               scrub=ams2.scrub, describe=ams2.describe,
+                               scrubbed=["participant names"])
     from .. import sim_info
 
+    def describe(raw):
+        st = sim_info.SPageFileStatic.from_buffer_copy(raw["static"])
+        return {"car": st.carModel, "track": st.track,
+                "track_config": st.trackConfiguration,
+                "game_version": [st.acVersion, st.smVersion]}
+    return SimpleNamespace(
+        title="Assetto Corsa", open=sim_info.SimInfo, describe=describe,
+        scrub=lambda raw: {**raw, "static": sim_info.scrub(raw["static"])},
+        scrubbed=list(sim_info.PLAYER_FIELDS))
+
+
+def record(out: Path, hz: float, keep_names: bool, game: str = "ac") -> None:
+    g = _game(game)
     sim = None
     while sim is None:
         try:
-            sim = sim_info.SimInfo()
+            sim = g.open()
         except RuntimeError as e:
             if sys.platform != "win32":
                 raise SystemExit(str(e)) from None
-            print("waiting for Assetto Corsa...", file=sys.stderr)
+            print(f"waiting for {g.title}: {e}", file=sys.stderr)
             time.sleep(2)
     try:
-        st = sim.static
+        first = sim.raw()
         writer = Writer(out, {
-            "sim": "ac",
-            "pages": {name: len(b) for name, b in sim.raw().items()},
+            "sim": game,
+            "pages": {name: len(b) for name, b in first.items()},
             "hz": hz, "started": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-            "game_version": [st.acVersion, st.smVersion],
-            "scrubbed": [] if keep_names else list(sim_info.PLAYER_FIELDS)})
-        st = None
+            "game_version": g.describe(first)["game_version"],
+            "scrubbed": [] if keep_names else g.scrubbed})
         print(f"recording to {out}; Ctrl+C to stop", file=sys.stderr)
         t0 = time.monotonic()
         try:
             while True:
                 raw = sim.raw()
-                if not keep_names:
-                    raw["static"] = sim_info.scrub(raw["static"])
-                writer.write(time.monotonic() - t0, raw)
+                writer.write(time.monotonic() - t0,
+                             raw if keep_names else g.scrub(raw))
                 time.sleep(1 / hz)
         except KeyboardInterrupt:
             pass
@@ -249,11 +268,10 @@ def info(path: Path) -> dict:
         last, count = t, count + 1
     out = {**header, "ticks": count,
            "seconds": round(last - first, 1) if count else 0}
-    if header.get("sim") == "ac" and "static" in pages:
-        from .. import sim_info
-        st = sim_info.SPageFileStatic.from_buffer_copy(pages["static"])
-        out.update(car=st.carModel, track=st.track,
-                   track_config=st.trackConfiguration)
+    if pages:
+        about = _game(header.get("sim", "ac")).describe(pages)
+        about.pop("game_version")
+        out.update(about)
     return out
 
 
@@ -267,7 +285,9 @@ def main(argv: list[str] | None = None) -> int:
     rec.add_argument("out", type=Path)
     rec.add_argument("--hz", type=float, default=25.0)
     rec.add_argument("--keep-names", action="store_true",
-                     help="keep the driver's name in the file")
+                     help="keep drivers' names in the file")
+    rec.add_argument("--game", choices=("ac", "ams2"), default="ac",
+                     help="Assetto Corsa (ac) or Automobilista 2 (ams2)")
     desc = sub.add_parser("info", help="what a recording holds")
     desc.add_argument("file", type=Path)
     rep = sub.add_parser("replay", help="store a recording's laps in a "
@@ -282,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
     cut.add_argument("end", type=float)
     args = ap.parse_args(argv)
     if args.command == "record":
-        record(args.out, args.hz, args.keep_names)
+        record(args.out, args.hz, args.keep_names, args.game)
     elif args.command == "replay":
         replay_into(args.file, args.db)
     elif args.command == "trim":

@@ -54,7 +54,8 @@ for LuaJIT by name.
 ### Recordings of the game
 
 `python -m assetto_mcp.sims.recording record lap.simrec` on the gaming PC
-records the game's shared memory until Ctrl+C. `replay lap.simrec --db out.db`
+records the game's shared memory until Ctrl+C; `--game ams2` records
+Automobilista 2's, with its Shared Memory option set to "Project CARS 2". `replay lap.simrec --db out.db`
 stores its laps into a database as fast as the collector can, on any OS, in
 the recording's own time, so two replays store identical rows: replay before
 and after a change to the collector and compare. `ASSETTO_MCP_REPLAY` runs the

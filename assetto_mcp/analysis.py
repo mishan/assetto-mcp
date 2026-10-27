@@ -12,6 +12,8 @@ import random
 from collections.abc import Iterable
 from statistics import mean, median
 
+from .sims import calibration
+
 WHEELS = ("fl", "fr", "rl", "rr")
 
 # AC's wheelSlip sits around 0..3 in normal driving and a few tens in a big
@@ -1117,7 +1119,8 @@ def _ego_position_at(samples: list[dict], clock, t: float):
 
 def infer_contacts(lap: dict, samples: list[dict],
                    rivals: list[dict] | None = None,
-                   names: dict[int, str] | None = None) -> list[dict] | None:
+                   names: dict[int, str] | None = None,
+                   sim: str = "ac") -> list[dict] | None:
     """Impacts on the lap, from acceleration spikes and who was alongside.
 
     One entry per impact: where, how hard, what the driver's feet were
@@ -1173,10 +1176,12 @@ def infer_contacts(lap: dict, samples: list[dict],
 
     # Spikes closer together than CONTACT_GAP_MS are one impact: a car
     # bouncing off another, or along a wall, spikes on several ticks.
+    contact_g = calibration(sim, "CONTACT_G", CONTACT_G)
+    near_m = calibration(sim, "CONTACT_NEAR_M", CONTACT_NEAR_M)
     groups: list[list[dict]] = []
     for s in samples:
         peak, _ = g(s)
-        if peak < CONTACT_G:
+        if peak < contact_g:
             continue
         if groups and s["t_ms"] - groups[-1][-1]["t_ms"] <= CONTACT_GAP_MS:
             groups[-1].append(s)
@@ -1265,7 +1270,7 @@ def infer_contacts(lap: dict, samples: list[dict],
                 "distance_m": round(d, 1),
                 "speed_kmh": round(speed) if speed is not None else None,
             }
-            entry["verdict"] = "contact" if d <= CONTACT_NEAR_M else alone
+            entry["verdict"] = "contact" if d <= near_m else alone
         out.append(entry)
     return out
 
@@ -4001,7 +4006,7 @@ def _aid_field_note(samples: list[dict], field: str) -> dict | None:
 
 
 def braking_report(lap: dict, samples: list[dict],
-                   points: int = 20) -> dict:
+                   points: int = 20, sim: str = "ac") -> dict:
     """What the tyres did under braking, and whether anything locked.
 
     The question behind this is "is ABS aggressive enough", which cannot be
@@ -4014,6 +4019,7 @@ def braking_report(lap: dict, samples: list[dict],
     braking AND cornering is high by construction, so the steering filter
     is what makes the rest of the numbers mean anything.
     """
+    lockup = calibration(sim, "LOCKUP_SLIP", LOCKUP_SLIP)
     if not samples:
         return {"error": "no samples for this lap"}
 
@@ -4042,7 +4048,7 @@ def braking_report(lap: dict, samples: list[dict],
         "thresholds": {
             "hard_brake": HARD_BRAKE,
             "straight_steer": STRAIGHT_STEER,
-            "lockup_slip": LOCKUP_SLIP,
+            "lockup_slip": lockup,
             "lockup_slip_is_calibrated": False,
         },
     }
@@ -4069,7 +4075,7 @@ def braking_report(lap: dict, samples: list[dict],
             "p95_slip": round(_pct(vals, 0.95), 3),
             "max_slip": round(max(vals), 3),
             "samples_over_lockup_threshold": sum(
-                1 for v in vals if v > LOCKUP_SLIP),
+                1 for v in vals if v > lockup),
         }
     out["under_straight_line_braking"] = axles
 
@@ -4097,7 +4103,7 @@ def braking_report(lap: dict, samples: list[dict],
             got = [num(s, f"slip_{c}") for c in ("fl", "fr")]
             got = [v for v in got if v is not None and abs(v) <= SLIP_SANE_MAX]
             worst = max(got) if got else None
-        if worst is not None and worst > LOCKUP_SLIP:
+        if worst is not None and worst > lockup:
             current.append(s)
         elif current:
             runs.append(current)

@@ -2334,7 +2334,8 @@ def chassis_report(
             part = {"error": f"{aspect} reads a stored lap; pass lap_id"}
         elif aspect == "braking":
             part = _placed(analysis.braking_report(
-                lap, db.get_samples(_conn, lap_id), points),
+                lap, db.get_samples(_conn, lap_id), points,
+                db.session_sim(_conn, lap["session_id"])),
                 lap["session_id"])
         else:
             part = _placed(analysis.attitude_report(

@@ -380,5 +380,32 @@ def test_a_lap_that_ran_wide_can_still_be_the_best_lap():
             conn.close()
 
 
+def test_a_game_can_count_track_limits_differently():
+    """Thresholds were tuned on AC; a game that differs says so in its
+    CALIBRATION, and its laps are judged by it."""
+    from types import SimpleNamespace
+    from assetto_mcp import sims
+    sims.GAMES["two_wheels"] = SimpleNamespace(
+        CALIBRATION={"TRACK_LIMITS_WHEELS": 2})
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            conn = db.connect(Path(d) / "t.db")
+            try:
+                verdicts = {}
+                for sim in ("ac", "two_wheels"):
+                    sid = db.create_session(
+                        conn, sim=sim, car="c", track="t", track_config="",
+                        tyre_compound="", air_temp=20, road_temp=25)
+                    lap = db.store_lap(conn, sid, 1, 113000, True,
+                                       _lap_samples([0] * 20 + [2] * 25
+                                                    + [0] * 55))
+                    verdicts[sim] = db.get_lap(conn, lap)["invalid"]
+            finally:
+                conn.close()
+        assert verdicts == {"ac": 0, "two_wheels": 1}, verdicts
+    finally:
+        del sims.GAMES["two_wheels"]
+
+
 if __name__ == "__main__":
     sys.exit(1 if run_module(globals()) else 0)

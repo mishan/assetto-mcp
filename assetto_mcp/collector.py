@@ -12,6 +12,7 @@ import time
 import uuid
 
 from . import analysis, db, retention
+from .sims import calibration
 
 TARGET_HZ = 25  # plenty for setup work; keeps the DB small
 
@@ -564,10 +565,14 @@ class Collector:
                 # only; the stored verdict is scored at store time. It uses
                 # the same rule, wheel count AND minimum duration, so the
                 # overlay and the database agree.
-                if f.tyres_out >= db.TRACK_LIMITS_WHEELS:
+                if f.tyres_out >= calibration(
+                        sim.name, "TRACK_LIMITS_WHEELS",
+                        db.TRACK_LIMITS_WHEELS):
                     if wide_since is None:
                         wide_since = t_ms
-                    elif t_ms - wide_since >= db.MIN_EXCURSION_MS:
+                    elif t_ms - wide_since >= calibration(
+                            sim.name, "MIN_EXCURSION_MS",
+                            db.MIN_EXCURSION_MS):
                         self.current_lap_dirty = True
                 else:
                     wide_since = None

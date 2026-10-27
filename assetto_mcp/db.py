@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from . import analysis
+from .sims import calibration
 
 # Bump when the schema changes and add a matching step in _migrate().
 SCHEMA_VERSION = 21
@@ -808,7 +809,14 @@ def _v11_preserve_old_exclusions(conn) -> list[str]:
             f"of lap-time comparisons. Their telemetry is untouched."]
 
 
-def score_excursions(pairs: list[tuple]) -> dict:
+def session_sim(conn, session_id: int) -> str:
+    """The game that recorded a session."""
+    row = conn.execute("SELECT sim FROM sessions WHERE id = ?",
+                       (session_id,)).fetchone()
+    return row["sim"] if row else "ac"
+
+
+def score_excursions(pairs: list[tuple], sim: str = "ac") -> dict:
     """Track-limits evidence for one lap, from (t_ms, tyres_out) pairs.
 
     Returns max_tyres_out, excursions, off_track_ms and the derived
@@ -838,6 +846,8 @@ def score_excursions(pairs: list[tuple]) -> dict:
         return {"max_tyres_out": None, "excursions": None,
                 "off_track_ms": None, "invalid": False}
     usable.sort()
+    wheels = calibration(sim, "TRACK_LIMITS_WHEELS", TRACK_LIMITS_WHEELS)
+    min_ms = calibration(sim, "MIN_EXCURSION_MS", MIN_EXCURSION_MS)
 
     max_out, episodes, total_ms = 0, 0, 0
     run_start = None
@@ -859,11 +869,11 @@ def score_excursions(pairs: list[tuple]) -> dict:
         off-track sample, so MIN_EXCURSION_MS means three samples at 25Hz,
         not four."""
         span = end_t - run_start
-        return (1, span) if span >= MIN_EXCURSION_MS else (0, 0)
+        return (1, span) if span >= min_ms else (0, 0)
 
     for i, (t, out) in enumerate(usable):
         max_out = max(max_out, out)
-        if out >= TRACK_LIMITS_WHEELS:
+        if out >= wheels:
             if run_start is None:
                 run_start = t
         elif run_start is not None:
@@ -956,8 +966,11 @@ def backfill_excursions(conn, lap_ids: list[int] | None = None) -> int:
     # database without it has nothing thinned, so every lap is eligible.
     thinned_guard = (" AND sample_stride = 1"
                      if "sample_stride" in set(_columns(conn, "laps")) else "")
-    q = ("SELECT id, invalid, max_tyres_out, excursions, off_track_ms"
-         " FROM laps WHERE invalid_source = 'inferred'" + thinned_guard)
+    sim = ("(SELECT sim FROM sessions WHERE sessions.id = laps.session_id)"
+           if "sim" in _columns(conn, "sessions") else "'ac'")
+    q = (f"SELECT id, invalid, max_tyres_out, excursions, off_track_ms,"
+         f" {sim} AS sim FROM laps WHERE invalid_source = 'inferred'"
+         + thinned_guard)
     args: list = []
     if lap_ids is not None:
         if not lap_ids:
@@ -970,7 +983,8 @@ def backfill_excursions(conn, lap_ids: list[int] | None = None) -> int:
         pairs = conn.execute(
             "SELECT t_ms, tyres_out FROM samples WHERE lap_id = ?"
             " ORDER BY t_ms", (row["id"],)).fetchall()
-        s = score_excursions([(r["t_ms"], r["tyres_out"]) for r in pairs])
+        s = score_excursions([(r["t_ms"], r["tyres_out"]) for r in pairs],
+                             row["sim"] or "ac")
         # Compared rather than trusting rowcount: SQLite counts rows
         # matched, not rows altered.
         if (row["invalid"] == int(s["invalid"])
@@ -1764,7 +1778,8 @@ def name_for_measured_setup(conn, session_id: int, fp: str) -> str:
 def _store_lap(conn, session_id, lap_number, lap_time_ms, samples,
                setup_name, complete, out_lap, pitted, outlier,
                setup_fp="", setup_changed=False, fuel_used_l=None):
-    ex = score_excursions(excursion_pairs(samples))
+    ex = score_excursions(excursion_pairs(samples),
+                          session_sim(conn, session_id))
     coverage = trace_coverage([s[1] for s in samples])
     cur = conn.execute(
         "INSERT INTO laps (session_id, lap_number, lap_time_ms, valid,"
@@ -2318,15 +2333,16 @@ def contacts_inferred(conn, lap: dict, samples: list[dict],
     can still be placed against a row stored just before it. `names` is the
     session's rival_names, for a caller reading many laps of one session.
     """
+    sim = session_sim(conn, lap["session_id"])
     clock = analysis._ego_clock(lap)
     if clock is None or not samples:
-        return analysis.infer_contacts(lap, samples)
+        return analysis.infer_contacts(lap, samples, sim=sim)
     t0 = clock(samples[0]["t_ms"]) - analysis.CONTACT_WINDOW_S
     t1 = clock(samples[-1]["t_ms"]) + analysis.CONTACT_WINDOW_S
     rivals = rival_samples_between(conn, lap["session_id"], t0, t1)
     if names is None:
         names = rival_names(conn, lap["session_id"])
-    return analysis.infer_contacts(lap, samples, rivals, names)
+    return analysis.infer_contacts(lap, samples, rivals, names, sim=sim)
 
 
 def get_rival_lap_samples(conn, session_id: int, car_index: int,

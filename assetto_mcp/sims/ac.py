@@ -19,6 +19,10 @@ CHECKERED_FLAG = 5
 # out-of-range values are handed back raw for the caller to report.
 MAX_FUEL_RATE = 10.0
 
+# Thresholds that differ from the defaults (sims.calibration); none do, as
+# the defaults were tuned on AC.
+CALIBRATION: dict = {}
+
 
 # Reads of AC's fixed-size arrays go through getattr, because an older
 # shared-memory layout or a test stub may not carry the field, and then check

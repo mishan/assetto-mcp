@@ -19,6 +19,15 @@ CHECKERED_FLAG = 5
 # out-of-range values are handed back raw for the caller to report.
 MAX_FUEL_RATE = 10.0
 
+TITLE = "Assetto Corsa"
+
+# What the server can do in this game beyond recording laps, and what
+# provides it: "app" is the in-game app, missing while it is not running;
+# "files" are files the game reads.
+CAPABILITIES = {"opponents": "app", "suspension": "app",
+                "setup_values": "app", "messages": "app",
+                "setup_files": "files", "track_sections": "files"}
+
 # Thresholds that differ from the defaults (sims.calibration); none do, as
 # the defaults were tuned on AC.
 CALIBRATION: dict = {}

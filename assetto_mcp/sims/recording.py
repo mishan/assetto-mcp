@@ -9,6 +9,7 @@ support for it.
     python -m assetto_mcp.sims.recording record lap.simrec
     python -m assetto_mcp.sims.recording info lap.simrec
     python -m assetto_mcp.sims.recording replay lap.simrec --db out.db
+    python -m assetto_mcp.sims.recording trim lap.simrec one.simrec 895 1026
 
 The file is MAGIC, then one lzma stream: a length-prefixed JSON header, then
 records of (seconds since the start, page index, length, bytes). A page is
@@ -221,6 +222,22 @@ def record(out: Path, hz: float, keep_names: bool) -> None:
         sim.close()
 
 
+def trim(src: Path, out: Path, start: float, end: float) -> None:
+    """The part of a recording from `start` to `end` seconds, starting at 0
+    and with every page as it was at `start`."""
+    header, ticks = read(src)
+    writer = Writer(out, {k: v for k, v in header.items() if k != "format"})
+    try:
+        for t, pages in ticks:
+            if t > end:
+                break
+            if t >= start:
+                writer.write(t - start, pages)
+    finally:
+        ticks.close()
+        writer.close()
+
+
 def info(path: Path) -> dict:
     header, ticks = read(path)
     first = last = None
@@ -256,11 +273,19 @@ def main(argv: list[str] | None = None) -> int:
                                         "database, as fast as it can")
     rep.add_argument("file", type=Path)
     rep.add_argument("--db", type=Path, required=True)
+    cut = sub.add_parser("trim", help="keep the part between two times, "
+                                      "in seconds from the start")
+    cut.add_argument("file", type=Path)
+    cut.add_argument("out", type=Path)
+    cut.add_argument("start", type=float)
+    cut.add_argument("end", type=float)
     args = ap.parse_args(argv)
     if args.command == "record":
         record(args.out, args.hz, args.keep_names)
     elif args.command == "replay":
         replay_into(args.file, args.db)
+    elif args.command == "trim":
+        trim(args.file, args.out, args.start, args.end)
     else:
         print(json.dumps(info(args.file), indent=2))
     return 0

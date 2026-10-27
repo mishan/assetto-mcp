@@ -575,6 +575,7 @@ assetto_mcp/
   sims/__init__.py  the games, and calibration(): a threshold for one game
   sims/base.py  what a game's reader gives the server, in one set of units
   sims/ac.py    Assetto Corsa's reader
+  sims/ams2.py  Automobilista 2's shared-memory page, opened and recorded
   sims/recording.py  the game's shared memory to a file and back
 lua_app/
   assetto_mcp/  CSP Lua in-game app (copy to apps/lua/)

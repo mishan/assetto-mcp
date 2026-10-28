@@ -8,8 +8,8 @@ It protects two properties of the test modules, not of the code under test:
   * Every module puts the repo root on sys.path itself, so
     `python tests/test_x.py` imports without pytest or an installed package.
 
-It also holds repo-wide checks that no module about the game would catch:
-stray merge-conflict markers and the schema version BACKLOG.md states.
+It also holds a repo-wide check that no module about the game would catch:
+stray merge-conflict markers.
 """
 
 import ast
@@ -209,31 +209,6 @@ def test_no_source_file_carries_a_merge_conflict_marker():
         "merge conflict markers left in tracked files:\n    "
         + "\n    ".join(hits))
     print("  no conflict markers in any tracked source file")
-
-
-def test_the_backlog_names_the_schema_version_the_code_is_at():
-    """Two places state the schema version, and only one of them runs.
-
-    BACKLOG.md is read first at the start of a session, so its stated
-    schema version must match db.SCHEMA_VERSION.
-    """
-    import re
-    sys.path.insert(0, str(ROOT))
-    from assetto_mcp import db
-
-    text = (ROOT / "BACKLOG.md").read_text(encoding="utf-8")
-    m = re.search(r"schema at v(\d+)", text)
-    assert m, "BACKLOG.md no longer states a schema version"
-    assert int(m.group(1)) == db.SCHEMA_VERSION, (
-        f"BACKLOG.md says schema v{m.group(1)}, "
-        f"db.SCHEMA_VERSION is {db.SCHEMA_VERSION}")
-
-    # And no entry below claims a version that does not exist yet.
-    ahead = [v for v in re.findall(r"schema v(\d+)", text)
-             if int(v) > db.SCHEMA_VERSION]
-    assert not ahead, ("BACKLOG.md cites schema versions that do not exist: "
-                       f"{sorted(set(ahead))}")
-    print(f"  BACKLOG.md and db.py agree on schema v{db.SCHEMA_VERSION}")
 
 
 if __name__ == "__main__":

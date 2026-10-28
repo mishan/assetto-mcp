@@ -102,7 +102,7 @@ a decision.
 lap validity in shared memory. CSP does — `ac.onLapCompleted` hands a
 physics worker the game's own `valid` and `cuts` — and that's reachable from
 the worker this project already runs, but it isn't wired up yet and it would
-be single-player only. See [BACKLOG.md](../BACKLOG.md) item 2.
+be single-player only. See [#95](https://github.com/mishan/assetto-mcp/issues/95).
 
 ---
 
@@ -597,7 +597,6 @@ scripts/
   say.py             read a message aloud to the driver
   pit_wall_demo.py   the pit wall on recorded laps, without the game
   shoot_pit_wall.sh  the README's pit wall pictures, with shotbox
-BACKLOG.md           open work
 ```
 
 ### Setup attribution, in three pieces

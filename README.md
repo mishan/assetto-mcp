@@ -294,7 +294,7 @@ it before sharing it.
 | [docs/SETUP-RANGES.md](docs/SETUP-RANGES.md) | How setup values are clamped |
 | [docs/INTERNALS.md](docs/INTERNALS.md) | Corner detection, data-quality flags, driving line, suspension capture |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Running the tests, CI, schema changes |
-| [BACKLOG.md](BACKLOG.md) | Open work, in the order worth doing |
+| [Issues](https://github.com/mishan/assetto-mcp/issues) | Open work |
 
 ---
 
@@ -317,7 +317,7 @@ python run_tests.py
 ```
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md), and
-[BACKLOG.md](BACKLOG.md) for somewhere to start. Support for another MCP
+[the issues](https://github.com/mishan/assetto-mcp/issues) for somewhere to start. Support for another MCP
 client's installer is particularly welcome:
 `windows/install-claude-desktop.ps1` is the only file that knows about a
 specific client.

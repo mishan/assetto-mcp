@@ -143,7 +143,7 @@ CREATE TABLE IF NOT EXISTS laps (
     -- so the threshold can change and be re-applied to laps already driven.
     invalid INTEGER NOT NULL DEFAULT 0,
     -- 'inferred' (from tyres_out) or 'game' (the game's own verdict, which
-    -- needs a CSP physics worker -- see BACKLOG item 2). Recorded so a
+    -- needs a CSP physics worker -- see issue #95). Recorded so a
     -- reader can tell a measurement from a guess.
     invalid_source TEXT NOT NULL DEFAULT 'inferred',
 

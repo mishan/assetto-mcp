@@ -940,24 +940,28 @@ def session_check() -> str:
             "best_clean_lap_id": db.best_clean_lap_id(_conn, sid),
             "setup_name": tag,
             "measured_setup": db.measured_setup_at(_conn, sid) or None}
-        try:
-            found = setups.identify_setup(
-                AC_DOCS_DIR, session["car"],
-                session.get("track_config") or session["track"],
-                db.setup_values(_conn, sid), track_folder=session["track"])
-            out["setup_on_car"] = {k: found[k] for k in
-                                   ("match", "candidates", "reason")
-                                   if found.get(k) is not None}
-        except ValueError as e:
-            out["setup_on_car"] = {"match": None, "reason": str(e)}
+        has = sims.capabilities(session["sim"])
+        if "setup_values" in has:
+            try:
+                found = setups.identify_setup(
+                    AC_DOCS_DIR, session["car"],
+                    session.get("track_config") or session["track"],
+                    db.setup_values(_conn, sid),
+                    track_folder=session["track"])
+                out["setup_on_car"] = {k: found[k] for k in
+                                       ("match", "candidates", "reason")
+                                       if found.get(k) is not None}
+            except ValueError as e:
+                out["setup_on_car"] = {"match": None, "reason": str(e)}
         if not tag:
             to_do.append("no setup tag: set_session_setup with the setup "
                          "the driver names")
-        by_source, captured = _suspension_sources(sid)
-        out["suspension"] = {
-            "tier": ("worker" if "worker" in by_source
-                     else next(iter(by_source), None)),
-            "laps_captured": captured}
+        if "suspension" in has:
+            by_source, captured = _suspension_sources(sid)
+            out["suspension"] = {
+                "tier": ("worker" if "worker" in by_source
+                         else next(iter(by_source), None)),
+                "laps_captured": captured}
 
     out["app"] = _app_link()
     if (not out["app"]["connected"] and not _bridge.error
@@ -1206,9 +1210,10 @@ def _field_benchmark(session_id: int | None, lap_ids, car_indexes,
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id"})
-    if not db.get_session(_conn, sid):
+    session = db.get_session(_conn, sid)
+    if not session:
         return _j({"error": f"no session with id {sid}"})
-    if no := _lacks(sid, "opponents"):
+    if no := sims.unsupported(session["sim"], "opponents"):
         return _j(no)
     length, _ = _track_length(sid)
     if not length:
@@ -1366,7 +1371,7 @@ def identify_setup(session_id: int | None = None) -> str:
     session = db.get_session(_conn, sid)
     if not session:
         return _j({"error": f"no session with id {sid}"})
-    if no := _lacks(sid, "setup_values"):
+    if no := sims.unsupported(session["sim"], "setup_values"):
         return _j(no)
 
     values = db.setup_values(_conn, sid)
@@ -2288,10 +2293,10 @@ _ASPECTS = ("braking", "attitude", "suspension")
 def _suspension(sid: int | None, lap_count: int | None) -> dict:
     if sid is None:
         return {"error": "no active session; pass session_id explicitly"}
-    if lap_count is None:
-        return {"error": "pass either lap_id or lap_number"}
     if no := _lacks(sid, "suspension"):
         return no
+    if lap_count is None:
+        return {"error": "pass either lap_id or lap_number"}
     samples = db.get_suspension_samples(_conn, sid, lap_count)
     if not samples:
         captured = db.suspension_lap_counts(_conn, sid)

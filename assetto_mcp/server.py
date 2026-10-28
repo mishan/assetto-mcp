@@ -252,7 +252,7 @@ def _sim_factory():
     global _replay
     from .sims import ac
     if not REPLAY_FILE:
-        return sims.open_reader(SIM)
+        return sims.GAMES[SIM].live()
     if _replay is not None:
         raise SharedMemoryUnavailable("the recording has ended")
     from .sims.recording import Replay
@@ -265,7 +265,7 @@ def _open_sim():
     from .sim_info import SharedMemoryUnavailable
     from .sims import ac
     if not REPLAY_FILE:
-        return sims.open_reader(SIM)
+        return sims.GAMES[SIM].live()
     if _replay is None:
         raise SharedMemoryUnavailable("the recording has not started")
     return ac.Reader(_replay.view())

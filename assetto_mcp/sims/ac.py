@@ -159,3 +159,9 @@ class Reader:
 
     def close(self) -> None:
         self._pages.close()
+
+
+def live() -> Reader:
+    """Assetto Corsa's shared memory, as the game writes it."""
+    from ..sim_info import SimInfo
+    return Reader(SimInfo())

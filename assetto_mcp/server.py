@@ -65,6 +65,7 @@ if REPLAY_FILE and not config.env("DATA"):
     raise RuntimeError("ASSETTO_MCP_REPLAY needs ASSETTO_MCP_DATA set to a "
                        "directory of its own, so a replay never adds to "
                        "your real laps")
+SIM = sims.chosen()
 DATA_DIR = config.data_dir()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 RANGES_DIR = DATA_DIR / "ranges"
@@ -247,11 +248,11 @@ _replay = None
 
 
 def _sim_factory():
-    from .sim_info import SharedMemoryUnavailable, SimInfo
+    from .sim_info import SharedMemoryUnavailable
     global _replay
     from .sims import ac
     if not REPLAY_FILE:
-        return ac.Reader(SimInfo())
+        return sims.GAMES[SIM].live()
     if _replay is not None:
         raise SharedMemoryUnavailable("the recording has ended")
     from .sims.recording import Replay
@@ -261,10 +262,10 @@ def _sim_factory():
 
 def _open_sim():
     """The game for a tool to read, the replay's when replaying."""
-    from .sim_info import SharedMemoryUnavailable, SimInfo
+    from .sim_info import SharedMemoryUnavailable
     from .sims import ac
     if not REPLAY_FILE:
-        return ac.Reader(SimInfo())
+        return sims.GAMES[SIM].live()
     if _replay is None:
         raise SharedMemoryUnavailable("the recording has not started")
     return ac.Reader(_replay.view())

@@ -1,8 +1,18 @@
 """The games the server can read, and what differs between them."""
 
+from .. import config
 from . import ac
 
 GAMES = {ac.Reader.name: ac}
+
+
+def chosen() -> str:
+    """The game to read, from ASSETTO_MCP_SIM."""
+    name = config.env("SIM", "ac").strip().lower()
+    if name not in GAMES:
+        raise RuntimeError(f"ASSETTO_MCP_SIM is {name!r}; it can be "
+                           + ", ".join(GAMES))
+    return name
 
 
 def calibration(sim: str, name: str, default):

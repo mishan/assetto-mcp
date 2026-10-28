@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -159,10 +160,23 @@ def test_a_game_without_a_feature_says_so_rather_than_guessing():
                 ("write_setup", ("c", "t", "x", {"PRESSURE_LF": 25}),
                  "setup_files"),
                 ("list_setups", ("c", "t"), "setup_files"),
-                ("send_driver_message", ("box this lap",), "messages")):
+                ("send_driver_message", ("box this lap",), "messages"),
+                ("list_rivals", (), "opponents"),
+                ("field_benchmark", (), "opponents"),
+                ("compare_to_rival", (0, 1), "opponents"),
+                ("identify_setup", (), "setup_values"),
+                ("chassis_report", (None, "suspension", 20, 1),
+                 "suspension")):
             out = json.loads(getattr(s, name)(*args))
+            out = out.get("suspension", out)
             assert out["unsupported"] == cap, (name, out)
             assert out["error"].startswith("Bare Racer does not provide"), out
+        snap = {**s._bridge.status_snapshot(), "session_id": sid}
+        with mock.patch.object(s._bridge, "status_snapshot",
+                               return_value=snap):
+            check = json.loads(s.session_check())
+        assert check["session"]["id"] == sid, check
+        assert not {"setup_on_car", "suspension"} & set(check), check
     finally:
         s._active_session = active
         del sims.GAMES["bare"]

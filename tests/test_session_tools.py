@@ -159,8 +159,15 @@ def test_a_game_without_a_feature_says_so_rather_than_guessing():
                 ("write_setup", ("c", "t", "x", {"PRESSURE_LF": 25}),
                  "setup_files"),
                 ("list_setups", ("c", "t"), "setup_files"),
-                ("send_driver_message", ("box this lap",), "messages")):
+                ("send_driver_message", ("box this lap",), "messages"),
+                ("list_rivals", (), "opponents"),
+                ("field_benchmark", (), "opponents"),
+                ("compare_to_rival", (0, 1), "opponents"),
+                ("identify_setup", (), "setup_values"),
+                ("chassis_report", (None, "suspension", 20, 1),
+                 "suspension")):
             out = json.loads(getattr(s, name)(*args))
+            out = out.get("suspension", out)
             assert out["unsupported"] == cap, (name, out)
             assert out["error"].startswith("Bare Racer does not provide"), out
     finally:

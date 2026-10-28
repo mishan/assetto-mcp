@@ -425,6 +425,11 @@ def _current_sim() -> str:
     return db.session_sim(_conn, sid) if sid else "ac"
 
 
+def _lacks(sid: int, capability: str) -> dict | None:
+    """A tool's answer when session `sid`'s game lacks `capability`."""
+    return sims.unsupported(db.session_sim(_conn, sid), capability)
+
+
 # The numbering itself lives in turns.py, so a script can draw the same
 # turn numbers without starting a server. These are its budget, named here
 # too for anything that reads them off the server.
@@ -1002,6 +1007,8 @@ def list_rivals(session_id: int | None = None,
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
+    if no := _lacks(sid, "opponents"):
+        return _j(no)
     rivals = db.list_rivals(_conn, sid, limit=limit)
     if not rivals:
         return _j({"session_id": sid, "rivals": [],
@@ -1072,6 +1079,8 @@ def compare_to_rival(car_index: int, lap_id: int,
     sid = _active_session(session_id)
     if sid is None:
         return _j({"error": "no active session; pass session_id explicitly"})
+    if no := _lacks(sid, "opponents"):
+        return _j(no)
 
     lap = db.get_lap(_conn, lap_id)
     if not lap:
@@ -1199,6 +1208,8 @@ def _field_benchmark(session_id: int | None, lap_ids, car_indexes,
         return _j({"error": "no active session; pass session_id"})
     if not db.get_session(_conn, sid):
         return _j({"error": f"no session with id {sid}"})
+    if no := _lacks(sid, "opponents"):
+        return _j(no)
     length, _ = _track_length(sid)
     if not length:
         return _j({"error": f"session {sid} has no track length"})
@@ -1355,6 +1366,8 @@ def identify_setup(session_id: int | None = None) -> str:
     session = db.get_session(_conn, sid)
     if not session:
         return _j({"error": f"no session with id {sid}"})
+    if no := _lacks(sid, "setup_values"):
+        return _j(no)
 
     values = db.setup_values(_conn, sid)
     # Both names, because neither is reliably the folder on disk: at some
@@ -2277,6 +2290,8 @@ def _suspension(sid: int | None, lap_count: int | None) -> dict:
         return {"error": "no active session; pass session_id explicitly"}
     if lap_count is None:
         return {"error": "pass either lap_id or lap_number"}
+    if no := _lacks(sid, "suspension"):
+        return no
     samples = db.get_suspension_samples(_conn, sid, lap_count)
     if not samples:
         captured = db.suspension_lap_counts(_conn, sid)

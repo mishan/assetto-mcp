@@ -249,6 +249,34 @@ def test_opponents_show_where_their_latest_sample_put_them():
             conn.close()
 
 
+def test_a_new_session_draws_the_track_from_the_last_one_there():
+    """Race night starts with no lap: the overlay map still shows the track.
+
+    It used to stay blank until the out-lap was in, through the grid and
+    the opening laps on stream. Another layout or circuit is never used.
+    """
+    with temp_db() as path:
+        conn = db.connect(path)
+        try:
+            practice = make_session(conn, track="thomson")
+            lap = _store(conn, practice, 1, 121000)
+            elsewhere = make_session(conn, track="riverside")
+            _store(conn, elsewhere, 1, 110000)
+            race = make_session(conn, track="thomson")
+            conn.commit()
+            out = B._track_outline(conn, race)
+            assert out["lap_id"] == lap and out["x"], out
+            assert B._track_outline(conn, elsewhere)["lap_id"] != lap
+            alone = make_session(conn, track="laguna_seca")
+            assert B._track_outline(conn, alone) == {"lap_id": None}
+            own = _store(conn, race, 1, 120500)
+            assert B._track_outline(conn, race)["lap_id"] == own
+        finally:
+            conn.close()
+    print("  an empty session borrows its layout's last outline, and only"
+          " until it has a lap of its own")
+
+
 def test_the_pit_wall_runs_without_a_chat():
     from test_supervisor import _server_env
     with temp_db() as path:

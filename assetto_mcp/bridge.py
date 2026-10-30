@@ -1010,11 +1010,16 @@ def _focus(conn) -> dict:
     return {**f, "laps": [number.get(i, i) for i in f["lap_ids"]]}
 
 
-def _session_outline(conn, sid: int) -> dict | None:
+def _session_outline(conn, sid: int, whole: bool = False) -> dict | None:
+    """`whole`: only from a lap driven start to finish, for a session the
+    outline is borrowed from. An abandoned lap there is a fragment of the
+    road, and an older session's whole lap draws more of it."""
+    only = f" AND {db.USABLE_LAP_SQL} AND partial_trace = 0" if whole else ""
     recent = [r["id"] for r in conn.execute(
-        "SELECT id FROM laps WHERE session_id = ? ORDER BY id DESC LIMIT 5",
-        (sid,))]
-    for lap_id in filter(None, [db.best_clean_lap_id(conn, sid), *recent]):
+        f"SELECT id FROM laps WHERE session_id = ?{only}"
+        " ORDER BY id DESC LIMIT 5", (sid,))]
+    best = None if whole else db.best_clean_lap_id(conn, sid)
+    for lap_id in filter(None, [best, *recent]):
         line = line_map.trace(db.get_samples(conn, lap_id), 250)
         if line:
             return {"lap_id": lap_id, "x": line["x"], "z": line["z"]}
@@ -1053,7 +1058,7 @@ def _track_outline(conn, sid: int | None) -> dict:
             " AND id < ? ORDER BY id DESC LIMIT ?",
             (here["track"], here.get("track_config") or "", sid,
              OUTLINE_LOOKBACK)):
-        out = _session_outline(conn, earlier)
+        out = _session_outline(conn, earlier, whole=True)
         if out:
             return out
     return {"lap_id": None}

@@ -1010,21 +1010,57 @@ def _focus(conn) -> dict:
     return {**f, "laps": [number.get(i, i) for i in f["lap_ids"]]}
 
 
+def _session_outline(conn, sid: int, whole: bool = False) -> dict | None:
+    """`whole`: only from a lap driven start to finish, for a session the
+    outline is borrowed from. An abandoned lap there is a fragment of the
+    road, and an older session's whole lap draws more of it."""
+    only = f" AND {db.USABLE_LAP_SQL} AND partial_trace = 0" if whole else ""
+    recent = [r["id"] for r in conn.execute(
+        f"SELECT id FROM laps WHERE session_id = ?{only}"
+        " ORDER BY id DESC LIMIT 5", (sid,))]
+    best = None if whole else db.best_clean_lap_id(conn, sid)
+    for lap_id in filter(None, [best, *recent]):
+        line = line_map.trace(db.get_samples(conn, lap_id), 250)
+        if line:
+            return {"lap_id": lap_id, "x": line["x"], "z": line["z"]}
+    return None
+
+
+# How many earlier sessions at the layout to look back through for an
+# outline. Each is a few laps' samples read; the newest usually has one.
+OUTLINE_LOOKBACK = 10
+
+
 def _track_outline(conn, sid: int | None) -> dict:
     """The session's best clean lap as a thinned outline, else one of its
-    newest laps with positions; the latest session when none is live."""
+    newest laps with positions; the latest session when none is live.
+
+    A session with no lap yet -- every race night starts as one -- takes
+    the outline from the newest earlier session at the same track and
+    layout. Without it the stream overlay's map stayed blank until the
+    out-lap was in, through the grid and the first laps of a session the
+    viewers had come to watch. The road is the same whatever car drew it.
+    """
     if sid is None:
         latest = db.latest_session(conn)
         sid = latest["id"] if latest else None
     if sid is None:
         return {"lap_id": None}
-    recent = [r["id"] for r in conn.execute(
-        "SELECT id FROM laps WHERE session_id = ? ORDER BY id DESC LIMIT 5",
-        (sid,))]
-    for lap_id in filter(None, [db.best_clean_lap_id(conn, sid), *recent]):
-        line = line_map.trace(db.get_samples(conn, lap_id), 250)
-        if line:
-            return {"lap_id": lap_id, "x": line["x"], "z": line["z"]}
+    out = _session_outline(conn, sid)
+    if out:
+        return out
+    here = db.get_session(conn, sid)
+    if not here:
+        return {"lap_id": None}
+    for (earlier,) in conn.execute(
+            "SELECT id FROM sessions WHERE track = ?"
+            " AND COALESCE(track_config, '') = ?"
+            " AND id < ? ORDER BY id DESC LIMIT ?",
+            (here["track"], here.get("track_config") or "", sid,
+             OUTLINE_LOOKBACK)):
+        out = _session_outline(conn, earlier, whole=True)
+        if out:
+            return out
     return {"lap_id": None}
 
 

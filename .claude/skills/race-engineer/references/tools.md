@@ -1,4 +1,4 @@
-# The assetto-mcp tools, by the question they answer
+# The Telemetrist tools, by the question they answer
 
 Thirty-nine tools. They fall into nine groups. For each: what to pass,
 what to read in the reply, and the traps.
@@ -575,19 +575,19 @@ Then `restart_server`, with the driver's OK, to load the new code.
   under WSL; anywhere else it prints the sentence instead.
 - `scripts/relabel_laps.py` -- the only way to overwrite a setup label.
 - `scripts/rescore_track_limits.py` -- re-derive ran-wide verdicts after
-  changing the wheels-out threshold in `assetto_mcp/db.py`. Skips thinned
+  changing the wheels-out threshold in `telemetrist/db.py`. Skips thinned
   laps and says so: a new threshold does not reach them, so do not
   describe the pass as covering the driver's whole history.
 - The running server can predate the repository's code: a field this
   file describes (`contacts_inferred`, say) may be missing from a tool's
   reply until the server restarts -- `restart_server`, between sessions
   and with the driver's say-so, fixes that. The analysis lives in
-  `assetto_mcp/analysis.py` and can be called from a script against the
+  `telemetrist/analysis.py` and can be called from a script against the
   read-only database (`db.get_lap`, `db.get_samples`,
   `db.rival_samples_between`, `db.rival_names`, `analysis.infer_contacts`).
   Say in the answer when you did that.
 - `lap_trace` answers most questions the reports do not. Past it, and
-  only with a shell, the database at `~/.assetto-mcp/telemetry.db` is safe
+  only with a shell, the database at `~/.telemetrist/telemetry.db` is safe
   to read with `mode=ro`: `samples` has the 25 Hz trace per lap,
   `laps` the verdicts, `completed_at` and `fuel_used_l`, `rival_samples`
   opponents (`spline`, not `norm_pos`), `sessions` `track_length_m`.

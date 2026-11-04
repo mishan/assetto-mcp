@@ -53,12 +53,12 @@ for LuaJIT by name.
 
 ### Recordings of the game
 
-`python -m assetto_mcp.sims.recording record lap.simrec` on the gaming PC
+`python -m telemetrist.sims.recording record lap.simrec` on the gaming PC
 records the game's shared memory until Ctrl+C; `--game ams2` records
 Automobilista 2's, with its Shared Memory option set to "Project CARS 2". `replay lap.simrec --db out.db`
 stores its laps into a database as fast as the collector can, on any OS, in
 the recording's own time, so two replays store identical rows: replay before
-and after a change to the collector and compare. `ASSETTO_MCP_REPLAY` runs the
+and after a change to the collector and compare. `TELEMETRIST_REPLAY` runs the
 whole server from one in real time instead, and `trim lap.simrec out.simrec
 START END` keeps the seconds between two times. Recordings in
 `tests/recordings/` replay in the suite against the lap times the game showed.
@@ -86,7 +86,7 @@ prompts and the server's own replies name exists.
 for each request in `tests/eval/cases.json`, given only `tools/list` and
 the server's instructions, and prints each case (expected tools against
 the one chosen) and the score, for the full toolset and for
-`ASSETTO_MCP_TOOLSET=core`. Run it after renaming a tool or rewriting a
+`TELEMETRIST_TOOLSET=core`. Run it after renaming a tool or rewriting a
 description. It needs a model, so it is not part of the suite or CI;
 without one configured it says so and exits.
 
@@ -95,19 +95,19 @@ Studio, Ollama):
 
 ```
 llama-server -m Qwen3-30B-A3B-Instruct.gguf --jinja --port 8080
-ASSETTO_MCP_EVAL_BASE_URL=http://127.0.0.1:8080 python tests/eval/tool_choice.py
+TELEMETRIST_EVAL_BASE_URL=http://127.0.0.1:8080 python tests/eval/tool_choice.py
 ```
 
 `--jinja` is what makes llama-server accept tools. LM Studio and Ollama
-want the model's name as well: `ASSETTO_MCP_EVAL_MODEL=<name>`.
-`ASSETTO_MCP_EVAL_API_KEY`, if set, is sent as a bearer token.
+want the model's name as well: `TELEMETRIST_EVAL_MODEL=<name>`.
+`TELEMETRIST_EVAL_API_KEY`, if set, is sent as a bearer token.
 
 Against the Anthropic API (`claude-haiku-5-5` unless
-`ASSETTO_MCP_EVAL_MODEL` says otherwise):
+`TELEMETRIST_EVAL_MODEL` says otherwise):
 
 ```
 pip install -e ".[eval]"
-ASSETTO_MCP_EVAL=anthropic ANTHROPIC_API_KEY=... python tests/eval/tool_choice.py
+TELEMETRIST_EVAL=anthropic ANTHROPIC_API_KEY=... python tests/eval/tool_choice.py
 ```
 
 `--toolset full|core` runs one toolset, `-k fuel` only the matching cases,

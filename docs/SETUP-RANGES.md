@@ -69,10 +69,10 @@ loaded. This is the easy route and needs no files.
    folder name — e.g. `ks_mazda_mx5_cup.ini`.
 
 ```powershell
-explorer $env:USERPROFILE\.assetto-mcp\ranges
+explorer $env:USERPROFILE\.telemetrist\ranges
 ```
 
-(cmd.exe: `explorer %USERPROFILE%\.assetto-mcp\ranges`)
+(cmd.exe: `explorer %USERPROFILE%\.telemetrist\ranges`)
 
 Game-reported ranges always win over this file. Encrypted car data may refuse
 to unpack at all, which is the main reason the in-game route is preferred.

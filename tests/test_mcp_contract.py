@@ -149,7 +149,7 @@ def _package_identifiers() -> set[str]:
     """Function names and whole-identifier strings (payload keys) in the
     package: words that look like tools and are not."""
     found = set()
-    for path in (ROOT / "assetto_mcp").glob("*.py"):
+    for path in (ROOT / "telemetrist").glob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 found.add(node.name)
@@ -163,7 +163,7 @@ def _package_identifiers() -> set[str]:
 def _server_strings() -> list[tuple[int, str]]:
     """Every string in server.py but a bare identifier: descriptions,
     guidance (do_this, note, warning...) and errors a model reads."""
-    tree = ast.parse((ROOT / "assetto_mcp" / "server.py")
+    tree = ast.parse((ROOT / "telemetrist" / "server.py")
                      .read_text(encoding="utf-8"))
     return [(n.lineno, n.value) for n in ast.walk(tree)
             if isinstance(n, ast.Constant) and isinstance(n.value, str)

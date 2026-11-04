@@ -6,11 +6,11 @@ is replayed through the reader, and an old recording stays good after the
 reader is fixed. It is also what lets someone without the game test
 support for it.
 
-    python -m assetto_mcp.sims.recording record lap.simrec
-    python -m assetto_mcp.sims.recording record lap.simrec --game ams2
-    python -m assetto_mcp.sims.recording info lap.simrec
-    python -m assetto_mcp.sims.recording replay lap.simrec --db out.db
-    python -m assetto_mcp.sims.recording trim lap.simrec one.simrec 895 1026
+    python -m telemetrist.sims.recording record lap.simrec
+    python -m telemetrist.sims.recording record lap.simrec --game ams2
+    python -m telemetrist.sims.recording info lap.simrec
+    python -m telemetrist.sims.recording replay lap.simrec --db out.db
+    python -m telemetrist.sims.recording trim lap.simrec one.simrec 895 1026
 
 The file is MAGIC, then one lzma stream: a length-prefixed JSON header, then
 records of (seconds since the start, page index, length, bytes). A page is
@@ -277,7 +277,7 @@ def info(path: Path) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        prog="python -m assetto_mcp.sims.recording",
+        prog="python -m telemetrist.sims.recording",
         description="Record the game's shared memory, or describe a "
                     "recording.")
     sub = ap.add_subparsers(dest="command", required=True)

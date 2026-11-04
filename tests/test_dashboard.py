@@ -16,7 +16,7 @@ from support import (FakeCollector, make_session, post, run_module,  # noqa: E40
 from test_line_map import _store  # noqa: E402
 from test_mcp_protocol import _server, _session_with_laps  # noqa: E402
 
-from assetto_mcp import bridge as B, db  # noqa: E402
+from telemetrist import bridge as B, db  # noqa: E402
 
 
 def _get(port, path):
@@ -175,7 +175,7 @@ def test_show_on_dashboard_checks_what_it_points_at():
 
 def test_a_message_from_any_chat_reaches_the_game():
     """The game polls whichever process holds the port; the chat sending
-    the message is often another one, such as beside assetto-mcp-pit-wall."""
+    the message is often another one, such as beside telemetrist-pit-wall."""
     with temp_db() as path:
         holder = _bridge(path)
         chat = B.Bridge(path, FakeCollector(), 0)
@@ -287,9 +287,9 @@ def test_the_pit_wall_runs_without_a_chat():
     from test_supervisor import _server_env
     with temp_db() as path:
         env = _server_env(str(Path(path).parent))
-        env.pop("ASSETTO_MCP_DASH_LAN", None)
+        env.pop("TELEMETRIST_DASH_LAN", None)
         proc = subprocess.Popen(
-            [sys.executable, "-m", "assetto_mcp.pit_wall"],
+            [sys.executable, "-m", "telemetrist.pit_wall"],
             cwd=Path(__file__).resolve().parent.parent, text=True,
             env=env, stdout=subprocess.PIPE)
         # A child that never prints would leave readline blocked forever.
@@ -316,7 +316,7 @@ def test_the_pit_wall_runs_without_a_chat():
 def test_delta_is_against_the_sessions_best_clean_lap_at_that_point():
     s = _server()
     sid, ids = _session_with_laps()
-    from assetto_mcp import analysis
+    from telemetrist import analysis
     t = analysis._time_at_positions(db.get_samples(s._conn, ids[0]), [0.5])[0]
     snap = {"sim": "ac", "car": "ks_mazda_mx5_cup", "track": "mugello",
             "track_config": ""}

@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import run_module  # noqa: E402
 
-from assetto_mcp import setups  # noqa: E402
+from telemetrist import setups  # noqa: E402
 
 # A ranges file in the shape Kunos actually ships: C-style banner comments
 # between sections, trailing comments on values, and a valueless key.
@@ -628,9 +628,9 @@ def test_step_of_zero_does_not_become_a_divide_trap():
 
 def _tool(docs: Path, name: str, arguments: dict) -> dict:
     """A setup tool's reply through MCP, with the setups under `docs`."""
-    os.environ.setdefault("ASSETTO_MCP_NO_AUTOSTART", "1")
-    os.environ.setdefault("ASSETTO_MCP_BRIDGE_PORT", "0")
-    from assetto_mcp import server
+    os.environ.setdefault("TELEMETRIST_NO_AUTOSTART", "1")
+    os.environ.setdefault("TELEMETRIST_BRIDGE_PORT", "0")
+    from telemetrist import server
     old, server.AC_DOCS_DIR = server.AC_DOCS_DIR, docs
     try:
         r = asyncio.run(server.mcp.call_tool(name, arguments))

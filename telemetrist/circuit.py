@@ -121,7 +121,7 @@ def _steam_ac_root() -> Path | None:
     Every tool that places a position asks for the track's sections, so the
     search -- several Steam installs, a vdf each, a stat per library -- would
     otherwise run on every call. An install moved while the server runs is
-    found again after a restart, or straight away with ASSETTO_MCP_AC_ROOT.
+    found again after a restart, or straight away with TELEMETRIST_AC_ROOT.
     """
     for lib in _steam_libraries():
         path = lib / "steamapps" / "common" / "assettocorsa"
@@ -133,7 +133,7 @@ def _steam_ac_root() -> Path | None:
 def ac_root() -> Path | None:
     """The Assetto Corsa install folder, or None if it cannot be found.
 
-    ASSETTO_MCP_AC_ROOT wins when set, and is read on every call rather
+    TELEMETRIST_AC_ROOT wins when set, and is read on every call rather
     than cached, so changing it takes effect at once. Otherwise every Steam
     library is searched for steamapps/common/assettocorsa, once
     (`_steam_ac_root.cache_clear()` forgets the answer).

@@ -148,7 +148,7 @@ def test_notes_stay_in_their_folders_and_keep_what_they_replace():
 
 def test_a_game_without_a_feature_says_so_rather_than_guessing():
     from types import SimpleNamespace
-    from assetto_mcp import db, sims
+    from telemetrist import db, sims
     s = _server()
     sims.GAMES["bare"] = SimpleNamespace(TITLE="Bare Racer", CAPABILITIES={})
     sid = db.create_session(s._conn, sim="bare", car="c", track="t",

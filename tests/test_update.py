@@ -22,9 +22,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import run_module  # noqa: E402
 
-from assetto_mcp import update as U  # noqa: E402
+from telemetrist import update as U  # noqa: E402
 
-REPO = "owner/assetto-mcp"
+REPO = "owner/telemetrist"
 
 
 def _git(cwd, *args) -> str:
@@ -143,16 +143,16 @@ class World:
         self.write("pyproject.toml", "[project]\nname = 'x'\n")
         self.write("lua_app/assetto_mcp/assetto_mcp.lua", "-- v1\n")
         self.write("lua_app/assetto_mcp/manifest.ini", "[ABOUT]\n")
-        self.write("assetto_mcp/server.py", "# v1\n")
+        self.write("telemetrist/server.py", "# v1\n")
         self.push("First")
         _git(tmp, "clone", "-q", str(self.bare), str(self.install))
         self.github = FakeGitHub(self.bare)
         self._env = {k: os.environ.get(k) for k in (
-            "ASSETTO_MCP_UPDATE_API", "ASSETTO_MCP_UPDATE_REPO",
-            "ASSETTO_MCP_UPDATE_GIT_URL")}
-        os.environ["ASSETTO_MCP_UPDATE_API"] = self.github.url
-        os.environ["ASSETTO_MCP_UPDATE_REPO"] = REPO
-        os.environ["ASSETTO_MCP_UPDATE_GIT_URL"] = self.bare.as_uri()
+            "TELEMETRIST_UPDATE_API", "TELEMETRIST_UPDATE_REPO",
+            "TELEMETRIST_UPDATE_GIT_URL")}
+        os.environ["TELEMETRIST_UPDATE_API"] = self.github.url
+        os.environ["TELEMETRIST_UPDATE_REPO"] = REPO
+        os.environ["TELEMETRIST_UPDATE_GIT_URL"] = self.bare.as_uri()
         U.set_channel("latest", self.data)
         self.pip_calls: list[Path] = []
 
@@ -257,10 +257,10 @@ def test_stable_offers_releases_and_latest_offers_every_change():
         assert U.channel(w.data) == "stable"
         assert w.check()["error"] == "no_release"
 
-        w.write("assetto_mcp/server.py", "# v2\n")
+        w.write("telemetrist/server.py", "# v2\n")
         released = w.push("Released")
         w.release("v0.2.0")
-        w.write("assetto_mcp/server.py", "# v3\n")
+        w.write("telemetrist/server.py", "# v3\n")
         tip = w.push("Not released yet")
 
         out = w.check(force=True)
@@ -300,7 +300,7 @@ def test_a_failed_reinstall_is_a_warning_not_a_failure():
 def test_the_running_commit_is_compared_with_the_disk():
     def go(w):
         old = w.head()
-        w.write("assetto_mcp/server.py", "# v2\n")
+        w.write("telemetrist/server.py", "# v2\n")
         tip = w.push("Server change")
         w.apply(tip)
         out = w.check(running_commit=old)
@@ -341,9 +341,9 @@ def test_ahead_and_diverged_are_refused():
 
 def test_edited_files_are_refused():
     def go(w):
-        w.write("assetto_mcp/server.py", "# v2\n")
+        w.write("telemetrist/server.py", "# v2\n")
         tip = w.push("Change")
-        w.write("assetto_mcp/server.py", "# my edit\n", where=w.install)
+        w.write("telemetrist/server.py", "# my edit\n", where=w.install)
         before = w.head()
         refused = w.apply(tip)
         assert refused["refused"] == "local_changes", refused
@@ -354,7 +354,7 @@ def test_edited_files_are_refused():
 
 def test_another_branch_is_refused():
     def go(w):
-        w.write("assetto_mcp/server.py", "# v2\n")
+        w.write("telemetrist/server.py", "# v2\n")
         tip = w.push("Change")
         _git(w.install, "checkout", "-q", "-b", "experiment")
         refused = w.apply(tip)
@@ -367,9 +367,9 @@ def test_another_branch_is_refused():
 def test_a_commit_that_is_no_longer_the_tip_is_refused():
     """The driver agreed to a list; a different list is a new question."""
     def go(w):
-        w.write("assetto_mcp/server.py", "# v2\n")
+        w.write("telemetrist/server.py", "# v2\n")
         agreed = w.push("Change")
-        w.write("assetto_mcp/server.py", "# v3\n")
+        w.write("telemetrist/server.py", "# v3\n")
         newer = w.push("Another change, pushed after the driver said yes")
         before = w.head()
         refused = w.apply(agreed)
@@ -382,7 +382,7 @@ def test_a_commit_that_is_no_longer_the_tip_is_refused():
 
 def test_offline_is_an_answer_not_an_exception():
     def go(w):
-        os.environ["ASSETTO_MCP_UPDATE_API"] = "http://127.0.0.1:9"
+        os.environ["TELEMETRIST_UPDATE_API"] = "http://127.0.0.1:9"
         out = w.check()
         assert out["error"] == "offline", out
         assert out["status"] == "unknown", out
@@ -392,7 +392,7 @@ def test_offline_is_an_answer_not_an_exception():
 
 def test_rate_limited_falls_back_to_the_cached_answer():
     def go(w):
-        w.write("assetto_mcp/server.py", "# v2\n")
+        w.write("telemetrist/server.py", "# v2\n")
         tip = w.push("Change")
         first = w.check()
         assert first["status"] == "behind" and first["cached"] is False
@@ -483,7 +483,7 @@ def test_an_install_that_is_not_a_git_checkout_says_so():
 def test_the_commit_is_read_without_git_too():
     """A PC with no git on PATH can still say what it is running."""
     def go(w):
-        w.write("assetto_mcp/server.py", "# v2\n")
+        w.write("telemetrist/server.py", "# v2\n")
         tip = w.push("Change")
         w.apply(tip)
         assert U.installed_commit(w.install, use_git=False) == tip
@@ -565,8 +565,8 @@ def test_an_apply_is_refused_while_the_driver_is_on_track():
 
 _SERVER = r"""
 import asyncio, json
-import assetto_mcp.server as s
-from assetto_mcp import db
+import telemetrist.server as s
+from telemetrist import db
 
 def apply_update():
     try:
@@ -602,9 +602,9 @@ def test_the_server_tools_as_the_model_calls_them():
         return
     root = Path(__file__).resolve().parent.parent
     with tempfile.TemporaryDirectory(prefix="ac-upd-") as d:
-        env = dict(os.environ, ASSETTO_MCP_DATA=d,
-                   ASSETTO_MCP_NO_AUTOSTART="1", ASSETTO_MCP_BRIDGE_PORT="0",
-                   ASSETTO_MCP_UPDATE_API="http://127.0.0.1:9")
+        env = dict(os.environ, TELEMETRIST_DATA=d,
+                   TELEMETRIST_NO_AUTOSTART="1", TELEMETRIST_BRIDGE_PORT="0",
+                   TELEMETRIST_UPDATE_API="http://127.0.0.1:9")
         proc = subprocess.run([sys.executable, "-c", _SERVER], cwd=root,
                               env=env, capture_output=True, text=True,
                               timeout=120, stdin=subprocess.DEVNULL)

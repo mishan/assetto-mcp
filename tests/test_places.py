@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from support import (FakeSim, complete_lap, lasting_dir,  # noqa: E402
                      make_session, run_collector, run_module, temp_db, tick)
 
-from assetto_mcp import db, places  # noqa: E402
+from telemetrist import db, places  # noqa: E402
 
 LENGTH = 4000.0
 
@@ -199,12 +199,12 @@ def _server():
     global _SERVER
     if _SERVER is None:
         d = lasting_dir("ac-places-")
-        os.environ["ASSETTO_MCP_DATA"] = d
+        os.environ["TELEMETRIST_DATA"] = d
         os.environ["AC_DOCS_DIR"] = d
-        os.environ["ASSETTO_MCP_BRIDGE_PORT"] = "0"
-        os.environ["ASSETTO_MCP_NO_AUTOSTART"] = "1"
+        os.environ["TELEMETRIST_BRIDGE_PORT"] = "0"
+        os.environ["TELEMETRIST_NO_AUTOSTART"] = "1"
         import importlib
-        _SERVER = importlib.import_module("assetto_mcp.server")
+        _SERVER = importlib.import_module("telemetrist.server")
         atexit.register(_SERVER._bridge.stop)
     return _SERVER
 

@@ -1,4 +1,4 @@
-"""Finding the data directory across the ac-race-engineer rename.
+"""Finding the data directory across the project's renames.
 
 The database holds laps that cannot be re-driven, so the old directory is
 moved rather than abandoned, and a move that *cannot* happen leaves the old
@@ -18,28 +18,30 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import run_module  # noqa: E402
 
-from assetto_mcp import config  # noqa: E402
+from telemetrist import config  # noqa: E402
 
 
 class _Home:
     """Point config at a scratch home, and put the env back afterward."""
 
-    _VARS = ("ASSETTO_MCP_DATA", "AC_ENGINEER_DATA",
-             "ASSETTO_MCP_BRIDGE_PORT", "AC_ENGINEER_BRIDGE_PORT")
+    _VARS = tuple(p + v for p in ("TELEMETRIST_", "ASSETTO_MCP_",
+                                  "AC_ENGINEER_")
+                  for v in ("DATA", "BRIDGE_PORT"))
 
     def __enter__(self):
         self._tmp = tempfile.TemporaryDirectory()
         self._saved_default = config.DEFAULT_DATA_DIR
-        self._saved_legacy = config.LEGACY_DATA_DIR
+        self._saved_legacy = config.LEGACY_DATA_DIRS
         self._saved_env = {k: os.environ.pop(k, None) for k in self._VARS}
         home = Path(self._tmp.name)
-        config.DEFAULT_DATA_DIR = home / ".assetto-mcp"
-        config.LEGACY_DATA_DIR = home / ".ac-race-engineer"
+        config.DEFAULT_DATA_DIR = home / ".telemetrist"
+        config.LEGACY_DATA_DIRS = (home / ".assetto-mcp",
+                                   home / ".ac-race-engineer")
         return self
 
     def __exit__(self, *exc):
         config.DEFAULT_DATA_DIR = self._saved_default
-        config.LEGACY_DATA_DIR = self._saved_legacy
+        config.LEGACY_DATA_DIRS = self._saved_legacy
         for k, v in self._saved_env.items():
             if v is None:
                 os.environ.pop(k, None)
@@ -54,11 +56,12 @@ class _Home:
 
     @property
     def old(self):
-        return config.LEGACY_DATA_DIR
+        return config.LEGACY_DATA_DIRS[0]
 
-    def seed_legacy(self, contents="laps"):
-        self.old.mkdir()
-        (self.old / "telemetry.db").write_text(contents)
+    def seed_legacy(self, contents="laps", old=None):
+        old = old or self.old
+        old.mkdir()
+        (old / "telemetry.db").write_text(contents)
 
 
 def test_a_pre_rename_directory_is_moved_with_its_laps():
@@ -68,6 +71,18 @@ def test_a_pre_rename_directory_is_moved_with_its_laps():
         assert (h.new / "telemetry.db").read_text() == "laps"
         assert not h.old.exists(), "the old directory should be gone, not copied"
         print("  moved, telemetry.db intact")
+
+
+def test_the_newest_old_directory_is_the_one_moved():
+    # (directories present, which one ends up as the data directory)
+    for present, moved in (((0,), 0), ((1,), 1), ((0, 1), 0)):
+        with _Home() as h:
+            for i in present:
+                h.seed_legacy(f"laps {i}", config.LEGACY_DATA_DIRS[i])
+            assert config.data_dir() == h.new
+            assert (h.new / "telemetry.db").read_text() == f"laps {moved}"
+            for i in set(present) - {moved}:
+                assert (config.LEGACY_DATA_DIRS[i] / "telemetry.db").exists()
 
 
 def test_an_existing_new_directory_is_left_alone():
@@ -107,6 +122,8 @@ def test_the_new_environment_name_wins_over_the_old_one():
         assert config.env("BRIDGE_PORT", "9666") == "7777"
         os.environ["ASSETTO_MCP_BRIDGE_PORT"] = "8888"
         assert config.env("BRIDGE_PORT", "9666") == "8888"
+        os.environ["TELEMETRIST_BRIDGE_PORT"] = "9999"
+        assert config.env("BRIDGE_PORT", "9666") == "9999"
 
 
 def test_a_file_where_the_data_directory_goes_is_named_not_stumbled_over():

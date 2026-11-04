@@ -1,7 +1,7 @@
 """Re-derive every stored lap's track-limits verdict from its samples.
 
 Run it after changing TRACK_LIMITS_WHEELS or MIN_EXCURSION_MS in
-assetto_mcp/db.py. It reads the constants from the code on disk, so it
+telemetrist/db.py. It reads the constants from the code on disk, so it
 needs no server restart, and it is rare enough to be typed rather than
 offered to a model as a tool.
 
@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from assetto_mcp import config, db  # noqa: E402
+from telemetrist import config, db  # noqa: E402
 
 
 def main(argv=None):

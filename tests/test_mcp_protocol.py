@@ -28,12 +28,12 @@ def _server():
     global _SERVER
     if _SERVER is None:
         d = lasting_dir("ac-protocol-")
-        os.environ.setdefault("ASSETTO_MCP_DATA", d)
+        os.environ.setdefault("TELEMETRIST_DATA", d)
         os.environ.setdefault("AC_DOCS_DIR", d)
-        os.environ.setdefault("ASSETTO_MCP_BRIDGE_PORT", "0")
-        os.environ.setdefault("ASSETTO_MCP_NO_AUTOSTART", "1")
+        os.environ.setdefault("TELEMETRIST_BRIDGE_PORT", "0")
+        os.environ.setdefault("TELEMETRIST_NO_AUTOSTART", "1")
         import importlib
-        _SERVER = importlib.import_module("assetto_mcp.server")
+        _SERVER = importlib.import_module("telemetrist.server")
         atexit.register(_SERVER._bridge.stop)
     return _SERVER
 
@@ -64,7 +64,7 @@ def _wire(model) -> dict:
 
 def _session_with_laps(n: int = 4, samples: int = 600,
                        corners=None) -> tuple[int, list[int]]:
-    from assetto_mcp import db
+    from telemetrist import db
     s = _server()
     sid = db.create_session(s._conn, car="ks_mazda_mx5_cup", track="mugello",
                             track_config="", tyre_compound="SM",
@@ -137,7 +137,7 @@ def test_a_status_report_is_not_a_failed_call_but_a_refusal_is():
     """A status tool asked "is it working?" answers, even when the answer
     is no: AC not open yet, GitHub unreachable. A refusal is a failed call
     whose text is the JSON payload."""
-    from assetto_mcp import update
+    from telemetrist import update
     s = _server()
     status = [("recording_status", {}), ("check_for_updates", {}),
               ("session_check", {})]
@@ -163,7 +163,7 @@ def test_a_status_report_is_not_a_failed_call_but_a_refusal_is():
 
     saved = (s._collector.last_error, s._bridge.error,
              update.apply_in_background)
-    os.environ["ASSETTO_MCP_UPDATE_API"] = "http://127.0.0.1:9"
+    os.environ["TELEMETRIST_UPDATE_API"] = "http://127.0.0.1:9"
     s._collector.last_error = "shared memory not found: AC is not running"
     s._bridge.error = "port 9666 in use"
     update.apply_in_background = lambda *a, **kw: update._refuse(
@@ -173,7 +173,7 @@ def test_a_status_report_is_not_a_failed_call_but_a_refusal_is():
     finally:
         (s._collector.last_error, s._bridge.error,
          update.apply_in_background) = saved
-        del os.environ["ASSETTO_MCP_UPDATE_API"]
+        del os.environ["TELEMETRIST_UPDATE_API"]
     for (name, _), r in zip(status, answered):
         assert not r.get("isError"), (name, r)
     for name in ("recording_status", "check_for_updates"):
@@ -225,7 +225,7 @@ def test_initialize_carries_instructions_version_and_list_changed():
 def test_prompts_and_resources_serve_the_skill_and_the_data():
     """A client with no skill gets the routine as prompts, cut from the
     skill's own sections, and the skill and the data as resources."""
-    from assetto_mcp import guide
+    from telemetrist import guide
     sid, ids = _session_with_laps(2)
     prompts = [("start_session", {"mode": "live"}), ("start_session", {}),
                ("debrief", {"session_id": str(sid)}), ("debrief", {}),
@@ -260,7 +260,7 @@ def test_the_driver_confirms_where_the_client_can_ask():
     a model that set one itself still has to get a yes. A client that
     cannot ask gets today's refusal, and the flag still works."""
     from mcp import types
-    from assetto_mcp import supervisor, update
+    from telemetrist import config, supervisor, update
     s = _server()
     docs = Path(lasting_dir("ac-confirm-"))
     write = {"car": "c", "track": "t", "name": "v1",
@@ -301,7 +301,7 @@ def test_the_driver_confirms_where_the_client_can_ask():
     s._restart_soon = lambda: restarted.append(True)
     update.apply_in_background = (
         lambda *a, **kw: applied.append(True) or {"applied": True})
-    os.environ[supervisor.CHILD_ENV] = "1"
+    os.environ[config.PREFIX + supervisor.CHILD_ENV] = "1"
     s._collector.holds_recorder, s._collector.session_id = True, 42
     s._collector.live = True
     # Earlier tests leave sessions open, which reads as another instance on
@@ -331,21 +331,21 @@ def test_the_driver_confirms_where_the_client_can_ask():
         (s.AC_DOCS_DIR, s._restart_soon, update.apply_in_background,
          s._live_session, s._collector.holds_recorder, s._collector.session_id,
          s._collector.live) = saved
-        del os.environ[supervisor.CHILD_ENV]
+        del os.environ[config.PREFIX + supervisor.CHILD_ENV]
 
 
 def test_the_core_toolset_serves_only_its_tools():
     script = (
         "import asyncio, json\n"
-        "import assetto_mcp.server as s\n"
+        "import telemetrist.server as s\n"
         "print(json.dumps([sorted(t.name for t in "
         "asyncio.run(s.mcp.list_tools())), list(s.CORE_TOOLS)]))\n"
         "s._shutdown()\n")
     import subprocess
     with tempfile.TemporaryDirectory(prefix="ac-core-") as d:
-        env = dict(os.environ, ASSETTO_MCP_DATA=d, AC_DOCS_DIR=d,
-                   ASSETTO_MCP_NO_AUTOSTART="1", ASSETTO_MCP_BRIDGE_PORT="0",
-                   ASSETTO_MCP_TOOLSET="core")
+        env = dict(os.environ, TELEMETRIST_DATA=d, AC_DOCS_DIR=d,
+                   TELEMETRIST_NO_AUTOSTART="1", TELEMETRIST_BRIDGE_PORT="0",
+                   TELEMETRIST_TOOLSET="core")
         proc = subprocess.run(
             [sys.executable, "-c", script],
             cwd=Path(__file__).resolve().parent.parent, env=env,
@@ -411,7 +411,7 @@ def test_the_line_view_reads_one_lap_and_the_others_need_two():
 def test_a_chassis_aspect_that_cannot_be_read_leaves_the_others():
     """A lap whose trace has no straight-line braking or attitude still
     has its suspension read, and a lap never stored has only that."""
-    from assetto_mcp import db
+    from telemetrist import db
     from test_suspension import _lap as suspension_lap
     s = _server()
     sid, (lap,) = _session_with_laps(1)
@@ -432,7 +432,7 @@ def test_a_chassis_aspect_that_cannot_be_read_leaves_the_others():
 
 
 def test_list_laps_says_which_laps_have_a_lap_time():
-    from assetto_mcp import db
+    from telemetrist import db
     s = _server()
     sid, (timed,) = _session_with_laps(1)
     out_lap = db.store_lap(s._conn, sid, 2, 0, True, [], out_lap=True)

@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import make_session, run_module  # noqa: E402
 
-from assetto_mcp import analysis, db  # noqa: E402
+from telemetrist import analysis, db  # noqa: E402
 
 # The real figures from the RSS Formula 4 at Mugello.
 MUGELLO_M = 5245.0
@@ -317,7 +317,7 @@ def test_set_fuel_basis_checks_its_own_arguments():
 # argument checks live in the tool layer.
 _SERVER_PROBE = """
 import json
-from assetto_mcp import db, server
+from telemetrist import db, server
 
 conn = server._conn
 sid = db.create_session(conn, car="rss_formula_rss_4", track="mugello",
@@ -342,8 +342,8 @@ def _run_probe(source: str) -> dict:
     """Run a probe against a throwaway data directory and return its JSON."""
     with tempfile.TemporaryDirectory() as d:
         env = dict(os.environ)
-        env["ASSETTO_MCP_DATA"] = d
-        env["ASSETTO_MCP_BRIDGE_PORT"] = "0"  # never the real one
+        env["TELEMETRIST_DATA"] = d
+        env["TELEMETRIST_BRIDGE_PORT"] = "0"  # never the real one
         env["PYTHONPATH"] = os.pathsep.join(
             [str(Path(__file__).resolve().parent.parent),
              env.get("PYTHONPATH", "")])
@@ -387,7 +387,7 @@ def test_the_tool_layer_survives_a_read_only_fuel_entry():
 # session and label it "the game's maxFuel".
 _PROVENANCE_PROBE = """
 import json
-from assetto_mcp import db, server
+from telemetrist import db, server
 
 conn = server._conn
 facts = {}
@@ -571,7 +571,7 @@ def test_the_fuel_basis_survives_a_partial_update():
 
 _LIVE_FUEL_PROBE = """
 import json
-from assetto_mcp import db, server
+from telemetrist import db, server
 
 conn = server._conn
 server._live_fuel_facts = lambda: ({}, "AC is not running")
@@ -607,7 +607,7 @@ def test_live_snapshot_fuel_uses_the_driven_sessions_consumption():
 
 _NO_BASIS_PROBE = """
 import json
-from assetto_mcp import db, server
+from telemetrist import db, server
 
 conn = server._conn
 server._live_fuel_facts = lambda: ({}, "AC is not running")
@@ -668,7 +668,7 @@ def test_each_lap_burn_is_measured_from_line_to_line():
 
 _MEASURED_FUEL_PROBE = """
 import json
-from assetto_mcp import db, server
+from telemetrist import db, server
 
 conn = server._conn
 server._live_fuel_facts = lambda: ({}, "AC is not running")

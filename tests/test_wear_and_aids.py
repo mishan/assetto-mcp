@@ -21,7 +21,7 @@ for _p in (str(_HERE.parent), str(_HERE)):
 
 from support import run_module  # noqa: E402
 
-from assetto_mcp import analysis  # noqa: E402
+from telemetrist import analysis  # noqa: E402
 
 
 def _stint(per_lap, start=100.0, laps=8, lap_ms=113000):
@@ -406,7 +406,7 @@ def test_a_stint_that_is_only_an_out_lap_states_no_rate():
 
 _STINT_PROBE = """
 import json
-from assetto_mcp import db, server
+from telemetrist import db, server
 
 conn = server._conn
 sid = db.create_session(conn, car="ks_mazda_mx5_cup", track="mugello",
@@ -447,8 +447,8 @@ def _run_probe(source: str) -> dict:
     """Run a probe against a throwaway data directory and return its JSON."""
     with tempfile.TemporaryDirectory() as d:
         env = dict(os.environ)
-        env["ASSETTO_MCP_DATA"] = d
-        env["ASSETTO_MCP_BRIDGE_PORT"] = "0"  # never the real one
+        env["TELEMETRIST_DATA"] = d
+        env["TELEMETRIST_BRIDGE_PORT"] = "0"  # never the real one
         env["PYTHONPATH"] = os.pathsep.join(
             [str(_HERE.parent), env.get("PYTHONPATH", "")])
         proc = subprocess.run([sys.executable, "-c", source],

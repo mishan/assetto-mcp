@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import make_session, run_module, temp_db  # noqa: E402
 
-from assetto_mcp import db  # noqa: E402
+from telemetrist import db  # noqa: E402
 
 # The schema as it stood before laps carried their own setup name.
 V0_SCHEMA = """
@@ -469,7 +469,7 @@ def test_v17_gives_old_laps_no_burn_rather_than_none_burned():
 def test_display_readings_survive_a_retention_pass():
     # They are keyed on the car, not the session, so pruning a session's
     # samples must not take the car's screen readings with it.
-    from assetto_mcp import retention
+    from telemetrist import retention
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "t.db"
         conn = db.connect(path)

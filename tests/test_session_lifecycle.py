@@ -17,9 +17,9 @@ from support import (FakeSim, complete_lap, go_live, go_off,  # noqa: E402
                      restart_from_menu, run_collector, run_module, temp_db,
                      tick, timed_laps, wait_for)
 
-from assetto_mcp import db, retention  # noqa: E402
-from assetto_mcp.collector import Collector  # noqa: E402
-from assetto_mcp.sims import ac  # noqa: E402
+from telemetrist import db, retention  # noqa: E402
+from telemetrist.collector import Collector  # noqa: E402
+from telemetrist.sims import ac  # noqa: E402
 
 
 def test_restart_from_the_menu_starts_a_new_session():

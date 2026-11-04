@@ -13,8 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import run_module  # noqa: E402
 
-from assetto_mcp import sim_info  # noqa: E402
-from assetto_mcp.sims import recording  # noqa: E402
+from telemetrist import sim_info  # noqa: E402
+from telemetrist.sims import recording  # noqa: E402
 
 
 def _static(**fields) -> bytes:
@@ -109,7 +109,7 @@ def _two_laps(path):
 
 
 def test_a_replay_stores_the_laps_the_same_way_every_time():
-    from assetto_mcp import db
+    from telemetrist import db
     with tempfile.TemporaryDirectory() as d:
         rec = Path(d) / "two.simrec"
         _two_laps(rec)
@@ -153,7 +153,7 @@ REAL = Path(__file__).resolve().parent / "recordings" / "ac_911rsr_thompson.simr
 def test_a_lap_driven_in_the_game_replays_to_the_time_it_showed():
     """A 1974 911 RSR at Thompson, recorded on the gaming PC: the end of one
     lap, all of the next, and a few seconds after it."""
-    from assetto_mcp import db
+    from telemetrist import db
     with tempfile.TemporaryDirectory() as d:
         path = Path(d) / "real.db"
         recording.replay_into(REAL, path)

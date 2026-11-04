@@ -3,7 +3,7 @@
 # shotbox (https://github.com/mishan/shotbox) in a sealed session from
 # scripts/pit_wall_demo.py. Arguments go to the demo, e.g. --session 41.
 #
-#   scripts/shoot_pit_wall.sh --db ~/.assetto-mcp/telemetry.db
+#   scripts/shoot_pit_wall.sh --db ~/.telemetrist/telemetry.db
 set -e
 cd "$(dirname "$0")/.."
 browser=${CHROME:-google-chrome}

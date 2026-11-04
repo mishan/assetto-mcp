@@ -2,7 +2,7 @@
 
 The same map the export_line_map tool writes, for when there is no
 conversation to ask for it in. What the page shows is described in
-assetto_mcp/line_map.py.
+telemetrist/line_map.py.
 
     python scripts/driving_line_map.py                      # latest session
     python scripts/driving_line_map.py --session 41
@@ -19,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from assetto_mcp import config, line_map  # noqa: E402
+from telemetrist import config, line_map  # noqa: E402
 
 # Resolved by the same code the server uses, so this follows both a moved
 # data dir and one under the old name.

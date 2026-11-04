@@ -10,12 +10,12 @@ or description. A first call that sets a flag the driver has not confirmed
 
 Not part of the test suite: it needs a model. Pick one by environment:
 
-    ASSETTO_MCP_EVAL_BASE_URL=http://127.0.0.1:8080   an OpenAI-compatible
-        server (llama-server, LM Studio, Ollama); ASSETTO_MCP_EVAL_MODEL
+    TELEMETRIST_EVAL_BASE_URL=http://127.0.0.1:8080   an OpenAI-compatible
+        server (llama-server, LM Studio, Ollama); TELEMETRIST_EVAL_MODEL
         names the model if the server serves several, and
-        ASSETTO_MCP_EVAL_API_KEY is sent as a bearer token if set.
-    ASSETTO_MCP_EVAL=anthropic   the Anthropic API, with ANTHROPIC_API_KEY
-        and the [eval] extra; ASSETTO_MCP_EVAL_MODEL overrides the model.
+        TELEMETRIST_EVAL_API_KEY is sent as a bearer token if set.
+    TELEMETRIST_EVAL=anthropic   the Anthropic API, with ANTHROPIC_API_KEY
+        and the [eval] extra; TELEMETRIST_EVAL_MODEL overrides the model.
 
     python tests/eval/tool_choice.py                   full and core
     python tests/eval/tool_choice.py --toolset core -k fuel
@@ -46,14 +46,14 @@ ANTHROPIC_MODEL = "claude-haiku-5-5"
 # Facts a driver would assume the engineer knows; ids the requests use.
 CONTEXT = (
     "You are the driver's race engineer, working through the tools of the "
-    "assetto-mcp server. The driver is in the ks_mazda_mx5_cup at mugello, "
+    "Telemetrist server. The driver is in the ks_mazda_mx5_cup at mugello, "
     "session 12; its laps so far have ids 431 to 438, and lap 433 is the "
     "best clean one. Answer the driver's request, calling a tool when you "
     "need one.")
 
 _DUMP = """
 import asyncio, json
-import assetto_mcp.server as s
+import telemetrist.server as s
 tools = [t.model_dump(by_alias=True, exclude_none=True)
          for t in asyncio.run(s.mcp.list_tools())]
 print(json.dumps({"instructions": s.INSTRUCTIONS, "tools": tools}))
@@ -64,9 +64,9 @@ s._shutdown()
 def surface(toolset: str) -> dict:
     """tools/list and the instructions, from a server of that toolset."""
     with tempfile.TemporaryDirectory(prefix="ac-eval-") as d:
-        env = dict(os.environ, ASSETTO_MCP_DATA=d, AC_DOCS_DIR=d,
-                   ASSETTO_MCP_NO_AUTOSTART="1", ASSETTO_MCP_BRIDGE_PORT="0",
-                   ASSETTO_MCP_TOOLSET=toolset)
+        env = dict(os.environ, TELEMETRIST_DATA=d, AC_DOCS_DIR=d,
+                   TELEMETRIST_NO_AUTOSTART="1", TELEMETRIST_BRIDGE_PORT="0",
+                   TELEMETRIST_TOOLSET=toolset)
         proc = subprocess.run([sys.executable, "-c", _DUMP], cwd=ROOT,
                               env=env, capture_output=True, text=True,
                               timeout=120, stdin=subprocess.DEVNULL)
@@ -87,8 +87,8 @@ def openai_backend(base: str):
     """First tool call from an OpenAI-compatible chat-completions server."""
     base = base.rstrip("/")
     url = base + ("" if base.endswith("/v1") else "/v1") + "/chat/completions"
-    model = os.environ.get("ASSETTO_MCP_EVAL_MODEL", "local")
-    key = os.environ.get("ASSETTO_MCP_EVAL_API_KEY")
+    model = os.environ.get("TELEMETRIST_EVAL_MODEL", "local")
+    key = os.environ.get("TELEMETRIST_EVAL_API_KEY")
     headers = {"Authorization": f"Bearer {key}"} if key else {}
 
     def call(system: str, tools: list[dict], request: str):
@@ -120,7 +120,7 @@ def anthropic_backend():
         sys.exit('the Anthropic backend needs the SDK: '
                  'pip install -e ".[eval]"')
     client = anthropic.Anthropic()
-    model = os.environ.get("ASSETTO_MCP_EVAL_MODEL", ANTHROPIC_MODEL)
+    model = os.environ.get("TELEMETRIST_EVAL_MODEL", ANTHROPIC_MODEL)
 
     def call(system: str, tools: list[dict], request: str):
         response = client.messages.create(
@@ -139,9 +139,9 @@ def anthropic_backend():
 
 
 def backend():
-    if os.environ.get("ASSETTO_MCP_EVAL_BASE_URL"):
-        return openai_backend(os.environ["ASSETTO_MCP_EVAL_BASE_URL"])
-    if os.environ.get("ASSETTO_MCP_EVAL") == "anthropic":
+    if os.environ.get("TELEMETRIST_EVAL_BASE_URL"):
+        return openai_backend(os.environ["TELEMETRIST_EVAL_BASE_URL"])
+    if os.environ.get("TELEMETRIST_EVAL") == "anthropic":
         return anthropic_backend()
     return None
 
@@ -206,8 +206,8 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
     chosen = backend()
     if chosen is None:
-        print("no model configured: set ASSETTO_MCP_EVAL_BASE_URL, or "
-              "ASSETTO_MCP_EVAL=anthropic (see docs/DEVELOPMENT.md); "
+        print("no model configured: set TELEMETRIST_EVAL_BASE_URL, or "
+              "TELEMETRIST_EVAL=anthropic (see docs/DEVELOPMENT.md); "
               "skipping")
         return 0
     label, call = chosen

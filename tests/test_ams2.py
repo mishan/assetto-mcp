@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import run_module  # noqa: E402
 
-from assetto_mcp.sims import ams2, recording  # noqa: E402
+from telemetrist.sims import ams2, recording  # noqa: E402
 
 
 def test_the_page_is_laid_out_as_the_game_writes_it():

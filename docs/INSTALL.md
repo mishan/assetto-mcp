@@ -303,10 +303,13 @@ names are still honored so nothing is lost:
 - **The stale bits get cleaned up.** Re-running `install-windows.bat` replaces
   the `assetto-mcp` or `ac-race-engineer` entry in every Claude Desktop config
   with `telemetrist` and deletes the old in-game app folders, so you don't end
-  up with two servers or the app listed twice. Claude Desktop asks once to
+  up with two servers or the app listed twice. Close Assetto Corsa and
+  Content Manager first: a folder the game holds open is left in place, and
+  the new app is not installed beside it. Claude Desktop asks once to
   approve the tools again under the new name. On any other client, rename the
   entry yourself, or leave it: it keeps working.
 
-One thing does not carry over: the in-game app's **wheel button bindings**. The
-CSP control names changed with the rename, so re-bind the four complaint
-buttons in the app's Settings window.
+One thing does not carry over from `ac-race-engineer`: the in-game app's
+**wheel button bindings**. The CSP control names changed with that rename, so
+re-bind the four complaint buttons in the app's Settings window. Bindings made
+under `assetto-mcp` are kept.

@@ -587,7 +587,8 @@ Then `restart_server`, with the driver's OK, to load the new code.
   `db.rival_samples_between`, `db.rival_names`, `analysis.infer_contacts`).
   Say in the answer when you did that.
 - `lap_trace` answers most questions the reports do not. Past it, and
-  only with a shell, the database at `~/.telemetrist/telemetry.db` is safe
+  only with a shell, `telemetry.db` in the data directory (`TELEMETRIST_DATA`,
+  else `~/.telemetrist`) is safe
   to read with `mode=ro`: `samples` has the 25 Hz trace per lap,
   `laps` the verdicts, `completed_at` and `fuel_used_l`, `rival_samples`
   opponents (`spline`, not `norm_pos`), `sessions` `track_length_m`.

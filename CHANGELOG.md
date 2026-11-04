@@ -13,8 +13,8 @@ and the setup files may still change between minor versions.
   `telemetrist-update`, `telemetrist-pit-wall`), `TELEMETRIST_*` settings,
   `~/.telemetrist`, the in-game app and the GitHub repository. The old names
   keep working: `-m assetto_mcp.server` and the `assetto-mcp` commands,
-  `ASSETTO_MCP_*` settings, and `~/.assetto-mcp`, which is moved on first
-  start. See [upgrading](docs/INSTALL.md#upgrading-from-assetto-mcp-or-ac-race-engineer).
+  `ASSETTO_MCP_*` settings, and `~/.assetto-mcp`, which is moved at the
+  first start that finds nothing holding it open. See [upgrading](docs/INSTALL.md#upgrading-from-assetto-mcp-or-ac-race-engineer).
 
 ## [0.2.0] - 2026-10-24
 

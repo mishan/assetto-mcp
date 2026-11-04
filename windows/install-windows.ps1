@@ -506,16 +506,15 @@ if (-not $SkipLuaApp) {
         Write-Info  "then re-run:  install-windows.bat -AcPath ""<that folder>"""
     } else {
         Write-Ok "Found Assetto Corsa at $ac"
-        $oldLeft = Remove-LegacyLuaApp $ac
         $src  = Join-Path $script:RepoRoot 'lua_app\telemetrist'
         $dest = Join-Path $ac 'apps\lua\telemetrist'
 
-        if ($oldLeft) {
+        if (-not (Test-Path -LiteralPath $src)) {
+            Write-Warn2 "lua_app\telemetrist missing from this repo - skipping"
+        } elseif (Remove-LegacyLuaApp $ac) {
             # The old copy shares the new one's wheel buttons and physics
             # struct, so the two side by side are worse than the old alone.
             Write-Warn2 "Not installing the in-game app beside the old one; close Assetto Corsa / Content Manager and re-run."
-        } elseif (-not (Test-Path -LiteralPath $src)) {
-            Write-Warn2 "lua_app\telemetrist missing from this repo - skipping"
         } else {
             try {
                 # Literal, not wildcard: Steam libraries are often "D:\Games [SSD]".

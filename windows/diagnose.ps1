@@ -247,14 +247,15 @@ foreach ($exe in $pyExes) {
     try {
         $imp = & $exe -c "import telemetrist,sys;print('import OK ->',telemetrist.__file__)" 2>&1
         $impCode = $LASTEXITCODE
-        $srv = & $exe -c "import telemetrist.server;print('server module OK')" 2>&1
+        # Found, not imported: importing the server starts its bridge.
+        $srv = & $exe -c "import importlib.util as u,sys;s=u.find_spec('telemetrist.server');print('server module OK' if s else 'not found');sys.exit(0 if s else 1)" 2>&1
         $srvCode = $LASTEXITCODE
     } finally {
         Pop-Location
     }
     L "  import telemetrist          : $(if ($impCode -eq 0) {'OK'} else {'FAILED'})"
     L "    $($imp -join "`n    ")"
-    L "  import telemetrist.server   : $(if ($srvCode -eq 0) {'OK'} else {'FAILED'})"
+    L "  find telemetrist.server     : $(if ($srvCode -eq 0) {'OK'} else {'FAILED'})"
     L "    $($srv -join "`n    ")"
 }
 

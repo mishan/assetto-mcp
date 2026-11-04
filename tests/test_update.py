@@ -141,8 +141,8 @@ class World:
         _git(tmp, "init", "--bare", "-q", "-b", "main", str(self.bare))
         _git(tmp, "clone", "-q", str(self.bare), str(self.dev))
         self.write("pyproject.toml", "[project]\nname = 'x'\n")
-        self.write("lua_app/assetto_mcp/assetto_mcp.lua", "-- v1\n")
-        self.write("lua_app/assetto_mcp/manifest.ini", "[ABOUT]\n")
+        self.write("lua_app/telemetrist/telemetrist.lua", "-- v1\n")
+        self.write("lua_app/telemetrist/manifest.ini", "[ABOUT]\n")
         self.write("telemetrist/server.py", "# v1\n")
         self.push("First")
         _git(tmp, "clone", "-q", str(self.bare), str(self.install))
@@ -222,7 +222,7 @@ def test_behind_is_listed_flagged_and_fast_forwarded():
     def go(w):
         w.write("pyproject.toml", "[project]\nname = 'x'\nversion = '2'\n")
         w.push("Bump the package")
-        w.write("lua_app/assetto_mcp/assetto_mcp.lua", "-- v2\n")
+        w.write("lua_app/telemetrist/telemetrist.lua", "-- v2\n")
         w.write("windows/install-windows.ps1", "# new\n")
         tip = w.push("Change the app and the installer\n\nWith a body.")
 
@@ -418,7 +418,7 @@ def test_rate_limited_falls_back_to_the_cached_answer():
 
 def test_lua_is_left_alone_when_the_app_is_not_installed():
     def go(w):
-        w.write("lua_app/assetto_mcp/assetto_mcp.lua", "-- v2\n")
+        w.write("lua_app/telemetrist/telemetrist.lua", "-- v2\n")
         tip = w.push("App change")
         ac = w.tmp / "ac"
         ac.mkdir()
@@ -427,43 +427,43 @@ def test_lua_is_left_alone_when_the_app_is_not_installed():
         assert done["lua"]["copied"] is False, done
         assert "not installed" in done["lua"]["note"], done
         assert not (ac / "apps").exists()
-        print("  no apps/lua/assetto_mcp: nothing created")
+        print("  no apps/lua/telemetrist: nothing created")
     _world(go)
 
 
 def test_lua_is_not_copied_while_the_game_runs():
     def go(w):
-        dest = w.tmp / "ac" / "apps" / "lua" / "assetto_mcp"
+        dest = w.tmp / "ac" / "apps" / "lua" / "telemetrist"
         dest.mkdir(parents=True)
-        (dest / "assetto_mcp.lua").write_text("-- v1\n")
-        w.write("lua_app/assetto_mcp/assetto_mcp.lua", "-- v2\n")
+        (dest / "telemetrist.lua").write_text("-- v1\n")
+        w.write("lua_app/telemetrist/telemetrist.lua", "-- v2\n")
         tip = w.push("App change")
         done = w.apply(tip, ac=w.tmp / "ac", is_game_running=lambda: True)
         assert done["updated"] is True, done
         assert done["lua"]["copied"] is False, done
         assert "running" in done["lua"]["note"], done
         assert "--sync-lua" in done["lua"]["note"], done
-        assert (dest / "assetto_mcp.lua").read_text() == "-- v1\n"
+        assert (dest / "telemetrist.lua").read_text() == "-- v1\n"
         print("  game running: app not touched, and how to finish later")
     _world(go)
 
 
 def test_lua_files_that_differ_are_copied():
     def go(w):
-        dest = w.tmp / "ac" / "apps" / "lua" / "assetto_mcp"
+        dest = w.tmp / "ac" / "apps" / "lua" / "telemetrist"
         dest.mkdir(parents=True)
-        (dest / "assetto_mcp.lua").write_text("-- v1\n")
+        (dest / "telemetrist.lua").write_text("-- v1\n")
         (dest / "manifest.ini").write_bytes(
-            (w.install / "lua_app/assetto_mcp/manifest.ini").read_bytes())
+            (w.install / "lua_app/telemetrist/manifest.ini").read_bytes())
         (dest / "old_module.lua").write_text("-- gone upstream\n")
-        w.write("lua_app/assetto_mcp/assetto_mcp.lua", "-- v2\n")
+        w.write("lua_app/telemetrist/telemetrist.lua", "-- v2\n")
         tip = w.push("App change")
         done = w.apply(tip, ac=w.tmp / "ac")
         lua = done["lua"]
         assert lua["copied"] is True, lua
-        assert lua["files"] == ["assetto_mcp.lua"], lua
+        assert lua["files"] == ["telemetrist.lua"], lua
         assert lua["removed"] == ["old_module.lua"], lua
-        assert (dest / "assetto_mcp.lua").read_text() == "-- v2\n"
+        assert (dest / "telemetrist.lua").read_text() == "-- v2\n"
         assert not (dest / "old_module.lua").exists()
         print("  only the changed file copied; a stale one removed")
     _world(go)
@@ -525,6 +525,41 @@ def test_a_long_apply_answers_in_progress_and_is_collected_later():
         assert not (w.data / U.LOCK_FILE).exists()
         print("  in progress, a second apply refused, result collected")
     _world(go)
+
+
+def test_an_app_under_its_old_name_is_moved_and_never_doubled():
+    # (new folder there too, game running, move fails) -> old folder left
+    cases = [((False, False, False), False), ((True, False, False), False),
+             ((False, True, False), True), ((False, False, True), True)]
+    real_rename = Path.rename
+    for (has_new, running, fails), old_left in cases:
+        with tempfile.TemporaryDirectory() as d:
+            root, ac = Path(d) / "install", Path(d) / "ac"
+            (root / U.LUA_APP).mkdir(parents=True)
+            (root / U.LUA_APP / "telemetrist.lua").write_text("-- v2\n")
+            old = ac / "apps" / "lua" / U.OLD_APP_NAME
+            new = old.with_name(U.APP_NAME)
+            old.mkdir(parents=True)
+            (old / "assetto_mcp.lua").write_text("-- v1\n")
+            if has_new:
+                new.mkdir()
+            if fails:
+                def no_rename(self, target):
+                    raise OSError("in use")
+                Path.rename = no_rename
+            try:
+                out = U.sync_lua(root, ac, is_game_running=lambda: running)
+            finally:
+                Path.rename = real_rename
+            case = (has_new, running, fails)
+            assert old.is_dir() == old_left == U.old_app_installed(ac), (
+                case, out)
+            if old_left:
+                assert (old / "assetto_mcp.lua").read_text() == "-- v1\n"
+                assert new.is_dir() == has_new, (case, out)
+            else:
+                assert [p.name for p in new.iterdir()] == ["telemetrist.lua"]
+    print("  moved when it can be, else left whole and alone")
 
 
 def test_a_lock_left_by_a_dead_apply_is_taken_over():

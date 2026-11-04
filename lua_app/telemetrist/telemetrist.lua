@@ -1,4 +1,4 @@
--- Assetto MCP: in-game companion for the assetto-mcp MCP server.
+-- Telemetrist: in-game companion for the Telemetrist MCP server.
 --
 -- Talks to the localhost HTTP bridge (default port 9666):
 --   * polls /status every 2s (recording state + messages from Claude)
@@ -124,6 +124,7 @@ local TAGS = {
   { tag = 'braking',    label = 'Braking'    },
   { tag = 'traction',   label = 'Traction'   },
 }
+-- Still the pre-rename id: CSP keeps the driver's wheel binding under it.
 for _, t in ipairs(TAGS) do
   t.btn = ac.ControlButton('__EXT_ASSETTO_MCP_' .. t.tag:upper())
 end
@@ -216,7 +217,7 @@ local function pumpNotes()
         -- Don't let a rejected note look like a recorded one: the "noted"
         -- toast already fired at enqueue time.
         toast, toastTimer = 'note REJECTED (' .. tostring(response.status) .. ')', 3
-        ac.warn('assetto_mcp: /note rejected: ' .. tostring(response.body))
+        ac.warn('telemetrist: /note rejected: ' .. tostring(response.body))
       else
         -- Stored, but with no session to attach it to. Say so: an orphaned
         -- note won't show up against this run's telemetry.
@@ -250,7 +251,7 @@ local function ask(label, fn)
 end
 
 local function logWorkerEnvironment()
-  ac.log('assetto_mcp: physics worker environment')
+  ac.log('telemetrist: physics worker environment')
   ask('csp version', function() return ac.getPatchVersion() end)
   ask('csp version code', function() return ac.getPatchVersionCode() end)
   ask('physics table', function() return type(physics) end)
@@ -290,7 +291,7 @@ local function startSuspensionWorker()
   if isOnlineSession() == true then
     suspNote = 'multiplayer: damper capture is single-player only'
     onlineSuppressed = true
-    ac.log('assetto_mcp: online session, not starting physics worker '
+    ac.log('telemetrist: online session, not starting physics worker '
       .. '(CSP disallows physics scripting in multiplayer). Ride height '
       .. 'and load transfer still recording at render rate.')
     return
@@ -358,13 +359,13 @@ local function startSuspensionWorker()
       if err then
         worker, workerProducing = nil, false
         suspNote = 'worker stopped: ' .. tostring(err)
-        ac.warn('assetto_mcp: physics worker stopped: ' .. tostring(err))
+        ac.warn('telemetrist: physics worker stopped: ' .. tostring(err))
       end
     end)
   if not started then
     worker = nil
     suspNote = 'worker start failed: ' .. tostring(startErr)
-    ac.warn('assetto_mcp: startPhysicsWorker failed: ' .. tostring(startErr))
+    ac.warn('telemetrist: startPhysicsWorker failed: ' .. tostring(startErr))
     return
   end
   -- Not claiming the worker tier yet. startPhysicsWorker returning without
@@ -505,7 +506,7 @@ local function postSuspensionBuffer(which, buffer)
       if err or not response or response.status ~= 200 then
         suspDropped = suspDropped + #batch
         if response and response.status and response.status ~= 200 then
-          ac.warn('assetto_mcp: /suspension rejected: '
+          ac.warn('telemetrist: /suspension rejected: '
             .. tostring(response.status) .. ' ' .. tostring(response.body))
         end
         return
@@ -531,7 +532,7 @@ local function postSuspensionBuffer(which, buffer)
       -- The server nulls out-of-range fields and says which. Almost always
       -- a units disagreement.
       if parsed.rejected_fields then
-        ac.warn('assetto_mcp: /suspension rejected fields: '
+        ac.warn('telemetrist: /suspension rejected fields: '
           .. tostring(response.body))
       end
     end)
@@ -735,7 +736,7 @@ local function postRivals()
       end
       if response.status ~= 200 then
         rivalDropped = rivalDropped + #batch
-        ac.warn('assetto_mcp: /rivals rejected: '
+        ac.warn('telemetrist: /rivals rejected: '
           .. tostring(response.status) .. ' ' .. tostring(response.body))
         return
       end
@@ -853,7 +854,7 @@ local function postSetup()
       setupBusy = false
       local outcome = classifyReply(err, response)
       if outcome == 'rejected' then
-        ac.warn('assetto_mcp: /setup rejected: '
+        ac.warn('telemetrist: /setup rejected: '
           .. tostring(response.status) .. ' ' .. tostring(response.body))
       end
       if outcome ~= 'ok' then
@@ -985,7 +986,7 @@ function script.update(dt)
     if not ok then
       worker, workerProducing = nil, false
       suspNote = 'render rate only (worker probe failed)'
-      ac.warn('assetto_mcp: suspension worker probe failed: '
+      ac.warn('telemetrist: suspension worker probe failed: '
         .. tostring(err))
     end
   end
@@ -1202,5 +1203,5 @@ function windowSettings(dt)
   end
   ui.separator()
   ui.textWrapped('Bridge: ' .. BASE ..
-    '  (assetto-mcp server must be running)')
+    '  (the Telemetrist server must be running)')
 end

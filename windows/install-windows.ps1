@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    One-shot installer for assetto-mcp on the Windows gaming PC.
+    One-shot installer for Telemetrist on the Windows gaming PC.
 
 .DESCRIPTION
     Does the whole install:
@@ -116,21 +116,22 @@ function Write-JsonFile ($path, $text) {
 }
 
 Write-Host ""
-Write-Host "  assetto-mcp installer" -ForegroundColor White
+Write-Host "  Telemetrist installer" -ForegroundColor White
 Write-Host "  $script:RepoRoot" -ForegroundColor DarkGray
 
 # --- paths --------------------------------------------------------------
 
-$ServerName            = 'assetto-mcp'
+$ServerName            = 'telemetrist'
 $script:OwnerConfigDir = Join-Path $env:APPDATA 'Claude'   # refined in step 3
 
-# This project was called ac-race-engineer until it was renamed, and the
-# installer is the only thing that knows where the old install put itself.
+# This project was called ac-race-engineer, then assetto-mcp, and the
+# installer is the only thing that knows where an old install put itself.
 # Anything left under these names is dead weight that still gets launched, so
-# every run sweeps them up.
-$LegacyServerName      = 'ac-race-engineer'
-$LegacyLuaAppName      = 'race_engineer'
-$LegacyDataDir         = Join-Path $env:USERPROFILE '.ac-race-engineer'
+# every run sweeps them up. Newest first, as in telemetrist/config.py.
+$LegacyServerNames     = @('assetto-mcp', 'ac-race-engineer')
+$LegacyLuaAppNames     = @('assetto_mcp', 'race_engineer')
+$LegacyDataDirs        = @((Join-Path $env:USERPROFILE '.assetto-mcp'),
+                           (Join-Path $env:USERPROFILE '.ac-race-engineer'))
 
 # --- MCP client support --------------------------------------------------
 #
@@ -152,17 +153,23 @@ if (-not (Test-Path -LiteralPath $clientScript)) {
 # Delete the in-game app directory this project installed under an older
 # name. CSP loads every folder under apps\lua, so leaving it there means two
 # copies of the app in the sidebar, both talking to the same bridge port.
+# Returns $true if one is still there.
 function Remove-LegacyLuaApp ($ac) {
-    if (-not $ac) { return }
-    $old = Join-Path $ac "apps\lua\$LegacyLuaAppName"
-    if (-not (Test-Path -LiteralPath $old)) { return }
-    try {
-        Remove-Item -LiteralPath $old -Recurse -Force
-        Write-Ok "Removed the pre-rename in-game app from $old"
-    } catch {
-        Write-Warn2 "Could not remove the old in-game app at $old - is Assetto Corsa running?"
-        Write-Info  "Delete that folder by hand, or you will see the app twice in the sidebar."
+    if (-not $ac) { return $false }
+    $left = $false
+    foreach ($name in $LegacyLuaAppNames) {
+        $old = Join-Path $ac "apps\lua\$name"
+        if (-not (Test-Path -LiteralPath $old)) { continue }
+        try {
+            Remove-Item -LiteralPath $old -Recurse -Force
+            Write-Ok "Removed the pre-rename in-game app from $old"
+        } catch {
+            Write-Warn2 "Could not remove the old in-game app at $old - is Assetto Corsa running?"
+            Write-Info  "Delete that folder by hand, or you will see the app twice in the sidebar."
+            $left = $true
+        }
     }
+    return $left
 }
 
 # --- locating Assetto Corsa (needed by both install and uninstall) -------
@@ -227,13 +234,13 @@ if ($Uninstall) {
 
     # Only Claude Desktop is registered automatically, so it is the only client
     # there is anything to unregister from. If you wired this into another MCP
-    # client by hand, remove the 'assetto-mcp' entry from its config yourself.
+    # client by hand, remove the 'telemetrist' entry from its config yourself.
     Unregister-FromClaudeDesktop
 
     $ac = Resolve-AcPath
     if ($ac) {
-        Remove-LegacyLuaApp $ac
-        $dest = Join-Path $ac 'apps\lua\assetto_mcp'
+        Remove-LegacyLuaApp $ac | Out-Null
+        $dest = Join-Path $ac 'apps\lua\telemetrist'
         if (Test-Path -LiteralPath $dest) {
             try {
                 Remove-Item -LiteralPath $dest -Recurse -Force
@@ -333,7 +340,7 @@ Write-Info $python.Path
 # 2. Install the package
 # ======================================================================
 
-Write-Step "Installing assetto-mcp (editable)"
+Write-Step "Installing Telemetrist (editable)"
 
 Push-Location -LiteralPath $script:RepoRoot
 try {
@@ -341,6 +348,11 @@ try {
     # Best-effort; a failure here (e.g. all-users install without elevation)
     # is not fatal to the actual install below.
     Invoke-Native { & $py -m pip install --upgrade pip --quiet } | Out-Null
+    # The package's name before the rename. Left installed beside the new
+    # one, it keeps its own copies of the old command names, and removing it
+    # later would take those away from the new package. Best-effort: it is
+    # usually not there.
+    Invoke-Native { & $py -m pip uninstall -y assetto-mcp --quiet } | Out-Null
 
     $r = Invoke-Native { & $py -m pip install -e . }
     if ($r.ExitCode -ne 0) {
@@ -363,13 +375,14 @@ Write-Ok "Package installed"
 $py = $python.Path
 $r = Invoke-Native {
     Push-Location -LiteralPath ([System.IO.Path]::GetTempPath())
-    try { & $py -c "import assetto_mcp" } finally { Pop-Location }
+    # assetto_mcp too: client configs from before the rename still name it.
+    try { & $py -c "import telemetrist, assetto_mcp" } finally { Pop-Location }
 }
 if ($r.ExitCode -ne 0) {
-    Stop-WithError "Package installed but 'import assetto_mcp' failed." @"
+    Stop-WithError "Package installed but 'import telemetrist, assetto_mcp' failed." @"
   pip most likely installed into a different Python than the one detected.
   Try running this in a terminal to see the real error:
-      "$($python.Path)" -c "import assetto_mcp"
+      "$($python.Path)" -c "import telemetrist, assetto_mcp"
 "@
 }
 Write-Ok "Import check passed"
@@ -388,7 +401,7 @@ if ($SkipClientConfig) {
     Write-Info "Register this server with your client using:"
     Write-Info ""
     Write-Info "    command : $($python.Path)"
-    Write-Info "    args    : -m assetto_mcp.server"
+    Write-Info "    args    : -m telemetrist.server"
     Write-Info ""
     Write-Info "Most clients (Claude Desktop, Claude Code, Cursor, LM Studio, Windsurf)"
     Write-Info "take an ""mcpServers"" JSON object. See docs/INSTALL.md."
@@ -402,17 +415,20 @@ if ($SkipClientConfig) {
 
 Write-Step "Preparing data directory"
 
-# Same resolution order as assetto_mcp/config.py: an explicit variable wins,
-# then the pre-rename directory, which is *moved* rather than left behind. The
-# installer is the best place to do it -- it runs once, with the client quit,
-# so nothing has the database open. config.py retries the same move at startup
+# Same resolution order as telemetrist/config.py: an explicit variable wins,
+# then the newest pre-rename directory, which is *moved* rather than left
+# behind. The installer is the best place to do it -- it runs once, with the
+# client quit, so nothing has the database open. config.py retries the same move at startup
 # for anyone who installed by hand and never runs this.
-$defaultDataDir = Join-Path $env:USERPROFILE '.assetto-mcp'
+$defaultDataDir = Join-Path $env:USERPROFILE '.telemetrist'
 # -PathType Container throughout: if the old name happens to be a *file*, a
 # bare Test-Path is true and Move-Item cheerfully renames it into the place a
 # directory is about to be created, which fails several lines later with the
-# file already moved. assetto_mcp/config.py uses is_dir() for the same reason.
-$haveLegacyDir  = Test-Path -LiteralPath $LegacyDataDir  -PathType Container
+# file already moved. telemetrist/config.py uses is_dir() for the same reason.
+$LegacyDataDir  = $LegacyDataDirs |
+    Where-Object { Test-Path -LiteralPath $_ -PathType Container } |
+    Select-Object -First 1
+$haveLegacyDir  = [bool]$LegacyDataDir
 $haveDefaultDir = Test-Path -LiteralPath $defaultDataDir -PathType Container
 
 # Exists, but as something other than a directory. Say so by name rather than
@@ -424,7 +440,9 @@ if ((Test-Path -LiteralPath $defaultDataDir) -and -not $haveDefaultDir) {
 "@
 }
 
-if ($env:ASSETTO_MCP_DATA) {
+if ($env:TELEMETRIST_DATA) {
+    $dataDir = $env:TELEMETRIST_DATA
+} elseif ($env:ASSETTO_MCP_DATA) {
     $dataDir = $env:ASSETTO_MCP_DATA
 } elseif ($env:AC_ENGINEER_DATA) {
     $dataDir = $env:AC_ENGINEER_DATA
@@ -467,7 +485,7 @@ try {
   $($_.Exception.Message)
 
   Check that the path is writable, or point somewhere else by setting
-  ASSETTO_MCP_DATA and re-running.
+  TELEMETRIST_DATA and re-running.
 "@
 }
 Write-Ok "$dataDir"
@@ -488,18 +506,22 @@ if (-not $SkipLuaApp) {
         Write-Info  "then re-run:  install-windows.bat -AcPath ""<that folder>"""
     } else {
         Write-Ok "Found Assetto Corsa at $ac"
-        Remove-LegacyLuaApp $ac
-        $src  = Join-Path $script:RepoRoot 'lua_app\assetto_mcp'
-        $dest = Join-Path $ac 'apps\lua\assetto_mcp'
+        $oldLeft = Remove-LegacyLuaApp $ac
+        $src  = Join-Path $script:RepoRoot 'lua_app\telemetrist'
+        $dest = Join-Path $ac 'apps\lua\telemetrist'
 
-        if (-not (Test-Path -LiteralPath $src)) {
-            Write-Warn2 "lua_app\assetto_mcp missing from this repo - skipping"
+        if ($oldLeft) {
+            # The old copy shares the new one's wheel buttons and physics
+            # struct, so the two side by side are worse than the old alone.
+            Write-Warn2 "Not installing the in-game app beside the old one; close Assetto Corsa / Content Manager and re-run."
+        } elseif (-not (Test-Path -LiteralPath $src)) {
+            Write-Warn2 "lua_app\telemetrist missing from this repo - skipping"
         } else {
             try {
                 # Literal, not wildcard: Steam libraries are often "D:\Games [SSD]".
                 [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $dest))
                 # Remove first: Copy-Item -Recurse onto an existing directory
-                # would nest it as assetto_mcp\assetto_mcp.
+                # would nest it as telemetrist\telemetrist.
                 if (Test-Path -LiteralPath $dest) {
                     Remove-Item -LiteralPath $dest -Recurse -Force
                 }
@@ -544,7 +566,7 @@ if ($SkipClientConfig) {
        "confirm you can see the session"
 
   3. In-game, open the apps sidebar (move mouse to the right edge) and
-     enable "Assetto MCP" to bind complaint tags to wheel buttons.
+     enable "Telemetrist" to bind complaint tags to wheel buttons.
 "@ -ForegroundColor White
 } else {
     # Logs live next to whichever config the app actually uses, so on a
@@ -565,13 +587,13 @@ if ($SkipClientConfig) {
      system tray (bottom-right, possibly under the '^' arrow) and choose Quit.
 
   2. In Claude Desktop, open a new chat and look for the tools icon.
-     You should see assetto-mcp listed.
+     You should see telemetrist listed.
 
   3. Start Assetto Corsa, get on track, and ask:
        "confirm you can see the session"
 
   4. In-game, open the apps sidebar (move mouse to the right edge) and
-     enable "Assetto MCP" to bind complaint tags to wheel buttons.
+     enable "Telemetrist" to bind complaint tags to wheel buttons.
 
   If Claude does not see the server, read the log:
 $logHint

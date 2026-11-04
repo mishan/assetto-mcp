@@ -65,7 +65,12 @@ LOCK_STALE_SECONDS = FETCH_TIMEOUT + PIP_TIMEOUT + 600
 # progress": inside the minute an MCP client commonly allows a call.
 APPLY_WAIT = 25.0
 
-LUA_APP = Path("lua_app") / "assetto_mcp"
+APP_NAME = "telemetrist"
+LUA_APP = Path("lua_app") / APP_NAME
+# The app's folder in the game before the rename. It is moved, never copied
+# beside, since the game would run both: two sets of the same wheel buttons
+# and two physics workers on one shared struct.
+OLD_APP_NAME = "assetto_mcp"
 INSTALLERS = ("install-windows.bat", "windows/install-windows.ps1",
               "windows/install-claude-desktop.ps1")
 
@@ -504,6 +509,14 @@ def _tree(base: Path) -> dict[str, Path]:
             for p in base.rglob("*") if p.is_file()}
 
 
+def old_app_installed(ac: Path | None = None) -> bool:
+    """Whether the in-game app is still in its pre-rename folder: an
+    updater from before the rename cannot move it, so the first update
+    across the rename leaves it there."""
+    ac = ac if ac is not None else circuit.ac_root()
+    return bool(ac) and (Path(ac) / "apps" / "lua" / OLD_APP_NAME).is_dir()
+
+
 def sync_lua(root: Path | None = None, ac: Path | None = None,
              is_game_running=game_running) -> dict:
     """Copy the in-game app into Assetto Corsa where it differs.
@@ -524,24 +537,39 @@ def sync_lua(root: Path | None = None, ac: Path | None = None,
                 "note": "Assetto Corsa's folder was not found; set "
                         "TELEMETRIST_AC_ROOT, or rerun install-windows.bat "
                         "with -AcPath"}
-    dest = Path(ac) / "apps" / "lua" / "assetto_mcp"
-    if not dest.is_dir():
+    dest = Path(ac) / "apps" / "lua" / APP_NAME
+    old = dest.with_name(OLD_APP_NAME)
+    if not dest.is_dir() and not old.is_dir():
         return {"copied": False, "destination": str(dest),
                 "note": "the in-game app is not installed there, so it was "
                         "left that way"}
-    have, want = _tree(dest), _tree(src)
+    have, want = _tree(dest if dest.is_dir() else old), _tree(src)
     changed = sorted(n for n, p in want.items()
                      if n not in have or _digest(have[n]) != _digest(p))
     stale = sorted(n for n in have if n not in want)
-    if not changed and not stale:
+    if not changed and not stale and not old.is_dir():
         return {"copied": False, "destination": str(dest),
                 "note": "already up to date"}
     if is_game_running():
         return {"copied": False, "destination": str(dest),
-                "would_change": changed + stale,
+                "would_change": changed + stale
+                + ([str(old)] if old.is_dir() else []),
                 "note": "Assetto Corsa is running. Quit it, then run "
                         "`python -m telemetrist.update --sync-lua` or "
                         "install-windows.bat to copy the in-game app"}
+    if old.is_dir():
+        verb = "removed" if dest.is_dir() else "moved"
+        try:
+            if dest.is_dir():
+                shutil.rmtree(old)
+            else:
+                old.rename(dest)
+        except OSError as e:
+            return {"copied": False, "destination": str(dest),
+                    "note": f"the in-game app's old folder, {old}, could "
+                            f"not be {verb} ({e}). Quit anything that may "
+                            "have it open, such as Content Manager, and run "
+                            "`python -m telemetrist.update --sync-lua`"}
     for name in changed:
         target = dest / name
         target.parent.mkdir(parents=True, exist_ok=True)

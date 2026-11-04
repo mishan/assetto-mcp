@@ -461,8 +461,8 @@ def test_lua_and_python_batch_limits_agree():
     means every POST is rejected.
     """
     from telemetrist import bridge as B
-    lua_dir = Path(__file__).resolve().parents[1] / "lua_app/assetto_mcp"
-    app = (lua_dir / "assetto_mcp.lua").read_text(encoding="utf-8")
+    lua_dir = Path(__file__).resolve().parents[1] / "lua_app/telemetrist"
+    app = (lua_dir / "telemetrist.lua").read_text(encoding="utf-8")
     wrk = (lua_dir / "suspension_worker.lua").read_text(encoding="utf-8")
 
     def const(text, name):
@@ -503,7 +503,7 @@ def test_the_lua_app_assigns_no_implicit_globals():
 
     from luaparser import ast, astnodes
 
-    lua_dir = Path(__file__).resolve().parents[1] / "lua_app/assetto_mcp"
+    lua_dir = Path(__file__).resolve().parents[1] / "lua_app/telemetrist"
     # Names Lua and CSP provide. Anything assigned that isn't declared local
     # and isn't one of these is a new global.
     provided = {
@@ -558,7 +558,7 @@ def test_the_shared_struct_layouts_are_identical():
     subsequent field -- damper travel read as a spline position, say. There
     is no error for this at runtime, just wrong numbers.
     """
-    lua_dir = Path(__file__).resolve().parents[1] / "lua_app/assetto_mcp"
+    lua_dir = Path(__file__).resolve().parents[1] / "lua_app/telemetrist"
 
     def struct(name):
         text = (lua_dir / name).read_text(encoding="utf-8")
@@ -578,7 +578,7 @@ def test_the_shared_struct_layouts_are_identical():
         return [l.replace("WORKER_RING", "N").replace("BUFFER", "N")
                 for l in lines if l]
 
-    app = struct("assetto_mcp.lua")
+    app = struct("telemetrist.lua")
     wrk = struct("suspension_worker.lua")
     assert app == wrk, "\n".join(
         f"  app: {a!r}\n  wrk: {b!r}" for a, b in zip(app, wrk) if a != b)

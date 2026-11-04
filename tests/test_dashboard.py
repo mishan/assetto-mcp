@@ -287,7 +287,8 @@ def test_the_pit_wall_runs_without_a_chat():
     from test_supervisor import _server_env
     with temp_db() as path:
         env = _server_env(str(Path(path).parent))
-        env.pop("TELEMETRIST_DASH_LAN", None)
+        for prefix in ("TELEMETRIST_", "ASSETTO_MCP_", "AC_ENGINEER_"):
+            env.pop(prefix + "DASH_LAN", None)
         proc = subprocess.Popen(
             [sys.executable, "-m", "telemetrist.pit_wall"],
             cwd=Path(__file__).resolve().parent.parent, text=True,

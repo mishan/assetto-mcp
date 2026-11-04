@@ -289,7 +289,9 @@ def test_the_steam_search_runs_once_and_the_variable_always_wins():
     calls = []
     real = circuit._steam_libraries
     circuit._steam_libraries = lambda: calls.append(1) or []
-    old = os.environ.pop("TELEMETRIST_AC_ROOT", None)
+    names = [p + "AC_ROOT" for p in ("TELEMETRIST_", "ASSETTO_MCP_",
+                                     "AC_ENGINEER_")]
+    old = {n: os.environ.pop(n, None) for n in names}
     circuit._steam_ac_root.cache_clear()
     try:
         assert circuit.ac_root() is None
@@ -300,8 +302,7 @@ def test_the_steam_search_runs_once_and_the_variable_always_wins():
     finally:
         circuit._steam_libraries = real
         circuit._steam_ac_root.cache_clear()
-        if old is not None:
-            os.environ["TELEMETRIST_AC_ROOT"] = old
+        os.environ.update({n: v for n, v in old.items() if v is not None})
 
 
 # --- the tools -------------------------------------------------------------

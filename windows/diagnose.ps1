@@ -190,7 +190,9 @@ foreach ($p in $configPaths) {
                     Command = [string]$e.command; Args = $a
                 }
             }
-            if ($LegacyServerNames -contains $n) { $withLegacyEntry += "$p ($n)" }
+            if ($LegacyServerNames -contains $n) {
+                $withLegacyEntry += [pscustomobject]@{ Path = $p; Name = $n }
+            }
         }
     } else {
         L "!! no 'mcpServers' key at the top level"
@@ -212,15 +214,22 @@ if ($withEntry.Count -gt 1) {
 if ($withLegacyEntry.Count -gt 0) {
     L ""
     L "!! a pre-rename entry is still present in:"
-    foreach ($p in $withLegacyEntry) { L "     $p" }
-    L "   'ac-race-engineer' names a module that no longer exists, and shows as a"
-    if ($withEntry.Count -gt 0) {
-        L "   failed server; 'assetto-mcp' still starts, as a second server beside"
-        L "   '$ServerName'. Re-run install-windows.bat: it removes these."
-    } else {
-        L "   failed server; 'assetto-mcp' still starts. Re-run install-windows.bat"
-        L "   to replace these with '$ServerName'."
+    foreach ($w in $withLegacyEntry) { L "     $($w.Path) ($($w.Name))" }
+    $legacyNames = @($withLegacyEntry | ForEach-Object { $_.Name })
+    if ($legacyNames -contains 'ac-race-engineer') {
+        L "   'ac-race-engineer' names a module that no longer exists, and shows as a"
+        L "   failed server."
     }
+    if ($legacyNames -contains 'assetto-mcp') {
+        if ($withEntry.Count -gt 0) {
+            L "   'assetto-mcp' still starts, as a second server beside '$ServerName'."
+        } else {
+            L "   'assetto-mcp' still starts."
+        }
+    }
+    L "   Re-run install-windows.bat to move this user's Claude Desktop config to"
+    L "   '$ServerName'. It doesn't touch .claude.json, .claude\settings.json,"
+    L "   .mcp.json or other users' profiles; remove entries there by hand."
 }
 
 # ---------------------------------------------------------------- python

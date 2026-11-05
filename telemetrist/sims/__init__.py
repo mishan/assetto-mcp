@@ -7,10 +7,10 @@ GAMES = {ac.Reader.name: ac}
 
 
 def chosen() -> str:
-    """The game to read, from ASSETTO_MCP_SIM."""
+    """The game to read, from TELEMETRIST_SIM."""
     name = config.env("SIM", "ac").strip().lower()
     if name not in GAMES:
-        raise RuntimeError(f"ASSETTO_MCP_SIM is {name!r}; it can be "
+        raise RuntimeError(f"TELEMETRIST_SIM is {name!r}; it can be "
                            + ", ".join(GAMES))
     return name
 

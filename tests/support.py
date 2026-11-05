@@ -18,9 +18,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from assetto_mcp import db  # noqa: E402
-from assetto_mcp.collector import Collector  # noqa: E402
-from assetto_mcp.sims import ac  # noqa: E402
+from telemetrist import db  # noqa: E402
+from telemetrist.collector import Collector  # noqa: E402
+from telemetrist.sims import ac  # noqa: E402
 
 AC_OFF = 0
 AC_LIVE = 2
@@ -307,7 +307,7 @@ def timed_laps(conn, session_id=None):
     Out-laps, pit laps and abandoned laps are stored too, so a bare
     COUNT(*) over `laps` is not the lap count most tests mean.
     """
-    from assetto_mcp import db
+    from telemetrist import db
     return [l for l in db.list_laps(conn, session_id, limit=None)
             if db.lap_usability(dict(l))[0]]
 

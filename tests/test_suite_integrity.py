@@ -101,14 +101,14 @@ def test_no_test_is_defined_after_the_main_block():
 
 
 # Runs with -I (no PYTHONPATH, no user site) from a temporary directory,
-# then removes every remaining way to import assetto_mcp that the module did
+# then removes every remaining way to import telemetrist that the module did
 # not arrange itself. CI's `pip install -e ".[test]"` makes the package
 # importable everywhere, which would hide a module that never adds the repo
 # root.
 _WRAPPER = '''
 import importlib.util, runpy, sys
 
-PKG = "assetto_mcp"
+PKG = "telemetrist"
 
 def provides(entry):
     try:

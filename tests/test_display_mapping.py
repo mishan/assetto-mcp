@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import lasting_dir, make_session, run_module  # noqa: E402
 
-from assetto_mcp import db, setups  # noqa: E402
+from telemetrist import db, setups  # noqa: E402
 
 
 # --- the fit ------------------------------------------------------------
@@ -290,11 +290,11 @@ def _server():
         import atexit
         import importlib
         d = lasting_dir("ac-display-")
-        os.environ["ASSETTO_MCP_DATA"] = d
+        os.environ["TELEMETRIST_DATA"] = d
         os.environ["AC_DOCS_DIR"] = d
-        os.environ["ASSETTO_MCP_BRIDGE_PORT"] = "0"
-        os.environ["ASSETTO_MCP_NO_AUTOSTART"] = "1"
-        _SERVER = importlib.import_module("assetto_mcp.server")
+        os.environ["TELEMETRIST_BRIDGE_PORT"] = "0"
+        os.environ["TELEMETRIST_NO_AUTOSTART"] = "1"
+        _SERVER = importlib.import_module("telemetrist.server")
         atexit.register(_SERVER._bridge.stop)
     return _SERVER
 

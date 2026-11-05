@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import make_session, run_module  # noqa: E402
 
-from assetto_mcp import db, retention  # noqa: E402
+from telemetrist import db, retention  # noqa: E402
 
 _SAMPLE = (180.0, 1.0, 0.0, 0.0, 4, 9000, 0.0, 0.0,
            0.4, 0.4, 0.3, 0.3, 26.0, 26.0, 26.0, 26.0,
@@ -203,19 +203,20 @@ def test_storage_report_says_what_has_been_thinned():
 
 def test_the_budget_can_be_set_from_the_environment():
     import os
-    for var in ("ASSETTO_MCP_MAX_DB_BYTES", "AC_ENGINEER_MAX_DB_BYTES"):
+    for var in ("TELEMETRIST_MAX_DB_BYTES", "ASSETTO_MCP_MAX_DB_BYTES",
+                "AC_ENGINEER_MAX_DB_BYTES"):
         os.environ.pop(var, None)
     assert retention.budget_bytes() == retention.DEFAULT_BUDGET_BYTES
     try:
-        os.environ["ASSETTO_MCP_MAX_DB_BYTES"] = "12345"
+        os.environ["TELEMETRIST_MAX_DB_BYTES"] = "12345"
         assert retention.budget_bytes() == 12345
-        os.environ["ASSETTO_MCP_MAX_DB_BYTES"] = "0"
+        os.environ["TELEMETRIST_MAX_DB_BYTES"] = "0"
         assert retention.budget_bytes() == 0, "0 means keep everything"
-        os.environ["ASSETTO_MCP_MAX_DB_BYTES"] = "not a number"
+        os.environ["TELEMETRIST_MAX_DB_BYTES"] = "not a number"
         assert retention.budget_bytes() == retention.DEFAULT_BUDGET_BYTES, \
             "a typo must not silently disable or shrink the budget"
     finally:
-        os.environ.pop("ASSETTO_MCP_MAX_DB_BYTES", None)
+        os.environ.pop("TELEMETRIST_MAX_DB_BYTES", None)
 
 
 class _FailAfter:
@@ -309,7 +310,7 @@ def test_the_documented_ladder_is_the_ladder():
     # database and starts a bridge as a side effect of import.
     import ast
     src = (Path(__file__).resolve().parent.parent
-           / "assetto_mcp" / "server.py").read_text()
+           / "telemetrist" / "server.py").read_text()
     doc = next(ast.get_docstring(n) for n in ast.walk(ast.parse(src))
                if isinstance(n, ast.FunctionDef)
                and n.name == "session_check")
@@ -333,7 +334,7 @@ def test_session_check_says_where_the_drivers_notes_go():
     """
     import ast
     src = (Path(__file__).resolve().parent.parent
-           / "assetto_mcp" / "server.py").read_text()
+           / "telemetrist" / "server.py").read_text()
     fn = next(n for n in ast.walk(ast.parse(src))
               if isinstance(n, ast.FunctionDef) and n.name == "session_check")
     body = ast.get_source_segment(src, fn)

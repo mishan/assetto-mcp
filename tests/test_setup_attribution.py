@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import lasting_dir, make_session, run_module  # noqa: E402
 
-from assetto_mcp import db  # noqa: E402
+from telemetrist import db  # noqa: E402
 
 # The tools decide which laps the SQL touches, so these tests go through the
 # server module, imported lazily against a scratch data directory and a
@@ -31,12 +31,12 @@ def _server():
     global _SERVER
     if _SERVER is None:
         d = lasting_dir("ac-attribution-")
-        os.environ["ASSETTO_MCP_DATA"] = d
+        os.environ["TELEMETRIST_DATA"] = d
         os.environ["AC_DOCS_DIR"] = d
-        os.environ["ASSETTO_MCP_BRIDGE_PORT"] = "0"
-        os.environ["ASSETTO_MCP_NO_AUTOSTART"] = "1"
+        os.environ["TELEMETRIST_BRIDGE_PORT"] = "0"
+        os.environ["TELEMETRIST_NO_AUTOSTART"] = "1"
         import importlib
-        _SERVER = importlib.import_module("assetto_mcp.server")
+        _SERVER = importlib.import_module("telemetrist.server")
         atexit.register(_SERVER._bridge.stop)
     return _SERVER
 

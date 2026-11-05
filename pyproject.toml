@@ -1,7 +1,7 @@
 [project]
-name = "assetto-mcp"
+name = "telemetrist"
 version = "0.2.0"
-description = "MCP server exposing Assetto Corsa telemetry and setup files to an AI assistant"
+description = "An AI race engineer for sim racing: an MCP server for game telemetry and setup files"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Misha Nasledov", email = "misha@nasledov.com" }]
@@ -17,20 +17,25 @@ test = ["pytest>=7", "lupa>=2.0", "luaparser>=3.2"]
 eval = ["anthropic"]
 
 [project.scripts]
-assetto-mcp = "assetto_mcp.supervisor:main"
-assetto-mcp-update = "assetto_mcp.update:main"
-assetto-mcp-pit-wall = "assetto_mcp.pit_wall:main"
+telemetrist = "telemetrist.supervisor:main"
+telemetrist-update = "telemetrist.update:main"
+telemetrist-pit-wall = "telemetrist.pit_wall:main"
+# The names from before the rename, which client configs may still use.
+assetto-mcp = "telemetrist.supervisor:main"
+assetto-mcp-update = "telemetrist.update:main"
+assetto-mcp-pit-wall = "telemetrist.pit_wall:main"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["assetto_mcp", "assetto_mcp.sims"]
+# assetto_mcp is the old name, forwarding to telemetrist.
+packages = ["telemetrist", "telemetrist.sims", "assetto_mcp"]
 
 [tool.setuptools.package-data]
 # The line map's page, read at runtime by line_map.render.
-assetto_mcp = ["line_map.html", "dash.html", "overlay.html"]
+telemetrist = ["line_map.html", "dash.html", "overlay.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -42,7 +47,7 @@ addopts = ["--strict-markers", "--strict-config"]
 pythonpath = [".", "tests"]
 filterwarnings = [
     # ctypes layout is load-bearing in sim_info.
-    "error::DeprecationWarning:assetto_mcp.*",
+    "error::DeprecationWarning:telemetrist.*",
 ]
 
 [tool.ruff]

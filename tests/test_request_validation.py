@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from support import (FakeCollector, get, make_session, post,  # noqa: E402
                      run_module, temp_db)
 
-from assetto_mcp import bridge as B, db  # noqa: E402
+from telemetrist import bridge as B, db  # noqa: E402
 
 
 def _recording_bridge(path, conn):

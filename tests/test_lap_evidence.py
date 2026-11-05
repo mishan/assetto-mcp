@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import lasting_dir, make_session, run_module  # noqa: E402
 
-from assetto_mcp import db  # noqa: E402
+from telemetrist import db  # noqa: E402
 
 # t_ms, then tyres_out. score_excursions takes just these two.
 STEP_MS = 40  # 25Hz
@@ -324,12 +324,12 @@ def test_every_tool_that_subtracts_lap_times_says_when_it_should_not():
     import json
     import os
     d = lasting_dir("ac-deltas-")
-    env = {"ASSETTO_MCP_DATA": d, "AC_DOCS_DIR": d,
-           "ASSETTO_MCP_BRIDGE_PORT": "0", "ASSETTO_MCP_NO_AUTOSTART": "1"}
+    env = {"TELEMETRIST_DATA": d, "AC_DOCS_DIR": d,
+           "TELEMETRIST_BRIDGE_PORT": "0", "TELEMETRIST_NO_AUTOSTART": "1"}
     prior = {k: os.environ.get(k) for k in env}
     os.environ.update(env)
     try:
-        srv = importlib.import_module("assetto_mcp.server")
+        srv = importlib.import_module("telemetrist.server")
     finally:
         # The module read them at import; leaving them set would hand the
         # next test in this process a data directory it never chose.
@@ -377,7 +377,7 @@ def test_a_game_can_count_track_limits_differently():
     """Thresholds were tuned on AC; a game that differs says so in its
     CALIBRATION, and its laps are judged by it."""
     from types import SimpleNamespace
-    from assetto_mcp import sims
+    from telemetrist import sims
     sims.GAMES["two_wheels"] = SimpleNamespace(
         CALIBRATION={"TRACK_LIMITS_WHEELS": 2})
     try:

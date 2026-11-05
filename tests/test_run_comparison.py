@@ -42,7 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import lasting_dir, make_session, run_module  # noqa: E402
 
-from assetto_mcp import analysis, db  # noqa: E402
+from telemetrist import analysis, db  # noqa: E402
 
 
 def _lap(lap_ms, balance, load_pct, fl_temp=100.0, corners=None):
@@ -744,16 +744,16 @@ def _server():
     global _SERVER
     if _SERVER is None:
         d = lasting_dir("ac-compare-runs-")
-        os.environ["ASSETTO_MCP_DATA"] = d
+        os.environ["TELEMETRIST_DATA"] = d
         os.environ["AC_DOCS_DIR"] = d
-        os.environ["ASSETTO_MCP_BRIDGE_PORT"] = "0"
+        os.environ["TELEMETRIST_BRIDGE_PORT"] = "0"
         # Importing the server starts recording, which is right in the game
         # and wrong here: a collector polling for Assetto Corsa would add a
         # thread, a second SQLite connection and a retry timer to every
         # test. The decision is made at import time, so this is set first.
-        os.environ["ASSETTO_MCP_NO_AUTOSTART"] = "1"
+        os.environ["TELEMETRIST_NO_AUTOSTART"] = "1"
         import importlib
-        _SERVER = importlib.import_module("assetto_mcp.server")
+        _SERVER = importlib.import_module("telemetrist.server")
         atexit.register(_SERVER._bridge.stop)
     return _SERVER
 

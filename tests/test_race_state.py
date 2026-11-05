@@ -15,11 +15,11 @@ from support import run_module  # noqa: E402
 
 def _state(**g):
     import os
-    os.environ.setdefault("ASSETTO_MCP_NO_AUTOSTART", "1")
-    os.environ.setdefault("ASSETTO_MCP_BRIDGE_PORT", "0")
-    from assetto_mcp import server
-    from assetto_mcp import sim_info
-    from assetto_mcp.sims import ac
+    os.environ.setdefault("TELEMETRIST_NO_AUTOSTART", "1")
+    os.environ.setdefault("TELEMETRIST_BRIDGE_PORT", "0")
+    from telemetrist import server
+    from telemetrist import sim_info
+    from telemetrist.sims import ac
     base = dict(session=2, position=7, completedLaps=14, numberOfLaps=16,
                 sessionTimeLeft=-1.0, status=2, flag=0)
     base.update(g)

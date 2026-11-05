@@ -25,7 +25,7 @@ on 127.0.0.1 that it polls and posts to:
     POST /dash/ask   -> a question the driver typed, for Claude's next reply
     GET  /dash/asks  -> those questions, for scripts/watch_laps.py to wake on
 
-With ASSETTO_MCP_DASH_LAN=1 the /dash pages are also served on the local
+With TELEMETRIST_DASH_LAN=1 the /dash pages are also served on the local
 network, on DASH_LAN_PORT, under a secret first path segment; nothing else
 is.
 

@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import make_session, run_module, temp_db  # noqa: E402
 
-from assetto_mcp import db, suspension as susp  # noqa: E402
+from telemetrist import db, suspension as susp  # noqa: E402
 
 
 def _lap(rate_hz=333.0, n=1200, compression_is_positive=True,
@@ -460,7 +460,7 @@ def test_lua_and_python_batch_limits_agree():
     drained sample silently, and a client buffer above the server's cap
     means every POST is rejected.
     """
-    from assetto_mcp import bridge as B
+    from telemetrist import bridge as B
     lua_dir = Path(__file__).resolve().parents[1] / "lua_app/assetto_mcp"
     app = (lua_dir / "assetto_mcp.lua").read_text(encoding="utf-8")
     wrk = (lua_dir / "suspension_worker.lua").read_text(encoding="utf-8")
@@ -631,7 +631,7 @@ def test_pruning_keeps_recent_laps():
 
 def _bridge(path, conn):
     import time
-    from assetto_mcp import bridge as B
+    from telemetrist import bridge as B
     from support import FakeCollector
     sid = make_session(conn)
     br = B.Bridge(path, FakeCollector(session_id=sid, running=True), 0)
@@ -713,7 +713,7 @@ def test_one_bad_sample_does_not_cost_the_batch():
 
 def test_batch_is_refused_when_nothing_is_recording():
     import time
-    from assetto_mcp import bridge as B
+    from telemetrist import bridge as B
     from support import FakeCollector, age_session, post
     with temp_db() as path:
         conn = db.connect(path)

@@ -104,7 +104,7 @@ def storage_report(conn, db_path) -> dict:
             f"{thinned} lap(s) have had their traces decimated to stay "
             f"within the budget. Their lap times, setups and track-limits "
             f"evidence are unaffected; only the sample resolution is lower. "
-            f"Raise ASSETTO_MCP_MAX_DB_BYTES to stop thinning more.")
+            f"Raise TELEMETRIST_MAX_DB_BYTES to stop thinning more.")
     return report
 
 
@@ -257,7 +257,7 @@ def enforce_budget(conn, db_path, budget: int | None = None) -> dict:
         out["note"] = (
             "Still over budget after thinning everything eligible. The "
             "current session's traces are never thinned, and no lap is ever "
-            "deleted, so this is the floor. Raise ASSETTO_MCP_MAX_DB_BYTES, "
+            "deleted, so this is the floor. Raise TELEMETRIST_MAX_DB_BYTES, "
             "or move the old database aside if you want a clean start.")
     return out
 

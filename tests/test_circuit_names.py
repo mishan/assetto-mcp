@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import lasting_dir, run_module  # noqa: E402
 
-from assetto_mcp import circuit, places  # noqa: E402
+from telemetrist import circuit, places  # noqa: E402
 
 LENGTH = 4000.0
 
@@ -71,22 +71,22 @@ def _fake_install(tmp: Path, track="jr_road_atlanta_2022", layout="full",
 
 
 class _AcRoot:
-    """Point ASSETTO_MCP_AC_ROOT at a fake install for one test."""
+    """Point TELEMETRIST_AC_ROOT at a fake install for one test."""
 
     def __init__(self, ini=SECTIONS_INI):
         self.dir = Path(lasting_dir("ac-root-"))
         _fake_install(self.dir, ini=ini)
 
     def __enter__(self):
-        self.old = os.environ.get("ASSETTO_MCP_AC_ROOT")
-        os.environ["ASSETTO_MCP_AC_ROOT"] = str(self.dir)
+        self.old = os.environ.get("TELEMETRIST_AC_ROOT")
+        os.environ["TELEMETRIST_AC_ROOT"] = str(self.dir)
         return self.dir
 
     def __exit__(self, *exc):
         if self.old is None:
-            os.environ.pop("ASSETTO_MCP_AC_ROOT", None)
+            os.environ.pop("TELEMETRIST_AC_ROOT", None)
         else:
-            os.environ["ASSETTO_MCP_AC_ROOT"] = self.old
+            os.environ["TELEMETRIST_AC_ROOT"] = self.old
 
 
 def _sections():
@@ -289,7 +289,9 @@ def test_the_steam_search_runs_once_and_the_variable_always_wins():
     calls = []
     real = circuit._steam_libraries
     circuit._steam_libraries = lambda: calls.append(1) or []
-    old = os.environ.pop("ASSETTO_MCP_AC_ROOT", None)
+    names = [p + "AC_ROOT" for p in ("TELEMETRIST_", "ASSETTO_MCP_",
+                                     "AC_ENGINEER_")]
+    old = {n: os.environ.pop(n, None) for n in names}
     circuit._steam_ac_root.cache_clear()
     try:
         assert circuit.ac_root() is None
@@ -300,8 +302,7 @@ def test_the_steam_search_runs_once_and_the_variable_always_wins():
     finally:
         circuit._steam_libraries = real
         circuit._steam_ac_root.cache_clear()
-        if old is not None:
-            os.environ["ASSETTO_MCP_AC_ROOT"] = old
+        os.environ.update({n: v for n, v in old.items() if v is not None})
 
 
 # --- the tools -------------------------------------------------------------
@@ -313,18 +314,18 @@ def _server():
     global _SERVER
     if _SERVER is None:
         d = lasting_dir("ac-circuit-")
-        os.environ.setdefault("ASSETTO_MCP_DATA", d)
+        os.environ.setdefault("TELEMETRIST_DATA", d)
         os.environ.setdefault("AC_DOCS_DIR", d)
-        os.environ.setdefault("ASSETTO_MCP_BRIDGE_PORT", "0")
-        os.environ.setdefault("ASSETTO_MCP_NO_AUTOSTART", "1")
+        os.environ.setdefault("TELEMETRIST_BRIDGE_PORT", "0")
+        os.environ.setdefault("TELEMETRIST_NO_AUTOSTART", "1")
         import importlib
-        _SERVER = importlib.import_module("assetto_mcp.server")
+        _SERVER = importlib.import_module("telemetrist.server")
         atexit.register(_SERVER._bridge.stop)
     return _SERVER
 
 
 def _session(srv):
-    from assetto_mcp import db
+    from telemetrist import db
     sid = db.create_session(srv._conn, car="ks_mazda_mx5_cup",
                             track="jr_road_atlanta_2022",
                             track_config="full", tyre_compound="SM",

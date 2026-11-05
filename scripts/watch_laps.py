@@ -38,7 +38,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from assetto_mcp import config  # noqa: E402
+from telemetrist import config  # noqa: E402
 
 # Resolved by the same code the server uses, so this follows both a moved
 # data dir and one under the old name.

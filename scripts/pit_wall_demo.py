@@ -27,7 +27,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from assetto_mcp import bridge, db  # noqa: E402
+from telemetrist import bridge, db  # noqa: E402
 
 NAMES = ["A. Moreau", "K. Tanaka", "R. Silva", "J. Becker", "L. Okafor"]
 # Each opponent's place on the lap, as a fraction of it ahead of the driver.
@@ -66,7 +66,7 @@ class Recording:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--db", type=Path,
-                    default=Path.home() / ".assetto-mcp" / "telemetry.db")
+                    default=Path.home() / ".telemetrist" / "telemetry.db")
     ap.add_argument("--session", type=int, help="default: the latest")
     ap.add_argument("--turn", help="zoom the map to this turn, e.g. T1")
     ap.add_argument("--port", type=int, default=19666)

@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from support import run_module, wait_for  # noqa: E402
 
-from assetto_mcp import supervisor as S  # noqa: E402
+from telemetrist import supervisor as S  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -312,8 +312,8 @@ def test_the_supervisor_imports_neither_the_server_nor_mcp():
     Importing the server would open the database and start a collector in
     a process that never uses them, and mcp is most of the startup time.
     """
-    code = ("import sys, assetto_mcp.supervisor; "
-            "bad = [m for m in ('mcp', 'assetto_mcp.server') "
+    code = ("import sys, telemetrist.supervisor; "
+            "bad = [m for m in ('mcp', 'telemetrist.server') "
             "if m in sys.modules]; print(bad); sys.exit(1 if bad else 0)")
     proc = subprocess.run([sys.executable, "-c", code], cwd=ROOT,
                           capture_output=True, text=True, timeout=60)
@@ -321,30 +321,44 @@ def test_the_supervisor_imports_neither_the_server_nor_mcp():
     print("  importing the supervisor pulls in neither")
 
 
+# Every spelling config.env reads, so none leaks in from the environment.
+_SUPERVISOR_VARS = [p + v for p in ("TELEMETRIST_", "ASSETTO_MCP_",
+                                    "AC_ENGINEER_")
+                    for v in ("CHILD", "CHILD_CMD", "NO_SUPERVISOR")]
+
+
 def test_running_the_server_module_starts_the_supervisor():
-    """Existing client configs run `-m assetto_mcp.server` and must get it.
+    """Client configs run `-m telemetrist.server`, or from before the
+    rename `-m assetto_mcp.server`, from wherever the client starts, and
+    must get it.
 
     The child command is pointed at the fake server, so a reply from it
     proves the handoff happened before the real server was imported.
     """
+    for module in ("telemetrist.server", "assetto_mcp.server"):
+        _run_server_module(module)
+
+
+def _run_server_module(module):
     with _tmp() as d:
         script = Path(d) / "fake_child.py"
         script.write_text(FAKE_CHILD, encoding="utf-8")
         env = dict(os.environ, FAKE_DIR=d,
-                   ASSETTO_MCP_CHILD_CMD=json.dumps(
+                   TELEMETRIST_CHILD_CMD=json.dumps(
                        [sys.executable, str(script)]))
-        env.pop("ASSETTO_MCP_CHILD", None)
-        env.pop("ASSETTO_MCP_NO_SUPERVISOR", None)
+        for k in _SUPERVISOR_VARS:
+            if k != "TELEMETRIST_CHILD_CMD":
+                env.pop(k, None)
         req = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
                "params": {}}
         proc = subprocess.run(
-            [sys.executable, "-m", "assetto_mcp.server"], cwd=ROOT, env=env,
+            [sys.executable, "-m", module], cwd=d, env=env,
             input=(json.dumps(req) + "\n").encode(), capture_output=True,
             timeout=60)
         assert proc.returncode == 0, proc.stderr.decode()
         reply = json.loads(proc.stdout.decode().splitlines()[0])
         assert reply["result"] == {"gen": 1}, reply
-        print("  -m assetto_mcp.server ran the child command, supervised")
+        print(f"  -m {module} ran the child command, supervised")
 
 
 # --- the real server --------------------------------------------------------
@@ -359,11 +373,10 @@ def _mcp_missing() -> bool:
 
 
 def _server_env(data: str, **extra) -> dict:
-    env = dict(os.environ, ASSETTO_MCP_DATA=data,
-               ASSETTO_MCP_NO_AUTOSTART="1", ASSETTO_MCP_BRIDGE_PORT="0",
+    env = dict(os.environ, TELEMETRIST_DATA=data,
+               TELEMETRIST_NO_AUTOSTART="1", TELEMETRIST_BRIDGE_PORT="0",
                **extra)
-    for k in ("ASSETTO_MCP_CHILD", "ASSETTO_MCP_CHILD_CMD",
-              "ASSETTO_MCP_NO_SUPERVISOR"):
+    for k in _SUPERVISOR_VARS:
         if k not in extra:
             env.pop(k, None)
     return env
@@ -373,13 +386,15 @@ def _server_env(data: str, **extra) -> dict:
 # since there is no game to put it in a live session.
 _REFUSALS = r'''
 import json, os
-import assetto_mcp.server as s
-from assetto_mcp import update
+import telemetrist.server as s
+from telemetrist import update
 lock = update._cache_path(s.DATA_DIR, update.LOCK_FILE)
 lock.write_text(json.dumps({"pid": os.getpid(), "to_commit": "abc1234"}))
 out = {"updating": json.loads(s.restart_server(force=True))}
 lock.unlink()
 out["unsupervised"] = json.loads(s.restart_server())
+# As a supervisor from before the rename sets it, which a child from after
+# it must still take as being supervised.
 os.environ["ASSETTO_MCP_CHILD"] = "1"
 c = s._collector
 c.holds_recorder, c.session_id, c.live = True, 42, True
@@ -392,6 +407,36 @@ c.holds_recorder, c.session_id, c.live = False, None, False
 s._shutdown()
 print(json.dumps(out))
 '''
+
+
+def test_the_child_of_a_supervisor_from_before_the_rename_is_the_server():
+    """A supervisor started before the rename launches `-m
+    assetto_mcp.server` with ASSETTO_MCP_CHILD set, and must get the server
+    itself, not a second supervisor. The child command names the fake
+    server, which would be the one answering if a supervisor started."""
+    if _mcp_missing():
+        from lua_harness import skip
+        skip("mcp is not installed")
+        return
+    with _tmp() as d:
+        script = Path(d) / "fake_child.py"
+        script.write_text(FAKE_CHILD, encoding="utf-8")
+        env = _server_env(str(Path(d) / "data"), FAKE_DIR=d,
+                          ASSETTO_MCP_CHILD="1",
+                          TELEMETRIST_CHILD_CMD=json.dumps(
+                              [sys.executable, str(script)]))
+        req = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+               "params": {"protocolVersion": "2025-06-18",
+                          "capabilities": {},
+                          "clientInfo": {"name": "test", "version": "0"}}}
+        proc = subprocess.run(
+            [sys.executable, "-m", "assetto_mcp.server"], cwd=d, env=env,
+            input=json.dumps(req) + "\n", capture_output=True, text=True,
+            timeout=120)
+        reply = json.loads(proc.stdout.splitlines()[0])
+        assert reply["result"]["serverInfo"]["name"] == "telemetrist", (
+            reply, proc.stderr)
+        print("  ASSETTO_MCP_CHILD: the server ran, unsupervised")
 
 
 def test_restart_server_refuses_when_it_cannot_or_should_not():
@@ -429,7 +474,7 @@ def test_restart_server_refuses_when_it_cannot_or_should_not():
 
 def test_the_real_server_restarts_behind_one_connection():
     """End to end, as a client runs it: the SDK's stdio client on
-    `-m assetto_mcp.server`, through a restart_server on the same pipes."""
+    `-m telemetrist.server`, through a restart_server on the same pipes."""
     if _mcp_missing():
         from lua_harness import skip
         skip("mcp is not installed")
@@ -452,7 +497,7 @@ def test_the_real_server_restarts_behind_one_connection():
 
     async def run(data):
         params = StdioServerParameters(
-            command=sys.executable, args=["-m", "assetto_mcp.server"],
+            command=sys.executable, args=["-m", "telemetrist.server"],
             env=_server_env(data), cwd=str(ROOT))
         changed = anyio.Event()
 

@@ -9,12 +9,14 @@ behavior is checked without the cost or the timing of the real one. Two
 tests at the end run the real server, for the parts only it can show.
 """
 
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import threading
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -35,6 +37,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # FAKE_START_DELAY makes generations after the first slow to start, which
 # is the window in which the client's messages have to be queued.
 # FAKE_CRASH makes every generation exit with that code at once.
+# FAKE_REFUSE_GEN makes that generation answer initialize with an error.
 FAKE_CHILD = r'''
 import json, os, sys, time
 d = os.environ["FAKE_DIR"]
@@ -54,7 +57,12 @@ for line in sys.stdin:
     msg = json.loads(line)
     log.write(line if line.endswith("\n") else line + "\n"); log.flush()
     m = msg.get("method")
-    if m == "initialize":
+    if m == "initialize" and str(gen) == os.environ.get("FAKE_REFUSE_GEN"):
+        sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": msg["id"],
+                                     "error": {"code": -32603,
+                                               "message": "no"}}) + "\n")
+        sys.stdout.flush()
+    elif m == "initialize":
         reply(msg["id"], {"gen": gen})
     elif m == "echo":
         reply(msg["id"], {"gen": gen, "echo": msg.get("params")})
@@ -192,6 +200,47 @@ def test_a_restart_replays_the_handshake_and_hides_its_reply():
                   "its reply never reached the client")
         finally:
             assert c.close() == 0
+
+
+def test_a_replacement_that_refuses_initialize_is_replaced_again():
+    """It would refuse every tool call, so it is a failed start, not a
+    server: nothing the client sends goes to it, and the next one gets it."""
+    saved = S.BACKOFF
+    S.BACKOFF = (0.01, 0.01, 0.01)
+    try:
+        with _tmp() as d:
+            c = Client(Path(d), FAKE_REFUSE_GEN=2)
+            try:
+                c.handshake()
+                c.request(2, "restart_after")
+                assert c.reply_to(2)["result"] == {"gen": 1}
+                wait_for(lambda: (Path(d) / "gen").read_text() != "1",
+                         "the second generation to start")
+                c.request(3, "echo", {"x": 1})
+                assert c.reply_to(3)["result"] == {"gen": 3,
+                                                   "echo": {"x": 1}}
+                assert [m.get("method") for m in c.generation_log(2)] == [
+                    "initialize"]
+                print("  gen 2 refused initialize and got nothing more; "
+                      "gen 3 took over")
+            finally:
+                assert c.close() == 0
+    finally:
+        S.BACKOFF = saved
+
+
+def test_a_late_reply_from_a_replaced_server_is_not_taken_for_the_next():
+    """One that missed the deadline can still have its reply in the pipe
+    while the next server starts."""
+    sup = S.Supervisor(io.BytesIO(), io.BytesIO(), cmd=["unused"])
+    old_id = S._INIT_ID_PREFIX + "1"
+    sup._init_id = S._INIT_ID_PREFIX + "2"
+    for reply in ({"result": {}}, {"error": {"code": -32603}}):
+        old = types.SimpleNamespace(stdout=io.BytesIO(S._encode(
+            {"jsonrpc": "2.0", "id": old_id, **reply})))
+        sup._child_reader(old, old_id)
+        assert not sup._init_done.is_set() and sup._init_error is None
+    assert sup._out.getvalue() == b""
 
 
 def test_the_client_is_told_the_tools_may_have_changed():

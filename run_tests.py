@@ -36,6 +36,7 @@ import sys
 import time
 import traceback
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -252,11 +253,17 @@ def run_isolated(paths: list[Path], pattern: str | None,
     failures = []
     skips = []
     total_start = time.perf_counter()
-    for path in paths:
+    def run(path):
         started = time.perf_counter()
         proc = subprocess.run([sys.executable, str(path)],
                               capture_output=True, text=True, env=env)
-        elapsed = time.perf_counter() - started
+        return proc, time.perf_counter() - started
+
+    # Each module is its own process with its own temp dirs, so they can
+    # run side by side; this step otherwise takes as long as the suite.
+    with ThreadPoolExecutor(os.cpu_count() or 1) as pool:
+        done = pool.map(run, paths)
+    for path, (proc, elapsed) in zip(paths, done):
         skipped = proc.returncode == SKIP_EXIT
         ok = proc.returncode == 0 or (skipped and not no_skip)
         mark = YELLOW("skip") if skipped else (

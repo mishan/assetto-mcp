@@ -137,6 +137,14 @@ async def _ask(ctx, question: str) -> bool | None:
 
 class _Server(FastMCP):
     async def call_tool(self, name, arguments, *args, **kwargs):
+        # The whole call, the driver's confirmations included.
+        _enter_call()
+        try:
+            return await self._call_tool(name, arguments, *args, **kwargs)
+        finally:
+            _leave_call()
+
+    async def _call_tool(self, name, arguments, *args, **kwargs):
         # A null is how many models say "the default", and a parameter that
         # has one would otherwise refuse it.
         arguments = {k: v for k, v in (arguments or {}).items()
@@ -211,6 +219,9 @@ INSTRUCTIONS = (
 # and comparing against this is how check_for_updates knows to say that a
 # restart is still owed.
 _RUNNING_COMMIT = update.installed_commit()
+# When this process started: an update applied before it is one it already
+# runs, or a commit someone checked out again by hand.
+_STARTED_AT = time.time()
 
 
 def _version() -> str:
@@ -335,6 +346,31 @@ if _TOOLSET not in ("full", "core"):
     print(f"telemetrist: TELEMETRIST_TOOLSET={_TOOLSET!r} is not 'full' "
           "or 'core'; serving every tool", file=sys.stderr)
 _REGISTERED: set[str] = set()
+
+
+# Tool calls running now, so a restart this chat did not ask for never
+# lands in the middle of one.
+_calls_in_flight = 0
+_in_flight_lock = threading.Lock()
+# Set, under the lock, when such a restart is decided on.
+_restart_pending = threading.Event()
+
+
+def _enter_call() -> None:
+    global _calls_in_flight
+    with _in_flight_lock:
+        if not _restart_pending.is_set():
+            _calls_in_flight += 1
+            return
+    # Start nothing the restart would cut short: the supervisor answers
+    # this call "server restarted; retry" once this process exits.
+    threading.Event().wait()
+
+
+def _leave_call() -> None:
+    global _calls_in_flight
+    with _in_flight_lock:
+        _calls_in_flight -= 1
 
 
 def _tool(title: str, *, writes: bool = False, destructive: bool = False,
@@ -3586,17 +3622,44 @@ def apply_update(to_commit: str) -> str:
     pyproject.toml changed; copies the in-game app unless the game is
     running (`lua.note`). `in_progress: true` means still running: call
     again with the same to_commit for the result. The old code runs until
-    restart_server. Pass any `warning` on as it is."""
+    restart_server; servers in the driver's other chats restart onto it by
+    themselves once the game is off track. Pass any `warning` on as it
+    is."""
     return _j(update.apply_in_background(
         to_commit, live_session=_live_session(), data_dir=DATA_DIR))
 
 
 def _live_session() -> int | None:
-    """The session the driver is on track in, in any instance."""
+    """The session the driver is on track in, in any instance.
+
+    Another instance's open session is only a claim to be live: its
+    recorder keeps the heartbeat going while the game sits in the menus,
+    which in Claude Desktop, one server per chat, was every apply refused
+    for as long as the game was open. So it counts only while the game
+    itself says it is on track.
+    """
+    if _collector.holds_recorder:
+        return _collector.session_id if _collector.live else None
     snap = _bridge.status_snapshot()
-    return (_collector.session_id
-            if _collector.holds_recorder and _collector.live
-            else snap["session_id"] if snap["by_other"] else None)
+    if not snap["by_other"]:
+        return None
+    return snap["session_id"] if _game_on_track() else None
+
+
+def _game_on_track() -> bool:
+    """Whether the car may be on track. Only a game that says it is not
+    lets an update or a restart through: one whose shared memory cannot be
+    read right now -- mid-load, or a server whose files changed under it --
+    might be mid-lap."""
+    try:
+        status = _game_now().get("status")
+    except Exception:  # noqa: BLE001 - a read that fails may be mid-lap too
+        return True
+    return status not in OFF_TRACK_STATUSES
+
+
+# Shared-memory statuses with no lap to lose.
+OFF_TRACK_STATUSES = ("off", "replay")
 
 
 async def _ask_to_update(ctx, arguments) -> bool | None:
@@ -3610,6 +3673,51 @@ async def _ask_to_update(ctx, arguments) -> bool | None:
                            f"{to_commit.strip()[:7]}? It reinstalls on "
                            "disk; the running server is replaced only by "
                            "a restart.")
+
+
+# How often a server looks for an update another chat's server applied.
+FOLLOW_INTERVAL = 15.0
+
+
+def _follow_update_once() -> bool:
+    """Restart onto an update another instance applied, if now is the time.
+
+    Only for the commit apply_update recorded, not whatever the checkout
+    happens to hold: someone switching branches in it is not an update.
+    Not while an apply is still running, not with the driver on track,
+    and not with one of this chat's own calls in flight.
+    """
+    mark = update.applied_marker(DATA_DIR)
+    applied = mark and mark["commit"]
+    if not (applied and _RUNNING_COMMIT and applied != _RUNNING_COMMIT):
+        return False
+    # The server that applied it says so and waits for the driver's OK.
+    if mark.get("pid") == os.getpid():
+        return False
+    if not isinstance(mark.get("at"), (int, float)) \
+            or mark["at"] < _STARTED_AT:
+        return False
+    if update.installed_commit() != applied or update.apply_running(DATA_DIR):
+        return False
+    with _in_flight_lock:
+        # The game too, whoever records: a paused lap is not live, and
+        # with recording off there is no session to say so.
+        if (_calls_in_flight or _live_session() is not None
+                or _game_on_track()):
+            return False
+        _restart_pending.set()
+    _restart_soon()
+    return True
+
+
+def _follow_updates() -> None:
+    while True:
+        time.sleep(FOLLOW_INTERVAL)
+        try:
+            if _follow_update_once():
+                return
+        except Exception:  # noqa: BLE001 - never take the server down
+            pass
 
 
 def _restart_soon() -> None:
@@ -3873,6 +3981,11 @@ if guide.guides():
 
 
 def main():
+    # Only a supervised server can restart itself without dropping the
+    # client's connection.
+    if config.env(supervisor.CHILD_ENV):
+        threading.Thread(target=_follow_updates, daemon=True,
+                         name="follow-updates").start()
     try:
         mcp.run()
     finally:

@@ -61,7 +61,7 @@
    "openWorldHint": true,
    "readOnlyHint": false
   },
-  "description": "Fast-forward this server's checkout to `to_commit`, the `latest` sha\nfrom check_for_updates.\n\nOnly with the driver's explicit OK after they have seen the commit list.\nRefuses a live session (\"recording\"), another apply (\"in_progress\"),\nlocal edits, another branch, a checkout ahead of or diverged from main,\nor a to_commit no longer main's tip (check again). Reinstalls when\npyproject.toml changed; copies the in-game app unless the game is\nrunning (`lua.note`). `in_progress: true` means still running: call\nagain with the same to_commit for the result. The old code runs until\nrestart_server. Pass any `warning` on as it is.",
+  "description": "Fast-forward this server's checkout to `to_commit`, the `latest` sha\nfrom check_for_updates.\n\nOnly with the driver's explicit OK after they have seen the commit list.\nRefuses a live session (\"recording\"), another apply (\"in_progress\"),\nlocal edits, another branch, a checkout ahead of or diverged from main,\nor a to_commit no longer main's tip (check again). Reinstalls when\npyproject.toml changed; copies the in-game app unless the game is\nrunning (`lua.note`). `in_progress: true` means still running: call\nagain with the same to_commit for the result. The old code runs until\nrestart_server; servers in the driver's other chats restart onto it by\nthemselves once the game is off track. Pass any `warning` on as it\nis.",
   "inputSchema": {
    "properties": {
     "to_commit": {

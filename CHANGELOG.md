@@ -9,6 +9,10 @@ and the setup files may still change between minor versions.
 
 ### Added
 
+- After an update, the servers in Claude Desktop's other chats restart onto
+  the new code by themselves once the game is off track. Another chat's
+  session holds an update back only while the game is on track.
+
 - Automobilista 2, with `TELEMETRIST_SIM=ams2`: laps, the out-lap, corners,
   tyres, fuel and track limits from the game's shared memory, and its
   recordings replay like AC's. Opponents and setup files are not there yet.

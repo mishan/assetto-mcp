@@ -293,6 +293,8 @@ def test_a_failed_reinstall_is_a_warning_not_a_failure():
         assert done["updated"] is True and w.head() == tip, done
         assert done["pip"]["ok"] is False, done
         assert "install-windows.bat" in done["warning"], done
+        # The other chats' servers must not restart onto it before then.
+        assert U.applied_commit(w.data) is None, done
         print("  pip failure reported with what to do")
     _world(go)
 
@@ -620,7 +622,12 @@ c.holds_recorder, c.session_id, c.live = False, None, False
 out["elsewhere_id"] = db.create_session(
     s._conn, car="c", track="t", track_config="", tyre_compound="",
     air_temp=20, road_temp=25)
+s._game_now = lambda: {"status": "live"}
 out["elsewhere"] = apply_update()
+# The other instance keeps its session open in the menus; only the game
+# can say whether the driver is on track.
+s._game_now = lambda: {"status": "off"}
+out["menus"] = s._live_session()
 s._shutdown()
 print(json.dumps(out))
 """
@@ -654,9 +661,210 @@ def test_the_server_tools_as_the_model_calls_them():
         for where, sid in (("here", 42), ("elsewhere", out["elsewhere_id"])):
             assert out[where]["refused"] == "recording", out
             assert out[where]["session_id"] == sid, out
+        assert out["menus"] is None, out
         print(f"  check_for_updates: {check['error']}; apply_update "
-              "refused in a live session")
+              "refused in a live session, not in another chat's menus")
 
+
+
+def test_a_finished_apply_tells_every_server_where_to_go():
+    """Only the server that applied an update hears about it; the others,
+    one per chat in Claude Desktop, read the commit it left behind."""
+    def go(w):
+        w.write("a.txt", "a\n")
+        tip = w.push("Change")
+        assert U.applied_commit(w.data) is None
+        assert w.apply(tip)["updated"] is True
+        assert U.applied_commit(w.data) == tip
+        print("  the applied commit is left for the other servers")
+    _world(go)
+
+
+_FOLLOW = r"""
+import json, threading, time
+import telemetrist.server as s
+from telemetrist import update
+
+restarts = []
+s._restart_soon = lambda: restarts.append(1)
+s._RUNNING_COMMIT = "old"
+update.installed_commit = lambda root=None: "new"
+update.apply_running = lambda data_dir=None: None
+s._game_now = lambda: {"status": "off"}
+out = {}
+# A call waiting on the driver's answer is a call in flight.
+import asyncio
+asking = []
+async def ask(ctx, arguments):
+    asking.append(s._calls_in_flight)
+    return False
+s._ask_to_update, s._can_elicit = ask, lambda ctx: True
+try:
+    asyncio.run(s.mcp.call_tool("apply_update", {"to_commit": "abc"}))
+except Exception:
+    pass
+out["counted_while_asking"] = asking
+out["nothing_applied"] = s._follow_update_once()
+def marker(commit):
+    return lambda data_dir=None: {"commit": commit, "pid": -1,
+                                  "at": s._STARTED_AT + 1}
+update.applied_marker = marker("branch")
+out["a_branch_checked_out"] = s._follow_update_once()
+update.applied_marker = marker("new")
+s._calls_in_flight = 1
+out["mid_call"] = s._follow_update_once()
+s._calls_in_flight = 0
+c = s._collector
+c.holds_recorder, c.session_id, c.live = True, 9, True
+out["on_track"] = s._follow_update_once()
+c.live = False
+s._game_now = lambda: {"status": "pause"}
+out["paused"] = s._follow_update_once()
+s._game_now = lambda: {"status": "off"}
+c.holds_recorder, c.session_id, c.live = False, None, False
+out["idle"] = s._follow_update_once()
+out["restarts"] = len(restarts)
+# Decided on: a call arriving before the process exits does not start.
+ran = []
+threading.Thread(target=lambda: (s._enter_call(), ran.append(1)),
+                 daemon=True).start()
+time.sleep(0.3)
+out["call_started"] = bool(ran)
+s._shutdown()
+print(json.dumps(out))
+"""
+
+
+def test_another_chats_server_follows_an_update_when_idle():
+    """Applied in one chat, every other server restarts onto it itself --
+    but never for a branch someone checked out, mid-call, or on track."""
+    out = _run_server(_FOLLOW)
+    if out is None:
+        return
+    assert out == {"counted_while_asking": [1], "nothing_applied": False,
+                   "a_branch_checked_out": False, "mid_call": False,
+                   "on_track": False, "paused": False, "idle": True,
+                   "restarts": 1, "call_started": False}, out
+    print("  restarts once, idle, onto the applied commit only")
+
+
+_FAIL_SAFE = r"""
+import json
+import telemetrist.server as s
+from telemetrist import db
+
+c = s._collector
+c.holds_recorder, c.session_id, c.live = False, None, False
+sid = db.create_session(s._conn, car="c", track="t", track_config="",
+                        tyre_compound="", air_temp=20, road_temp=25)
+out = {"sid": sid}
+for status in ("not running", "unknown (9)", "off", "replay", "live"):
+    s._game_now = lambda status=status: {"status": status}
+    out[status] = s._live_session()
+def torn():
+    raise OSError("torn page")
+s._game_now = torn
+out["read_fails"] = s._live_session()
+s._shutdown()
+print(json.dumps(out))
+"""
+
+
+def test_a_game_that_cannot_be_read_counts_as_on_track():
+    """Only a game that says it is off track lets an update through.
+
+    Shared memory unreadable -- the game mid-load, a server whose files
+    changed under it -- with another chat recording must refuse, as it did
+    before another instance's session needed the game's word.
+    """
+    out = _run_server(_FAIL_SAFE)
+    if out is None:
+        return
+    sid = out["sid"]
+    assert out["not running"] == sid and out["unknown (9)"] == sid, out
+    assert out["read_fails"] == sid, out
+    assert out["live"] == sid, out
+    assert out["off"] is None and out["replay"] is None, out
+    print("  unreadable or unknown: on track; off and replay: not")
+
+
+_SELF = r"""
+import json, os, time
+import telemetrist.server as s
+from telemetrist import update
+
+restarts = []
+s._restart_soon = lambda: restarts.append(1)
+s._RUNNING_COMMIT = "old"
+update.installed_commit = lambda root=None: "new"
+update.apply_running = lambda data_dir=None: None
+s._game_now = lambda: {"status": "off"}
+out = {}
+# This process applied it: the driver is asked before it restarts.
+update.mark_applied("new", s.DATA_DIR)
+out["applied_here"] = s._follow_update_once()
+# Another process applied it after this one started: follow.
+update.mark_applied("new", s.DATA_DIR, pid=os.getpid() + 1)
+out["applied_elsewhere"] = s._follow_update_once()
+# Applied before this process started -- someone checked the applied
+# commit out again after working on a branch: not an update.
+s._STARTED_AT = time.time() + 60
+out["applied_before_start"] = s._follow_update_once()
+out["restarts"] = len(restarts)
+s._shutdown()
+print(json.dumps(out))
+"""
+
+
+def test_only_other_servers_follow_and_only_a_newer_apply():
+    """The applying server waits for the driver's OK; a branch switched
+    back to the applied commit is not an update."""
+    out = _run_server(_SELF)
+    if out is None:
+        return
+    assert out == {"applied_here": False, "applied_elsewhere": True,
+                   "applied_before_start": False, "restarts": 1}, out
+    print("  follows another process's apply, made after it started, only")
+
+
+def test_an_interrupted_marker_write_keeps_the_last_marker():
+    """A write that dies half way must not leave an empty marker that no
+    server can follow."""
+    import pathlib
+    with tempfile.TemporaryDirectory() as d:
+        U.mark_applied("aaa", Path(d))
+        real = pathlib.Path.write_text
+
+        def dies_half_way(self, text, *a, **kw):
+            real(self, text[:3], *a, **kw)
+            raise OSError("disk full")
+
+        pathlib.Path.write_text = dies_half_way
+        try:
+            U.mark_applied("bbb", Path(d))
+        finally:
+            pathlib.Path.write_text = real
+        assert U.applied_commit(Path(d)) == "aaa"
+        print("  a failed write leaves the previous marker readable")
+
+
+def _run_server(script: str) -> dict | None:
+    try:
+        import mcp  # noqa: F401
+    except ImportError:
+        from lua_harness import skip
+        skip("mcp is not installed")
+        return None
+    root = Path(__file__).resolve().parent.parent
+    with tempfile.TemporaryDirectory(prefix="ac-upd-") as d:
+        env = dict(os.environ, TELEMETRIST_DATA=d,
+                   TELEMETRIST_NO_AUTOSTART="1", TELEMETRIST_BRIDGE_PORT="0",
+                   TELEMETRIST_UPDATE_API="http://127.0.0.1:9")
+        proc = subprocess.run([sys.executable, "-c", script], cwd=root,
+                              env=env, capture_output=True, text=True,
+                              timeout=120, stdin=subprocess.DEVNULL)
+        assert proc.returncode == 0, proc.stderr
+        return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
 def test_an_empty_commit_is_refused_rather_than_matched():

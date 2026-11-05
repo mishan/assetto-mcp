@@ -60,6 +60,10 @@ MAX_COMMITS = 25
 # them. Every step of an apply has its own timeout, and a lock older than
 # all of them together belongs to an apply that died without removing it.
 LOCK_FILE = "update_apply.lock"
+# Written when an apply succeeds: the commit every server should now be on.
+# Claude Desktop runs one server per chat, and only the one that applied it
+# hears about it; the others read this and restart themselves onto it.
+APPLIED_FILE = "update_applied.json"
 LOCK_STALE_SECONDS = FETCH_TIMEOUT + PIP_TIMEOUT + 600
 # How long apply_update waits for the result before answering "in
 # progress": inside the minute an MCP client commonly allows a call.
@@ -899,7 +903,58 @@ def _apply(to_commit, root, data_dir, ac, pip, is_game_running) -> dict:
         pass
     out["restart_required"] = True
     out["next"] = "call restart_server, with the driver's OK"
+    head = installed_commit(root)
+    # Not after a failed reinstall: the other servers would restart onto
+    # code whose dependencies may not be installed.
+    if head and out["pip"].get("ok", True):
+        mark_applied(head, data_dir)
+        out["next"] += (". Servers in the driver's other chats restart "
+                        "themselves onto it once the game is not on track")
     return out
+
+
+def mark_applied(commit: str, data_dir: Path | None = None,
+                 pid: int | None = None) -> None:
+    """Record the commit an apply left on disk, which process applied it
+    and when, for the other servers to follow.
+
+    Written to a temporary file and moved into place: a write that dies
+    half way must leave the last marker, not an empty one no server can
+    read.
+    """
+    path = _cache_path(data_dir, APPLIED_FILE)
+    if not path:
+        return
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps({
+            "commit": commit, "at": time.time(),
+            "pid": os.getpid() if pid is None else pid}), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def applied_marker(data_dir: Path | None = None) -> dict | None:
+    """The last successful apply: its commit, time and process id."""
+    path = _cache_path(data_dir, APPLIED_FILE)
+    try:
+        mark = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    if not isinstance(mark, dict) or not isinstance(mark.get("commit"), str) \
+            or not mark["commit"]:
+        return None
+    return mark
+
+
+def applied_commit(data_dir: Path | None = None) -> str | None:
+    """The commit the last successful apply left on disk, if any."""
+    mark = applied_marker(data_dir)
+    return mark["commit"] if mark else None
 
 
 # --- command line -------------------------------------------------------

@@ -374,6 +374,7 @@ class Collector:
         lap_pitted = False       # driver entered the pit lane this lap
         session_best = None      # fastest valid lap so far, for outlier check
         last_completed = None
+        session_type = None
         lap_start_wall = None
         # Fuel on board when the current lap started at the line; None when
         # it started anywhere else, which a lap's burn cannot be read from.
@@ -423,9 +424,11 @@ class Collector:
 
             # Restarting a session from the in-game menu resets completedLaps
             # without passing through AC_OFF. A lap counter that goes
-            # backwards can only mean a restart, so roll a fresh session.
+            # backwards can only mean a restart, so roll a fresh session; so
+            # does moving on to the next session before a lap is done.
             if (session_started and last_completed is not None
-                    and f.completed_laps < last_completed):
+                    and (f.completed_laps < last_completed
+                         or f.session_type != session_type)):
                 session_started = False
                 last_completed = None
                 session_best = None
@@ -461,6 +464,7 @@ class Collector:
                         self.session_id = None
                     return
                 last_completed = f.completed_laps
+                session_type = f.session_type
                 last_pos = None
                 lap_samples = []
                 wide_since = None

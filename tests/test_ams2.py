@@ -288,6 +288,9 @@ def test_the_count_stays_on_the_driver_whoever_the_camera_follows():
           (dict(viewed=1, dist=960), ("live", 0, 0)),
           (dict(viewed=1, laps=1, dist=2, clock=0.03, last=58.0),
            ("live", 1, 58000))])
+    # Started while a replay follows another car.
+    _run([(dict(game=6, viewed=1), ("off", None, None)),
+          (dict(dist=950), ("live", 0, 0))])
 
 
 if __name__ == "__main__":

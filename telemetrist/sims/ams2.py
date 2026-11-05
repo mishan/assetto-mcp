@@ -349,9 +349,10 @@ class Reader:
             self._session_state = s.mSessionState
         viewed = s.mViewedParticipantIndex
         count = min(s.mNumParticipants, PARTICIPANTS)
-        if self._player is None or self._player >= count:
+        if ((self._player is None or self._player >= count)
+                and STATUS.get(s.mGameState) in ("live", "pause")):
             # Latched: a view switched to another car must not move the lap
-            # count to that car's.
+            # count to that car's. A replay may be following anyone.
             self._player = viewed if 0 <= viewed < count else None
         # In the menus there is no car and no track: the index is -1, which
         # ctypes would wrap to the last car, and the length 0.

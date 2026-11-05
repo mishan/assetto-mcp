@@ -49,6 +49,18 @@ def test_restart_from_the_menu_starts_a_new_session():
         conn.close()
 
 
+def test_moving_on_to_qualifying_before_a_lap_starts_a_new_session():
+    """With no lap done in either, the lap count never goes backwards; the
+    session type is all that changes."""
+    def to_qualifying(sim, col):
+        before = col.sessions_started
+        sim.graphics.session = 1
+        wait_for(lambda: col.sessions_started > before, "a new session")
+
+    with temp_db() as path:
+        run_collector([lambda s, c: tick(s, c), to_qualifying], path)
+
+
 def test_leaving_the_session_starts_a_new_one():
     with temp_db() as path:
         script = [

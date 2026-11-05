@@ -262,7 +262,8 @@ def run_isolated(paths: list[Path], pattern: str | None,
 
     # Each module is its own process with its own temp dirs, so they can
     # run side by side; this step otherwise takes as long as the suite.
-    # Reported in order as each finishes; on Ctrl+C, nothing queued starts.
+    # Reported in the usual order, each as soon as it and those before it
+    # are done; on Ctrl+C, nothing queued starts.
     pool = ThreadPoolExecutor(os.cpu_count() or 1)
     try:
         for path, (proc, elapsed) in zip(paths, pool.map(run, paths)):

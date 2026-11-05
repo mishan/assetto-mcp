@@ -885,6 +885,25 @@ def test_a_client_entry_left_under_the_old_name_is_found():
         print("  the pre-rename entry is found in any config, bad ones skipped")
 
 
+def test_every_package_build_s_config_is_searched():
+    """The installer finds Claude Desktop by its redirect directory, under
+    any package name; so must the check that sends the driver to it."""
+    with tempfile.TemporaryDirectory() as d:
+        want = []
+        for pkg in ("Claude_pzs8sxrjxfjjc", "AnthropicClaude_1.0_x64"):
+            cfg = (Path(d) / "Packages" / pkg / "LocalCache" / "Roaming"
+                   / "Claude" / "claude_desktop_config.json")
+            cfg.parent.mkdir(parents=True)
+            cfg.write_text("{}", encoding="utf-8")
+            want.append(cfg)
+        (Path(d) / "Packages" / "SomethingElse").mkdir()
+        from unittest import mock
+        with mock.patch.dict(os.environ, LOCALAPPDATA=d):
+            os.environ.pop("APPDATA", None)
+            assert U._claude_configs() == sorted(want), U._claude_configs()
+        print("  every package with the redirect directory is searched")
+
+
 def test_an_apply_reads_the_client_configs_it_is_given():
     """Which Claude config still names the old entry is the apply's input,
     not whatever the machine running it happens to have."""

@@ -42,12 +42,14 @@ def _powershell() -> str | None:
     return shutil.which("powershell") or shutil.which("pwsh")
 
 
-def _install(owner_cfg: dict | None, other_cfg: dict | None) -> tuple:
-    """Run the step; return (owner config, other config, output)."""
+def _install(owner_cfg: dict | None, other_cfg: dict | None) -> tuple | None:
+    """Run the step; return (owner config, other config, output), or None
+    where there is no PowerShell to run it."""
     shell = _powershell()
     if not shell:
         from lua_harness import skip
         skip("PowerShell is not installed")
+        return None
     with tempfile.TemporaryDirectory() as d:
         owner, other = Path(d) / "msix.json", Path(d) / "plain.json"
         for path, cfg in ((owner, owner_cfg), (other, other_cfg)):
@@ -72,7 +74,9 @@ def test_settings_on_the_old_entry_are_kept():
     old = {"mcpServers": {"elgato": {"command": "x"}, "assetto-mcp": {
         "command": "py", "args": ["-m", "assetto_mcp.server"],
         "env": {"ASSETTO_MCP_DASH_LAN": "1"}}}}
-    owner, _, out = _install(old, None)
+    if not (got := _install(old, None)):
+        return
+    owner, _, out = got
     entry = owner["mcpServers"]["telemetrist"]
     assert entry["env"] == {"ASSETTO_MCP_DASH_LAN": "1"}, owner
     assert "assetto-mcp" not in owner["mcpServers"], owner
@@ -87,7 +91,9 @@ def test_settings_in_the_other_config_are_kept_too():
     other = {"mcpServers": {"assetto-mcp": {
         "command": "py", "args": ["-m", "assetto_mcp.server"],
         "env": {"ASSETTO_MCP_DASH_LAN": "1"}}}}
-    owner, plain, _ = _install(None, other)
+    if not (got := _install(None, other)):
+        return
+    owner, plain, _ = got
     assert owner["mcpServers"]["telemetrist"].get("env") == {
         "ASSETTO_MCP_DASH_LAN": "1"}, owner
     assert "assetto-mcp" not in plain["mcpServers"], plain
@@ -99,7 +105,9 @@ def test_other_fields_the_driver_added_are_kept():
     old = {"mcpServers": {"assetto-mcp": {
         "command": "py", "args": ["-m", "assetto_mcp.server"],
         "cwd": "D:\\racing", "disabled": False}}}
-    owner, _, out = _install(old, None)
+    if not (got := _install(old, None)):
+        return
+    owner, _, out = got
     entry = owner["mcpServers"]["telemetrist"]
     assert entry["command"] == "C:\\py.exe", entry
     assert entry["args"] == ["-m", "telemetrist.server"], entry

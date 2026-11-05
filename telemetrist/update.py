@@ -528,7 +528,9 @@ OLD_CLIENT_ENTRIES = ("assetto-mcp", "ac-race-engineer")
 
 def _claude_configs() -> list[Path]:
     """Every claude_desktop_config.json Claude Desktop might read: the plain
-    one, and the MSIX build's redirected copy."""
+    one, and every MSIX build's redirected copy. As in the installer, the
+    redirect directory is what marks a package as Claude Desktop, whatever
+    the package is called."""
     out = []
     appdata = os.environ.get("APPDATA")
     if appdata:
@@ -536,7 +538,7 @@ def _claude_configs() -> list[Path]:
     local = os.environ.get("LOCALAPPDATA")
     if local:
         out += sorted((Path(local) / "Packages").glob(
-            "Claude_*/LocalCache/Roaming/Claude/claude_desktop_config.json"))
+            "*/LocalCache/Roaming/Claude/claude_desktop_config.json"))
     return [p for p in out if p.is_file()]
 
 

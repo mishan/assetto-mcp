@@ -218,7 +218,9 @@ class Supervisor:
         self._init_request: dict | None = None
         self._initialized: dict | None = None
         self._init_seq = 0
+        self._init_id: str | None = None
         self._init_done = threading.Event()
+        self._init_error = None
         self.eof = threading.Event()
 
     # -- writing ----------------------------------------------------------
@@ -315,8 +317,12 @@ class Supervisor:
                 # Our replayed initialize. The client already has an answer
                 # to its own, from the first child, and a second one for an
                 # id it never sent would be a protocol error.
-                self._init_error = msg.get("error")
-                self._init_done.set()
+                # A server replaced after missing the deadline can still
+                # have its reply in the pipe; it must not pass for the next's.
+                with self._lock:
+                    if init_id == self._init_id:
+                        self._init_error = msg.get("error")
+                        self._init_done.set()
                 continue
             with self._lock:
                 for m in _messages(msg):
@@ -392,6 +398,7 @@ class Supervisor:
             if init is not None:
                 self._init_seq += 1
                 init_id = f"{_INIT_ID_PREFIX}{self._init_seq}"
+            self._init_id = init_id
             self._init_done.clear()
             self._init_error = None
         proc = self._spawn()

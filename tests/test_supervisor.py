@@ -9,12 +9,14 @@ behavior is checked without the cost or the timing of the real one. Two
 tests at the end run the real server, for the parts only it can show.
 """
 
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import threading
+import types
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -225,6 +227,20 @@ def test_a_replacement_that_refuses_initialize_is_replaced_again():
                 assert c.close() == 0
     finally:
         S.BACKOFF = saved
+
+
+def test_a_late_reply_from_a_replaced_server_is_not_taken_for_the_next():
+    """One that missed the deadline can still have its reply in the pipe
+    while the next server starts."""
+    sup = S.Supervisor(io.BytesIO(), io.BytesIO(), cmd=["unused"])
+    old_id = S._INIT_ID_PREFIX + "1"
+    sup._init_id = S._INIT_ID_PREFIX + "2"
+    for reply in ({"result": {}}, {"error": {"code": -32603}}):
+        old = types.SimpleNamespace(stdout=io.BytesIO(S._encode(
+            {"jsonrpc": "2.0", "id": old_id, **reply})))
+        sup._child_reader(old, old_id)
+        assert not sup._init_done.is_set() and sup._init_error is None
+    assert sup._out.getvalue() == b""
 
 
 def test_the_client_is_told_the_tools_may_have_changed():

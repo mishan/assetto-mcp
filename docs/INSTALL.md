@@ -299,15 +299,17 @@ names are still honored so nothing is lost:
   move is skipped, the old directory keeps being used, and it's retried on the
   next clean start — so the worst case is that nothing happens yet.
 - **`ASSETTO_MCP_*` and `AC_ENGINEER_*` still work.** Every `TELEMETRIST_*`
-  setting is read under the old spellings as a fallback.
+  setting the server reads is read under the old spellings as a fallback.
+  The tool-choice eval in `tests/eval` takes only the new names.
 - **The stale bits get cleaned up.** Re-running `install-windows.bat` replaces
   the `assetto-mcp` or `ac-race-engineer` entry in every Claude Desktop config
   with `telemetrist` and deletes the old in-game app folders, so you don't end
   up with two servers or the app listed twice. Close Assetto Corsa and
   Content Manager first: a folder the game holds open is left in place, and
   the new app is not installed beside it. Claude Desktop asks once to
-  approve the tools again under the new name. On any other client, rename the
-  entry yourself, or leave it: it keeps working.
+  approve the tools again under the new name. On any other client, rename an
+  `assetto-mcp` entry yourself, or leave it: it keeps working. Delete an
+  `ac-race-engineer` entry: its module no longer exists.
 
 One thing does not carry over from `ac-race-engineer`: the in-game app's
 **wheel button bindings**. The CSP control names changed with that rename, so

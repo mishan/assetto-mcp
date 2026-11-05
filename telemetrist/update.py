@@ -544,7 +544,9 @@ def _claude_configs() -> list[Path]:
 
 def old_client_entry(configs: list[Path] | None = None) -> str | None:
     """The pre-rename Claude Desktop entry still starting this server, if
-    any. Only the installer renames it, carrying its settings over."""
+    any. Only the installer renames it, carrying its settings over, and
+    it takes the newest name in any config before an older one."""
+    found = []
     for path in configs if configs is not None else _claude_configs():
         try:
             servers = json.loads(path.read_text(encoding="utf-8"))
@@ -552,12 +554,9 @@ def old_client_entry(configs: list[Path] | None = None) -> str | None:
         except (OSError, ValueError, AttributeError):
             continue
         # Read at the server's start: no config, however mangled, may stop it.
-        if not isinstance(servers, dict):
-            continue
-        for name in OLD_CLIENT_ENTRIES:
-            if name in servers:
-                return name
-    return None
+        if isinstance(servers, dict):
+            found += servers
+    return next((n for n in OLD_CLIENT_ENTRIES if n in found), None)
 
 
 def sync_lua(root: Path | None = None, ac: Path | None = None,

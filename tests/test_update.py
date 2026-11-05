@@ -888,6 +888,10 @@ def test_a_client_entry_left_under_the_old_name_is_found():
         assert U.old_client_entry([odd, plain]) is None
         assert U.old_client_entry([plain]) is None
         assert U.old_client_entry([broken, plain, msix]) == "assetto-mcp"
+        # The name the installer carries over: newest first, in any config.
+        odd.write_text(json.dumps({"mcpServers": {"ac-race-engineer": {}}}),
+                       encoding="utf-8")
+        assert U.old_client_entry([odd, msix]) == "assetto-mcp"
         print("  the pre-rename entry is found in any config, bad ones skipped")
 
 

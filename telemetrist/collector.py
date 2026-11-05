@@ -31,10 +31,11 @@ ABANDON_JUMP = 0.25
 WRAP_HIGH = 0.9
 WRAP_LOW = 0.1
 
-# Arriving in the pit lane, a car that moved more than this since the last
-# tick, either way round the lap, was sent there. Driving moves it well
-# under 1% of a lap a tick, even across the line; a car sent to a pit box
-# only just up the road from where it was is left as a lap with a pit visit.
+# In the pit lane, a car that moved more than this since the last tick,
+# either way round the lap, was sent to its box or the garage: on the
+# recordings, driving moves it at most 0.3% of a lap a tick, even across the
+# line. A car sent to a box only just up the road from where it was is left
+# as a lap with a pit visit.
 PIT_JUMP = 0.02
 
 # The outlier rule lives in analysis so the same definition is used both
@@ -387,7 +388,6 @@ class Collector:
         lap_start_fuel = None
         last_packet = -1
         last_pos = None
-        last_in_pit = False
 
         def keep_unfinished():
             # Often the lap the driver most wants to look at; complete=0 so
@@ -437,10 +437,10 @@ class Collector:
                     # menus.
                     self._announce("waiting for the session to go live")
                 # A return to the pits or the garage often lands on a paused
-                # frame, which the driver may quit from: that one goes on to
-                # the check for a lap left unfinished.
+                # frame, which the driver may quit from: paused frames in the
+                # pit lane go on to the check for a lap left unfinished.
                 if not (session_started and f.status == "pause"
-                        and f.in_pit_lane and not last_in_pit):
+                        and f.in_pit_lane):
                     pause(0.25)
                     continue
 
@@ -573,8 +573,7 @@ class Collector:
             if (lap_samples and last_pos is not None
                     and (last_pos - pos > ABANDON_JUMP and not wrapped
                          and not f.in_pit_lane
-                         or f.in_pit_lane and not last_in_pit
-                         and min(moved, 1 - moved) > PIT_JUMP)):
+                         or f.in_pit_lane and min(moved, 1 - moved) > PIT_JUMP)):
                 keep_unfinished()
                 lap_samples = []
                 wide_since = None
@@ -583,7 +582,7 @@ class Collector:
                 lap_start_fuel = None
                 self.current_lap_dirty = False
                 self.current_lap_pitted = False
-            last_pos, last_in_pit = pos, f.in_pit_lane
+            last_pos = pos
 
             # A lap containing a pit visit has a meaningless time. Note it
             # before the sampling guard below, which skips pit-lane ticks.

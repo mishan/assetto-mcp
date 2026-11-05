@@ -198,28 +198,34 @@ def test_a_lap_left_for_the_pits_is_kept_marked_incomplete():
     lane mid-lap, ahead of it on the spline as often as behind, and often
     on a paused frame the driver then quits from."""
     cases = [
-        # (how the car gets to the pits, from, to, laps abandoned)
-        ("sent there, live", sim_info.AC_LIVE, 0.5, 0.86, 1),
-        ("sent there, paused", sim_info.AC_PAUSE, 0.5, 0.86, 1),
-        ("sent behind the car", sim_info.AC_LIVE, 0.5, 0.05, 1),
-        ("sent from the end of the lap", sim_info.AC_LIVE, 0.95, 0.03, 1),
-        ("driven in", sim_info.AC_LIVE, 0.5, None, 0),
-        ("driven in at the line", sim_info.AC_LIVE, 0.999, 0.001, 0),
+        # (how the car gets to the pits, from, where it is in the pit lane,
+        # laps abandoned)
+        ("sent there, live", sim_info.AC_LIVE, 0.5, [0.86], 1),
+        ("sent there, paused", sim_info.AC_PAUSE, 0.5, [0.86], 1),
+        ("sent behind the car", sim_info.AC_LIVE, 0.5, [0.05], 1),
+        ("sent from the end of the lap", sim_info.AC_LIVE, 0.95, [0.03], 1),
+        ("driven in, then sent to the box", sim_info.AC_LIVE, 0.5,
+         [0.5, 0.86], 1),
+        ("driven in, then sent, paused", sim_info.AC_PAUSE, 0.5,
+         [0.5, 0.86], 1),
+        ("driven in", sim_info.AC_LIVE, 0.5, [0.5], 0),
+        ("driven in at the line", sim_info.AC_LIVE, 0.999, [0.001], 0),
     ]
-    for name, status, start, to, abandoned in cases:
+    for name, status, start, stops, abandoned in cases:
         with temp_db() as path:
 
             def go_to_pits(sim, col):
                 sim.graphics.normalizedCarPosition = start - 0.2
                 tick(sim, col, n=2)
-                # All in one read, as the game moves the car.
-                g = copy.copy(sim.graphics)
-                g.status, g.isInPitLane = status, 1
-                if to is not None:
+                for i, to in enumerate(stops):
+                    # All in one read, as the game moves the car.
+                    g = copy.copy(sim.graphics)
+                    g.status, g.isInPitLane = status, 1
                     g.normalizedCarPosition = to
-                sim.graphics = g
-                wait_for(lambda: col.current_lap_pitted,
-                         "the pit visit to be noticed")
+                    sim.graphics = g
+                    wait_for(lambda: col.current_lap_pitted if i == 0
+                             else col.abandoned_laps >= abandoned,
+                             "the car in the pit lane to be read")
 
             col = run_collector([
                 lambda s, c: (tick(s, c), complete_lap(s, c, 113000)),

@@ -236,7 +236,7 @@ def test_the_loaded_tread_spread_is_not_cancelled_by_the_other_way():
     print("  loaded spread -20 C where the lap average reads 0")
 
 
-def test_loaded_time_does_not_shrink_on_a_thinned_lap():
+def test_loaded_time_survives_thinning_and_leaves_out_gaps():
     """Retention keeps every Nth sample of old laps; a count of loaded
     samples would fall N-fold, time in the loaded state does not."""
     full = [_sample(t, -1.2) for t in range(0, 2000, 40)]
@@ -245,6 +245,11 @@ def test_loaded_time_does_not_shrink_on_a_thinned_lap():
     b = analysis.tread_and_camber(thinned, "fl")["camber_deg"]
     assert abs(a["loaded_s"] - b["loaded_s"]) <= 0.3, (a, b)
     assert a["loaded_s"] >= 1.9, a
+    # Ten seconds the recording missed are not ten seconds loaded.
+    gap = ([_sample(t, 0.0) for t in range(0, 1000, 40)]
+           + [_sample(t, -1.2) for t in range(11000, 12000, 40)])
+    c = analysis.tread_and_camber(gap, "fl")["camber_deg"]
+    assert c["loaded_s"] <= 1.1, c
     print(f"  loaded {a['loaded_s']} s full, {b['loaded_s']} s thinned")
 
 

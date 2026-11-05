@@ -1329,6 +1329,12 @@ def tread_and_camber(samples: list[dict], w: str) -> dict:
         out["middle_minus_edges_c"] = round(m - (i + o) / 2, 1)
 
     outside_sign = 1 if w.endswith("r") else -1
+    # The lap's usual sample step: a gap in the recording longer than that
+    # was not seen, so it is not counted as time loaded.
+    ts = [s.get("t_ms") for s in samples]
+    steps = [b - a for a, b in zip(ts, ts[1:])
+             if a is not None and b is not None and b > a]
+    step = median(steps) if steps else 0
     straight, loaded, loaded_tread, loaded_ms = [], [], [], 0
     prev_t = None
     for s in samples:
@@ -1341,7 +1347,7 @@ def tread_and_camber(samples: list[dict], w: str) -> dict:
         is_loaded = lat * outside_sign >= CAMBER_LOADED_G
         if is_loaded:
             # Time, not samples: a thinned lap keeps every Nth sample.
-            loaded_ms += max(dt, 0)
+            loaded_ms += min(max(dt, 0), step)
             edges = (s.get(f"surf_in_{w}"), s.get(f"surf_out_{w}"))
             if None not in edges:
                 loaded_tread.append(edges[0] - edges[1])

@@ -7,32 +7,30 @@ and the setup files may still change between minor versions.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-05
+
+assetto-mcp is now Telemetrist, and it reads Automobilista 2 as well as
+Assetto Corsa. An install that updates itself keeps working under the old
+names; re-run `install-windows.bat` to move Claude Desktop's entry to the
+new one. Restart a pit wall or an older server left running across the
+update: until then it serves no pit wall, overlay or line map.
+
 ### Added
 
+- Automobilista 2, with `TELEMETRIST_SIM=ams2`: laps, the out-lap, corners,
+  tyres, fuel and track limits from the game's shared memory, and its
+  recordings replay like AC's. Opponents and setup files are not there yet.
+- Assetto Corsa laps record each tyre's tread temperature, inner, middle and
+  outer, and the camber each wheel runs at. Lap summaries give the spread
+  across each tyre and the camber in a straight line and when loaded, and
+  `lap_trace` can plot them.
 - After an update, the servers in Claude Desktop's other chats restart onto
   the new code by themselves once the game is off track. Another chat's
   session holds an update back only while the game is on track.
 - `session_check` and `apply_update` say when a Claude Desktop config
   still has a pre-rename entry, and that re-running the installer renames it.
-- Assetto Corsa laps record each tyre's tread temperature, inner, middle and
-  outer, and the camber each wheel runs at. Lap summaries give the spread
-  across each tyre and the camber in a straight line and when loaded, and
-  `lap_trace` can plot them.
-
-- Automobilista 2, with `TELEMETRIST_SIM=ams2`: laps, the out-lap, corners,
-  tyres, fuel and track limits from the game's shared memory, and its
-  recordings replay like AC's. Opponents and setup files are not there yet.
 
 ### Changed
-
-- The Windows installer keeps the settings on an existing Claude Desktop
-  entry (`env` and anything besides the command), from whichever config
-  holds it, instead of writing a bare entry over them.
-
-- A lap left mid-way for the pits (AC's Return to Pits) or the garage
-  (AMS2) is kept, marked unfinished, as a crash already was, and so is the
-  lap so far when the driver quits to the menus or restarts. They used to
-  be lost, or a pit return joined onto the next out-lap.
 
 - The project is now Telemetrist: the package, commands (`telemetrist`,
   `telemetrist-update`, `telemetrist-pit-wall`), `TELEMETRIST_*` settings,
@@ -40,6 +38,13 @@ and the setup files may still change between minor versions.
   keep working: `-m assetto_mcp.server` and the `assetto-mcp` commands,
   `ASSETTO_MCP_*` settings, and `~/.assetto-mcp`, which is moved at the
   first start that finds nothing holding it open. See [upgrading](docs/INSTALL.md#upgrading-from-assetto-mcp-or-ac-race-engineer).
+- The Windows installer keeps the settings on an existing Claude Desktop
+  entry (`env` and anything besides the command), from whichever config
+  holds it, instead of writing a bare entry over them.
+- A lap left mid-way for the pits (AC's Return to Pits) or the garage
+  (AMS2) is kept, marked unfinished, as a crash already was, and so is the
+  lap so far when the driver quits to the menus or restarts. They used to
+  be lost, or a pit return joined onto the next out-lap.
 
 ## [0.2.0] - 2026-10-24
 
@@ -112,5 +117,6 @@ The first tagged release, covering everything since the project began.
 - A Windows installer that sets up the server, the in-game app and Claude
   Desktop, and a diagnostic report for when something doesn't work.
 
-[Unreleased]: https://github.com/mishan/telemetrist/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/mishan/telemetrist/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/mishan/telemetrist/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/mishan/telemetrist/releases/tag/v0.2.0

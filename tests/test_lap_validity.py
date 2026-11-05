@@ -200,24 +200,30 @@ def test_a_lap_left_for_the_pits_is_kept_marked_incomplete():
     on a paused frame the driver then quits from."""
     cases = [
         # (how the car gets to the pits, from, where it is in the pit lane,
-        # laps abandoned)
-        ("sent there, live", sim_info.AC_LIVE, 0.5, [0.86], 1),
-        ("sent there, paused", sim_info.AC_PAUSE, 0.5, [0.86], 1),
-        ("sent behind the car", sim_info.AC_LIVE, 0.5, [0.05], 1),
-        ("sent from the end of the lap", sim_info.AC_LIVE, 0.95, [0.03], 1),
+        # laps abandoned, paused on track first)
+        ("sent there, live", sim_info.AC_LIVE, 0.5, [0.86], 1, False),
+        ("sent there, paused", sim_info.AC_PAUSE, 0.5, [0.86], 1, False),
+        ("sent behind the car", sim_info.AC_LIVE, 0.5, [0.05], 1, False),
+        ("sent from the end of the lap", sim_info.AC_LIVE, 0.95, [0.03], 1,
+         False),
         ("driven in, then sent to the box", sim_info.AC_LIVE, 0.5,
-         [0.5, 0.86], 1),
+         [0.5, 0.86], 1, False),
         ("driven in, then sent, paused", sim_info.AC_PAUSE, 0.5,
-         [0.5, 0.86], 1),
-        ("driven in", sim_info.AC_LIVE, 0.5, [0.5], 0),
-        ("driven in at the line", sim_info.AC_LIVE, 0.999, [0.001], 0),
+         [0.5, 0.86], 1, False),
+        ("driven in", sim_info.AC_LIVE, 0.5, [0.5], 0, False),
+        ("driven in at the line", sim_info.AC_LIVE, 0.999, [0.001], 0, False),
+        # Paused on track first: the menu's wait is not time driven.
+        ("sent from the pause menu", sim_info.AC_PAUSE, 0.5, [0.58], 1, True),
     ]
-    for name, status, start, stops, abandoned in cases:
+    for name, status, start, stops, abandoned, paused_first in cases:
         with temp_db() as path:
 
             def go_to_pits(sim, col):
                 sim.graphics.normalizedCarPosition = start - 0.2
                 tick(sim, col, n=2)
+                if paused_first:
+                    sim.graphics.status = status
+                    time.sleep(1)
                 for i, to in enumerate(stops):
                     # All in one read, as the game moves the car.
                     g = copy.copy(sim.graphics)
@@ -246,6 +252,8 @@ def test_only_a_move_driving_could_not_make_is_a_trip_to_the_pits():
         # A read held up two seconds at the pit entry: 100 m at 180 km/h,
         # on a 2 km track.
         (0.5, 0.55, 2.0, False),
+        # However long the hold-up, a return of a quarter lap or more shows.
+        (0.5, 0.86, 5.0, True),
     ]
     for last, pos, seconds, sent in cases:
         assert _sent_to_pits(last, pos, seconds) is sent, (last, pos, seconds)

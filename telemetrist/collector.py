@@ -41,9 +41,10 @@ PIT_JUMP = 0.02
 
 def _sent_to_pits(last_pos: float, pos: float, seconds: float) -> bool:
     # PIT_JUMP a tick: a read held up, by the database lock say, gives the
-    # car longer to have driven.
+    # car longer to have driven, though never a quarter of a lap.
     moved = abs(last_pos - pos)
-    return min(moved, 1 - moved) > PIT_JUMP * max(1, seconds * TARGET_HZ)
+    return min(moved, 1 - moved) > min(PIT_JUMP * max(1, seconds * TARGET_HZ),
+                                       ABANDON_JUMP)
 
 # The outlier rule lives in analysis so the same definition is used both
 # here (at write time) and by db.backfill_outliers. Being an outlier only
@@ -451,9 +452,9 @@ class Collector:
                 # pit lane go on to the check for a lap left unfinished.
                 if not (session_started and f.status == "pause"
                         and f.in_pit_lane):
-                    if f.status == "pause":
-                        last_read = read_at
                     pause(0.25)
+                    if f.status == "pause":
+                        last_read = now()
                     continue
 
             # Restarting a session from the in-game menu resets completedLaps

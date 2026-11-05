@@ -171,7 +171,9 @@ function Select-OwnerConfig {
         $lastWrite  = [datetime]::MinValue
         try {
             $lastWrite = (Get-Item -LiteralPath $c.Path).LastWriteTime
-            $raw = Get-Content -Raw -LiteralPath $c.Path
+            # UTF8 on every config read: Claude Desktop writes no BOM, and
+            # PowerShell 5.1 would otherwise read the file as ANSI.
+            $raw = Get-Content -Raw -Encoding UTF8 -LiteralPath $c.Path
             if ($raw -and $raw.Trim()) {
                 $j = $raw | ConvertFrom-Json
                 if ($j -and $j.PSObject.Properties['mcpServers']) { $hasServers = $true }
@@ -255,7 +257,7 @@ function Remove-ServerEntry ($path, $name = $ServerName) {
 
     $cfg = $null
     try {
-        $raw = Get-Content -Raw -LiteralPath $path
+        $raw = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
         if ($raw -and $raw.Trim()) { $cfg = $raw | ConvertFrom-Json }
     } catch {
         Write-Warn2 "Not valid JSON, leaving it alone: $path"
@@ -354,7 +356,7 @@ function Register-WithClaudeDesktop {
     $rawOld  = $null
     $alreadyBackedUp = $false
     if (Test-Path -LiteralPath $OwnerConfigPath) {
-        $rawOld = Get-Content -Raw -LiteralPath $OwnerConfigPath
+        $rawOld = Get-Content -Raw -Encoding UTF8 -LiteralPath $OwnerConfigPath
         if ($rawOld -and $rawOld.Trim()) {
             try {
                 $config = $rawOld | ConvertFrom-Json
@@ -396,7 +398,7 @@ function Register-WithClaudeDesktop {
         ForEach-Object {
             $c = $null
             try {
-                $raw = Get-Content -Raw -LiteralPath $_.Path -ErrorAction Stop
+                $raw = Get-Content -Raw -Encoding UTF8 -LiteralPath $_.Path -ErrorAction Stop
                 if ($raw -and $raw.Trim()) { $c = $raw | ConvertFrom-Json }
             } catch { }
             @{Path=$_.Path; Config=$c}

@@ -315,8 +315,7 @@ class Supervisor:
                 # Our replayed initialize. The client already has an answer
                 # to its own, from the first child, and a second one for an
                 # id it never sent would be a protocol error.
-                if "error" in msg:
-                    _log(f"replayed initialize failed: {msg['error']}")
+                self._init_error = msg.get("error")
                 self._init_done.set()
                 continue
             with self._lock:
@@ -394,6 +393,7 @@ class Supervisor:
                 self._init_seq += 1
                 init_id = f"{_INIT_ID_PREFIX}{self._init_seq}"
             self._init_done.clear()
+            self._init_error = None
         proc = self._spawn()
         reader = threading.Thread(target=self._child_reader,
                                   args=(proc, init_id), daemon=True)
@@ -412,6 +412,10 @@ class Supervisor:
                     break
             if not self._init_done.is_set() and not self.eof.is_set():
                 raise RuntimeError("replacement server did not initialize")
+            # A server that refused initialize refuses every tool call too.
+            if self._init_error is not None:
+                raise RuntimeError("replacement server refused initialize: "
+                                   f"{self._init_error}")
             if initialized is not None:
                 self._to_child(proc, _encode(initialized))
         # Flush what arrived while there was nobody to send it to, in the

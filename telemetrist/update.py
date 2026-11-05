@@ -544,8 +544,9 @@ def _claude_configs() -> list[Path]:
 
 def old_client_entry(configs: list[Path] | None = None) -> str | None:
     """The pre-rename Claude Desktop entry left in any config, if any.
-    Only the installer renames it, carrying its settings over, and it
-    takes the newest name in any config before an older one."""
+    Only the installer renames it, carrying its settings over unless a
+    telemetrist entry is already there, and it takes the newest name in
+    any config before an older one."""
     found = []
     for path in configs if configs is not None else _claude_configs():
         try:
@@ -943,7 +944,8 @@ def _apply(to_commit, root, data_dir, ac, pip, is_game_running,
             f"A Claude Desktop config still has the pre-rename entry "
             f"'{old_entry}'. "
             "Rerun install-windows.bat, then quit and reopen Claude Desktop: "
-            "the installer renames the entry and keeps its settings.")
+            "the installer renames the entry and keeps its settings, "
+            "unless a 'telemetrist' entry is already there.")
     elif flags["installer_changed"]:
         out["installer_note"] = (
             "the installer changed too. Nothing needs it now, but rerun "

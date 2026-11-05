@@ -382,6 +382,45 @@ function Register-WithClaudeDesktop {
         $config.mcpServers = [pscustomobject]@{}
     }
 
+    # Carry the driver's settings over. Only command and args are the
+    # installer's to write; anything else on the entry -- "env", where
+    # settings like TELEMETRIST_DASH_LAN live, a "cwd", a "disabled" flag --
+    # was the driver's, and writing a bare entry over it or dropping the
+    # pre-rename entry that held it turned it off with no word said. Every
+    # config is searched, before any entry is removed from any of them: the
+    # one the driver set up need not be the one chosen as owner. The owner's
+    # current entry wins, then the newest pre-rename name, owner first.
+    $keptFrom = $null
+    $searched = @(@{Path=$OwnerConfigPath; Config=$config}) + @(
+        $configCandidates | Where-Object { $_.Path -ne $OwnerConfigPath } |
+        ForEach-Object {
+            $c = $null
+            try {
+                $raw = Get-Content -Raw -LiteralPath $_.Path -ErrorAction Stop
+                if ($raw -and $raw.Trim()) { $c = $raw | ConvertFrom-Json }
+            } catch { }
+            @{Path=$_.Path; Config=$c}
+        })
+    :search foreach ($name in @($ServerName) + $LegacyServerNames) {
+        foreach ($s in $searched) {
+            $servers = $null
+            if ($s.Config -and $s.Config.PSObject.Properties['mcpServers']) {
+                $servers = $s.Config.mcpServers
+            }
+            if (-not $servers -or -not $servers.PSObject.Properties[$name]) {
+                continue
+            }
+            $old = $servers.$name
+            if (-not $old) { continue }
+            foreach ($p in $old.PSObject.Properties) {
+                if ($p.Name -in @('command', 'args')) { continue }
+                $entry | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
+            }
+            $keptFrom = "'$name' in $($s.Path)"
+            break search
+        }
+    }
+
     # Drop the pre-rename entry here, in the same object we are about to write,
     # rather than in a second pass over the same file afterwards. A second pass
     # meant a second write and a second backup in the same second, and since
@@ -389,23 +428,6 @@ function Register-WithClaudeDesktop {
     # the first -- so the file the user actually wanted preserved was the one
     # that got lost. It also read strangely: "preserved ac-race-engineer",
     # immediately followed by "removed ac-race-engineer".
-    # Carry the driver's settings over. An entry's "env" is where settings
-    # like TELEMETRIST_DASH_LAN live, and writing a bare command over it --
-    # or dropping the pre-rename entry that held it -- turned them off with
-    # no word said. The current entry's wins; else the newest pre-rename one
-    # that has any. The old spellings are kept as they are: the server reads
-    # every one of them.
-    $keptEnvFrom = $null
-    foreach ($name in @($ServerName) + $LegacyServerNames) {
-        $old = $config.mcpServers.PSObject.Properties[$name]
-        if ($old -and $old.Value -and $old.Value.PSObject.Properties['env'] `
-                -and @($old.Value.env.PSObject.Properties).Count -gt 0) {
-            $entry | Add-Member -NotePropertyName env -NotePropertyValue $old.Value.env
-            $keptEnvFrom = $name
-            break
-        }
-    }
-
     $droppedLegacy = @()
     foreach ($legacy in $LegacyServerNames) {
         if ($config.mcpServers.PSObject.Properties[$legacy]) {
@@ -445,9 +467,10 @@ function Register-WithClaudeDesktop {
         foreach ($legacy in $droppedLegacy) {
             Write-Ok "Removed the pre-rename '$legacy' entry from $OwnerConfigPath"
         }
-        if ($keptEnvFrom) {
-            $keys = @($entry.env.PSObject.Properties.Name) -join ', '
-            Write-Ok "Kept the settings from the '$keptEnvFrom' entry: $keys"
+        $kept = @($entry.PSObject.Properties.Name |
+                  Where-Object { $_ -notin @('command', 'args') })
+        if ($keptFrom -and $kept.Count -gt 0) {
+            Write-Ok "Kept $($kept -join ', ') from the $keptFrom entry"
         }
         # Where-Object { $_ }: an empty PSObject property collection yields a
         # single $null, which passes a bare -ne test and reported "1 other

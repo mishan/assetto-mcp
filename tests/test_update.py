@@ -182,6 +182,7 @@ class World:
         return True, "ok"
 
     def apply(self, sha, **kw):
+        kw.setdefault("client_configs", [])
         kw.setdefault("pip", self.pip)
         kw.setdefault("ac", self.tmp / "no-ac")
         kw.setdefault("is_game_running", lambda: False)
@@ -882,6 +883,23 @@ def test_a_client_entry_left_under_the_old_name_is_found():
         assert U.old_client_entry([plain]) is None
         assert U.old_client_entry([broken, plain, msix]) == "assetto-mcp"
         print("  the pre-rename entry is found in any config, bad ones skipped")
+
+
+def test_an_apply_reads_the_client_configs_it_is_given():
+    """Which Claude config still names the old entry is the apply's input,
+    not whatever the machine running it happens to have."""
+    def go(w):
+        old = w.tmp / "claude.json"
+        old.write_text(json.dumps({"mcpServers": {"assetto-mcp": {}}}),
+                       encoding="utf-8")
+        w.write("a.txt", "a\n")
+        done = w.apply(w.push("Change"), client_configs=[old])
+        assert "'assetto-mcp'" in done["installer_note"], done
+        w.write("b.txt", "b\n")
+        done = w.apply(w.push("Another"))
+        assert "installer_note" not in done, done
+        print("  the rename note follows the configs given, and only them")
+    _world(go)
 
 
 def test_an_empty_commit_is_refused_rather_than_matched():

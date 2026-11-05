@@ -709,8 +709,12 @@ def apply_running(data_dir: Path | None = None) -> dict | None:
 
 def apply(to_commit: str, root: Path | None = None,
           data_dir: Path | None = None, ac: Path | None = None,
-          pip=_pip_install, is_game_running=game_running) -> dict:
+          pip=_pip_install, is_game_running=game_running,
+          client_configs: list[Path] | None = None) -> dict:
     """Fast-forward the checkout to `to_commit`, which must be main's tip.
+
+    client_configs: the Claude Desktop configs to check for an entry still
+    under the old name; None reads the ones on this machine.
 
     Every precondition is checked again here rather than trusted from an
     earlier check_for_updates, because time passes between the two: the
@@ -732,7 +736,8 @@ def apply(to_commit: str, root: Path | None = None,
                 else ""),
             do_this="wait a few minutes, then call check_for_updates")
     try:
-        return _apply(to_commit, root, data_dir, ac, pip, is_game_running)
+        return _apply(to_commit, root, data_dir, ac, pip, is_game_running,
+                      client_configs)
     except subprocess.TimeoutExpired as e:
         return _refuse("timeout", f"{' '.join(map(str, e.cmd[:4]))} took "
                                   f"longer than {e.timeout:.0f}s")
@@ -838,7 +843,8 @@ def _start_job(to_commit: str, kw: dict) -> dict:
     return job
 
 
-def _apply(to_commit, root, data_dir, ac, pip, is_game_running) -> dict:
+def _apply(to_commit, root, data_dir, ac, pip, is_game_running,
+           client_configs=None) -> dict:
     if not is_checkout(root):
         return _refuse("not_a_git_checkout",
                        "this install is not a git clone and cannot be "
@@ -924,7 +930,7 @@ def _apply(to_commit, root, data_dir, ac, pip, is_game_running) -> dict:
         out["pip"] = {"ran": False, "note": "pyproject.toml did not change"}
 
     out["lua"] = sync_lua(root, ac, is_game_running)
-    old_entry = old_client_entry()
+    old_entry = old_client_entry(client_configs)
     if old_entry:
         # Claude Desktop names the server after its config entry, so the
         # driver went on seeing the old name with no word that anything

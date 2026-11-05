@@ -222,6 +222,9 @@ _RUNNING_COMMIT = update.installed_commit()
 # When this process started: an update applied before it is one it already
 # runs, or a commit someone checked out again by hand.
 _STARTED_AT = time.time()
+# Read once: the client's config cannot change under a running server
+# without the client being restarted, which starts a new one.
+_OLD_CLIENT_ENTRY = update.old_client_entry()
 
 
 def _version() -> str:
@@ -1016,7 +1019,7 @@ def session_check() -> str:
                      "with the game closed, run `python -m telemetrist."
                      "update --sync-lua` to move it")
 
-    if old_entry := update.old_client_entry():
+    if old_entry := _OLD_CLIENT_ENTRY:
         to_do.append(f"Claude Desktop still starts this server as "
                      f"'{old_entry}': rerun install-windows.bat, then quit "
                      "and reopen Claude Desktop; the installer renames the "

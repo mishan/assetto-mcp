@@ -19,7 +19,7 @@ from support import (complete_lap, enter_pits, go_off,  # noqa: E402
                      run_collector, run_module, temp_db, tick, wait_for)
 
 from telemetrist import analysis, db, sim_info  # noqa: E402
-from telemetrist.collector import _is_outlier  # noqa: E402
+from telemetrist.collector import _is_outlier, _sent_to_pits  # noqa: E402
 
 
 def test_gross_outliers_are_set_aside():
@@ -233,6 +233,21 @@ def test_a_lap_left_for_the_pits_is_kept_marked_incomplete():
             ], path)
             assert col.abandoned_laps == abandoned, (name, col.abandoned_laps)
     print("  a lap left for the pits is kept; one driven into them is not")
+
+
+def test_only_a_move_driving_could_not_make_is_a_trip_to_the_pits():
+    cases = [
+        # (from, to, seconds since the last read, sent to the pits)
+        (0.5, 0.86, 0.04, True),
+        (0.95, 0.03, 0.04, True),
+        (0.5, 0.502, 0.04, False),
+        (0.999, 0.001, 0.04, False),
+        # A read held up two seconds at the pit entry: 100 m at 180 km/h,
+        # on a 2 km track.
+        (0.5, 0.55, 2.0, False),
+    ]
+    for last, pos, seconds, sent in cases:
+        assert _sent_to_pits(last, pos, seconds) is sent, (last, pos, seconds)
 
 
 def test_a_lap_ended_by_leaving_the_session_is_kept_marked_incomplete():

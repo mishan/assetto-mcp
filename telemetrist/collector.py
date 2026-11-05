@@ -38,6 +38,13 @@ WRAP_LOW = 0.1
 # as a lap with a pit visit.
 PIT_JUMP = 0.02
 
+
+def _sent_to_pits(last_pos: float, pos: float, seconds: float) -> bool:
+    # PIT_JUMP a tick: a read held up, by the database lock say, gives the
+    # car longer to have driven.
+    moved = abs(last_pos - pos)
+    return min(moved, 1 - moved) > PIT_JUMP * max(1, seconds * TARGET_HZ)
+
 # The outlier rule lives in analysis so the same definition is used both
 # here (at write time) and by db.backfill_outliers. Being an outlier only
 # sets a flag: the lap is stored, readable, and still included in
@@ -388,6 +395,7 @@ class Collector:
         lap_start_fuel = None
         last_packet = -1
         last_pos = None
+        last_read = now()     # of last_pos, leaving out time paused
 
         def keep_unfinished():
             # Often the lap the driver most wants to look at; complete=0 so
@@ -426,6 +434,8 @@ class Collector:
             f = sim.read()
 
             self.live = f.status == "live"
+            if f.status == "pause":
+                last_read = now()
             if not self.live:
                 if f.status == "off":  # back to waiting
                     keep_unfinished()
@@ -569,11 +579,11 @@ class Collector:
             pos = f.norm_pos
             wrapped = (last_pos is not None
                        and last_pos > WRAP_HIGH and pos < WRAP_LOW)
-            moved = (abs(last_pos - pos) if last_pos is not None else 0)
             if (lap_samples and last_pos is not None
                     and (last_pos - pos > ABANDON_JUMP and not wrapped
                          and not f.in_pit_lane
-                         or f.in_pit_lane and min(moved, 1 - moved) > PIT_JUMP)):
+                         or f.in_pit_lane and _sent_to_pits(
+                             last_pos, pos, now() - last_read))):
                 keep_unfinished()
                 lap_samples = []
                 wide_since = None
@@ -582,7 +592,7 @@ class Collector:
                 lap_start_fuel = None
                 self.current_lap_dirty = False
                 self.current_lap_pitted = False
-            last_pos = pos
+            last_pos, last_read = pos, now()
 
             # A lap containing a pit visit has a meaningless time. Note it
             # before the sampling guard below, which skips pit-lane ticks.

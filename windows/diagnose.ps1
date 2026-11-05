@@ -214,8 +214,13 @@ if ($withLegacyEntry.Count -gt 0) {
     L "!! a pre-rename entry is still present in:"
     foreach ($p in $withLegacyEntry) { L "     $p" }
     L "   'ac-race-engineer' names a module that no longer exists, and shows as a"
-    L "   failed server; 'assetto-mcp' still starts, as a second server beside"
-    L "   '$ServerName'. Re-run install-windows.bat: it removes these."
+    if ($withEntry.Count -gt 0) {
+        L "   failed server; 'assetto-mcp' still starts, as a second server beside"
+        L "   '$ServerName'. Re-run install-windows.bat: it removes these."
+    } else {
+        L "   failed server; 'assetto-mcp' still starts. Re-run install-windows.bat"
+        L "   to replace these with '$ServerName'."
+    }
 }
 
 # ---------------------------------------------------------------- python

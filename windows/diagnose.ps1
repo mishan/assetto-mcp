@@ -363,13 +363,19 @@ if (-not $cmd) {
     if ($testPort -gt 0) {
         $stdout = [System.IO.Path]::GetTempFileName()
         $stderr = [System.IO.Path]::GetTempFileName()
-        $prevPort = $env:TELEMETRIST_BRIDGE_PORT
-        $env:TELEMETRIST_BRIDGE_PORT = "$testPort"
-        # The server itself, not the supervisor in front of it: a supervisor
-        # retrying a server that dies on import is "still running after 2s"
-        # too, and would pass a broken install.
-        $prevNoSup = $env:TELEMETRIST_NO_SUPERVISOR
-        $env:TELEMETRIST_NO_SUPERVISOR = "1"
+        # NO_SUPERVISOR runs the server itself: a supervisor retrying a server
+        # that dies on import is "still running after 2s" too, and would pass
+        # a broken install. Both spellings, since an old entry may start code
+        # from before the rename.
+        $overrides = @{ BRIDGE_PORT = "$testPort"; NO_SUPERVISOR = "1" }
+        $prevEnv = @{}
+        foreach ($prefix in 'TELEMETRIST_', 'ASSETTO_MCP_') {
+            foreach ($k in $overrides.Keys) {
+                $name = "$prefix$k"
+                $prevEnv[$name] = [Environment]::GetEnvironmentVariable($name)
+                [Environment]::SetEnvironmentVariable($name, $overrides[$k])
+            }
+        }
         try {
             # -ArgumentList rejects an empty array, so only pass it when there is one.
             if ($cargs.Count -gt 0) {
@@ -389,8 +395,9 @@ if (-not $cmd) {
         } catch {
             L "!! could not launch: $($_.Exception.Message)"
         } finally {
-            $env:TELEMETRIST_BRIDGE_PORT = $prevPort
-            $env:TELEMETRIST_NO_SUPERVISOR = $prevNoSup
+            foreach ($name in $prevEnv.Keys) {
+                [Environment]::SetEnvironmentVariable($name, $prevEnv[$name])
+            }
         }
         Start-Sleep -Milliseconds 300   # let the handles flush before reading
 

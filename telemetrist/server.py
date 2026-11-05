@@ -337,6 +337,45 @@ if _TOOLSET not in ("full", "core"):
 _REGISTERED: set[str] = set()
 
 
+# Tool calls running now, so a restart this chat did not ask for never
+# lands in the middle of one.
+_calls_in_flight = 0
+_in_flight_lock = threading.Lock()
+
+
+def _counted(fn):
+    import inspect
+
+    def enter():
+        global _calls_in_flight
+        with _in_flight_lock:
+            _calls_in_flight += 1
+
+    def leave():
+        global _calls_in_flight
+        with _in_flight_lock:
+            _calls_in_flight -= 1
+
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def counted_async(*args, **kwargs):
+            enter()
+            try:
+                return await fn(*args, **kwargs)
+            finally:
+                leave()
+        return counted_async
+
+    @functools.wraps(fn)
+    def counted(*args, **kwargs):
+        enter()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            leave()
+    return counted
+
+
 def _tool(title: str, *, writes: bool = False, destructive: bool = False,
           idempotent: bool = True, open_world: bool = False,
           status: bool = False, locks_conn: bool = True):
@@ -379,6 +418,7 @@ def _tool(title: str, *, writes: bool = False, destructive: bool = False,
         tool = locked if locks_conn else fn
         if not inspect.iscoroutinefunction(fn):
             tool = _asks_ride_along(tool)
+        tool = _counted(tool)
         _REGISTERED.add(fn.__name__)
         if _TOOLSET != "core" or fn.__name__ in CORE_TOOLS:
             extra = {}
@@ -3586,17 +3626,37 @@ def apply_update(to_commit: str) -> str:
     pyproject.toml changed; copies the in-game app unless the game is
     running (`lua.note`). `in_progress: true` means still running: call
     again with the same to_commit for the result. The old code runs until
-    restart_server. Pass any `warning` on as it is."""
+    restart_server; servers in the driver's other chats restart onto it by
+    themselves once the game is off track. Pass any `warning` on as it
+    is."""
     return _j(update.apply_in_background(
         to_commit, live_session=_live_session(), data_dir=DATA_DIR))
 
 
 def _live_session() -> int | None:
-    """The session the driver is on track in, in any instance."""
+    """The session the driver is on track in, in any instance.
+
+    Another instance's open session is only a claim to be live: its
+    recorder keeps the heartbeat going while the game sits in the menus,
+    which in Claude Desktop, one server per chat, was every apply refused
+    for as long as the game was open. So it counts only while the game
+    itself says it is on track.
+    """
+    if _collector.holds_recorder:
+        return _collector.session_id if _collector.live else None
     snap = _bridge.status_snapshot()
-    return (_collector.session_id
-            if _collector.holds_recorder and _collector.live
-            else snap["session_id"] if snap["by_other"] else None)
+    if not snap["by_other"]:
+        return None
+    return snap["session_id"] if _game_on_track() else None
+
+
+def _game_on_track() -> bool:
+    return _game_now().get("status") in ON_TRACK_STATUSES
+
+
+# Shared-memory statuses with the car on track; "pause" is a paused lap,
+# still one a restart would lose.
+ON_TRACK_STATUSES = ("live", "pause")
 
 
 async def _ask_to_update(ctx, arguments) -> bool | None:
@@ -3610,6 +3670,39 @@ async def _ask_to_update(ctx, arguments) -> bool | None:
                            f"{to_commit.strip()[:7]}? It reinstalls on "
                            "disk; the running server is replaced only by "
                            "a restart.")
+
+
+# How often a server looks for an update another chat's server applied.
+FOLLOW_INTERVAL = 15.0
+
+
+def _follow_update_once() -> bool:
+    """Restart onto an update another instance applied, if now is the time.
+
+    Only for the commit apply_update recorded, not whatever the checkout
+    happens to hold: someone switching branches in it is not an update.
+    Not while an apply is still running, not with the driver on track,
+    and not with one of this chat's own calls in flight.
+    """
+    applied = update.applied_commit(DATA_DIR)
+    if not (applied and _RUNNING_COMMIT and applied != _RUNNING_COMMIT):
+        return False
+    if update.installed_commit() != applied or update.apply_running(DATA_DIR):
+        return False
+    if _calls_in_flight or _live_session() is not None:
+        return False
+    _restart_soon()
+    return True
+
+
+def _follow_updates() -> None:
+    while True:
+        time.sleep(FOLLOW_INTERVAL)
+        try:
+            if _follow_update_once():
+                return
+        except Exception:  # noqa: BLE001 - never take the server down
+            pass
 
 
 def _restart_soon() -> None:
@@ -3873,6 +3966,11 @@ if guide.guides():
 
 
 def main():
+    # Only a supervised server can restart itself without dropping the
+    # client's connection.
+    if config.env(supervisor.CHILD_ENV):
+        threading.Thread(target=_follow_updates, daemon=True,
+                         name="follow-updates").start()
     try:
         mcp.run()
     finally:

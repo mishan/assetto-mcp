@@ -620,7 +620,12 @@ c.holds_recorder, c.session_id, c.live = False, None, False
 out["elsewhere_id"] = db.create_session(
     s._conn, car="c", track="t", track_config="", tyre_compound="",
     air_temp=20, road_temp=25)
+s._game_now = lambda: {"status": "live"}
 out["elsewhere"] = apply_update()
+# The other instance keeps its session open in the menus; only the game
+# can say whether the driver is on track.
+s._game_now = lambda: {"status": "off"}
+out["menus"] = s._live_session()
 s._shutdown()
 print(json.dumps(out))
 """
@@ -654,9 +659,78 @@ def test_the_server_tools_as_the_model_calls_them():
         for where, sid in (("here", 42), ("elsewhere", out["elsewhere_id"])):
             assert out[where]["refused"] == "recording", out
             assert out[where]["session_id"] == sid, out
+        assert out["menus"] is None, out
         print(f"  check_for_updates: {check['error']}; apply_update "
-              "refused in a live session")
+              "refused in a live session, not in another chat's menus")
 
+
+
+def test_a_finished_apply_tells_every_server_where_to_go():
+    """Only the server that applied an update hears about it; the others,
+    one per chat in Claude Desktop, read the commit it left behind."""
+    def go(w):
+        w.write("a.txt", "a\n")
+        tip = w.push("Change")
+        assert U.applied_commit(w.data) is None
+        assert w.apply(tip)["updated"] is True
+        assert U.applied_commit(w.data) == tip
+        print("  the applied commit is left for the other servers")
+    _world(go)
+
+
+_FOLLOW = r"""
+import json
+import telemetrist.server as s
+from telemetrist import update
+
+restarts = []
+s._restart_soon = lambda: restarts.append(1)
+s._RUNNING_COMMIT = "old"
+update.installed_commit = lambda root=None: "new"
+update.apply_running = lambda data_dir=None: None
+s._game_now = lambda: {"status": "off"}
+out = {}
+out["nothing_applied"] = s._follow_update_once()
+update.applied_commit = lambda data_dir=None: "branch"
+out["a_branch_checked_out"] = s._follow_update_once()
+update.applied_commit = lambda data_dir=None: "new"
+s._calls_in_flight = 1
+out["mid_call"] = s._follow_update_once()
+s._calls_in_flight = 0
+c = s._collector
+c.holds_recorder, c.session_id, c.live = True, 9, True
+out["on_track"] = s._follow_update_once()
+c.holds_recorder, c.session_id, c.live = False, None, False
+out["idle"] = s._follow_update_once()
+out["restarts"] = len(restarts)
+s._shutdown()
+print(json.dumps(out))
+"""
+
+
+def test_another_chats_server_follows_an_update_when_idle():
+    """Applied in one chat, every other server restarts onto it itself --
+    but never for a branch someone checked out, mid-call, or on track."""
+    try:
+        import mcp  # noqa: F401
+    except ImportError:
+        from lua_harness import skip
+        skip("mcp is not installed")
+        return
+    root = Path(__file__).resolve().parent.parent
+    with tempfile.TemporaryDirectory(prefix="ac-upd-") as d:
+        env = dict(os.environ, TELEMETRIST_DATA=d,
+                   TELEMETRIST_NO_AUTOSTART="1", TELEMETRIST_BRIDGE_PORT="0",
+                   TELEMETRIST_UPDATE_API="http://127.0.0.1:9")
+        proc = subprocess.run([sys.executable, "-c", _FOLLOW], cwd=root,
+                              env=env, capture_output=True, text=True,
+                              timeout=120, stdin=subprocess.DEVNULL)
+        assert proc.returncode == 0, proc.stderr
+        out = json.loads(proc.stdout.strip().splitlines()[-1])
+        assert out == {"nothing_applied": False, "a_branch_checked_out": False,
+                       "mid_call": False, "on_track": False, "idle": True,
+                       "restarts": 1}, out
+        print("  restarts once, idle, onto the applied commit only")
 
 
 def test_an_empty_commit_is_refused_rather_than_matched():

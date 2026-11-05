@@ -60,6 +60,10 @@ MAX_COMMITS = 25
 # them. Every step of an apply has its own timeout, and a lock older than
 # all of them together belongs to an apply that died without removing it.
 LOCK_FILE = "update_apply.lock"
+# Written when an apply succeeds: the commit every server should now be on.
+# Claude Desktop runs one server per chat, and only the one that applied it
+# hears about it; the others read this and restart themselves onto it.
+APPLIED_FILE = "update_applied.json"
 LOCK_STALE_SECONDS = FETCH_TIMEOUT + PIP_TIMEOUT + 600
 # How long apply_update waits for the result before answering "in
 # progress": inside the minute an MCP client commonly allows a call.
@@ -897,9 +901,35 @@ def _apply(to_commit, root, data_dir, ac, pip, is_game_running) -> dict:
             path.unlink()
     except OSError:
         pass
+    head = installed_commit(root)
+    if head:
+        mark_applied(head, data_dir)
     out["restart_required"] = True
-    out["next"] = "call restart_server, with the driver's OK"
+    out["next"] = ("call restart_server, with the driver's OK. Servers "
+                   "in the driver's other chats restart themselves onto "
+                   "it once the game is not on track")
     return out
+
+
+def mark_applied(commit: str, data_dir: Path | None = None) -> None:
+    path = _cache_path(data_dir, APPLIED_FILE)
+    if not path:
+        return
+    try:
+        path.write_text(json.dumps({"commit": commit, "at": time.time()}),
+                        encoding="utf-8")
+    except OSError:
+        pass
+
+
+def applied_commit(data_dir: Path | None = None) -> str | None:
+    """The commit the last successful apply left on disk, if any."""
+    path = _cache_path(data_dir, APPLIED_FILE)
+    try:
+        commit = json.loads(path.read_text(encoding="utf-8"))["commit"]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    return commit if isinstance(commit, str) and commit else None
 
 
 # --- command line -------------------------------------------------------

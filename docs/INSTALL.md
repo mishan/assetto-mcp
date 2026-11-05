@@ -301,9 +301,10 @@ names are still honored so nothing is lost:
 - **`ASSETTO_MCP_*` and `AC_ENGINEER_*` still work.** Every `TELEMETRIST_*`
   setting the server reads is read under the old spellings as a fallback.
   The tool-choice eval in `tests/eval` takes only the new names.
-- **The stale bits get cleaned up.** Re-running `install-windows.bat` replaces
-  the `assetto-mcp` or `ac-race-engineer` entry in every Claude Desktop config
-  with `telemetrist` and deletes the old in-game app folders, so you don't end
+- **The stale bits get cleaned up.** Re-running `install-windows.bat` writes
+  `telemetrist` into the config Claude Desktop reads, removes the
+  `assetto-mcp` and `ac-race-engineer` entries from every Claude Desktop
+  config, and deletes the old in-game app folders, so you don't end
   up with two servers or the app listed twice. Close Assetto Corsa and
   Content Manager first: a folder the game holds open is left in place, and
   the new app is not installed beside it. Claude Desktop asks once to

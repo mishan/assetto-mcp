@@ -423,8 +423,8 @@ class Collector:
                 # A return to the pits or the garage often lands on a paused
                 # frame, which the driver may quit from: that one goes on to
                 # the check for a lap left unfinished.
-                if not (f.status == "pause" and f.in_pit_lane
-                        and not last_in_pit):
+                if not (session_started and f.status == "pause"
+                        and f.in_pit_lane and not last_in_pit):
                     pause(0.25)
                     continue
 

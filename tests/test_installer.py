@@ -57,7 +57,8 @@ def _install(owner_cfg: dict | None, other_cfg: dict | None) -> tuple | None:
         owner, other = Path(d) / "msix.json", Path(d) / "plain.json"
         for path, cfg in ((owner, owner_cfg), (other, other_cfg)):
             if cfg is not None:
-                path.write_text(json.dumps(cfg), encoding="utf-8")
+                path.write_text(json.dumps(cfg, ensure_ascii=False),
+                                encoding="utf-8")
         script = (_HARNESS.replace("__SCRIPT__", str(SCRIPT))
                   .replace("__OWNER__", str(owner))
                   .replace("__OTHER__", str(other)))
@@ -117,6 +118,19 @@ def test_other_fields_the_driver_added_are_kept():
     assert entry.get("cwd") == "D:\\racing" and entry.get("disabled") is False, \
         entry
     print("  fields beyond command and args are carried over")
+
+
+def test_settings_outside_ascii_come_through_whole():
+    """Claude Desktop writes UTF-8 with no BOM, which Windows PowerShell
+    5.1 reads as the ANSI code page unless told otherwise."""
+    env = {"TELEMETRIST_DATA": "D:\\Rennen\\Köln"}
+    old = {"mcpServers": {"assetto-mcp": {
+        "command": "py", "args": ["-m", "assetto_mcp.server"], "env": env}}}
+    for owner_cfg, other_cfg in ((old, None), (None, old)):
+        if not (got := _install(owner_cfg, other_cfg)):
+            return
+        assert got[0]["mcpServers"]["telemetrist"]["env"] == env, got[0]
+    print("  non-ASCII settings survive, from either config")
 
 
 if __name__ == "__main__":

@@ -212,6 +212,8 @@ def test_a_replacement_that_refuses_initialize_is_replaced_again():
                 c.handshake()
                 c.request(2, "restart_after")
                 assert c.reply_to(2)["result"] == {"gen": 1}
+                wait_for(lambda: (Path(d) / "gen").read_text() != "1",
+                         "the second generation to start")
                 c.request(3, "echo", {"x": 1})
                 assert c.reply_to(3)["result"] == {"gen": 3,
                                                    "echo": {"x": 1}}

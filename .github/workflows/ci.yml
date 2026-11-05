@@ -59,7 +59,7 @@ jobs:
         # instead of skipping.
         env:
           AC_TESTS_STRICT: "1"
-        run: python -m pytest tests/ -v --durations=10
+        run: python -m pytest tests/ -v --durations=10 -n auto
 
       - name: Refuse to pass if nothing exercised the Lua app
         # A floor equal to the current count, so dropping a test fails CI.

@@ -36,6 +36,7 @@ import sys
 import time
 import traceback
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -252,20 +253,32 @@ def run_isolated(paths: list[Path], pattern: str | None,
     failures = []
     skips = []
     total_start = time.perf_counter()
-    for path in paths:
+
+    def run(path):
         started = time.perf_counter()
         proc = subprocess.run([sys.executable, str(path)],
                               capture_output=True, text=True, env=env)
-        elapsed = time.perf_counter() - started
-        skipped = proc.returncode == SKIP_EXIT
-        ok = proc.returncode == 0 or (skipped and not no_skip)
-        mark = YELLOW("skip") if skipped else (
-            GREEN("ok  ") if ok else RED("FAIL"))
-        print(f"  {mark}  {path.stem:<{width}} {DIM(f'{elapsed:6.2f}s')}")
-        if skipped:
-            skips.append(path.stem)
-        if not ok:
-            failures.append((path.stem, proc.stdout + proc.stderr))
+        return proc, time.perf_counter() - started
+
+    # Each module is its own process with its own temp dirs, so they can
+    # run side by side; this step otherwise takes as long as the suite.
+    # Reported in the usual order, each as soon as it and those before it
+    # are done; on Ctrl+C, nothing queued starts.
+    pool = ThreadPoolExecutor(os.cpu_count() or 1)
+    try:
+        for path, (proc, elapsed) in zip(paths, pool.map(run, paths)):
+            skipped = proc.returncode == SKIP_EXIT
+            ok = proc.returncode == 0 or (skipped and not no_skip)
+            mark = YELLOW("skip") if skipped else (
+                GREEN("ok  ") if ok else RED("FAIL"))
+            print(f"  {mark}  {path.stem:<{width}} "
+                  f"{DIM(f'{elapsed:6.2f}s')}", flush=True)
+            if skipped:
+                skips.append(path.stem)
+            if not ok:
+                failures.append((path.stem, proc.stdout + proc.stderr))
+    finally:
+        pool.shutdown(cancel_futures=True)
 
     print()
     if skips:

@@ -12,7 +12,7 @@ dependencies = ["mcp>=1.0.0"]
 # Every test module also runs without pytest, so a single file can be run on
 # the gaming PC. lupa runs the in-game app against a stubbed CSP API and
 # luaparser checks it; without them those tests skip.
-test = ["pytest>=7", "lupa>=2.0", "luaparser>=3.2"]
+test = ["pytest>=7", "pytest-xdist>=3", "lupa>=2.0", "luaparser>=3.2"]
 # tests/eval/tool_choice.py against the Anthropic API.
 eval = ["anthropic"]
 

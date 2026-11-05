@@ -14,9 +14,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import (complete_lap, enter_pits, leave_pits,  # noqa: E402
-                     make_session, run_collector, run_module, temp_db,
-                     tick, wait_for)
+from support import (complete_lap, enter_pits, go_off,  # noqa: E402
+                     leave_pits, make_session, restart_from_menu,
+                     run_collector, run_module, temp_db, tick, wait_for)
 
 from telemetrist import analysis, db, sim_info  # noqa: E402
 from telemetrist.collector import _is_outlier  # noqa: E402
@@ -225,6 +225,33 @@ def test_a_lap_left_for_the_pits_is_kept_marked_incomplete():
             ], path)
             assert col.abandoned_laps == abandoned, (name, col.abandoned_laps)
     print("  a lap left for the pits is kept; one driven into them is not")
+
+
+def test_a_lap_ended_by_leaving_the_session_is_kept_marked_incomplete():
+    """Quitting to the menus or restarting mid-lap ends the session, and
+    the lap so far goes with the session it was driven in."""
+    cases = [
+        # (how the session ends, ticks driven since the line, laps kept)
+        ("quit to the menus", go_off, 3, 1),
+        ("restarted", restart_from_menu, 3, 1),
+        ("quit at the line", go_off, 0, 0),
+    ]
+    for name, leave, driven, kept in cases:
+        with temp_db() as path:
+            col = run_collector([
+                lambda s, c: (tick(s, c), complete_lap(s, c, 113000)),
+                lambda s, c: tick(s, c, n=driven),
+                leave,
+            ], path)
+            assert col.abandoned_laps == kept, (name, col.abandoned_laps)
+            conn = db.connect(path)
+            first = db.list_sessions(conn)[-1]["id"]
+            gone = [l for l in db.list_laps(conn, first, limit=None)
+                    if not l["complete"]]
+            assert len(gone) == kept, (name, gone)
+            assert all(db.get_samples(conn, l["id"]) for l in gone), name
+            conn.close()
+    print("  the lap a session ended in is kept with that session")
 
 
 def test_crossing_the_line_is_not_mistaken_for_a_teleport():

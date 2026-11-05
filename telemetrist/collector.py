@@ -383,6 +383,16 @@ class Collector:
         last_pos = None
         last_in_pit = False
 
+        def keep_unfinished():
+            # Often the lap the driver most wants to look at; complete=0 so
+            # its elapsed time is never taken for a lap time.
+            if lap_samples:
+                db.store_lap(self._conn, self.session_id, last_completed + 1,
+                             int((now() - lap_start_wall) * 1000), False,
+                             lap_samples, complete=False, pitted=lap_pitted)
+                self.laps_recorded += 1
+                self.abandoned_laps += 1
+
         while not self._stop.is_set():
             # Before anything is read, let alone written. This loop does not
             # return to the outer one while a session is live, so this is the
@@ -411,8 +421,8 @@ class Collector:
 
             self.live = f.status == "live"
             if not self.live:
-                # Session ended / paused / menu: drop the partial lap.
                 if f.status == "off":  # back to waiting
+                    keep_unfinished()
                     session_started = False
                     last_completed = None
                     session_best = None
@@ -435,6 +445,7 @@ class Collector:
             if (session_started and last_completed is not None
                     and (f.completed_laps < last_completed
                          or f.session_type != session_type)):
+                keep_unfinished()
                 session_started = False
                 last_completed = None
                 session_best = None
@@ -556,12 +567,7 @@ class Collector:
                     and (last_pos - pos > ABANDON_JUMP and not f.in_pit_lane
                          or sent_to_pits
                          and abs(last_pos - pos) > ABANDON_JUMP)):
-                elapsed = int((now() - lap_start_wall) * 1000)
-                db.store_lap(self._conn, self.session_id,
-                             last_completed + 1, elapsed, False,
-                             lap_samples, complete=False, pitted=lap_pitted)
-                self.laps_recorded += 1
-                self.abandoned_laps += 1
+                keep_unfinished()
                 lap_samples = []
                 wide_since = None
                 lap_pitted = False

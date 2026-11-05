@@ -30,8 +30,9 @@ and the setup files may still change between minor versions.
   holds it, instead of writing a bare entry over them.
 
 - A lap left mid-way for the pits (AC's Return to Pits) or the garage
-  (AMS2) is kept, marked unfinished, as a crash already was. It used to be
-  lost, or joined onto the next out-lap.
+  (AMS2) is kept, marked unfinished, as a crash already was, and so is the
+  lap so far when the driver quits to the menus or restarts. They used to
+  be lost, or a pit return joined onto the next out-lap.
 
 - The project is now Telemetrist: the package, commands (`telemetrist`,
   `telemetrist-update`, `telemetrist-pit-wall`), `TELEMETRIST_*` settings,

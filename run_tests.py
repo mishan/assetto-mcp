@@ -253,6 +253,7 @@ def run_isolated(paths: list[Path], pattern: str | None,
     failures = []
     skips = []
     total_start = time.perf_counter()
+
     def run(path):
         started = time.perf_counter()
         proc = subprocess.run([sys.executable, str(path)],
@@ -261,18 +262,22 @@ def run_isolated(paths: list[Path], pattern: str | None,
 
     # Each module is its own process with its own temp dirs, so they can
     # run side by side; this step otherwise takes as long as the suite.
-    with ThreadPoolExecutor(os.cpu_count() or 1) as pool:
-        done = pool.map(run, paths)
-    for path, (proc, elapsed) in zip(paths, done):
-        skipped = proc.returncode == SKIP_EXIT
-        ok = proc.returncode == 0 or (skipped and not no_skip)
-        mark = YELLOW("skip") if skipped else (
-            GREEN("ok  ") if ok else RED("FAIL"))
-        print(f"  {mark}  {path.stem:<{width}} {DIM(f'{elapsed:6.2f}s')}")
-        if skipped:
-            skips.append(path.stem)
-        if not ok:
-            failures.append((path.stem, proc.stdout + proc.stderr))
+    # Reported in order as each finishes; on Ctrl+C, nothing queued starts.
+    pool = ThreadPoolExecutor(os.cpu_count() or 1)
+    try:
+        for path, (proc, elapsed) in zip(paths, pool.map(run, paths)):
+            skipped = proc.returncode == SKIP_EXIT
+            ok = proc.returncode == 0 or (skipped and not no_skip)
+            mark = YELLOW("skip") if skipped else (
+                GREEN("ok  ") if ok else RED("FAIL"))
+            print(f"  {mark}  {path.stem:<{width}} "
+                  f"{DIM(f'{elapsed:6.2f}s')}", flush=True)
+            if skipped:
+                skips.append(path.stem)
+            if not ok:
+                failures.append((path.stem, proc.stdout + proc.stderr))
+    finally:
+        pool.shutdown(cancel_futures=True)
 
     print()
     if skips:

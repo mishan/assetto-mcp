@@ -1295,6 +1295,7 @@ CAMBER_LOADED_G = 0.8
 # Below this the car is near enough straight for camber to read as set.
 CAMBER_STRAIGHT_G = 0.2
 CAMBER_STRAIGHT_MIN_KMH = 50
+GAP_STEPS = 3
 
 
 def tread_and_camber(samples: list[dict], w: str) -> dict:
@@ -1329,8 +1330,9 @@ def tread_and_camber(samples: list[dict], w: str) -> dict:
         out["middle_minus_edges_c"] = round(m - (i + o) / 2, 1)
 
     outside_sign = 1 if w.endswith("r") else -1
-    # The lap's usual sample step: a gap in the recording longer than that
-    # was not seen, so it is not counted as time loaded.
+    # The lap's usual sample step. An interval GAP_STEPS times longer is a
+    # gap in the recording, not time seen loaded; anything shorter, jitter or
+    # a slower stretch, counts as it was.
     ts = [s.get("t_ms") for s in samples]
     steps = [b - a for a, b in zip(ts, ts[1:])
              if a is not None and b is not None and b > a]
@@ -1347,7 +1349,8 @@ def tread_and_camber(samples: list[dict], w: str) -> dict:
         is_loaded = lat * outside_sign >= CAMBER_LOADED_G
         if is_loaded:
             # Time, not samples: a thinned lap keeps every Nth sample.
-            loaded_ms += min(max(dt, 0), step)
+            if dt <= GAP_STEPS * step:
+                loaded_ms += max(dt, 0)
             edges = (s.get(f"surf_in_{w}"), s.get(f"surf_out_{w}"))
             if None not in edges:
                 loaded_tread.append(edges[0] - edges[1])

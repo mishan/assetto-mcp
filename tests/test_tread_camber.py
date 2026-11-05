@@ -250,6 +250,15 @@ def test_loaded_time_survives_thinning_and_leaves_out_gaps():
            + [_sample(t, -1.2) for t in range(11000, 12000, 40)])
     c = analysis.tread_and_camber(gap, "fl")["camber_deg"]
     assert c["loaded_s"] <= 1.1, c
+    # But sampling jitter, and a stretch recorded at half the rate, are time
+    # the wheel was seen loaded.
+    ts = [sum((40, 40, 40, 44)[i % 4] for i in range(n)) for n in range(3000)]
+    jitter = analysis.tread_and_camber([_sample(t, -1.2) for t in ts], "fl")
+    assert jitter["camber_deg"]["loaded_s"] == round(ts[-1] / 1000, 1), jitter
+    slow = ([_sample(t, 0.0) for t in range(0, 20000, 40)]
+            + [_sample(t, -1.2) for t in range(20000, 40000, 80)])
+    c = analysis.tread_and_camber(slow, "fl")["camber_deg"]
+    assert c["loaded_s"] >= 19.9, c
     print(f"  loaded {a['loaded_s']} s full, {b['loaded_s']} s thinned")
 
 

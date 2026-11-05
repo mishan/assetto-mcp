@@ -293,6 +293,8 @@ def test_a_failed_reinstall_is_a_warning_not_a_failure():
         assert done["updated"] is True and w.head() == tip, done
         assert done["pip"]["ok"] is False, done
         assert "install-windows.bat" in done["warning"], done
+        # The other chats' servers must not restart onto it before then.
+        assert U.applied_commit(w.data) is None, done
         print("  pip failure reported with what to do")
     _world(go)
 
@@ -679,7 +681,7 @@ def test_a_finished_apply_tells_every_server_where_to_go():
 
 
 _FOLLOW = r"""
-import json
+import json, threading, time
 import telemetrist.server as s
 from telemetrist import update
 
@@ -706,6 +708,11 @@ out["on_track"] = s._follow_update_once()
 c.holds_recorder, c.session_id, c.live = False, None, False
 out["idle"] = s._follow_update_once()
 out["restarts"] = len(restarts)
+# Decided on: a call arriving before the process exits does not start.
+ran = []
+threading.Thread(target=s._counted(lambda: ran.append(1)), daemon=True).start()
+time.sleep(0.3)
+out["call_started"] = bool(ran)
 s._shutdown()
 print(json.dumps(out))
 """
@@ -719,7 +726,7 @@ def test_another_chats_server_follows_an_update_when_idle():
         return
     assert out == {"nothing_applied": False, "a_branch_checked_out": False,
                    "mid_call": False, "on_track": False, "idle": True,
-                   "restarts": 1}, out
+                   "restarts": 1, "call_started": False}, out
     print("  restarts once, idle, onto the applied commit only")
 
 
@@ -736,6 +743,10 @@ out = {"sid": sid}
 for status in ("not running", "unknown (9)", "off", "replay", "live"):
     s._game_now = lambda status=status: {"status": status}
     out[status] = s._live_session()
+def torn():
+    raise OSError("torn page")
+s._game_now = torn
+out["read_fails"] = s._live_session()
 s._shutdown()
 print(json.dumps(out))
 """
@@ -753,6 +764,7 @@ def test_a_game_that_cannot_be_read_counts_as_on_track():
         return
     sid = out["sid"]
     assert out["not running"] == sid and out["unknown (9)"] == sid, out
+    assert out["read_fails"] == sid, out
     assert out["live"] == sid, out
     assert out["off"] is None and out["replay"] is None, out
     print("  unreadable or unknown: on track; off and replay: not")

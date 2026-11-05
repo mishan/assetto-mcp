@@ -901,13 +901,15 @@ def _apply(to_commit, root, data_dir, ac, pip, is_game_running) -> dict:
             path.unlink()
     except OSError:
         pass
-    head = installed_commit(root)
-    if head:
-        mark_applied(head, data_dir)
     out["restart_required"] = True
-    out["next"] = ("call restart_server, with the driver's OK. Servers "
-                   "in the driver's other chats restart themselves onto "
-                   "it once the game is not on track")
+    out["next"] = "call restart_server, with the driver's OK"
+    head = installed_commit(root)
+    # Not after a failed reinstall: the other servers would restart onto
+    # code whose dependencies may not be installed.
+    if head and out["pip"].get("ok", True):
+        mark_applied(head, data_dir)
+        out["next"] += (". Servers in the driver's other chats restart "
+                        "themselves onto it once the game is not on track")
     return out
 
 

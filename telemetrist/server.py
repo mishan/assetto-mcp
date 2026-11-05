@@ -344,6 +344,8 @@ _REGISTERED: set[str] = set()
 # lands in the middle of one.
 _calls_in_flight = 0
 _in_flight_lock = threading.Lock()
+# Set, under the lock, when such a restart is decided on.
+_restart_pending = threading.Event()
 
 
 def _counted(fn):
@@ -352,7 +354,12 @@ def _counted(fn):
     def enter():
         global _calls_in_flight
         with _in_flight_lock:
-            _calls_in_flight += 1
+            if not _restart_pending.is_set():
+                _calls_in_flight += 1
+                return
+        # Start nothing the restart would cut short: the supervisor answers
+        # this call "server restarted; retry" once this process exits.
+        threading.Event().wait()
 
     def leave():
         global _calls_in_flight
@@ -3658,7 +3665,11 @@ def _game_on_track() -> bool:
     lets an update or a restart through: one whose shared memory cannot be
     read right now -- mid-load, or a server whose files changed under it --
     might be mid-lap."""
-    return _game_now().get("status") not in OFF_TRACK_STATUSES
+    try:
+        status = _game_now().get("status")
+    except Exception:  # noqa: BLE001 - a read that fails may be mid-lap too
+        return True
+    return status not in OFF_TRACK_STATUSES
 
 
 # Shared-memory statuses with no lap to lose.
@@ -3702,8 +3713,10 @@ def _follow_update_once() -> bool:
         return False
     if update.installed_commit() != applied or update.apply_running(DATA_DIR):
         return False
-    if _calls_in_flight or _live_session() is not None:
-        return False
+    with _in_flight_lock:
+        if _calls_in_flight or _live_session() is not None:
+            return False
+        _restart_pending.set()
     _restart_soon()
     return True
 

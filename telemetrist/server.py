@@ -255,28 +255,26 @@ _replay = None
 def _sim_factory():
     from .sim_info import SharedMemoryUnavailable
     global _replay
-    from .sims import ac
     if not REPLAY_FILE:
         return sims.GAMES[SIM].live()
     if _replay is not None:
         raise SharedMemoryUnavailable("the recording has ended")
     from .sims.recording import Replay
     _replay = Replay(REPLAY_FILE, realtime=True)
-    return ac.Reader(_replay)
+    return sims.GAMES[_replay.sim].Reader(_replay)
 
 
 def _open_sim():
     """The game for a tool to read, the replay's when replaying."""
     from .sim_info import SharedMemoryUnavailable
-    from .sims import ac
     if not REPLAY_FILE:
         return sims.GAMES[SIM].live()
     if _replay is None:
         raise SharedMemoryUnavailable("the recording has not started")
-    return ac.Reader(_replay.view())
+    return sims.GAMES[_replay.sim].Reader(_replay.view())
 
 
-_collector = Collector(DB_PATH, _sim_factory)
+_collector = Collector(DB_PATH, _sim_factory, sims.GAMES[SIM].TITLE)
 
 from .bridge import Bridge  # noqa: E402
 

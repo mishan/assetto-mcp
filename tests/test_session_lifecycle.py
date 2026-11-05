@@ -364,7 +364,7 @@ def test_stop_is_immediate_while_waiting_for_the_game():
         col = Collector(Path(d) / "t.db", never)
         col.SIM_RETRY_SECONDS = 30.0
         col.start()
-        wait_for(lambda: "waiting for Assetto Corsa" in col.status,
+        wait_for(lambda: "waiting for the game" in col.status,
                  "the collector to notice the game is absent")
 
         began = time.monotonic()

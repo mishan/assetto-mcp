@@ -19,8 +19,9 @@ whether you just had a good lap.
 
 ![The pit wall: lap time, gap to best, fuel and tyres along the top, the engineer's caption, and two laps on the line map](docs/pit-wall.png)
 
-> Runs on the Windows PC that runs Assetto Corsa. **Original AC only** — it uses
-> the `acpmf_*` shared memory layout, not ACC's.
+> Runs on the Windows PC that runs the game: original Assetto Corsa (not
+> ACC), or [Automobilista 2](docs/INSTALL.md#automobilista-2-instead) without
+> the in-game app's extras.
 
 ---
 

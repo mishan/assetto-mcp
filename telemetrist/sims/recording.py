@@ -103,7 +103,8 @@ def _ticks(z, f, pages):
 
 
 class Replay:
-    """A recording standing in for the game, with the pages SimInfo has.
+    """A recording standing in for the game, with the pages its game's
+    Reader reads: AC's physics, graphics and static, AMS2's page().
 
     Time is the recording's own: wait() moves it on, sleeping as long only
     when `realtime`, and the pages are those of the last tick at or before
@@ -111,13 +112,14 @@ class Replay:
     """
 
     def __init__(self, path, realtime: bool = False):
-        from .. import sim_info
+        from .. import sim_info, sims
         header, self._ticks = read(path)
-        if header.get("sim") != "ac":
+        self.sim = header.get("sim")
+        if self.sim not in sims.GAMES:
             self._ticks.close()
-            raise ValueError(f"{path} is a {header.get('sim')} recording; "
-                             "only Assetto Corsa can be replayed")
-        self._decode = sim_info.from_raw
+            raise ValueError(f"{path} is a {self.sim} recording, which "
+                             "cannot be replayed")
+        self._decode = sims.GAMES[self.sim].pages_from_raw
         self._ended = sim_info.SharedMemoryUnavailable
         self._realtime = realtime
         self.done = threading.Event()
@@ -128,9 +130,10 @@ class Replay:
         self._pages = self._decode(first[1])
         self._next = next(self._ticks, None)
 
-    physics = property(lambda self: self._pages.physics)
-    graphics = property(lambda self: self._pages.graphics)
-    static = property(lambda self: self._pages.static)
+    def __getattr__(self, name):
+        if name == "_pages":
+            raise AttributeError(name)
+        return getattr(self._pages, name)
 
     def now(self) -> float:
         return self._t
@@ -162,9 +165,8 @@ class Replay:
 def replay_into(path, db_path, timeout: float = 600) -> None:
     """Record a recording's laps into the database at `db_path`, as fast as
     the collector stores them."""
-    from .. import sim_info
+    from .. import sim_info, sims
     from ..collector import Collector
-    from .ac import Reader
 
     replay = Replay(path)
     opened = []
@@ -173,7 +175,7 @@ def replay_into(path, db_path, timeout: float = 600) -> None:
         if opened:
             raise sim_info.SharedMemoryUnavailable("the recording has ended")
         opened.append(replay)
-        return Reader(replay)
+        return sims.GAMES[replay.sim].Reader(replay)
 
     col = Collector(db_path, once)
     col.start()

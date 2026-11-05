@@ -45,9 +45,10 @@ SWITCHED_OFF = "recording was switched off by stop_recording"
 
 
 class Collector:
-    def __init__(self, db_path, sim_info_factory):
+    def __init__(self, db_path, sim_info_factory, title="the game"):
         """sim_info_factory: zero-arg callable returning a game reader
-        (sims.ac.Reader), raising while the game is not running.
+        (sims.ac.Reader, sims.ams2.Reader), raising while the game is not
+        running; `title` names the game in the status.
 
         Injected so tests can run without Windows/AC. The collector opens its
         own SQLite connection inside its thread; sharing one connection across
@@ -56,6 +57,7 @@ class Collector:
         self._db_path = db_path
         self._conn = None
         self._sim_factory = sim_info_factory
+        self._title = title
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         # Set by the thread as soon as it has published a status, so start()
@@ -270,10 +272,10 @@ class Collector:
 
                 try:
                     sim = self._sim_factory()
-                except Exception as e:  # AC not running / not Windows
+                except Exception as e:  # game not running / not Windows
                     # A state rather than a failure: the game is not open
                     # yet.
-                    self._announce("waiting for Assetto Corsa")
+                    self._announce(f"waiting for {self._title}")
                     self.last_error = str(e)
                     # Result ignored on purpose: this path goes straight back
                     # round the outer loop, which re-reads both the enabled
@@ -285,7 +287,7 @@ class Collector:
                         break
                     continue
 
-                self._announce("waiting for AC to go live")
+                self._announce("waiting for the session to go live")
                 self.last_error = None
                 try:
                     self._loop(sim)
@@ -413,8 +415,9 @@ class Collector:
                     last_completed = None
                     session_best = None
                     lap_samples = []
-                    # Not "recording (session 7)" while AC sits in the menus.
-                    self._announce("waiting for AC to go live")
+                    # Not "recording (session 7)" while the game sits in the
+                    # menus.
+                    self._announce("waiting for the session to go live")
                 pause(0.25)
                 continue
 

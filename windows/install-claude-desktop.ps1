@@ -389,6 +389,23 @@ function Register-WithClaudeDesktop {
     # the first -- so the file the user actually wanted preserved was the one
     # that got lost. It also read strangely: "preserved ac-race-engineer",
     # immediately followed by "removed ac-race-engineer".
+    # Carry the driver's settings over. An entry's "env" is where settings
+    # like TELEMETRIST_DASH_LAN live, and writing a bare command over it --
+    # or dropping the pre-rename entry that held it -- turned them off with
+    # no word said. The current entry's wins; else the newest pre-rename one
+    # that has any. The old spellings are kept as they are: the server reads
+    # every one of them.
+    $keptEnvFrom = $null
+    foreach ($name in @($ServerName) + $LegacyServerNames) {
+        $old = $config.mcpServers.PSObject.Properties[$name]
+        if ($old -and $old.Value -and $old.Value.PSObject.Properties['env'] `
+                -and @($old.Value.env.PSObject.Properties).Count -gt 0) {
+            $entry | Add-Member -NotePropertyName env -NotePropertyValue $old.Value.env
+            $keptEnvFrom = $name
+            break
+        }
+    }
+
     $droppedLegacy = @()
     foreach ($legacy in $LegacyServerNames) {
         if ($config.mcpServers.PSObject.Properties[$legacy]) {
@@ -427,6 +444,10 @@ function Register-WithClaudeDesktop {
     if ($written.Count -gt 0) {
         foreach ($legacy in $droppedLegacy) {
             Write-Ok "Removed the pre-rename '$legacy' entry from $OwnerConfigPath"
+        }
+        if ($keptEnvFrom) {
+            $keys = @($entry.env.PSObject.Properties.Name) -join ', '
+            Write-Ok "Kept the settings from the '$keptEnvFrom' entry: $keys"
         }
         # Where-Object { $_ }: an empty PSObject property collection yields a
         # single $null, which passes a bare -ne test and reported "1 other

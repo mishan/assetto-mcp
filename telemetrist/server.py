@@ -1016,6 +1016,12 @@ def session_check() -> str:
                      "with the game closed, run `python -m telemetrist."
                      "update --sync-lua` to move it")
 
+    if old_entry := update.old_client_entry():
+        to_do.append(f"Claude Desktop still starts this server as "
+                     f"'{old_entry}': rerun install-windows.bat, then quit "
+                     "and reopen Claude Desktop; the installer renames the "
+                     "entry and keeps its settings")
+
     disk = update.installed_commit()
     restart = bool(_RUNNING_COMMIT and disk and disk != _RUNNING_COMMIT)
     out["server"] = {"version": _version(), "restart_needed": restart,

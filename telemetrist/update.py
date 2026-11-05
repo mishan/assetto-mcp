@@ -521,6 +521,40 @@ def old_app_installed(ac: Path | None = None) -> bool:
     return bool(ac) and (Path(ac) / "apps" / "lua" / OLD_APP_NAME).is_dir()
 
 
+# Claude Desktop entries from before the rename, newest first, as the
+# installer's $LegacyServerNames.
+OLD_CLIENT_ENTRIES = ("assetto-mcp", "ac-race-engineer")
+
+
+def _claude_configs() -> list[Path]:
+    """Every claude_desktop_config.json Claude Desktop might read: the plain
+    one, and the MSIX build's redirected copy."""
+    out = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        out.append(Path(appdata) / "Claude" / "claude_desktop_config.json")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        out += sorted((Path(local) / "Packages").glob(
+            "Claude_*/LocalCache/Roaming/Claude/claude_desktop_config.json"))
+    return [p for p in out if p.is_file()]
+
+
+def old_client_entry(configs: list[Path] | None = None) -> str | None:
+    """The pre-rename Claude Desktop entry still starting this server, if
+    any. Only the installer renames it, carrying its settings over."""
+    for path in configs if configs is not None else _claude_configs():
+        try:
+            servers = json.loads(path.read_text(encoding="utf-8"))
+            servers = servers.get("mcpServers") or {}
+        except (OSError, ValueError, AttributeError):
+            continue
+        for name in OLD_CLIENT_ENTRIES:
+            if name in servers:
+                return name
+    return None
+
+
 def sync_lua(root: Path | None = None, ac: Path | None = None,
              is_game_running=game_running) -> dict:
     """Copy the in-game app into Assetto Corsa where it differs.
@@ -890,7 +924,16 @@ def _apply(to_commit, root, data_dir, ac, pip, is_game_running) -> dict:
         out["pip"] = {"ran": False, "note": "pyproject.toml did not change"}
 
     out["lua"] = sync_lua(root, ac, is_game_running)
-    if flags["installer_changed"]:
+    old_entry = old_client_entry()
+    if old_entry:
+        # Claude Desktop names the server after its config entry, so the
+        # driver went on seeing the old name with no word that anything
+        # was left to do.
+        out["installer_note"] = (
+            f"Claude Desktop still starts this server as '{old_entry}'. "
+            "Rerun install-windows.bat, then quit and reopen Claude Desktop: "
+            "the installer renames the entry and keeps its settings.")
+    elif flags["installer_changed"]:
         out["installer_note"] = (
             "the installer changed too. Nothing needs it now, but rerun "
             "install-windows.bat at some quiet moment to pick up whatever "

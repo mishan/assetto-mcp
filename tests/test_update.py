@@ -867,6 +867,23 @@ def _run_server(script: str) -> dict | None:
         return json.loads(proc.stdout.strip().splitlines()[-1])
 
 
+def test_a_client_entry_left_under_the_old_name_is_found():
+    """Claude Desktop names the server after its config entry: after the
+    rename the driver saw the old name, and nothing said why."""
+    with tempfile.TemporaryDirectory() as d:
+        plain, msix, broken = (Path(d) / n for n in ("a.json", "b.json",
+                                                     "c.json"))
+        plain.write_text(json.dumps({"mcpServers": {"telemetrist": {}}}),
+                         encoding="utf-8")
+        msix.write_text(json.dumps({"mcpServers": {"elgato": {},
+                                                   "assetto-mcp": {}}}),
+                        encoding="utf-8")
+        broken.write_text("{not json", encoding="utf-8")
+        assert U.old_client_entry([plain]) is None
+        assert U.old_client_entry([broken, plain, msix]) == "assetto-mcp"
+        print("  the pre-rename entry is found in any config, bad ones skipped")
+
+
 def test_an_empty_commit_is_refused_rather_than_matched():
     out = U.apply_in_background("  ")
     assert out["refused"] == "no_commit", out

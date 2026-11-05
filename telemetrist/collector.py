@@ -395,7 +395,7 @@ class Collector:
         lap_start_fuel = None
         last_packet = -1
         last_pos = None
-        last_read = now()     # of last_pos, leaving out time paused
+        last_read = now()     # when last_pos was read, leaving out pauses
 
         def keep_unfinished():
             # Often the lap the driver most wants to look at; complete=0 so
@@ -432,10 +432,10 @@ class Collector:
                 return
 
             f = sim.read()
+            # Before any write below can hold the loop up.
+            read_at = now()
 
             self.live = f.status == "live"
-            if f.status == "pause":
-                last_read = now()
             if not self.live:
                 if f.status == "off":  # back to waiting
                     keep_unfinished()
@@ -451,6 +451,8 @@ class Collector:
                 # pit lane go on to the check for a lap left unfinished.
                 if not (session_started and f.status == "pause"
                         and f.in_pit_lane):
+                    if f.status == "pause":
+                        last_read = read_at
                     pause(0.25)
                     continue
 
@@ -583,7 +585,7 @@ class Collector:
                     and (last_pos - pos > ABANDON_JUMP and not wrapped
                          and not f.in_pit_lane
                          or f.in_pit_lane and _sent_to_pits(
-                             last_pos, pos, now() - last_read))):
+                             last_pos, pos, read_at - last_read))):
                 keep_unfinished()
                 lap_samples = []
                 wide_since = None
@@ -592,7 +594,7 @@ class Collector:
                 lap_start_fuel = None
                 self.current_lap_dirty = False
                 self.current_lap_pitted = False
-            last_pos, last_read = pos, now()
+            last_pos, last_read = pos, read_at
 
             # A lap containing a pit visit has a meaningless time. Note it
             # before the sampling guard below, which skips pit-lane ticks.

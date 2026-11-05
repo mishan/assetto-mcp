@@ -10,11 +10,12 @@ meant to produce.
 import copy
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import (complete_lap, enter_pits, go_off,  # noqa: E402
+from support import (FakeSim, complete_lap, enter_pits, go_off,  # noqa: E402
                      leave_pits, make_session, restart_from_menu,
                      run_collector, run_module, temp_db, tick, wait_for)
 
@@ -248,6 +249,42 @@ def test_only_a_move_driving_could_not_make_is_a_trip_to_the_pits():
     ]
     for last, pos, seconds, sent in cases:
         assert _sent_to_pits(last, pos, seconds) is sent, (last, pos, seconds)
+
+
+def test_a_read_held_up_is_not_taken_for_a_trip_to_the_pits():
+    """The line's database write held up two seconds, while the car drove
+    on into the pit lane: 5% of the lap, in what is one read."""
+    for status in (sim_info.AC_LIVE, sim_info.AC_PAUSE):
+        sim, clock = FakeSim(), [0.0]
+        sim.now = lambda: clock[0]
+        sim.wait = lambda s: (clock.__setitem__(0, clock[0] + s),
+                              time.sleep(s))
+        store = db.store_lap
+
+        def held_up(*args, **kwargs):
+            store(*args, **kwargs)
+            g = copy.copy(sim.graphics)
+            g.status, g.isInPitLane = status, 1
+            g.normalizedCarPosition += 0.05
+            sim.graphics = g
+            clock[0] += 2.0
+
+        def line_then_pits(sim, col):
+            sim.graphics.normalizedCarPosition = 0.7
+            tick(sim, col, n=3)
+            sim.graphics.normalizedCarPosition = 0.001
+            sim.physics.packetId += 1     # the new lap's first sample
+            db.store_lap = held_up
+            try:
+                complete_lap(sim, col, 113000)
+                wait_for(lambda: col.current_lap_pitted,
+                         "the pit lane to be read")
+            finally:
+                db.store_lap = store
+
+        with temp_db() as path:
+            col = run_collector([line_then_pits], path, sim=sim)
+        assert col.abandoned_laps == 0, (status, col.abandoned_laps)
 
 
 def test_a_lap_ended_by_leaving_the_session_is_kept_marked_incomplete():

@@ -211,6 +211,9 @@ INSTRUCTIONS = (
 # and comparing against this is how check_for_updates knows to say that a
 # restart is still owed.
 _RUNNING_COMMIT = update.installed_commit()
+# When this process started: an update applied before it is one it already
+# runs, or a commit someone checked out again by hand.
+_STARTED_AT = time.time()
 
 
 def _version() -> str:
@@ -3651,12 +3654,15 @@ def _live_session() -> int | None:
 
 
 def _game_on_track() -> bool:
-    return _game_now().get("status") in ON_TRACK_STATUSES
+    """Whether the car may be on track. Only a game that says it is not
+    lets an update or a restart through: one whose shared memory cannot be
+    read right now -- mid-load, or a server whose files changed under it --
+    might be mid-lap."""
+    return _game_now().get("status") not in OFF_TRACK_STATUSES
 
 
-# Shared-memory statuses with the car on track; "pause" is a paused lap,
-# still one a restart would lose.
-ON_TRACK_STATUSES = ("live", "pause")
+# Shared-memory statuses with no lap to lose.
+OFF_TRACK_STATUSES = ("off", "replay")
 
 
 async def _ask_to_update(ctx, arguments) -> bool | None:
@@ -3684,8 +3690,15 @@ def _follow_update_once() -> bool:
     Not while an apply is still running, not with the driver on track,
     and not with one of this chat's own calls in flight.
     """
-    applied = update.applied_commit(DATA_DIR)
+    mark = update.applied_marker(DATA_DIR)
+    applied = mark and mark["commit"]
     if not (applied and _RUNNING_COMMIT and applied != _RUNNING_COMMIT):
+        return False
+    # The server that applied it says so and waits for the driver's OK.
+    if mark.get("pid") == os.getpid():
+        return False
+    if not isinstance(mark.get("at"), (int, float)) \
+            or mark["at"] < _STARTED_AT:
         return False
     if update.installed_commit() != applied or update.apply_running(DATA_DIR):
         return False

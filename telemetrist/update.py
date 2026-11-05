@@ -911,25 +911,48 @@ def _apply(to_commit, root, data_dir, ac, pip, is_game_running) -> dict:
     return out
 
 
-def mark_applied(commit: str, data_dir: Path | None = None) -> None:
+def mark_applied(commit: str, data_dir: Path | None = None,
+                 pid: int | None = None) -> None:
+    """Record the commit an apply left on disk, which process applied it
+    and when, for the other servers to follow.
+
+    Written to a temporary file and moved into place: a write that dies
+    half way must leave the last marker, not an empty one no server can
+    read.
+    """
     path = _cache_path(data_dir, APPLIED_FILE)
     if not path:
         return
+    tmp = path.with_name(path.name + ".tmp")
     try:
-        path.write_text(json.dumps({"commit": commit, "at": time.time()}),
-                        encoding="utf-8")
+        tmp.write_text(json.dumps({
+            "commit": commit, "at": time.time(),
+            "pid": os.getpid() if pid is None else pid}), encoding="utf-8")
+        os.replace(tmp, path)
     except OSError:
-        pass
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def applied_marker(data_dir: Path | None = None) -> dict | None:
+    """The last successful apply: its commit, time and process id."""
+    path = _cache_path(data_dir, APPLIED_FILE)
+    try:
+        mark = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    if not isinstance(mark, dict) or not isinstance(mark.get("commit"), str) \
+            or not mark["commit"]:
+        return None
+    return mark
 
 
 def applied_commit(data_dir: Path | None = None) -> str | None:
     """The commit the last successful apply left on disk, if any."""
-    path = _cache_path(data_dir, APPLIED_FILE)
-    try:
-        commit = json.loads(path.read_text(encoding="utf-8"))["commit"]
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return None
-    return commit if isinstance(commit, str) and commit else None
+    mark = applied_marker(data_dir)
+    return mark["commit"] if mark else None
 
 
 # --- command line -------------------------------------------------------

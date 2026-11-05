@@ -543,9 +543,9 @@ def _claude_configs() -> list[Path]:
 
 
 def old_client_entry(configs: list[Path] | None = None) -> str | None:
-    """The pre-rename Claude Desktop entry still starting this server, if
-    any. Only the installer renames it, carrying its settings over, and
-    it takes the newest name in any config before an older one."""
+    """The pre-rename Claude Desktop entry left in any config, if any.
+    Only the installer renames it, carrying its settings over, and it
+    takes the newest name in any config before an older one."""
     found = []
     for path in configs if configs is not None else _claude_configs():
         try:
@@ -940,7 +940,8 @@ def _apply(to_commit, root, data_dir, ac, pip, is_game_running,
         # driver went on seeing the old name with no word that anything
         # was left to do.
         out["installer_note"] = (
-            f"Claude Desktop still starts this server as '{old_entry}'. "
+            f"A Claude Desktop config still has the pre-rename entry "
+            f"'{old_entry}'. "
             "Rerun install-windows.bat, then quit and reopen Claude Desktop: "
             "the installer renames the entry and keeps its settings.")
     elif flags["installer_changed"]:

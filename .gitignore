@@ -13,7 +13,7 @@ ranges/
 # of the Claude Desktop config.
 diagnose-report.txt
 
-# A data directory kept beside the code (ASSETTO_MCP_DATA pointed here).
+# A data directory kept beside the code (TELEMETRIST_DATA pointed here).
 # The lap database is the driver's own driving, other drivers' names
 # included, and nearly a gigabyte; ranges inside it are licensed car data.
 /assetto-mcp-data/

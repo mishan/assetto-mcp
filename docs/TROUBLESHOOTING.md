@@ -26,7 +26,7 @@ properly.
 config, by hand:
 
 ```powershell
-& "<the command path from your config>" -m assetto_mcp.server
+& "<the command path from your config>" -m telemetrist.server
 ```
 
 It should start and sit there waiting for input on stdin. `Ctrl-C` to stop. If
@@ -34,11 +34,11 @@ it prints `ModuleNotFoundError`, go to the next item.
 
 **3. Two Pythons.** `pip install -e .` records the pointer to this repo in
 *one* interpreter's `site-packages`. If `command` in the config names a
-different Python, `-m assetto_mcp.server` dies with `ModuleNotFoundError` and
+different Python, `-m telemetrist.server` dies with `ModuleNotFoundError` and
 most clients show nothing rather than an error:
 
 ```powershell
-& "<the command path from your config>" -c "import assetto_mcp; print('ok')"
+& "<the command path from your config>" -c "import telemetrist; print('ok')"
 ```
 
 **4. Is it a bare `"python"` in the config?** Clients launch servers without
@@ -54,7 +54,7 @@ before editing files.
 **6. Read the client's MCP server log.** Claude Desktop:
 
 ```powershell
-notepad $env:APPDATA\Claude\logs\mcp-server-assetto-mcp.log
+notepad $env:APPDATA\Claude\logs\mcp-server-telemetrist.log
 ```
 
 ## Claude Desktop: there is no `logs` folder there
@@ -98,8 +98,8 @@ break that:
 - **No server running at all.** The client only launches it when the client is
   open, so start the client first.
 - **Something else owns the port.** `diagnose.bat` reports who holds 9666.
-- **You changed `ASSETTO_MCP_BRIDGE_PORT`** but didn't change `BASE` in
-  `lua_app/assetto_mcp/assetto_mcp.lua` to match.
+- **You changed `TELEMETRIST_BRIDGE_PORT`** but didn't change `BASE` in
+  `lua_app/telemetrist/telemetrist.lua` to match.
 - **Two clients open at once**, each with its own copy of the server. Only one
   can hold the port. See [INSTALL.md](INSTALL.md#only-run-one-copy).
 
@@ -124,11 +124,12 @@ It won't replace a setup file you might have made yourself. Take the suggested
 name, or say explicitly that it should overwrite — the old file is kept
 alongside as `<name>.ini.bak-<timestamp>` either way.
 
-## A dead `ac-race-engineer` server shows up
+## A dead `ac-race-engineer` server, or a second `assetto-mcp` one, shows up
 
-Left over from before the rename — it points at a module that no longer exists.
-Re-run `install-windows.bat`; it removes the old entry from every Claude
-Desktop config location. On any other client, delete the entry yourself. Same
+Left over from before a rename. An `ac-race-engineer` entry points at a module
+that no longer exists; an `assetto-mcp` entry still works, and beside a
+`telemetrist` one it is a second server. Re-run `install-windows.bat`; it
+removes the old entries from every Claude Desktop config location. On any other client, delete the entry yourself. Same
 for a duplicate in-game app in the AC sidebar.
 
 ## The overlay says NOT STORING LAPS
@@ -151,7 +152,7 @@ see what it saw.
 Track limits are still *inferred* from wheels-off-track, because vanilla AC
 doesn't expose lap validity. The threshold is four wheels off for at least
 120 ms. If it's consistently wrong for a circuit, change
-`TRACK_LIMITS_WHEELS` in `assetto_mcp/db.py` and run
+`TRACK_LIMITS_WHEELS` in `telemetrist/db.py` and run
 `python scripts/rescore_track_limits.py` — the evidence is stored per lap, so
 laps are re-scored without re-driving anything.
 
@@ -164,7 +165,7 @@ reporting with the track and lap number.
 
 Expected. The database has a size budget and thins the oldest sessions' traces
 when it passes it — `sample_stride` on a lap says by how much. No lap is ever
-deleted. Ask for a storage report, and raise `ASSETTO_MCP_MAX_DB_BYTES` (or set
+deleted. Ask for a storage report, and raise `TELEMETRIST_MAX_DB_BYTES` (or set
 it to `0`) if you'd rather keep everything.
 
 ## Damper histograms are missing or flagged as low-rate

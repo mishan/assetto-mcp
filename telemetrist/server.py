@@ -976,6 +976,11 @@ def session_check() -> str:
                      "suspension, setup values or messages. Is it enabled "
                      "in the apps sidebar?")
 
+    if sim == "ac" and update.old_app_installed():
+        to_do.append("the in-game app is installed under its old name: "
+                     "with the game closed, run `python -m telemetrist."
+                     "update --sync-lua` to move it")
+
     disk = update.installed_commit()
     restart = bool(_RUNNING_COMMIT and disk and disk != _RUNNING_COMMIT)
     out["server"] = {"version": _version(), "restart_needed": restart,

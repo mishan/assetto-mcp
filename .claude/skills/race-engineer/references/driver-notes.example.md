@@ -2,7 +2,7 @@
 
 The real notes are the driver's own and live in the data directory, never
 in this repository: `<data_dir>/notes/`, which `session_check` gives as
-`notes.dir` (`~/.assetto-mcp` unless `ASSETTO_MCP_DATA` says
+`notes.dir` (`~/.telemetrist` unless `TELEMETRIST_DATA` says
 otherwise). This file only shows their shape, and everything in it is made
 up. Create the real files from it the first time there is something to
 write down.

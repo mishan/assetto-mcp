@@ -33,7 +33,7 @@ than inferring from `running`.
 `stop_recording` applies to every instance and survives a restart, because
 "stop recording" is an instruction about the car and not about whichever chat
 you happened to type it into. `start_recording` turns it back on. Set
-`ASSETTO_MCP_NO_AUTOSTART=1` to keep one instance out of it entirely.
+`TELEMETRIST_NO_AUTOSTART=1` to keep one instance out of it entirely.
 
 The in-game overlay cross-checks all of this against the game's own lap
 counter: if laps are finishing and none are landing, it says **NOT STORING
@@ -102,7 +102,7 @@ a decision.
 lap validity in shared memory. CSP does — `ac.onLapCompleted` hands a
 physics worker the game's own `valid` and `cuts` — and that's reachable from
 the worker this project already runs, but it isn't wired up yet and it would
-be single-player only. See [#95](https://github.com/mishan/assetto-mcp/issues/95).
+be single-player only. See [#95](https://github.com/mishan/telemetrist/issues/95).
 
 ---
 
@@ -137,7 +137,7 @@ Order of sacrifice, worst value per byte first:
 3. **Car samples**, oldest session first, one stride step at a time, so a
    session only reaches 1-in-32 once every older one is already there.
 
-The current session is never thinned. `ASSETTO_MCP_MAX_DB_BYTES` sets the
+The current session is never thinned. `TELEMETRIST_MAX_DB_BYTES` sets the
 budget (default 2 GB); `0` disables budget-driven thinning entirely, though
 the per-session cap on suspension samples applies either way. A pass runs once at
 session start, so the cost lands while the car is in the garage rather than
@@ -539,7 +539,7 @@ reasoning and a confidence figure.
 ## The in-game bridge
 
 The Lua app talks to the server over HTTP on `127.0.0.1:9666` (change with
-`ASSETTO_MCP_BRIDGE_PORT`, and edit `BASE` in the Lua to match). The bridge
+`TELEMETRIST_BRIDGE_PORT`, and edit `BASE` in the Lua to match). The bridge
 binds localhost only.
 
 Only one server instance can hold the port, which is the same instance that
@@ -551,7 +551,7 @@ holds the recording claim — see [Recording](#recording). `session_check`
 ## Layout
 
 ```
-assetto_mcp/
+telemetrist/
   sim_info.py   shared memory structs (physics / graphics / static)
   collector.py  background sampler -> SQLite, lap boundary detection
   db.py         schema + storage
@@ -560,7 +560,7 @@ assetto_mcp/
   line_map.py   driving-line map as one HTML file (+ line_map.html)
   dash.html     the pit wall page the bridge serves at /dash
   overlay.html  its strip for a stream, at /dash/overlay
-  pit_wall.py   assetto-mcp-pit-wall: the recorder and pit wall, no chat
+  pit_wall.py   telemetrist-pit-wall: the recorder and pit wall, no chat
   setups.py     setup INI read/write, range clamping
   circuit.py    corner names from the track's sections.ini
   places.py     positions in meters and turns, for drivers
@@ -578,8 +578,8 @@ assetto_mcp/
   sims/ams2.py  Automobilista 2's shared-memory page, opened and recorded
   sims/recording.py  the game's shared memory to a file and back
 lua_app/
-  assetto_mcp/  CSP Lua in-game app (copy to apps/lua/)
-    assetto_mcp.lua        the app itself, render thread
+  telemetrist/  CSP Lua in-game app (copy to apps/lua/)
+    telemetrist.lua        the app itself, render thread
     suspension_worker.lua  CSP physics worker, 333Hz damper sampling
 install-windows.bat  double-clickable installer
 diagnose.bat         double-clickable what-is-broken report

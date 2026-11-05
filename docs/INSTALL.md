@@ -6,12 +6,12 @@ Desktop.
 
 ## What you're actually configuring
 
-`assetto-mcp` is a plain **stdio MCP server**. Whatever client you use, you are
+Telemetrist is a plain **stdio MCP server**. Whatever client you use, you are
 telling it one thing: *run this command, and talk MCP over its stdin/stdout.*
 
 ```
 command:  C:\path\to\python.exe
-args:     -m assetto_mcp.server
+args:     -m telemetrist.server
 ```
 
 That's the whole contract. Nothing in the server knows or cares which client
@@ -52,9 +52,9 @@ differs.
 ```json
 {
   "mcpServers": {
-    "assetto-mcp": {
+    "telemetrist": {
       "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
-      "args": ["-m", "assetto_mcp.server"]
+      "args": ["-m", "telemetrist.server"]
     }
   }
 }
@@ -77,12 +77,12 @@ routine from the server as prompts instead — `start_session`, `debrief`,
 itself as `assetto://guide/...` resources. Both are read from the clone's
 `.claude/skills` folder, so an install without the clone has neither. For
 LM Studio, or a client that drops tools past a limit, set
-`ASSETTO_MCP_TOOLSET=core` in the server's `env` block ([below](#environment-overrides)).
+`TELEMETRIST_TOOLSET=core` in the server's `env` block ([below](#environment-overrides)).
 
 ### Claude Code
 
 ```
-claude mcp add assetto-mcp -- python -m assetto_mcp.server
+claude mcp add telemetrist -- python -m telemetrist.server
 ```
 
 ### VS Code with GitHub Copilot
@@ -94,10 +94,10 @@ or edit `.vscode/mcp.json`:
 ```json
 {
   "servers": {
-    "assetto-mcp": {
+    "telemetrist": {
       "type": "stdio",
       "command": "C:\\path\\to\\python.exe",
-      "args": ["-m", "assetto_mcp.server"]
+      "args": ["-m", "telemetrist.server"]
     }
   }
 }
@@ -115,7 +115,7 @@ Fully, not just the window. Claude Desktop in particular keeps running in the
 system tray: right-click the tray icon and choose Quit.
 
 You only need to do this when the client config changes. `python -m
-assetto_mcp.server` starts a small supervisor that runs the real server as a
+telemetrist.server` starts a small supervisor that runs the real server as a
 child process and keeps the client's connection open across restarts, so after
 a code change the assistant can call `restart_server` instead of you quitting
 the client. Clients that act on `notifications/tools/list_changed` also pick
@@ -124,7 +124,7 @@ the ones the client saw when it connected, until it reconnects.
 
 ## 3. Copy the in-game app
 
-Copy `lua_app/assetto_mcp/` to `assettocorsa/apps/lua/assetto_mcp/`. It needs
+Copy `lua_app/telemetrist/` to `assettocorsa/apps/lua/telemetrist/`. It needs
 Custom Shaders Patch, which you already have if you use Content Manager with
 CSP enabled. Enable it from the in-game apps sidebar — move the mouse to the
 right edge of the screen while in a session.
@@ -146,12 +146,12 @@ given the commit that check named, does the following:
 1. refuses unless the clone is on `main`, has no edited tracked files, and is
    strictly behind — never ahead, never diverged — and the commit is still
    the one the check named;
-2. `git fetch https://github.com/mishan/assetto-mcp main`, then
+2. `git fetch https://github.com/mishan/telemetrist main`, then
    `git merge --ff-only` to that commit;
 3. `pip install -e .` if `pyproject.toml` changed. On Windows this can fail
    because the running server holds files open; the code is updated anyway,
    and the reply says to quit the client and re-run `install-windows.bat`;
-4. copies `lua_app/assetto_mcp/` over `assettocorsa/apps/lua/assetto_mcp/`,
+4. copies `lua_app/telemetrist/` over `assettocorsa/apps/lua/telemetrist/`,
    file by file where they differ — only if the app is installed there, and
    not while `acs.exe` is running;
 5. leaves the running server on the old code until `restart_server`.
@@ -164,10 +164,10 @@ seconds answers `in_progress`, and calling again collects the result.
 The same from a terminal:
 
 ```powershell
-python -m assetto_mcp.update --check
-python -m assetto_mcp.update --apply      # shows the commits and asks
-python -m assetto_mcp.update --sync-lua   # just the in-game app, game closed
-python -m assetto_mcp.update --channel latest   # or stable; then checks
+python -m telemetrist.update --check
+python -m telemetrist.update --apply      # shows the commits and asks
+python -m telemetrist.update --sync-lua   # just the in-game app, game closed
+python -m telemetrist.update --channel latest   # or stable; then checks
 ```
 
 `git` has to be installed — it is found on `PATH` or in Git for Windows'
@@ -183,12 +183,12 @@ and the HTTP bridge on `127.0.0.1:9666` that the in-game app talks to.
 
 Instances coordinate for the database — several can run, and exactly one holds
 the recording claim while the rest sit in standby. But if you register
-`assetto-mcp` with **two different clients** and have both open, you get two
+Telemetrist with **two different clients** and have both open, you get two
 sets of processes, and only one can hold the bridge port. The in-game app will
 then talk to whichever won.
 
 This is fine as long as you use one client at a time. If you routinely run two,
-give one of them `ASSETTO_MCP_NO_AUTOSTART=1` so it never tries to record.
+give one of them `TELEMETRIST_NO_AUTOSTART=1` so it never tries to record.
 
 ---
 
@@ -259,46 +259,64 @@ Config**, which always opens the file the running app actually reads.
 | Variable | Default | What it does |
 |---|---|---|
 | `AC_DOCS_DIR` | `~/Documents/Assetto Corsa` | Where AC keeps setups and logs |
-| `ASSETTO_MCP_AC_ROOT` | found from Steam's library list | The Assetto Corsa install folder: corner names from each track's `sections.ini`, and where updates copy the in-game app |
-| `ASSETTO_MCP_DATA` | `~/.assetto-mcp` | Database, car range files, `exports/` and `notes/` |
-| `ASSETTO_MCP_SIM` | `ac` | The game to read: `ac` for Assetto Corsa |
-| `ASSETTO_MCP_BRIDGE_PORT` | `9666` | In-game app bridge port |
-| `ASSETTO_MCP_NO_AUTOSTART` | unset | `1` stops *this* instance recording on startup. Rarely wanted: instances already coordinate so only one records. |
-| `ASSETTO_MCP_NO_SUPERVISOR` | unset | `1` runs the server directly, without the supervisor in front of it. `restart_server` then refuses, and picking up new code means restarting the client. |
-| `ASSETTO_MCP_UPDATE_REPO` | `mishan/assetto-mcp` | The GitHub repository updates come from |
-| `ASSETTO_MCP_UPDATE_API` | `https://api.github.com` | GitHub API base, for the update check |
-| `ASSETTO_MCP_UPDATE_GIT_URL` | `https://github.com/<repo>.git` | Where `apply_update` fetches from |
-| `ASSETTO_MCP_TOOLSET` | `full` | `core` serves only the tools of the session routine (`CORE_TOOLS` in `server.py`), for a small local model or a client that caps how many tools it takes |
-| `ASSETTO_MCP_REPLAY` | unset | A recording (`python -m assetto_mcp.sims.recording record`) to replay in place of the game, in real time, for the pit wall and the tools. Needs `ASSETTO_MCP_DATA` set too, so its laps never join your real ones. |
-| `ASSETTO_MCP_MAX_DB_BYTES` | `2147483648` (2 GB) | Size budget for the telemetry database. Over it, the oldest sessions' traces are thinned; laps are never deleted. `0` keeps every sample forever. |
+| `TELEMETRIST_AC_ROOT` | found from Steam's library list | The Assetto Corsa install folder: corner names from each track's `sections.ini`, and where updates copy the in-game app |
+| `TELEMETRIST_DATA` | `~/.telemetrist` | Database, car range files, `exports/` and `notes/` |
+| `TELEMETRIST_SIM` | `ac` | The game to read: `ac` for Assetto Corsa |
+| `TELEMETRIST_BRIDGE_PORT` | `9666` | In-game app bridge port |
+| `TELEMETRIST_NO_AUTOSTART` | unset | `1` stops *this* instance recording on startup. Rarely wanted: instances already coordinate so only one records. |
+| `TELEMETRIST_NO_SUPERVISOR` | unset | `1` runs the server directly, without the supervisor in front of it. `restart_server` then refuses, and picking up new code means restarting the client. |
+| `TELEMETRIST_UPDATE_REPO` | `mishan/telemetrist` | The GitHub repository updates come from |
+| `TELEMETRIST_UPDATE_API` | `https://api.github.com` | GitHub API base, for the update check |
+| `TELEMETRIST_UPDATE_GIT_URL` | `https://github.com/<repo>.git` | Where `apply_update` fetches from |
+| `TELEMETRIST_TOOLSET` | `full` | `core` serves only the tools of the session routine (`CORE_TOOLS` in `server.py`), for a small local model or a client that caps how many tools it takes |
+| `TELEMETRIST_REPLAY` | unset | A recording (`python -m telemetrist.sims.recording record`) to replay in place of the game, in real time, for the pit wall and the tools. Needs `TELEMETRIST_DATA` set too, so its laps never join your real ones. |
+| `TELEMETRIST_MAX_DB_BYTES` | `2147483648` (2 GB) | Size budget for the telemetry database. Over it, the oldest sessions' traces are thinned; laps are never deleted. `0` keeps every sample forever. |
 
 Set them in the `env` block of your client's server entry, if it has one, or in
 your Windows environment.
 
 If you change the bridge port, edit `BASE` in
-`lua_app/assetto_mcp/assetto_mcp.lua` to match. The bridge binds localhost only.
+`lua_app/telemetrist/telemetrist.lua` to match. The bridge binds localhost only.
 
 ---
 
-## Upgrading from `ac-race-engineer`
+## Upgrading from `assetto-mcp` or `ac-race-engineer`
 
-This project was renamed from `ac-race-engineer`, and the old names are still
-honored so nothing is lost:
+This project was called `ac-race-engineer`, then `assetto-mcp`, and the old
+names are still honored so nothing is lost:
 
-- **Your laps come with you.** `~/.ac-race-engineer` is renamed to
-  `~/.assetto-mcp` — by the installer if you run it, otherwise by the server
-  the next time it starts. Nothing is copied or rebuilt; it's the same
+- **Updating carries you across.** `apply_update` from an older version
+  works: the old module name, `-m assetto_mcp.server`, and the old commands
+  keep starting the server, so client configs need no change. The in-game
+  app is moved from `apps\lua\assetto_mcp` to `apps\lua\telemetrist` at the
+  next update or `--sync-lua` with the game closed; `session_check` says so
+  until it has been. Restart a pit wall left running across the update.
+- **Your laps come with you.** Unless `TELEMETRIST_DATA` (or an old spelling
+  of it) points somewhere, `~/.assetto-mcp` (or `~/.ac-race-engineer`) is
+  renamed to `~/.telemetrist` — by the installer if you run it, otherwise by
+  the server the next time it starts. Nothing is copied or rebuilt; it's the same
   directory under a new name. If something still has the database open the
   move is skipped, the old directory keeps being used, and it's retried on the
-  next clean start — so the worst case is that nothing happens yet.
-- **`AC_ENGINEER_*` still works.** `ASSETTO_MCP_DATA`, `_BRIDGE_PORT` and
-  `_NO_AUTOSTART` are each read under the old spelling as a fallback.
-- **The stale bits get cleaned up.** Re-running `install-windows.bat` removes
-  the old `ac-race-engineer` entry from every Claude Desktop config and deletes
-  the old `apps\lua\race_engineer` folder, so you don't end up with a dead
-  server entry and the in-game app listed twice. On any other client, remove
-  the old entry yourself.
+  next clean start — so the worst case is that nothing happens yet. If
+  `~/.telemetrist` already exists, the old directory is left alone and the
+  new one is used. When the new one holds nothing you want, quit everything
+  that uses it, delete it, and start the server again to bring the old one
+  across.
+- **`ASSETTO_MCP_*` and `AC_ENGINEER_*` still work.** Every `TELEMETRIST_*`
+  setting the server reads is read under the old spellings as a fallback.
+  The tool-choice eval in `tests/eval` takes only the new names.
+- **The stale bits get cleaned up.** Re-running `install-windows.bat` writes
+  `telemetrist` into the config Claude Desktop reads, removes the
+  `assetto-mcp` and `ac-race-engineer` entries from every Claude Desktop
+  config, and deletes the old in-game app folders, so you don't end
+  up with two servers or the app listed twice. Close Assetto Corsa and
+  Content Manager first: a folder the game holds open is left in place, and
+  the new app is not installed beside it. Claude Desktop asks once to
+  approve the tools again under the new name. On any other client, rename an
+  `assetto-mcp` entry yourself, or leave it: it keeps working. Delete an
+  `ac-race-engineer` entry: its module no longer exists.
 
-One thing does not carry over: the in-game app's **wheel button bindings**. The
-CSP control names changed with the rename, so re-bind the four complaint
-buttons in the app's Settings window.
+One thing does not carry over from `ac-race-engineer`: the in-game app's
+**wheel button bindings**. The CSP control names changed with that rename, so
+re-bind the four complaint buttons in the app's Settings window. Bindings made
+under `assetto-mcp` are kept.

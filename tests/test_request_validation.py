@@ -172,7 +172,7 @@ def test_batch_cap_exceeds_the_lua_clients_buffer():
     """
     assert B.MAX_RIVAL_BATCH >= B.RIVAL_BUFFER_MAX_CLIENT
     lua = (Path(__file__).resolve().parents[1]
-           / "lua_app/assetto_mcp/assetto_mcp.lua").read_text(
+           / "lua_app/telemetrist/telemetrist.lua").read_text(
                encoding="utf-8", errors="replace")
     for line in lua.splitlines():
         if "RIVAL_BUFFER_MAX" in line and "local" in line and "=" in line:

@@ -1,11 +1,20 @@
 # Changelog
 
-What changed in each release of assetto-mcp. The format follows
+What changed in each release of Telemetrist, formerly assetto-mcp. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/): until 1.0, tools, the database
 and the setup files may still change between minor versions.
 
 ## [Unreleased]
+
+### Changed
+
+- The project is now Telemetrist: the package, commands (`telemetrist`,
+  `telemetrist-update`, `telemetrist-pit-wall`), `TELEMETRIST_*` settings,
+  `~/.telemetrist`, the in-game app and the GitHub repository. The old names
+  keep working: `-m assetto_mcp.server` and the `assetto-mcp` commands,
+  `ASSETTO_MCP_*` settings, and `~/.assetto-mcp`, which is moved at the
+  first start that finds nothing holding it open. See [upgrading](docs/INSTALL.md#upgrading-from-assetto-mcp-or-ac-race-engineer).
 
 ## [0.2.0] - 2026-10-24
 
@@ -78,5 +87,5 @@ The first tagged release, covering everything since the project began.
 - A Windows installer that sets up the server, the in-game app and Claude
   Desktop, and a diagnostic report for when something doesn't work.
 
-[Unreleased]: https://github.com/mishan/assetto-mcp/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/mishan/assetto-mcp/releases/tag/v0.2.0
+[Unreleased]: https://github.com/mishan/telemetrist/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/mishan/telemetrist/releases/tag/v0.2.0

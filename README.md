@@ -1,11 +1,12 @@
-# assetto-mcp
+# Telemetrist
 
-[![CI](https://github.com/mishan/assetto-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/mishan/assetto-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/mishan/telemetrist/actions/workflows/ci.yml/badge.svg)](https://github.com/mishan/telemetrist/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 <img align="right" width="112" alt="" src="docs/logo.png">
 
-Turn an AI assistant into a race engineer for Assetto Corsa.
+An AI race engineer for sim racing: turn an AI assistant into a race
+engineer for Assetto Corsa. Formerly assetto-mcp.
 
 Drive a few laps, then ask it what the car is doing. It reads AC's live
 telemetry, stores every lap, reduces them to the numbers an engineer actually
@@ -70,7 +71,7 @@ Something went wrong? Run `diagnose.bat`, then see
 Ask the assistant *"Is there an update?"* It checks GitHub with
 `check_for_updates`, shows you the changes, and applies them only once you
 say yes, then restarts itself. From a terminal, the same thing is
-`python -m assetto_mcp.update --check` and `--apply`.
+`python -m telemetrist.update --check` and `--apply`.
 
 Updates come as releases, tested and listed in [CHANGELOG.md](CHANGELOG.md).
 To get each change as soon as it's finished instead, tell the assistant
@@ -117,13 +118,13 @@ the line map. When the assistant points at something, it puts those laps,
 zoomed to the turn, and a caption there. Click the map and type a question,
 and the assistant gets it with the next thing it reads.
 
-- **Without a chat:** run `assetto-mcp-pit-wall` and leave it open. It
+- **Without a chat:** run `telemetrist-pit-wall` and leave it open. It
   records and serves the pit wall on its own, for a stream or a tablet; a
   chat started later still puts laps on it and reads your questions.
-- **On a phone or tablet:** set `ASSETTO_MCP_DASH_LAN=1` and the pit wall is
+- **On a phone or tablet:** set `TELEMETRIST_DASH_LAN=1` and the pit wall is
   also served on your network, on port 9667, at a secret link: click **Open
   on a phone** on the pit wall for a QR code. Anyone with the link can see it
-  and ask questions; for a new one, delete `~/.assetto-mcp/dash-token` and
+  and ask questions; for a new one, delete `~/.telemetrist/dash-token` and
   restart.
 - **On a stream:** <http://127.0.0.1:9666/dash/overlay> is a strip of cards
   (position, lap clock and gap, fuel and tyres, a track map with every car,
@@ -221,7 +222,7 @@ and an opponent's braking and throttle points against yours.
 The in-game app (apps sidebar on the right edge of the screen) gives you:
 
 - **Four complaint buttons** — Understeer, Oversteer, Braking, Traction —
-  each bindable to a wheel button in the app's **Assetto MCP Bindings**
+  each bindable to a wheel button in the app's **Telemetrist Bindings**
   window. Press one the moment you feel it and it records where on track
   you were, to be matched against the telemetry:
   *"you flagged understeer twice at the same corner — that's where front slip
@@ -235,7 +236,7 @@ The in-game app (apps sidebar on the right edge of the screen) gives you:
 ## What gets logged
 
 **Everything stays on your machine.** It's a SQLite file at
-`~/.assetto-mcp/telemetry.db`, the in-game app talks to the server over
+`~/.telemetrist/telemetry.db`, the in-game app talks to the server over
 localhost only, and nothing is uploaded anywhere.
 
 While recording, at 25 Hz:
@@ -273,7 +274,7 @@ Worth knowing:
 
 About **0.4 MB per lap**, roughly **12 MB per hour** of driving. No lap is
 ever deleted. Past the size budget (2 GB by default, set with
-`ASSETTO_MCP_MAX_DB_BYTES`, `0` to disable), the oldest sessions' traces are
+`TELEMETRIST_MAX_DB_BYTES`, `0` to disable), the oldest sessions' traces are
 thinned — every 2nd sample, then every 4th, and so on — and their
 opponent traces and high-rate suspension samples are dropped. Ask for a storage report to see
 where you are.
@@ -289,12 +290,12 @@ it before sharing it.
 | | |
 |---|---|
 | [.claude/skills/race-engineer/](.claude/skills/race-engineer/SKILL.md) | The race-engineer skill: session routine, tool reference, how to read the numbers |
-| [docs/INSTALL.md](docs/INSTALL.md) | Manual install, per-client config, environment variables, upgrading from `ac-race-engineer` |
+| [docs/INSTALL.md](docs/INSTALL.md) | Manual install, per-client config, environment variables, upgrading from `assetto-mcp` or `ac-race-engineer` |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | When your client shows no tools, when laps stop landing, and the rest |
 | [docs/SETUP-RANGES.md](docs/SETUP-RANGES.md) | How setup values are clamped |
 | [docs/INTERNALS.md](docs/INTERNALS.md) | Corner detection, data-quality flags, driving line, suspension capture |
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Running the tests, CI, schema changes |
-| [Issues](https://github.com/mishan/assetto-mcp/issues) | Open work |
+| [Issues](https://github.com/mishan/telemetrist/issues) | Open work |
 
 ---
 
@@ -317,7 +318,7 @@ python run_tests.py
 ```
 
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md), and
-[the issues](https://github.com/mishan/assetto-mcp/issues) for somewhere to start. Support for another MCP
+[the issues](https://github.com/mishan/telemetrist/issues) for somewhere to start. Support for another MCP
 client's installer is particularly welcome:
 `windows/install-claude-desktop.ps1` is the only file that knows about a
 specific client.

@@ -1,6 +1,6 @@
 ---
 name: race-engineer
-description: Act as a live race engineer for a sim racer using the assetto-mcp telemetry server (Assetto Corsa). Use this whenever the driver mentions a race, practice, qualifying, laps, a setup, tyres, fuel, brake bias, a spin, a track name, or asks to "start recording", "analyze my laps", "suggest setup changes", "did that change help", "what happened there", or hands over a session doc from exports/ -- even if they do not say "race engineer". Covers the session routine, which assetto-mcp tool answers which question, how to read the numbers, the A/B protocol, fuel and tyre planning, and the handoff at the end.
+description: Act as a live race engineer for a sim racer using the Telemetrist telemetry server (Assetto Corsa). Use this whenever the driver mentions a race, practice, qualifying, laps, a setup, tyres, fuel, brake bias, a spin, a track name, or asks to "start recording", "analyze my laps", "suggest setup changes", "did that change help", "what happened there", or hands over a session doc from exports/ -- even if they do not say "race engineer". Covers the session routine, which Telemetrist tool answers which question, how to read the numbers, the A/B protocol, fuel and tyre planning, and the handoff at the end.
 ---
 
 # Race engineer
@@ -13,7 +13,7 @@ you.
 
 Read the reference files when you need them, not all at once:
 
-- `references/tools.md` -- every assetto-mcp tool: the question it answers,
+- `references/tools.md` -- every Telemetrist tool: the question it answers,
   what to pass, what to read in the reply, the traps. Read it before the
   first tool call of a session, and again whenever a tool refuses or a
   parameter turns out to be required.

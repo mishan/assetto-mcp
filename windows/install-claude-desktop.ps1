@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Claude Desktop registration for assetto-mcp. A component of
+    Claude Desktop registration for Telemetrist. A component of
     install-windows.ps1, not a standalone script.
 
 .DESCRIPTION
@@ -14,7 +14,7 @@
     Dot-sourced by install-windows.ps1, which means it runs in that script's
     scope and uses its helpers (Write-Step / Write-Ok / Write-Info /
     Write-Warn2 / Write-JsonFile / Stop-WithError) and its variables
-    ($ServerName, $LegacyServerName). Running this file on its own does
+    ($ServerName, $LegacyServerNames). Running this file on its own does
     nothing but define functions.
 
     Targets Windows PowerShell 5.1 as well as PowerShell 7.
@@ -112,7 +112,7 @@ function Get-PackageFamilyFromExePath {
     return ($parts[0] + '_' + $parts[$parts.Count - 1])
 }
 
-# Exactly ONE config file may carry the assetto-mcp entry.
+# Exactly ONE config file may carry our entry.
 #
 # If several do, every Claude surface that reads one of them spawns its own
 # copy of the MCP server, and those copies then fight over the single
@@ -249,8 +249,7 @@ function Backup-ConfigFile ($path) {
 # MCP server and every other top-level setting. Only rewrites the file if the
 # entry was actually there. Returns 'removed', 'absent' or 'error'.
 #
-# The name is a parameter so the legacy ac-race-engineer entry, which points
-# at a module that no longer exists, can be removed too.
+# The name is a parameter so the pre-rename entries can be removed too.
 function Remove-ServerEntry ($path, $name = $ServerName) {
     if (-not (Test-Path -LiteralPath $path)) { return 'absent' }
 
@@ -272,7 +271,7 @@ function Remove-ServerEntry ($path, $name = $ServerName) {
     # Where-Object { $_ } also drops the $null that an empty PSObject property
     # collection yields, which otherwise reported "1 other server: ".
     $others = @($cfg.mcpServers.PSObject.Properties.Name |
-                Where-Object { $_ -and $_ -ne $ServerName -and $_ -ne $LegacyServerName })
+                Where-Object { $_ -and $_ -ne $ServerName -and $LegacyServerNames -notcontains $_ })
     try {
         Backup-ConfigFile $path | Out-Null
         $cfg.mcpServers.PSObject.Properties.Remove($name)
@@ -297,8 +296,10 @@ function Unregister-FromClaudeDesktop {
         $status = Remove-ServerEntry $path
         if     ($status -eq 'removed') { Write-Ok   "Removed '$ServerName' from $path" }
         elseif ($status -eq 'absent')  { Write-Info "No '$ServerName' entry in $path" }
-        if ((Remove-ServerEntry $path $LegacyServerName) -eq 'removed') {
-            Write-Ok "Removed the pre-rename '$LegacyServerName' entry from $path"
+        foreach ($legacy in $LegacyServerNames) {
+            if ((Remove-ServerEntry $path $legacy) -eq 'removed') {
+                Write-Ok "Removed the pre-rename '$legacy' entry from $path"
+            }
         }
     }
 }
@@ -342,7 +343,7 @@ function Register-WithClaudeDesktop {
     # without your shell's PATH, so a bare command often silently fails.
     $entry = [pscustomobject]@{
         command = $PythonPath
-        args    = @('-m', 'assetto_mcp.server')
+        args    = @('-m', 'telemetrist.server')
     }
 
     $written  = @()
@@ -388,10 +389,12 @@ function Register-WithClaudeDesktop {
     # the first -- so the file the user actually wanted preserved was the one
     # that got lost. It also read strangely: "preserved ac-race-engineer",
     # immediately followed by "removed ac-race-engineer".
-    $droppedLegacy = $false
-    if ($config.mcpServers.PSObject.Properties[$LegacyServerName]) {
-        $config.mcpServers.PSObject.Properties.Remove($LegacyServerName)
-        $droppedLegacy = $true
+    $droppedLegacy = @()
+    foreach ($legacy in $LegacyServerNames) {
+        if ($config.mcpServers.PSObject.Properties[$legacy]) {
+            $config.mcpServers.PSObject.Properties.Remove($legacy)
+            $droppedLegacy += $legacy
+        }
     }
 
     $existingNames = @($config.mcpServers.PSObject.Properties.Name)
@@ -422,8 +425,8 @@ function Register-WithClaudeDesktop {
     }
 
     if ($written.Count -gt 0) {
-        if ($droppedLegacy) {
-            Write-Ok "Removed the pre-rename '$LegacyServerName' entry from $OwnerConfigPath"
+        foreach ($legacy in $droppedLegacy) {
+            Write-Ok "Removed the pre-rename '$legacy' entry from $OwnerConfigPath"
         }
         # Where-Object { $_ }: an empty PSObject property collection yields a
         # single $null, which passes a bare -ne test and reported "1 other
@@ -451,13 +454,17 @@ function Register-WithClaudeDesktop {
     }
 
     # --- and no config may keep the pre-rename entry --------------------
-    # It names a module that no longer exists, so Claude Desktop launches it,
-    # gets ModuleNotFoundError, and shows a failed server beside the working
-    # one. The owner config is skipped: its copy went out with the write above.
+    # An ac-race-engineer entry names a module that no longer exists, so
+    # Claude Desktop shows a failed server beside the working one; an
+    # assetto-mcp entry still starts, as a second server fighting this one for
+    # the bridge. The owner config is skipped: its copies went out with the
+    # write above.
     foreach ($c in $configCandidates) {
         if ($c.Path -eq $OwnerConfigPath) { continue }
-        if ((Remove-ServerEntry $c.Path $LegacyServerName) -eq 'removed') {
-            Write-Ok "Removed the pre-rename '$LegacyServerName' entry from $($c.Path)"
+        foreach ($legacy in $LegacyServerNames) {
+            if ((Remove-ServerEntry $c.Path $legacy) -eq 'removed') {
+                Write-Ok "Removed the pre-rename '$legacy' entry from $($c.Path)"
+            }
         }
     }
 

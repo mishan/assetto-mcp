@@ -1289,6 +1289,93 @@ def compact_contacts(entries: list[dict] | None) -> list[dict] | None:
             for e in entries]
 
 
+# Lateral g past which a wheel on the outside of the corner is carrying the
+# corner. Below it the camber read is mostly the static setting.
+CAMBER_LOADED_G = 0.8
+# Below this the car is near enough straight for camber to read as set.
+CAMBER_STRAIGHT_G = 0.2
+CAMBER_STRAIGHT_MIN_KMH = 50
+GAP_STEPS = 3
+
+
+def tread_and_camber(samples: list[dict], w: str) -> dict:
+    """One wheel's tread temperatures and running camber over a lap.
+
+    `tread_c` is the lap's mean inner, middle and outer surface
+    temperature. `inner_minus_outer_c` reads camber: a negative-camber
+    tyre normally runs a few degrees hotter inside; far more says too much
+    camber, an outer edge hotter says too little. `middle_minus_edges_c`
+    reads pressure: a middle hotter than its edges is over-inflated, cooler
+    is under-inflated.
+
+    `camber_deg` is what the wheel runs at, not what the setup screen sets:
+    `straight` near-straight above walking pace, `loaded` with the wheel on
+    the outside of a corner past CAMBER_LOADED_G, where it carries the
+    corner, for `loaded_s` seconds of the lap. Lateral g is positive in a
+    left-hander, so the right wheels are the loaded ones there. The
+    difference between the two is camber the suspension adds or loses under
+    roll. `loaded_inner_minus_outer_c` is the edge spread in that loaded
+    state only, the reading a camber change is set against. Laps recorded
+    before schema v22 have neither, and the keys are left out.
+    """
+    out = {}
+    zones = ("in", "mid", "out")
+    rows = [[s.get(f"surf_{z}_{w}") for z in zones] for s in samples]
+    rows = [r for r in rows if None not in r]
+    if rows:
+        i, m, o = (mean(r[k] for r in rows) for k in range(3))
+        out["tread_c"] = {"inner": round(i, 1), "middle": round(m, 1),
+                          "outer": round(o, 1)}
+        out["inner_minus_outer_c"] = round(i - o, 1)
+        out["middle_minus_edges_c"] = round(m - (i + o) / 2, 1)
+
+    outside_sign = 1 if w.endswith("r") else -1
+    # The lap's usual sample step. An interval GAP_STEPS times longer is a
+    # gap in the recording, not time seen loaded; anything shorter, jitter or
+    # a slower stretch, counts as it was.
+    ts = [s.get("t_ms") for s in samples]
+    steps = [b - a for a, b in zip(ts, ts[1:])
+             if a is not None and b is not None and b > a]
+    step = median(steps) if steps else 0
+    straight, loaded, loaded_tread, loaded_ms = [], [], [], 0
+    prev_t = None
+    for s in samples:
+        t = s.get("t_ms")
+        dt = t - prev_t if t is not None and prev_t is not None else 0
+        prev_t = t
+        lat = s.get("acc_lat")
+        if not _is_sane(lat, LAT_G_SANE_MAX):
+            continue
+        is_loaded = lat * outside_sign >= CAMBER_LOADED_G
+        if is_loaded:
+            # Time, not samples: a thinned lap keeps every Nth sample.
+            if dt <= GAP_STEPS * step:
+                loaded_ms += max(dt, 0)
+            edges = (s.get(f"surf_in_{w}"), s.get(f"surf_out_{w}"))
+            if None not in edges:
+                loaded_tread.append(edges[0] - edges[1])
+        c = s.get(f"camber_{w}")
+        if c is None:
+            continue
+        if (abs(lat) < CAMBER_STRAIGHT_G
+                and (s.get("speed_kmh") or 0) >= CAMBER_STRAIGHT_MIN_KMH):
+            straight.append(c)
+        elif is_loaded:
+            loaded.append(c)
+    if loaded_tread:
+        # Where the wheel carries the corner: the lap average mixes the
+        # other direction in, and a tyre cooking its outer edge in one and
+        # its inner edge in the other averages to a flat spread.
+        out["loaded_inner_minus_outer_c"] = round(mean(loaded_tread), 1)
+    if straight or loaded:
+        out["camber_deg"] = {
+            "straight": round(mean(straight), 2) if straight else None,
+            "loaded": round(mean(loaded), 2) if loaded else None,
+            "loaded_s": round(loaded_ms / 1000, 1),
+        }
+    return out
+
+
 def lap_summary(lap: dict, samples: list[dict],
                 reference_peak_g: float | None = None,
                 reference_laps: int = 0,
@@ -1324,6 +1411,7 @@ def lap_summary(lap: dict, samples: list[dict],
             "pressure_end": round(mean(
                 s[f"press_{w}"] for s in samples[-total // 10 or 1:]), 2),
             "core_temp_avg": round(mean(s[f"core_{w}"] for s in samples), 1),
+            **tread_and_camber(samples, w),
         }
 
     sane_lat = _sane_channel(samples, "acc_lat", LAT_G_SANE_MAX)

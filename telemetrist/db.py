@@ -19,7 +19,7 @@ from . import analysis
 from .sims import calibration
 
 # Bump when the schema changes and add a matching step in _migrate().
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # How many wheels have to be off the valid surface before a lap counts as
 # having exceeded track limits. Four is the count AC itself treats as
@@ -206,7 +206,16 @@ CREATE TABLE IF NOT EXISTS samples (
     -- session when the server has damage disabled, which is usual, so this
     -- confirms contact when on and says nothing when off. Detecting a wall
     -- from the speed trace works either way.
-    damage REAL
+    damage REAL,
+    -- Tread temperature across each tyre, inner / middle / outer, and the
+    -- camber the wheel actually runs at while driving, in degrees. Together
+    -- they say whether a hot tyre wants less pressure or less camber. NULL
+    -- on laps before v22.
+    surf_in_fl REAL, surf_mid_fl REAL, surf_out_fl REAL,
+    surf_in_fr REAL, surf_mid_fr REAL, surf_out_fr REAL,
+    surf_in_rl REAL, surf_mid_rl REAL, surf_out_rl REAL,
+    surf_in_rr REAL, surf_mid_rr REAL, surf_out_rr REAL,
+    camber_fl REAL, camber_fr REAL, camber_rl REAL, camber_rr REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_samples_lap ON samples(lap_id, t_ms);
@@ -480,16 +489,23 @@ SAMPLE_COLUMNS = [
     "heading", "pitch", "roll",
     "tc_active", "abs_active",
     "wear_fl", "wear_fr", "wear_rl", "wear_rr", "damage",
+    *(f"surf_{z}_{w}" for w in ("fl", "fr", "rl", "rr")
+      for z in ("in", "mid", "out")),
+    "camber_fl", "camber_fr", "camber_rl", "camber_rr",
 ]
+
+# The tread and camber columns v22 added, in SAMPLE_COLUMNS order.
+SURFACE_CAMBER_COLUMNS = SAMPLE_COLUMNS[SAMPLE_COLUMNS.index("surf_in_fl"):]
 
 # Sample tuple widths that have ever been correct, newest first. store_lap
 # pads a short tuple with NULL, which is right for a caller written against
 # an older layout and silently corrupting for a tuple missing a field in the
 # MIDDLE -- every column after the gap shifts by one. So padding applies
 # only to widths a real layout had. 25 is v7 (through tyres_out), 33 adds
-# v8's position/attitude/electronics, 38 adds v9's wear and damage. None of
-# these counts lap_id, which store_lap prepends.
-SAMPLE_WIDTHS = (len(SAMPLE_COLUMNS) - 1, 33, 25)
+# v8's position/attitude/electronics, 38 adds v9's wear and damage, 54
+# v22's tread temperatures and camber. None of these counts lap_id, which
+# store_lap prepends.
+SAMPLE_WIDTHS = (len(SAMPLE_COLUMNS) - 1, 38, 33, 25)
 
 
 def _table_exists(conn, name: str) -> bool:
@@ -726,6 +742,15 @@ def _migrate(conn) -> list[str]:
         if _add_column(conn, "sessions", "sim", "TEXT NOT NULL DEFAULT 'ac'"):
             log.append("sessions.sim added; every earlier session is "
                        "Assetto Corsa's")
+
+    if version < 22:
+        # v22: tread temperature across each tyre and camber while driving.
+        # Nullable and not backfilled; nothing earlier recorded them.
+        added = [c for c in SURFACE_CAMBER_COLUMNS
+                 if _add_column(conn, "samples", c, "REAL")]
+        if added:
+            log.append(f"samples: {len(added)} tread temperature and camber "
+                       "columns added; laps recorded before this have none")
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()

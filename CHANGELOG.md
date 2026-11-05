@@ -15,6 +15,10 @@ and the setup files may still change between minor versions.
 - `session_check` and `apply_update` say when Claude Desktop still starts
   the server under its pre-rename entry, and that re-running the installer
   renames it.
+- Assetto Corsa laps record each tyre's tread temperature, inner, middle and
+  outer, and the camber each wheel runs at. Lap summaries give the spread
+  across each tyre and the camber in a straight line and when loaded, and
+  `lap_trace` can plot them.
 
 - Automobilista 2, with `TELEMETRIST_SIM=ams2`: laps, the out-lap, corners,
   tyres, fuel and track limits from the game's shared memory, and its

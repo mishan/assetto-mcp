@@ -274,7 +274,8 @@ def _open_sim():
     return sims.GAMES[_replay.sim].Reader(_replay.view())
 
 
-_collector = Collector(DB_PATH, _sim_factory, sims.GAMES[SIM].TITLE)
+_collector = Collector(DB_PATH, _sim_factory,
+                       "the recording" if REPLAY_FILE else sims.GAMES[SIM].TITLE)
 
 from .bridge import Bridge  # noqa: E402
 

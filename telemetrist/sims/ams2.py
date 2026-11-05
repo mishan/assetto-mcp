@@ -281,6 +281,12 @@ G = 9.80665
 # A position this close to the line on each side, from one read to the
 # next, is the car crossing it.
 WRAP_HIGH, WRAP_LOW = 0.9, 0.1
+# Reads apart that the timer starting and the car crossing the line still
+# count as one event. They landed on the same read in every recording so
+# far, but AC's lap counter and position are known to land a tick apart. A
+# standing start, whose timer starts on the grid a second or more before
+# the car reaches the line, stays well outside it.
+CROSSING_READS = 2
 
 
 def _text(b: bytes) -> str:
@@ -329,6 +335,11 @@ class Reader:
         # mLapsCompleted's value while the lap just finished is an out-lap,
         # whose time the game leaves at the previous timed lap's.
         self._untimed_at = None
+        self._reads = 0
+        # The read on which the car last crossed the line, and on which the
+        # lap timer last started, with mLapsCompleted before and after.
+        self._wrapped = None
+        self._started = None
 
     def read(self) -> Frame:
         s = self._pages.page()
@@ -349,14 +360,24 @@ class Reader:
         pos = p.mCurrentLapDistance / s.mTrackLength if ready else 0.0
         laps, clock = p.mLapsCompleted, s.mCurrentTime
         if self._laps is not None and laps < self._laps:
+            player = self._player
             self._reset()
-            self._player = viewed if ready else None
-        crossed = (self._time is not None and self._time < 0 <= clock
-                   and self._pos is not None and self._pos > WRAP_HIGH
-                   and pos < WRAP_LOW and laps == self._laps)
-        if crossed:
+            self._player = player
+        self._reads += 1
+        if (self._pos is not None and self._pos > WRAP_HIGH
+                and pos < WRAP_LOW):
+            self._wrapped = (self._reads, self._laps, laps)
+        if self._time is not None and self._time < 0 <= clock:
+            self._started = (self._reads, self._laps, laps)
+        # The timer starting as the car crosses the line, with the game's
+        # count unmoved throughout, is an out-lap ending; a crossing the game
+        # counted itself is not. Both are cleared once counted.
+        if (self._wrapped and self._started
+                and abs(self._wrapped[0] - self._started[0]) <= CROSSING_READS
+                and len({*self._wrapped[1:], *self._started[1:], laps}) == 1):
             self._out_laps += 1
             self._untimed_at = laps
+            self._wrapped = self._started = None
         elif self._untimed_at is not None and laps != self._untimed_at:
             self._untimed_at = None
         self._laps, self._time, self._pos = laps, clock, pos
@@ -404,7 +425,9 @@ class Reader:
             fuel_l=s.mFuelLevel * tank if tank > 0 else None,
             air_temp=s.mAmbientTemperature, road_temp=s.mTrackTemperature,
             tyre_compound=_text(s.mTyreCompound[0].value),
-            clock_text=(_clock(clock), _clock(s.mLastLapTime),
+            clock_text=(_clock(clock),
+                        _clock(0 if self._untimed_at is not None
+                               else s.mLastLapTime),
                         _clock(s.mBestLapTime)))
 
     def session(self) -> SessionInfo:

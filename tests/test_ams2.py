@@ -166,12 +166,15 @@ def test_the_server_replays_an_ams2_recording_as_ams2():
 
 
 class _Pages:
-    """A page for the reader, set field by field between reads."""
+    """A page for the reader, set field by field between reads. Car 1 is
+    another driver, always on its seventh lap."""
 
     def __init__(self):
-        self.p = ams2.SharedMemory(mVersion=ams2.VERSION, mNumParticipants=1,
+        self.p = ams2.SharedMemory(mVersion=ams2.VERSION, mNumParticipants=2,
                                    mTrackLength=1000.0)
-        self.p.mParticipantInfo[0].mIsActive = True
+        for car in self.p.mParticipantInfo[:2]:
+            car.mIsActive = True
+        self.p.mParticipantInfo[1].mLapsCompleted = 7
 
     def page(self):
         return self.p
@@ -189,17 +192,34 @@ class _Pages:
         car.mLapsCompleted, car.mCurrentLapDistance = laps, dist
 
 
-def test_every_crossing_of_the_line_is_a_lap_and_the_out_lap_has_no_time():
-    # (page, then the reader's status, completed_laps and last_lap_ms)
-    steps = [
-        # The menus: no car, no track.
-        (dict(game=1, viewed=-1, length=0.0), ("off", None, None)),
-        # In the garage, then down the pit lane, which crosses the line
-        # without starting the timer.
-        (dict(pit=4, dist=980), ("live", 0, 0)),
+def _run(steps):
+    """Each step: the page, then the reader's status, completed_laps and
+    last_lap_ms, None where it does not matter."""
+    pages = _Pages()
+    reader = ams2.Reader(pages)
+    for i, (page, want) in enumerate(steps):
+        pages.set(**page)
+        f = reader.read()
+        got = tuple(None if w is None else g for w, g in zip(
+            want, (f.status, f.completed_laps, f.last_lap_ms)))
+        assert got == want, (i, page, got)
+
+
+# Down the pit lane and over the line, which starts no timer, to a place
+# on the out-lap.
+_OUT = [(dict(pit=4, dist=980), ("live", 0, 0)),
         (dict(pit=3, dist=995), ("live", 0, 0)),
         (dict(pit=3, dist=5), ("live", 0, 0)),
-        (dict(dist=950), ("live", 0, 0)),
+        (dict(dist=950), ("live", 0, 0))]
+
+
+def test_every_crossing_of_the_line_is_a_lap_and_the_out_lap_has_no_time():
+    _run([
+        # The menus: no car, no track.
+        (dict(game=1, viewed=-1, length=0.0), ("off", None, None)),
+        # A car but no track yet.
+        (dict(game=1, length=0.0), ("off", None, None)),
+        *_OUT,
         # The out-lap ends: the timer starts, the game's count does not move.
         (dict(dist=3, clock=0.02), ("live", 1, 0)),
         (dict(dist=990, clock=59.9), ("live", 1, 0)),
@@ -211,26 +231,63 @@ def test_every_crossing_of_the_line_is_a_lap_and_the_out_lap_has_no_time():
         (dict(game=4, laps=1, dist=980, pit=4, last=60.0187),
          ("pause", 2, 60019)),
         # Out again: this crossing ends an out-lap too, whatever the game
-        # still shows as its last lap.
+        # still shows as its last lap, and on a paused frame.
         (dict(laps=1, dist=960, last=60.0187), ("live", 2, 60019)),
         (dict(game=3, laps=1, dist=4, clock=0.04, last=60.0187),
          ("pause", 3, 0)),
         (dict(laps=1, dist=500, clock=30.0, last=60.0187), ("live", 3, 0)),
         (dict(laps=2, dist=1, clock=0.01, last=58.22), ("live", 4, 58220)),
-        # A restart: the game's count drops, and the reader's with it.
-        (dict(laps=0, dist=950), ("live", 0, 0)),
-        # A restart seen only as its own state, then the new session.
-        (dict(game=5, laps=0, dist=950), ("off", 0, 0)),
-        (dict(session=3, laps=0, dist=950), ("live", 0, 0)),
-    ]
-    pages = _Pages()
-    reader = ams2.Reader(pages)
-    for i, (page, (status, laps, last)) in enumerate(steps):
-        pages.set(**page)
-        f = reader.read()
-        got = (f.status, laps if laps is None else f.completed_laps,
-               last if last is None else f.last_lap_ms)
-        assert got == (status, laps, last), (i, page, got)
+    ])
+
+
+def test_a_restart_or_a_new_session_starts_the_count_again():
+    for restart in (
+            # The game's count drops.
+            [(dict(laps=0, dist=950), ("live", 0, 0))],
+            # Only the restart state, seen during the first timed lap,
+            # where the game's count is already 0 and cannot drop.
+            [(dict(game=5, dist=950), ("off", 0, None)),
+             (dict(dist=950), ("live", 0, 0))],
+            # The next session.
+            [(dict(session=3, dist=950), ("live", 0, 0))]):
+        _run([*_OUT, (dict(dist=3, clock=0.02), ("live", 1, 0)),
+              (dict(dist=500, clock=30.0), ("live", 1, 0)),
+              *([(dict(laps=1, dist=2, clock=0.03, last=60.0), (
+                  "live", 2, 60000))] if restart[0][0].get("laps") == 0
+                else []),
+              *restart])
+
+
+def test_only_a_timer_started_at_the_line_ends_an_out_lap():
+    # (what comes first, the start, the game's count after, the reader's)
+    for before, start, game, want in (
+            # The timer one read after the car crosses.
+            (_OUT, [(dict(dist=3), ("live", 0, 0)),
+              (dict(dist=20, clock=0.4), ("live", 1, 0))], 0, 1),
+            # A standing start: on the grid, the timer starts short of the
+            # line, and the car crosses a second later.
+            ([(dict(dist=985), ("live", 0, 0))],
+             [(dict(dist=990, clock=0.0), ("live", 0, 0))]
+             + [(dict(dist=992 + i / 4, clock=0.04 * (i + 1)),
+                 ("live", 0, 0)) for i in range(25)]
+             + [(dict(dist=2, clock=1.1), ("live", 0, 0))], 0, 0),
+            # A crossing the game counts itself.
+            (_OUT, [(dict(laps=1, dist=3, clock=0.02), ("live", 1, 0))],
+             1, 1)):
+        _run([*before, *start,
+              (dict(laps=game, dist=500, clock=30.0), ("live", want, None))])
+
+
+def test_the_count_stays_on_the_driver_whoever_the_camera_follows():
+    _run([*_OUT, (dict(dist=3, clock=0.02), ("live", 1, 0)),
+          (dict(viewed=1, dist=500, clock=30.0), ("live", 1, 0)),
+          (dict(viewed=1, laps=1, dist=2, clock=0.03, last=60.0),
+           ("live", 2, 60000)),
+          # Nobody followed as the game's count drops on a restart.
+          (dict(viewed=-1, dist=950), ("live", 0, 0)),
+          (dict(viewed=1, dist=960), ("live", 0, 0)),
+          (dict(viewed=1, laps=1, dist=2, clock=0.03, last=58.0),
+           ("live", 1, 58000))])
 
 
 if __name__ == "__main__":

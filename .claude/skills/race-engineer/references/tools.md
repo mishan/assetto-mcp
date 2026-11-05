@@ -49,7 +49,7 @@ says when it is needed.
 "stopped_by_request" look identical otherwise. "standby" is healthy.
 `session_id` is the id to tag and to watch. `setup_name` shows the current
 tag; `measured_setup` is the fingerprint of the values the in-game app reads
-off the setup menu right now, and it changes when the setup does. "waiting for AC to go live" means the car is in the pits, the menu, or
+off the setup menu right now, and it changes when the setup does. "waiting for the session to go live" means the car is in the pits, the menu, or
 between sessions.
 
 **`stop_recording()`** -- durable and shared across instances. Do not call it

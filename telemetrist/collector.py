@@ -31,6 +31,12 @@ ABANDON_JUMP = 0.25
 WRAP_HIGH = 0.9
 WRAP_LOW = 0.1
 
+# Arriving in the pit lane, a car that moved more than this since the last
+# tick, either way round the lap, was sent there. Driving moves it well
+# under 1% of a lap a tick, even across the line; a car sent to a pit box
+# only just up the road from where it was is left as a lap with a pit visit.
+PIT_JUMP = 0.02
+
 # The outlier rule lives in analysis so the same definition is used both
 # here (at write time) and by db.backfill_outliers. Being an outlier only
 # sets a flag: the lap is stored, readable, and still included in
@@ -558,15 +564,17 @@ class Collector:
             # that lap, marked incomplete: it is often the one the driver
             # most wants to look at. The wrap window keeps a line crossing
             # out of this check when the counter lags a tick. Sent to the
-            # pits, the car can land ahead of where it was as well.
+            # pits, the car can land ahead of where it was too, or across
+            # the line.
             pos = f.norm_pos
             wrapped = (last_pos is not None
                        and last_pos > WRAP_HIGH and pos < WRAP_LOW)
-            sent_to_pits = f.in_pit_lane and not last_in_pit
-            if (lap_samples and last_pos is not None and not wrapped
-                    and (last_pos - pos > ABANDON_JUMP and not f.in_pit_lane
-                         or sent_to_pits
-                         and abs(last_pos - pos) > ABANDON_JUMP)):
+            moved = (abs(last_pos - pos) if last_pos is not None else 0)
+            if (lap_samples and last_pos is not None
+                    and (last_pos - pos > ABANDON_JUMP and not wrapped
+                         and not f.in_pit_lane
+                         or f.in_pit_lane and not last_in_pit
+                         and min(moved, 1 - moved) > PIT_JUMP)):
                 keep_unfinished()
                 lap_samples = []
                 wide_since = None

@@ -12,9 +12,8 @@ and the setup files may still change between minor versions.
 - After an update, the servers in Claude Desktop's other chats restart onto
   the new code by themselves once the game is off track. Another chat's
   session holds an update back only while the game is on track.
-- `session_check` and `apply_update` say when Claude Desktop still starts
-  the server under its pre-rename entry, and that re-running the installer
-  renames it.
+- `session_check` and `apply_update` say when a Claude Desktop config
+  still has a pre-rename entry, and that re-running the installer renames it.
 - Assetto Corsa laps record each tyre's tread temperature, inner, middle and
   outer, and the camber each wheel runs at. Lap summaries give the spread
   across each tyre and the camber in a straight line and when loaded, and

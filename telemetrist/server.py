@@ -1020,10 +1020,11 @@ def session_check() -> str:
                      "update --sync-lua` to move it")
 
     if old_entry := _OLD_CLIENT_ENTRY:
-        to_do.append(f"Claude Desktop still starts this server as "
-                     f"'{old_entry}': rerun install-windows.bat, then quit "
-                     "and reopen Claude Desktop; the installer renames the "
-                     "entry and keeps its settings")
+        to_do.append(f"a Claude Desktop config still has the pre-rename "
+                     f"entry '{old_entry}': rerun install-windows.bat, then "
+                     "quit and reopen Claude Desktop; the installer renames "
+                     "the entry and keeps its settings, unless a "
+                     "'telemetrist' entry is already there")
 
     disk = update.installed_commit()
     restart = bool(_RUNNING_COMMIT and disk and disk != _RUNNING_COMMIT)

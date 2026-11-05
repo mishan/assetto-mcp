@@ -212,7 +212,7 @@ def test_a_lap_left_for_the_pits_is_kept_marked_incomplete():
          [0.5, 0.86], 1, False),
         ("driven in", sim_info.AC_LIVE, 0.5, [0.5], 0, False),
         ("driven in at the line", sim_info.AC_LIVE, 0.999, [0.001], 0, False),
-        # Paused on track first: the menu's wait is not time driven.
+        # Paused on track first: time paused is not time driven.
         ("sent from the pause menu", sim_info.AC_PAUSE, 0.5, [0.58], 1, True),
     ]
     for name, status, start, stops, abandoned, paused_first in cases:
@@ -223,7 +223,15 @@ def test_a_lap_left_for_the_pits_is_kept_marked_incomplete():
                 tick(sim, col, n=2)
                 if paused_first:
                     sim.graphics.status = status
-                    time.sleep(1)
+                    wait_for(lambda: not col.live, "the pause to be read")
+                    # And the next heartbeat held up by the database.
+                    beat = type(col)._beat
+
+                    def held_up(self, *args, **kwargs):
+                        type(col)._beat = beat
+                        time.sleep(1.5)
+                        return beat(self, *args, **kwargs)
+                    type(col)._beat = held_up
                 for i, to in enumerate(stops):
                     # All in one read, as the game moves the car.
                     g = copy.copy(sim.graphics)

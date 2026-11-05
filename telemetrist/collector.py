@@ -396,7 +396,9 @@ class Collector:
         lap_start_fuel = None
         last_packet = -1
         last_pos = None
-        last_read = now()     # when last_pos was read, leaving out pauses
+        # When last_pos was read; None once paused, as time paused is not
+        # time driven, nor anything that holds the loop up before it reads.
+        last_read = None
 
         def keep_unfinished():
             # Often the lap the driver most wants to look at; complete=0 so
@@ -452,9 +454,9 @@ class Collector:
                 # pit lane go on to the check for a lap left unfinished.
                 if not (session_started and f.status == "pause"
                         and f.in_pit_lane):
-                    pause(0.25)
                     if f.status == "pause":
-                        last_read = now()
+                        last_read = None
+                    pause(0.25)
                     continue
 
             # Restarting a session from the in-game menu resets completedLaps
@@ -586,7 +588,8 @@ class Collector:
                     and (last_pos - pos > ABANDON_JUMP and not wrapped
                          and not f.in_pit_lane
                          or f.in_pit_lane and _sent_to_pits(
-                             last_pos, pos, read_at - last_read))):
+                             last_pos, pos, 0 if last_read is None
+                             else read_at - last_read))):
                 keep_unfinished()
                 lap_samples = []
                 wide_since = None

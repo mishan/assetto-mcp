@@ -7,6 +7,7 @@ discarding a merely scrappy lap throws away the evidence a setup change was
 meant to produce.
 """
 
+import copy
 import sys
 import tempfile
 from pathlib import Path
@@ -17,7 +18,7 @@ from support import (complete_lap, enter_pits, leave_pits,  # noqa: E402
                      make_session, run_collector, run_module, temp_db,
                      tick, wait_for)
 
-from telemetrist import analysis, db  # noqa: E402
+from telemetrist import analysis, db, sim_info  # noqa: E402
 from telemetrist.collector import _is_outlier  # noqa: E402
 
 
@@ -190,6 +191,40 @@ def test_an_abandoned_lap_is_kept_marked_incomplete():
         print(f"  kept the abandoned lap with "
               f"{len(db.get_samples(conn, gone[0]['id']))} samples")
         conn.close()
+
+
+def test_a_lap_left_for_the_pits_is_kept_marked_incomplete():
+    """Return to Pits (AC) or to the garage (AMS2) lands the car in the pit
+    lane mid-lap, ahead of it on the spline as often as behind, and often
+    on a paused frame the driver then quits from."""
+    cases = [
+        # (how the car gets to the pits, laps abandoned)
+        ("sent there, live", sim_info.AC_LIVE, 0.86, 1),
+        ("sent there, paused", sim_info.AC_PAUSE, 0.86, 1),
+        ("sent behind the car", sim_info.AC_LIVE, 0.05, 1),
+        ("driven in", sim_info.AC_LIVE, None, 0),
+    ]
+    for name, status, to, abandoned in cases:
+        with temp_db() as path:
+
+            def go_to_pits(sim, col):
+                sim.graphics.normalizedCarPosition = 0.30
+                tick(sim, col, n=2)                          # now ~0.50
+                # All in one read, as the game moves the car.
+                g = copy.copy(sim.graphics)
+                g.status, g.isInPitLane = status, 1
+                if to is not None:
+                    g.normalizedCarPosition = to
+                sim.graphics = g
+                wait_for(lambda: col.current_lap_pitted,
+                         "the pit visit to be noticed")
+
+            col = run_collector([
+                lambda s, c: (tick(s, c), complete_lap(s, c, 113000)),
+                go_to_pits,
+            ], path)
+            assert col.abandoned_laps == abandoned, (name, col.abandoned_laps)
+    print("  a lap left for the pits is kept; one driven into them is not")
 
 
 def test_crossing_the_line_is_not_mistaken_for_a_teleport():

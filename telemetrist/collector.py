@@ -381,6 +381,7 @@ class Collector:
         lap_start_fuel = None
         last_packet = -1
         last_pos = None
+        last_in_pit = False
 
         while not self._stop.is_set():
             # Before anything is read, let alone written. This loop does not
@@ -419,8 +420,13 @@ class Collector:
                     # Not "recording (session 7)" while the game sits in the
                     # menus.
                     self._announce("waiting for the session to go live")
-                pause(0.25)
-                continue
+                # A return to the pits or the garage often lands on a paused
+                # frame, which the driver may quit from: that one goes on to
+                # the check for a lap left unfinished.
+                if not (f.status == "pause" and f.in_pit_lane
+                        and not last_in_pit):
+                    pause(0.25)
+                    continue
 
             # Restarting a session from the in-game menu resets completedLaps
             # without passing through AC_OFF. A lap counter that goes
@@ -540,13 +546,16 @@ class Collector:
             # backwards down the spline without completedLaps advancing. Keep
             # that lap, marked incomplete: it is often the one the driver
             # most wants to look at. The wrap window keeps a line crossing
-            # out of this check when the counter lags a tick.
+            # out of this check when the counter lags a tick. Sent to the
+            # pits, the car can land ahead of where it was as well.
             pos = f.norm_pos
             wrapped = (last_pos is not None
                        and last_pos > WRAP_HIGH and pos < WRAP_LOW)
+            sent_to_pits = f.in_pit_lane and not last_in_pit
             if (lap_samples and last_pos is not None and not wrapped
-                    and not f.in_pit_lane
-                    and last_pos - pos > ABANDON_JUMP):
+                    and (last_pos - pos > ABANDON_JUMP and not f.in_pit_lane
+                         or sent_to_pits
+                         and abs(last_pos - pos) > ABANDON_JUMP)):
                 elapsed = int((now() - lap_start_wall) * 1000)
                 db.store_lap(self._conn, self.session_id,
                              last_completed + 1, elapsed, False,
@@ -560,7 +569,7 @@ class Collector:
                 lap_start_fuel = None
                 self.current_lap_dirty = False
                 self.current_lap_pitted = False
-            last_pos = pos
+            last_pos, last_in_pit = pos, f.in_pit_lane
 
             # A lap containing a pit visit has a meaningless time. Note it
             # before the sampling guard below, which skips pit-lane ticks.

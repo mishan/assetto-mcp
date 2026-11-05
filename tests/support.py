@@ -18,13 +18,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-# Never the driver's own data. A module that imports the server without
-# choosing a data directory gets this one, not ~/.telemetrist, which every
-# process running tests at once would share.
+# Never the driver's own data or bridge. A module that imports the server
+# without choosing gets these, not ~/.telemetrist or a port from the
+# environment, which every process running tests at once would share.
 _DATA = tempfile.TemporaryDirectory(prefix="telemetrist-tests-",
                                     ignore_cleanup_errors=True)
 atexit.register(_DATA.cleanup)
 os.environ["TELEMETRIST_DATA"] = _DATA.name
+os.environ["TELEMETRIST_BRIDGE_PORT"] = "0"
 
 from telemetrist import db  # noqa: E402
 from telemetrist.collector import Collector  # noqa: E402

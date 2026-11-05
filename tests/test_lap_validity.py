@@ -7,18 +7,20 @@ discarding a merely scrappy lap throws away the evidence a setup change was
 meant to produce.
 """
 
+import copy
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from support import (complete_lap, enter_pits, leave_pits,  # noqa: E402
-                     make_session, run_collector, run_module, temp_db,
-                     tick, wait_for)
+from support import (FakeSim, complete_lap, enter_pits, go_off,  # noqa: E402
+                     leave_pits, make_session, restart_from_menu,
+                     run_collector, run_module, temp_db, tick, wait_for)
 
-from telemetrist import analysis, db  # noqa: E402
-from telemetrist.collector import _is_outlier  # noqa: E402
+from telemetrist import analysis, db, sim_info  # noqa: E402
+from telemetrist.collector import _is_outlier, _sent_to_pits  # noqa: E402
 
 
 def test_gross_outliers_are_set_aside():
@@ -190,6 +192,142 @@ def test_an_abandoned_lap_is_kept_marked_incomplete():
         print(f"  kept the abandoned lap with "
               f"{len(db.get_samples(conn, gone[0]['id']))} samples")
         conn.close()
+
+
+def test_a_lap_left_for_the_pits_is_kept_marked_incomplete():
+    """Return to Pits (AC) or to the garage (AMS2) lands the car in the pit
+    lane mid-lap, ahead of it on the spline as often as behind, and often
+    on a paused frame the driver then quits from."""
+    cases = [
+        # (how the car gets to the pits, from, where it is in the pit lane,
+        # laps abandoned, paused on track first)
+        ("sent there, live", sim_info.AC_LIVE, 0.5, [0.86], 1, False),
+        ("sent there, paused", sim_info.AC_PAUSE, 0.5, [0.86], 1, False),
+        ("sent behind the car", sim_info.AC_LIVE, 0.5, [0.05], 1, False),
+        ("sent from the end of the lap", sim_info.AC_LIVE, 0.95, [0.03], 1,
+         False),
+        ("driven in, then sent to the box", sim_info.AC_LIVE, 0.5,
+         [0.5, 0.86], 1, False),
+        ("driven in, then sent, paused", sim_info.AC_PAUSE, 0.5,
+         [0.5, 0.86], 1, False),
+        ("driven in", sim_info.AC_LIVE, 0.5, [0.5], 0, False),
+        ("driven in at the line", sim_info.AC_LIVE, 0.999, [0.001], 0, False),
+        # Paused on track first: time paused is not time driven.
+        ("sent from the pause menu", sim_info.AC_PAUSE, 0.5, [0.58], 1, True),
+    ]
+    for name, status, start, stops, abandoned, paused_first in cases:
+        with temp_db() as path:
+
+            def go_to_pits(sim, col):
+                sim.graphics.normalizedCarPosition = start - 0.2
+                tick(sim, col, n=2)
+                if paused_first:
+                    sim.graphics.status = status
+                    wait_for(lambda: not col.live, "the pause to be read")
+                    # And the next heartbeat held up by the database.
+                    beat = type(col)._beat
+
+                    def held_up(self, *args, **kwargs):
+                        type(col)._beat = beat
+                        time.sleep(1.5)
+                        return beat(self, *args, **kwargs)
+                    type(col)._beat = held_up
+                for i, to in enumerate(stops):
+                    # All in one read, as the game moves the car.
+                    g = copy.copy(sim.graphics)
+                    g.status, g.isInPitLane = status, 1
+                    g.normalizedCarPosition = to
+                    sim.graphics = g
+                    wait_for(lambda: col.current_lap_pitted if i == 0
+                             else col.abandoned_laps >= abandoned,
+                             "the car in the pit lane to be read")
+
+            col = run_collector([
+                lambda s, c: (tick(s, c), complete_lap(s, c, 113000)),
+                go_to_pits,
+            ], path)
+            assert col.abandoned_laps == abandoned, (name, col.abandoned_laps)
+    print("  a lap left for the pits is kept; one driven into them is not")
+
+
+def test_only_a_move_driving_could_not_make_is_a_trip_to_the_pits():
+    cases = [
+        # (from, to, seconds since the last read, sent to the pits)
+        (0.5, 0.86, 0.04, True),
+        (0.95, 0.03, 0.04, True),
+        (0.5, 0.502, 0.04, False),
+        (0.999, 0.001, 0.04, False),
+        # A read held up two seconds at the pit entry: 100 m at 180 km/h,
+        # on a 2 km track.
+        (0.5, 0.55, 2.0, False),
+        # However long the hold-up, a return of a quarter lap or more shows.
+        (0.5, 0.86, 5.0, True),
+    ]
+    for last, pos, seconds, sent in cases:
+        assert _sent_to_pits(last, pos, seconds) is sent, (last, pos, seconds)
+
+
+def test_a_read_held_up_is_not_taken_for_a_trip_to_the_pits():
+    """The line's database write held up two seconds, while the car drove
+    on into the pit lane: 5% of the lap, in what is one read."""
+    for status in (sim_info.AC_LIVE, sim_info.AC_PAUSE):
+        sim, clock = FakeSim(), [0.0]
+        sim.now = lambda: clock[0]
+        sim.wait = lambda s: (clock.__setitem__(0, clock[0] + s),
+                              time.sleep(s))
+        store = db.store_lap
+
+        def held_up(*args, **kwargs):
+            store(*args, **kwargs)
+            g = copy.copy(sim.graphics)
+            g.status, g.isInPitLane = status, 1
+            g.normalizedCarPosition += 0.05
+            sim.graphics = g
+            clock[0] += 2.0
+
+        def line_then_pits(sim, col):
+            sim.graphics.normalizedCarPosition = 0.7
+            tick(sim, col, n=3)
+            sim.graphics.normalizedCarPosition = 0.001
+            sim.physics.packetId += 1     # the new lap's first sample
+            db.store_lap = held_up
+            try:
+                complete_lap(sim, col, 113000)
+                wait_for(lambda: col.current_lap_pitted,
+                         "the pit lane to be read")
+            finally:
+                db.store_lap = store
+
+        with temp_db() as path:
+            col = run_collector([line_then_pits], path, sim=sim)
+        assert col.abandoned_laps == 0, (status, col.abandoned_laps)
+
+
+def test_a_lap_ended_by_leaving_the_session_is_kept_marked_incomplete():
+    """Quitting to the menus or restarting mid-lap ends the session, and
+    the lap so far goes with the session it was driven in."""
+    cases = [
+        # (how the session ends, ticks driven since the line, laps kept)
+        ("quit to the menus", go_off, 3, 1),
+        ("restarted", restart_from_menu, 3, 1),
+        ("quit at the line", go_off, 0, 0),
+    ]
+    for name, leave, driven, kept in cases:
+        with temp_db() as path:
+            col = run_collector([
+                lambda s, c: (tick(s, c), complete_lap(s, c, 113000)),
+                lambda s, c: tick(s, c, n=driven),
+                leave,
+            ], path)
+            assert col.abandoned_laps == kept, (name, col.abandoned_laps)
+            conn = db.connect(path)
+            first = db.list_sessions(conn)[-1]["id"]
+            gone = [l for l in db.list_laps(conn, first, limit=None)
+                    if not l["complete"]]
+            assert len(gone) == kept, (name, gone)
+            assert all(db.get_samples(conn, l["id"]) for l in gone), name
+            conn.close()
+    print("  the lap a session ended in is kept with that session")
 
 
 def test_crossing_the_line_is_not_mistaken_for_a_teleport():

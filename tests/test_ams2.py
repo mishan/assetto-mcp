@@ -95,11 +95,14 @@ def test_a_session_driven_in_the_game_replays_to_the_times_it_showed():
     assert abs(session["track_length_m"] - 1932.8) < 0.1
     # The game's lap screen: 1:00.019, 0:58.220, 0:58.160, 1:25.345, after
     # an out-lap it does not time.
-    assert [(l["lap_time_ms"], l["out_lap"]) for l in laps] == [
+    assert [(l["lap_time_ms"], l["out_lap"]) for l in laps
+            if l["complete"]] == [
         (0, 1), (60019, 0), (58220, 0), (58160, 0), (85345, 0)]
+    # Then a few seconds of the next before the garage, kept unfinished.
+    assert [l["lap_number"] for l in laps if not l["complete"]] == [6]
     # A wheel on the grass for an instant on the third; all four off for
     # half a minute on the fourth.
-    assert [l["invalid"] for l in laps[1:]] == [0, 0, 0, 1]
+    assert [l["invalid"] for l in laps[1:]] == [0, 0, 0, 1, 1]
     ranges = {"norm_pos": (0, 1), "speed_kmh": (0, 200), "gas": (0, 1),
               "brake": (0, 1), "steer": (-1, 1), "acc_lat": (-2, 2),
               "acc_lon": (-2, 2), "ride_f": (0.02, 0.15),

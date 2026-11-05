@@ -31,6 +31,21 @@ ABANDON_JUMP = 0.25
 WRAP_HIGH = 0.9
 WRAP_LOW = 0.1
 
+# In the pit lane, a car that moved more than this since the last tick,
+# either way round the lap, was sent to its box or the garage: on the
+# recordings, driving moves it at most 0.3% of a lap a tick, even across the
+# line. A car sent to a box only just up the road from where it was is left
+# as a lap with a pit visit.
+PIT_JUMP = 0.02
+
+
+def _sent_to_pits(last_pos: float, pos: float, seconds: float) -> bool:
+    # PIT_JUMP a tick: a read held up, by the database lock say, gives the
+    # car longer to have driven, though never a quarter of a lap.
+    moved = abs(last_pos - pos)
+    return min(moved, 1 - moved) > min(PIT_JUMP * max(1, seconds * TARGET_HZ),
+                                       ABANDON_JUMP)
+
 # The outlier rule lives in analysis so the same definition is used both
 # here (at write time) and by db.backfill_outliers. Being an outlier only
 # sets a flag: the lap is stored, readable, and still included in
@@ -381,6 +396,19 @@ class Collector:
         lap_start_fuel = None
         last_packet = -1
         last_pos = None
+        # When last_pos was read; None once paused, as time paused is not
+        # time driven, nor anything that holds the loop up before it reads.
+        last_read = None
+
+        def keep_unfinished():
+            # Often the lap the driver most wants to look at; complete=0 so
+            # its elapsed time is never taken for a lap time.
+            if lap_samples:
+                db.store_lap(self._conn, self.session_id, last_completed + 1,
+                             int((now() - lap_start_wall) * 1000), False,
+                             lap_samples, complete=False, pitted=lap_pitted)
+                self.laps_recorded += 1
+                self.abandoned_laps += 1
 
         while not self._stop.is_set():
             # Before anything is read, let alone written. This loop does not
@@ -407,11 +435,13 @@ class Collector:
                 return
 
             f = sim.read()
+            # Before any write below can hold the loop up.
+            read_at = now()
 
             self.live = f.status == "live"
             if not self.live:
-                # Session ended / paused / menu: drop the partial lap.
                 if f.status == "off":  # back to waiting
+                    keep_unfinished()
                     session_started = False
                     last_completed = None
                     session_best = None
@@ -419,8 +449,15 @@ class Collector:
                     # Not "recording (session 7)" while the game sits in the
                     # menus.
                     self._announce("waiting for the session to go live")
-                pause(0.25)
-                continue
+                # A return to the pits or the garage often lands on a paused
+                # frame, which the driver may quit from: paused frames in the
+                # pit lane go on to the check for a lap left unfinished.
+                if not (session_started and f.status == "pause"
+                        and f.in_pit_lane):
+                    if f.status == "pause":
+                        last_read = None
+                    pause(0.25)
+                    continue
 
             # Restarting a session from the in-game menu resets completedLaps
             # without passing through AC_OFF. A lap counter that goes
@@ -429,6 +466,7 @@ class Collector:
             if (session_started and last_completed is not None
                     and (f.completed_laps < last_completed
                          or f.session_type != session_type)):
+                keep_unfinished()
                 session_started = False
                 last_completed = None
                 session_best = None
@@ -540,19 +578,19 @@ class Collector:
             # backwards down the spline without completedLaps advancing. Keep
             # that lap, marked incomplete: it is often the one the driver
             # most wants to look at. The wrap window keeps a line crossing
-            # out of this check when the counter lags a tick.
+            # out of this check when the counter lags a tick. Sent to the
+            # pits, the car can land ahead of where it was too, or across
+            # the line.
             pos = f.norm_pos
             wrapped = (last_pos is not None
                        and last_pos > WRAP_HIGH and pos < WRAP_LOW)
-            if (lap_samples and last_pos is not None and not wrapped
-                    and not f.in_pit_lane
-                    and last_pos - pos > ABANDON_JUMP):
-                elapsed = int((now() - lap_start_wall) * 1000)
-                db.store_lap(self._conn, self.session_id,
-                             last_completed + 1, elapsed, False,
-                             lap_samples, complete=False, pitted=lap_pitted)
-                self.laps_recorded += 1
-                self.abandoned_laps += 1
+            if (lap_samples and last_pos is not None
+                    and (last_pos - pos > ABANDON_JUMP and not wrapped
+                         and not f.in_pit_lane
+                         or f.in_pit_lane and _sent_to_pits(
+                             last_pos, pos, 0 if last_read is None
+                             else read_at - last_read))):
+                keep_unfinished()
                 lap_samples = []
                 wide_since = None
                 lap_pitted = False
@@ -560,7 +598,7 @@ class Collector:
                 lap_start_fuel = None
                 self.current_lap_dirty = False
                 self.current_lap_pitted = False
-            last_pos = pos
+            last_pos, last_read = pos, read_at
 
             # A lap containing a pit visit has a meaningless time. Note it
             # before the sampling guard below, which skips pit-lane ticks.

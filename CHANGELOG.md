@@ -29,6 +29,11 @@ and the setup files may still change between minor versions.
   entry (`env` and anything besides the command), from whichever config
   holds it, instead of writing a bare entry over them.
 
+- A lap left mid-way for the pits (AC's Return to Pits) or the garage
+  (AMS2) is kept, marked unfinished, as a crash already was, and so is the
+  lap so far when the driver quits to the menus or restarts. They used to
+  be lost, or a pit return joined onto the next out-lap.
+
 - The project is now Telemetrist: the package, commands (`telemetrist`,
   `telemetrist-update`, `telemetrist-pit-wall`), `TELEMETRIST_*` settings,
   `~/.telemetrist`, the in-game app and the GitHub repository. The old names

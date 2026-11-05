@@ -70,6 +70,14 @@ class Frame:
     tyre_compound: str
     # The game's own current, last and best lap clocks, as it prints them.
     clock_text: tuple[str, str, str]
+    # Across each tyre's tread: (inner, middle, outer) per wheel, in WHEELS
+    # order, 12 values. The core temperature says how hot a tyre is; the
+    # spread across it says why -- a hot middle is too much pressure, a hot
+    # inside edge too much camber -- which the core alone cannot.
+    surface_temp_c: tuple | None = None
+    # Camber per wheel while driving, in degrees, in WHEELS order. The
+    # setup sets it standing still; what the tyre meets in a corner is this.
+    camber_deg: tuple | None = None
 
     def sample(self, t_ms: int) -> tuple:
         """This reading as a row of db.SAMPLE_COLUMNS, after lap_id."""
@@ -79,4 +87,6 @@ class Frame:
                 *self.ride_height_m, self.tyres_out,
                 *(self.world_pos or (None,) * 3),
                 self.heading, self.pitch, self.roll,
-                self.tc_active, self.abs_active, *self.wear, self.damage)
+                self.tc_active, self.abs_active, *self.wear, self.damage,
+                *(self.surface_temp_c or (None,) * 12),
+                *(self.camber_deg or (None,) * 4))

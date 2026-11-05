@@ -1,5 +1,6 @@
 """Assetto Corsa, read through its shared memory or a recording of it."""
 
+import math
 import time
 
 from .base import Frame, SessionInfo
@@ -80,6 +81,41 @@ def _damage(p):
     return float(sum(zones)) if zones is not None else None
 
 
+# AC publishes camber and the tread's edge temperatures in one frame for the
+# whole car rather than per wheel, so one side comes out mirrored. Checked
+# against a recorded 911 RSR lap set to -1.0 deg front, -0.8 rear: camberRAD
+# read about -1.2 deg on the left wheels and +1.3 on the right in a straight
+# line, and both sides went positive when that wheel was on the outside of a
+# corner. tyreTempI was the hotter edge on the right wheels and tyreTempO on
+# the left, where negative camber on all four puts the heat on every inner
+# edge. So the left wheels' "O" is their inner edge, and the right wheels'
+# camber needs its sign turned to read as the setup screen does.
+LEFT_WHEELS = (0, 2)   # FL, RL in WHEELS order
+
+
+def _surface(p) -> tuple | None:
+    """Inner, middle and outer tread temperature, wheel by wheel."""
+    i_, m, o = (_seq(p, name, WHEELS_PER_CAR)
+                for name in ("tyreTempI", "tyreTempM", "tyreTempO"))
+    if i_ is None or m is None or o is None:
+        return None
+    out = []
+    for w in range(WHEELS_PER_CAR):
+        inner, outer = (o[w], i_[w]) if w in LEFT_WHEELS else (i_[w], o[w])
+        out += [inner, m[w], outer]
+    return tuple(out)
+
+
+def _camber(p) -> tuple | None:
+    """Camber per wheel while driving, in degrees, negative leaning the top
+    in, as the setup screen shows it. The game publishes radians."""
+    rad = _seq(p, "camberRAD", WHEELS_PER_CAR)
+    if rad is None:
+        return None
+    return tuple(math.degrees(r) * (1 if w in LEFT_WHEELS else -1)
+                 for w, r in enumerate(rad))
+
+
 class Reader:
     """AC's three pages read as Frames: `pages` is a SimInfo, or anything
     with the same physics, graphics and static pages."""
@@ -131,7 +167,8 @@ class Reader:
             fuel_l=getattr(p, "fuel", None),
             air_temp=p.airTemp, road_temp=p.roadTemp,
             tyre_compound=g.tyreCompound,
-            clock_text=(g.currentTime, g.lastTime, g.bestTime))
+            clock_text=(g.currentTime, g.lastTime, g.bestTime),
+            surface_temp_c=_surface(p), camber_deg=_camber(p))
 
     def session(self) -> SessionInfo:
         s = self._pages.static

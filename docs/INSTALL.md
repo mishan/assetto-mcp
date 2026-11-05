@@ -291,10 +291,10 @@ names are still honored so nothing is lost:
   app is moved from `apps\lua\assetto_mcp` to `apps\lua\telemetrist` at the
   next update or `--sync-lua` with the game closed; `session_check` says so
   until it has been. Restart a pit wall left running across the update.
-- **Your laps come with you.** `~/.assetto-mcp` (or `~/.ac-race-engineer`) is
+- **Your laps come with you.** Unless `TELEMETRIST_DATA` (or an old spelling
+  of it) points somewhere, `~/.assetto-mcp` (or `~/.ac-race-engineer`) is
   renamed to `~/.telemetrist` — by the installer if you run it, otherwise by
-  the server
-  the next time it starts. Nothing is copied or rebuilt; it's the same
+  the server the next time it starts. Nothing is copied or rebuilt; it's the same
   directory under a new name. If something still has the database open the
   move is skipped, the old directory keeps being used, and it's retried on the
   next clean start — so the worst case is that nothing happens yet. If

@@ -47,7 +47,10 @@ def _install(owner_cfg: dict | None, other_cfg: dict | None) -> tuple | None:
     where there is no PowerShell to run it."""
     shell = _powershell()
     if not shell:
-        from lua_harness import skip
+        from lua_harness import skip, strict
+        if strict():
+            raise RuntimeError("PowerShell is not installed, and a skip here "
+                               "would read as a pass")
         skip("PowerShell is not installed")
         return None
     with tempfile.TemporaryDirectory() as d:

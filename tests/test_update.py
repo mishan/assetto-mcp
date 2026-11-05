@@ -880,6 +880,12 @@ def test_a_client_entry_left_under_the_old_name_is_found():
                                                    "assetto-mcp": {}}}),
                         encoding="utf-8")
         broken.write_text("{not json", encoding="utf-8")
+        odd = Path(d) / "d.json"
+        odd.write_text(json.dumps({"mcpServers": "assetto-mcp"}),
+                       encoding="utf-8")
+        assert U.old_client_entry([odd]) is None
+        odd.write_text(json.dumps({"mcpServers": 1}), encoding="utf-8")
+        assert U.old_client_entry([odd, plain]) is None
         assert U.old_client_entry([plain]) is None
         assert U.old_client_entry([broken, plain, msix]) == "assetto-mcp"
         print("  the pre-rename entry is found in any config, bad ones skipped")

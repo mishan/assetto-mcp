@@ -551,6 +551,9 @@ def old_client_entry(configs: list[Path] | None = None) -> str | None:
             servers = servers.get("mcpServers") or {}
         except (OSError, ValueError, AttributeError):
             continue
+        # Read at the server's start: no config, however mangled, may stop it.
+        if not isinstance(servers, dict):
+            continue
         for name in OLD_CLIENT_ENTRIES:
             if name in servers:
                 return name

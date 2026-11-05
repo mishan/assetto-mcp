@@ -3,7 +3,7 @@
 import math
 import time
 
-from .base import Frame, SessionInfo
+from .base import WHEELS, Frame, SessionInfo
 
 STATUS = {0: "off", 1: "replay", 2: "live", 3: "pause"}
 
@@ -90,7 +90,7 @@ def _damage(p):
 # the left, where negative camber on all four puts the heat on every inner
 # edge. So the left wheels' "O" is their inner edge, and the right wheels'
 # camber needs its sign turned to read as the setup screen does.
-LEFT_WHEELS = (0, 2)   # FL, RL in WHEELS order
+LEFT_WHEELS = tuple(i for i, w in enumerate(WHEELS) if w.endswith("l"))
 
 
 def _surface(p) -> tuple | None:

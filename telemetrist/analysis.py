@@ -1310,10 +1310,12 @@ def tread_and_camber(samples: list[dict], w: str) -> dict:
     `camber_deg` is what the wheel runs at, not what the setup screen sets:
     `straight` near-straight above walking pace, `loaded` with the wheel on
     the outside of a corner past CAMBER_LOADED_G, where it carries the
-    corner. Lateral g is positive in a left-hander, so the right wheels are
-    the loaded ones there. The difference between the two is camber the
-    suspension adds or loses under roll. Laps recorded before schema v22
-    have neither, and the keys are left out.
+    corner, for `loaded_s` seconds of the lap. Lateral g is positive in a
+    left-hander, so the right wheels are the loaded ones there. The
+    difference between the two is camber the suspension adds or loses under
+    roll. `loaded_inner_minus_outer_c` is the edge spread in that loaded
+    state only, the reading a camber change is set against. Laps recorded
+    before schema v22 have neither, and the keys are left out.
     """
     out = {}
     zones = ("in", "mid", "out")
@@ -1327,20 +1329,40 @@ def tread_and_camber(samples: list[dict], w: str) -> dict:
         out["middle_minus_edges_c"] = round(m - (i + o) / 2, 1)
 
     outside_sign = 1 if w.endswith("r") else -1
-    straight, loaded = [], []
+    straight, loaded, loaded_tread, loaded_ms = [], [], [], 0
+    prev_t = None
     for s in samples:
-        c, lat = s.get(f"camber_{w}"), s.get("acc_lat")
-        if c is None or not _is_sane(lat, LAT_G_SANE_MAX):
+        t = s.get("t_ms")
+        dt = t - prev_t if t is not None and prev_t is not None else 0
+        prev_t = t
+        lat = s.get("acc_lat")
+        if not _is_sane(lat, LAT_G_SANE_MAX):
             continue
-        if abs(lat) < CAMBER_STRAIGHT_G                 and (s.get("speed_kmh") or 0) >= CAMBER_STRAIGHT_MIN_KMH:
+        is_loaded = lat * outside_sign >= CAMBER_LOADED_G
+        if is_loaded:
+            # Time, not samples: a thinned lap keeps every Nth sample.
+            loaded_ms += max(dt, 0)
+            edges = (s.get(f"surf_in_{w}"), s.get(f"surf_out_{w}"))
+            if None not in edges:
+                loaded_tread.append(edges[0] - edges[1])
+        c = s.get(f"camber_{w}")
+        if c is None:
+            continue
+        if (abs(lat) < CAMBER_STRAIGHT_G
+                and (s.get("speed_kmh") or 0) >= CAMBER_STRAIGHT_MIN_KMH):
             straight.append(c)
-        elif lat * outside_sign >= CAMBER_LOADED_G:
+        elif is_loaded:
             loaded.append(c)
+    if loaded_tread:
+        # Where the wheel carries the corner: the lap average mixes the
+        # other direction in, and a tyre cooking its outer edge in one and
+        # its inner edge in the other averages to a flat spread.
+        out["loaded_inner_minus_outer_c"] = round(mean(loaded_tread), 1)
     if straight or loaded:
         out["camber_deg"] = {
             "straight": round(mean(straight), 2) if straight else None,
             "loaded": round(mean(loaded), 2) if loaded else None,
-            "loaded_samples": len(loaded),
+            "loaded_s": round(loaded_ms / 1000, 1),
         }
     return out
 

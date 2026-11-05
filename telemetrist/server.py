@@ -2089,7 +2089,8 @@ TRACE_CHANNELS = (
     "press_fr", "press_rl", "press_rr", "core_fl", "core_fr", "core_rl",
     "core_rr", "ride_f", "ride_r", "tyres_out", "pos_x", "pos_y", "pos_z",
     "heading", "pitch", "roll", "tc_active", "abs_active", "wear_fl",
-    "wear_fr", "wear_rl", "wear_rr", "damage")
+    "wear_fr", "wear_rl", "wear_rr", "damage",
+    *db.SURFACE_CAMBER_COLUMNS)
 TRACE_MAX_ROWS = 300
 
 

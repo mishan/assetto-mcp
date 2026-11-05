@@ -12,12 +12,19 @@ and the setup files may still change between minor versions.
 - After an update, the servers in Claude Desktop's other chats restart onto
   the new code by themselves once the game is off track. Another chat's
   session holds an update back only while the game is on track.
+- `session_check` and `apply_update` say when Claude Desktop still starts
+  the server under its pre-rename entry, and that re-running the installer
+  renames it.
 
 - Automobilista 2, with `TELEMETRIST_SIM=ams2`: laps, the out-lap, corners,
   tyres, fuel and track limits from the game's shared memory, and its
   recordings replay like AC's. Opponents and setup files are not there yet.
 
 ### Changed
+
+- The Windows installer keeps the settings on an existing Claude Desktop
+  entry (`env` and anything besides the command), from whichever config
+  holds it, instead of writing a bare entry over them.
 
 - The project is now Telemetrist: the package, commands (`telemetrist`,
   `telemetrist-update`, `telemetrist-pit-wall`), `TELEMETRIST_*` settings,

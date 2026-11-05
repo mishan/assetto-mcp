@@ -307,7 +307,9 @@ names are still honored so nothing is lost:
 
 - **Updating carries you across.** `apply_update` from an older version
   works: the old module name, `-m assetto_mcp.server`, and the old commands
-  keep starting the server, so client configs need no change. The in-game
+  keep starting the server. Claude Desktop goes on showing the server under
+  its old name until `install-windows.bat` is re-run; `session_check` says
+  so. The in-game
   app is moved from `apps\lua\assetto_mcp` to `apps\lua\telemetrist` at the
   next update or `--sync-lua` with the game closed; `session_check` says so
   until it has been. Restart a pit wall left running across the update.
@@ -328,7 +330,8 @@ names are still honored so nothing is lost:
 - **The stale bits get cleaned up.** Re-running `install-windows.bat` writes
   `telemetrist` into the config Claude Desktop reads, removes the
   `assetto-mcp` and `ac-race-engineer` entries from every Claude Desktop
-  config, and deletes the old in-game app folders, so you don't end
+  config, carrying over everything on the old entry but its command and arguments (its
+  `env` settings included), and deletes the old in-game app folders, so you don't end
   up with two servers or the app listed twice. Close Assetto Corsa and
   Content Manager first: a folder the game holds open is left in place, and
   the new app is not installed beside it. Claude Desktop asks once to

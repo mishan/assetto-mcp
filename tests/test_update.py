@@ -182,6 +182,7 @@ class World:
         return True, "ok"
 
     def apply(self, sha, **kw):
+        kw.setdefault("client_configs", [])
         kw.setdefault("pip", self.pip)
         kw.setdefault("ac", self.tmp / "no-ac")
         kw.setdefault("is_game_running", lambda: False)
@@ -865,6 +866,69 @@ def _run_server(script: str) -> dict | None:
                               timeout=120, stdin=subprocess.DEVNULL)
         assert proc.returncode == 0, proc.stderr
         return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+def test_a_client_entry_left_under_the_old_name_is_found():
+    """Claude Desktop names the server after its config entry: after the
+    rename the driver saw the old name, and nothing said why."""
+    with tempfile.TemporaryDirectory() as d:
+        plain, msix, broken = (Path(d) / n for n in ("a.json", "b.json",
+                                                     "c.json"))
+        plain.write_text(json.dumps({"mcpServers": {"telemetrist": {}}}),
+                         encoding="utf-8")
+        msix.write_text(json.dumps({"mcpServers": {"elgato": {},
+                                                   "assetto-mcp": {}}}),
+                        encoding="utf-8")
+        broken.write_text("{not json", encoding="utf-8")
+        odd = Path(d) / "d.json"
+        odd.write_text(json.dumps({"mcpServers": "assetto-mcp"}),
+                       encoding="utf-8")
+        assert U.old_client_entry([odd]) is None
+        odd.write_text(json.dumps({"mcpServers": 1}), encoding="utf-8")
+        assert U.old_client_entry([odd, plain]) is None
+        assert U.old_client_entry([plain]) is None
+        assert U.old_client_entry([broken, plain, msix]) == "assetto-mcp"
+        # The name the installer carries over: newest first, in any config.
+        odd.write_text(json.dumps({"mcpServers": {"ac-race-engineer": {}}}),
+                       encoding="utf-8")
+        assert U.old_client_entry([odd, msix]) == "assetto-mcp"
+        print("  the pre-rename entry is found in any config, bad ones skipped")
+
+
+def test_every_package_build_s_config_is_searched():
+    """The installer finds Claude Desktop by its redirect directory, under
+    any package name; so must the check that sends the driver to it."""
+    with tempfile.TemporaryDirectory() as d:
+        want = []
+        for pkg in ("Claude_pzs8sxrjxfjjc", "AnthropicClaude_1.0_x64"):
+            cfg = (Path(d) / "Packages" / pkg / "LocalCache" / "Roaming"
+                   / "Claude" / "claude_desktop_config.json")
+            cfg.parent.mkdir(parents=True)
+            cfg.write_text("{}", encoding="utf-8")
+            want.append(cfg)
+        (Path(d) / "Packages" / "SomethingElse").mkdir()
+        from unittest import mock
+        with mock.patch.dict(os.environ, LOCALAPPDATA=d):
+            os.environ.pop("APPDATA", None)
+            assert U._claude_configs() == sorted(want), U._claude_configs()
+        print("  every package with the redirect directory is searched")
+
+
+def test_an_apply_reads_the_client_configs_it_is_given():
+    """Which Claude config still names the old entry is the apply's input,
+    not whatever the machine running it happens to have."""
+    def go(w):
+        old = w.tmp / "claude.json"
+        old.write_text(json.dumps({"mcpServers": {"assetto-mcp": {}}}),
+                       encoding="utf-8")
+        w.write("a.txt", "a\n")
+        done = w.apply(w.push("Change"), client_configs=[old])
+        assert "'assetto-mcp'" in done["installer_note"], done
+        w.write("b.txt", "b\n")
+        done = w.apply(w.push("Another"))
+        assert "installer_note" not in done, done
+        print("  the rename note follows the configs given, and only them")
+    _world(go)
 
 
 def test_an_empty_commit_is_refused_rather_than_matched():

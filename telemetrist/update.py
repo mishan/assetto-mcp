@@ -521,6 +521,44 @@ def old_app_installed(ac: Path | None = None) -> bool:
     return bool(ac) and (Path(ac) / "apps" / "lua" / OLD_APP_NAME).is_dir()
 
 
+# Claude Desktop entries from before the rename, newest first, as the
+# installer's $LegacyServerNames.
+OLD_CLIENT_ENTRIES = ("assetto-mcp", "ac-race-engineer")
+
+
+def _claude_configs() -> list[Path]:
+    """Every claude_desktop_config.json Claude Desktop might read: the plain
+    one, and every MSIX build's redirected copy. As in the installer, the
+    redirect directory is what marks a package as Claude Desktop, whatever
+    the package is called."""
+    out = []
+    appdata = os.environ.get("APPDATA")
+    if appdata:
+        out.append(Path(appdata) / "Claude" / "claude_desktop_config.json")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        out += sorted((Path(local) / "Packages").glob(
+            "*/LocalCache/Roaming/Claude/claude_desktop_config.json"))
+    return [p for p in out if p.is_file()]
+
+
+def old_client_entry(configs: list[Path] | None = None) -> str | None:
+    """The pre-rename Claude Desktop entry still starting this server, if
+    any. Only the installer renames it, carrying its settings over, and
+    it takes the newest name in any config before an older one."""
+    found = []
+    for path in configs if configs is not None else _claude_configs():
+        try:
+            servers = json.loads(path.read_text(encoding="utf-8"))
+            servers = servers.get("mcpServers") or {}
+        except (OSError, ValueError, AttributeError):
+            continue
+        # Read at the server's start: no config, however mangled, may stop it.
+        if isinstance(servers, dict):
+            found += servers
+    return next((n for n in OLD_CLIENT_ENTRIES if n in found), None)
+
+
 def sync_lua(root: Path | None = None, ac: Path | None = None,
              is_game_running=game_running) -> dict:
     """Copy the in-game app into Assetto Corsa where it differs.
@@ -675,8 +713,12 @@ def apply_running(data_dir: Path | None = None) -> dict | None:
 
 def apply(to_commit: str, root: Path | None = None,
           data_dir: Path | None = None, ac: Path | None = None,
-          pip=_pip_install, is_game_running=game_running) -> dict:
+          pip=_pip_install, is_game_running=game_running,
+          client_configs: list[Path] | None = None) -> dict:
     """Fast-forward the checkout to `to_commit`, which must be main's tip.
+
+    client_configs: the Claude Desktop configs to check for an entry still
+    under the old name; None reads the ones on this machine.
 
     Every precondition is checked again here rather than trusted from an
     earlier check_for_updates, because time passes between the two: the
@@ -698,7 +740,8 @@ def apply(to_commit: str, root: Path | None = None,
                 else ""),
             do_this="wait a few minutes, then call check_for_updates")
     try:
-        return _apply(to_commit, root, data_dir, ac, pip, is_game_running)
+        return _apply(to_commit, root, data_dir, ac, pip, is_game_running,
+                      client_configs)
     except subprocess.TimeoutExpired as e:
         return _refuse("timeout", f"{' '.join(map(str, e.cmd[:4]))} took "
                                   f"longer than {e.timeout:.0f}s")
@@ -804,7 +847,8 @@ def _start_job(to_commit: str, kw: dict) -> dict:
     return job
 
 
-def _apply(to_commit, root, data_dir, ac, pip, is_game_running) -> dict:
+def _apply(to_commit, root, data_dir, ac, pip, is_game_running,
+           client_configs=None) -> dict:
     if not is_checkout(root):
         return _refuse("not_a_git_checkout",
                        "this install is not a git clone and cannot be "
@@ -890,7 +934,16 @@ def _apply(to_commit, root, data_dir, ac, pip, is_game_running) -> dict:
         out["pip"] = {"ran": False, "note": "pyproject.toml did not change"}
 
     out["lua"] = sync_lua(root, ac, is_game_running)
-    if flags["installer_changed"]:
+    old_entry = old_client_entry(client_configs)
+    if old_entry:
+        # Claude Desktop names the server after its config entry, so the
+        # driver went on seeing the old name with no word that anything
+        # was left to do.
+        out["installer_note"] = (
+            f"Claude Desktop still starts this server as '{old_entry}'. "
+            "Rerun install-windows.bat, then quit and reopen Claude Desktop: "
+            "the installer renames the entry and keeps its settings.")
+    elif flags["installer_changed"]:
         out["installer_note"] = (
             "the installer changed too. Nothing needs it now, but rerun "
             "install-windows.bat at some quiet moment to pick up whatever "

@@ -171,7 +171,9 @@ function Select-OwnerConfig {
         $lastWrite  = [datetime]::MinValue
         try {
             $lastWrite = (Get-Item -LiteralPath $c.Path).LastWriteTime
-            $raw = Get-Content -Raw -LiteralPath $c.Path
+            # UTF8 on every config read: Claude Desktop writes no BOM, and
+            # PowerShell 5.1 would otherwise read the file as ANSI.
+            $raw = Get-Content -Raw -Encoding UTF8 -LiteralPath $c.Path
             if ($raw -and $raw.Trim()) {
                 $j = $raw | ConvertFrom-Json
                 if ($j -and $j.PSObject.Properties['mcpServers']) { $hasServers = $true }
@@ -255,7 +257,7 @@ function Remove-ServerEntry ($path, $name = $ServerName) {
 
     $cfg = $null
     try {
-        $raw = Get-Content -Raw -LiteralPath $path
+        $raw = Get-Content -Raw -Encoding UTF8 -LiteralPath $path
         if ($raw -and $raw.Trim()) { $cfg = $raw | ConvertFrom-Json }
     } catch {
         Write-Warn2 "Not valid JSON, leaving it alone: $path"
@@ -354,7 +356,7 @@ function Register-WithClaudeDesktop {
     $rawOld  = $null
     $alreadyBackedUp = $false
     if (Test-Path -LiteralPath $OwnerConfigPath) {
-        $rawOld = Get-Content -Raw -LiteralPath $OwnerConfigPath
+        $rawOld = Get-Content -Raw -Encoding UTF8 -LiteralPath $OwnerConfigPath
         if ($rawOld -and $rawOld.Trim()) {
             try {
                 $config = $rawOld | ConvertFrom-Json
@@ -380,6 +382,45 @@ function Register-WithClaudeDesktop {
     }
     if ($null -eq $config.mcpServers) {
         $config.mcpServers = [pscustomobject]@{}
+    }
+
+    # Carry the driver's settings over. Only command and args are the
+    # installer's to write; anything else on the entry -- "env", where
+    # settings like TELEMETRIST_DASH_LAN live, a "cwd", a "disabled" flag --
+    # was the driver's, and writing a bare entry over it or dropping the
+    # pre-rename entry that held it turned it off with no word said. Every
+    # config is searched, before any entry is removed from any of them: the
+    # one the driver set up need not be the one chosen as owner. The owner's
+    # current entry wins, then the newest pre-rename name, owner first.
+    $keptFrom = $null
+    $searched = @(@{Path=$OwnerConfigPath; Config=$config}) + @(
+        $configCandidates | Where-Object { $_.Path -ne $OwnerConfigPath } |
+        ForEach-Object {
+            $c = $null
+            try {
+                $raw = Get-Content -Raw -Encoding UTF8 -LiteralPath $_.Path -ErrorAction Stop
+                if ($raw -and $raw.Trim()) { $c = $raw | ConvertFrom-Json }
+            } catch { }
+            @{Path=$_.Path; Config=$c}
+        })
+    :search foreach ($name in @($ServerName) + $LegacyServerNames) {
+        foreach ($s in $searched) {
+            $servers = $null
+            if ($s.Config -and $s.Config.PSObject.Properties['mcpServers']) {
+                $servers = $s.Config.mcpServers
+            }
+            if (-not $servers -or -not $servers.PSObject.Properties[$name]) {
+                continue
+            }
+            $old = $servers.$name
+            if (-not $old) { continue }
+            foreach ($p in $old.PSObject.Properties) {
+                if ($p.Name -in @('command', 'args')) { continue }
+                $entry | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value -Force
+            }
+            $keptFrom = "'$name' in $($s.Path)"
+            break search
+        }
     }
 
     # Drop the pre-rename entry here, in the same object we are about to write,
@@ -427,6 +468,11 @@ function Register-WithClaudeDesktop {
     if ($written.Count -gt 0) {
         foreach ($legacy in $droppedLegacy) {
             Write-Ok "Removed the pre-rename '$legacy' entry from $OwnerConfigPath"
+        }
+        $kept = @($entry.PSObject.Properties.Name |
+                  Where-Object { $_ -notin @('command', 'args') })
+        if ($keptFrom -and $kept.Count -gt 0) {
+            Write-Ok "Kept $($kept -join ', ') from the $keptFrom entry"
         }
         # Where-Object { $_ }: an empty PSObject property collection yields a
         # single $null, which passes a bare -ne test and reported "1 other

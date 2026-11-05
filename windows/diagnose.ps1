@@ -192,7 +192,8 @@ foreach ($p in $configPaths) {
             }
             if ($LegacyServerNames -contains $n) {
                 $withLegacyEntry += [pscustomobject]@{
-                    Path = $p; Name = $n; Command = [string]$e.command; Args = $a
+                    Path = $p; LastWrite = $fi.LastWriteTime; Name = $n
+                    Command = [string]$e.command; Args = $a
                 }
             }
         }
@@ -341,7 +342,8 @@ if ($withEntry.Count -gt 0) {
     $cmd = $pick.Command; $cargs = @($pick.Args); $cfgUsed = $pick.Path
 } else {
     # An install that updated itself still starts under the old name.
-    $pick = @($withLegacyEntry | Where-Object { $_.Name -eq 'assetto-mcp' -and $_.Command })[0]
+    $pick = @($withLegacyEntry | Where-Object { $_.Name -eq 'assetto-mcp' -and $_.Command } |
+              Sort-Object -Property @{Expression={$_.LastWrite};Descending=$true})[0]
     if ($pick) { $cmd = $pick.Command; $cargs = @($pick.Args); $cfgUsed = $pick.Path }
 }
 

@@ -714,26 +714,13 @@ print(json.dumps(out))
 def test_another_chats_server_follows_an_update_when_idle():
     """Applied in one chat, every other server restarts onto it itself --
     but never for a branch someone checked out, mid-call, or on track."""
-    try:
-        import mcp  # noqa: F401
-    except ImportError:
-        from lua_harness import skip
-        skip("mcp is not installed")
+    out = _run_server(_FOLLOW)
+    if out is None:
         return
-    root = Path(__file__).resolve().parent.parent
-    with tempfile.TemporaryDirectory(prefix="ac-upd-") as d:
-        env = dict(os.environ, TELEMETRIST_DATA=d,
-                   TELEMETRIST_NO_AUTOSTART="1", TELEMETRIST_BRIDGE_PORT="0",
-                   TELEMETRIST_UPDATE_API="http://127.0.0.1:9")
-        proc = subprocess.run([sys.executable, "-c", _FOLLOW], cwd=root,
-                              env=env, capture_output=True, text=True,
-                              timeout=120, stdin=subprocess.DEVNULL)
-        assert proc.returncode == 0, proc.stderr
-        out = json.loads(proc.stdout.strip().splitlines()[-1])
-        assert out == {"nothing_applied": False, "a_branch_checked_out": False,
-                       "mid_call": False, "on_track": False, "idle": True,
-                       "restarts": 1}, out
-        print("  restarts once, idle, onto the applied commit only")
+    assert out == {"nothing_applied": False, "a_branch_checked_out": False,
+                   "mid_call": False, "on_track": False, "idle": True,
+                   "restarts": 1}, out
+    print("  restarts once, idle, onto the applied commit only")
 
 
 _FAIL_SAFE = r"""

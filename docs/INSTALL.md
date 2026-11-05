@@ -297,7 +297,11 @@ names are still honored so nothing is lost:
   the next time it starts. Nothing is copied or rebuilt; it's the same
   directory under a new name. If something still has the database open the
   move is skipped, the old directory keeps being used, and it's retried on the
-  next clean start — so the worst case is that nothing happens yet.
+  next clean start — so the worst case is that nothing happens yet. If
+  `~/.telemetrist` already exists, the old directory is left alone and the
+  new one is used. When the new one holds nothing you want, quit everything
+  that uses it, delete it, and start the server again to bring the old one
+  across.
 - **`ASSETTO_MCP_*` and `AC_ENGINEER_*` still work.** Every `TELEMETRIST_*`
   setting the server reads is read under the old spellings as a fallback.
   The tool-choice eval in `tests/eval` takes only the new names.

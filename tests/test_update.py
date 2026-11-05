@@ -692,6 +692,18 @@ update.installed_commit = lambda root=None: "new"
 update.apply_running = lambda data_dir=None: None
 s._game_now = lambda: {"status": "off"}
 out = {}
+# A call waiting on the driver's answer is a call in flight.
+import asyncio
+asking = []
+async def ask(ctx, arguments):
+    asking.append(s._calls_in_flight)
+    return False
+s._ask_to_update, s._can_elicit = ask, lambda ctx: True
+try:
+    asyncio.run(s.mcp.call_tool("apply_update", {"to_commit": "abc"}))
+except Exception:
+    pass
+out["counted_while_asking"] = asking
 out["nothing_applied"] = s._follow_update_once()
 def marker(commit):
     return lambda data_dir=None: {"commit": commit, "pid": -1,
@@ -705,12 +717,17 @@ s._calls_in_flight = 0
 c = s._collector
 c.holds_recorder, c.session_id, c.live = True, 9, True
 out["on_track"] = s._follow_update_once()
+c.live = False
+s._game_now = lambda: {"status": "pause"}
+out["paused"] = s._follow_update_once()
+s._game_now = lambda: {"status": "off"}
 c.holds_recorder, c.session_id, c.live = False, None, False
 out["idle"] = s._follow_update_once()
 out["restarts"] = len(restarts)
 # Decided on: a call arriving before the process exits does not start.
 ran = []
-threading.Thread(target=s._counted(lambda: ran.append(1)), daemon=True).start()
+threading.Thread(target=lambda: (s._enter_call(), ran.append(1)),
+                 daemon=True).start()
 time.sleep(0.3)
 out["call_started"] = bool(ran)
 s._shutdown()
@@ -724,8 +741,9 @@ def test_another_chats_server_follows_an_update_when_idle():
     out = _run_server(_FOLLOW)
     if out is None:
         return
-    assert out == {"nothing_applied": False, "a_branch_checked_out": False,
-                   "mid_call": False, "on_track": False, "idle": True,
+    assert out == {"counted_while_asking": [1], "nothing_applied": False,
+                   "a_branch_checked_out": False, "mid_call": False,
+                   "on_track": False, "paused": False, "idle": True,
                    "restarts": 1, "call_started": False}, out
     print("  restarts once, idle, onto the applied commit only")
 

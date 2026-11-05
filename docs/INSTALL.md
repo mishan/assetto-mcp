@@ -173,7 +173,8 @@ given the commit that check named, does the following:
    not while `acs.exe` is running;
 5. leaves the running server on the old code until `restart_server`. Claude
    Desktop runs a server per chat; the others restart onto the new code by
-   themselves once the game is not on track and they are between calls.
+   themselves once the game is not on track and they are between calls,
+   unless `TELEMETRIST_NO_SUPERVISOR` is set.
 
 It refuses while the driver is in a live session, and while another apply is
 running in any server instance (`update_apply.lock` in the data directory; a

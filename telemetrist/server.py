@@ -137,6 +137,14 @@ async def _ask(ctx, question: str) -> bool | None:
 
 class _Server(FastMCP):
     async def call_tool(self, name, arguments, *args, **kwargs):
+        # The whole call, the driver's confirmations included.
+        _enter_call()
+        try:
+            return await self._call_tool(name, arguments, *args, **kwargs)
+        finally:
+            _leave_call()
+
+    async def _call_tool(self, name, arguments, *args, **kwargs):
         # A null is how many models say "the default", and a parameter that
         # has one would otherwise refuse it.
         arguments = {k: v for k, v in (arguments or {}).items()
@@ -348,42 +356,21 @@ _in_flight_lock = threading.Lock()
 _restart_pending = threading.Event()
 
 
-def _counted(fn):
-    import inspect
+def _enter_call() -> None:
+    global _calls_in_flight
+    with _in_flight_lock:
+        if not _restart_pending.is_set():
+            _calls_in_flight += 1
+            return
+    # Start nothing the restart would cut short: the supervisor answers
+    # this call "server restarted; retry" once this process exits.
+    threading.Event().wait()
 
-    def enter():
-        global _calls_in_flight
-        with _in_flight_lock:
-            if not _restart_pending.is_set():
-                _calls_in_flight += 1
-                return
-        # Start nothing the restart would cut short: the supervisor answers
-        # this call "server restarted; retry" once this process exits.
-        threading.Event().wait()
 
-    def leave():
-        global _calls_in_flight
-        with _in_flight_lock:
-            _calls_in_flight -= 1
-
-    if inspect.iscoroutinefunction(fn):
-        @functools.wraps(fn)
-        async def counted_async(*args, **kwargs):
-            enter()
-            try:
-                return await fn(*args, **kwargs)
-            finally:
-                leave()
-        return counted_async
-
-    @functools.wraps(fn)
-    def counted(*args, **kwargs):
-        enter()
-        try:
-            return fn(*args, **kwargs)
-        finally:
-            leave()
-    return counted
+def _leave_call() -> None:
+    global _calls_in_flight
+    with _in_flight_lock:
+        _calls_in_flight -= 1
 
 
 def _tool(title: str, *, writes: bool = False, destructive: bool = False,
@@ -428,7 +415,6 @@ def _tool(title: str, *, writes: bool = False, destructive: bool = False,
         tool = locked if locks_conn else fn
         if not inspect.iscoroutinefunction(fn):
             tool = _asks_ride_along(tool)
-        tool = _counted(tool)
         _REGISTERED.add(fn.__name__)
         if _TOOLSET != "core" or fn.__name__ in CORE_TOOLS:
             extra = {}
@@ -3714,7 +3700,10 @@ def _follow_update_once() -> bool:
     if update.installed_commit() != applied or update.apply_running(DATA_DIR):
         return False
     with _in_flight_lock:
-        if _calls_in_flight or _live_session() is not None:
+        # The game too, whoever records: a paused lap is not live, and
+        # with recording off there is no session to say so.
+        if (_calls_in_flight or _live_session() is not None
+                or _game_on_track()):
             return False
         _restart_pending.set()
     _restart_soon()

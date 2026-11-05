@@ -7,6 +7,12 @@ and the setup files may still change between minor versions.
 
 ## [Unreleased]
 
+### Added
+
+- Automobilista 2, with `TELEMETRIST_SIM=ams2`: laps, the out-lap, corners,
+  tyres, fuel and track limits from the game's shared memory, and its
+  recordings replay like AC's. Opponents and setup files are not there yet.
+
 ### Changed
 
 - The project is now Telemetrist: the package, commands (`telemetrist`,

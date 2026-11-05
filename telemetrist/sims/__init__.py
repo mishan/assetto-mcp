@@ -1,9 +1,9 @@
 """The games the server can read, and what differs between them."""
 
 from .. import config
-from . import ac
+from . import ac, ams2
 
-GAMES = {ac.Reader.name: ac}
+GAMES = {ac.Reader.name: ac, ams2.Reader.name: ams2}
 
 
 def chosen() -> str:

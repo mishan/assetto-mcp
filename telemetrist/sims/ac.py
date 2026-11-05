@@ -161,6 +161,12 @@ class Reader:
         self._pages.close()
 
 
+def pages_from_raw(raw: dict):
+    """A recording's AC pages, as SimInfo has them."""
+    from ..sim_info import from_raw
+    return from_raw(raw)
+
+
 def live() -> Reader:
     """Assetto Corsa's shared memory, as the game writes it."""
     from ..sim_info import SimInfo

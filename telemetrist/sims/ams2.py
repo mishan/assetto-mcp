@@ -1,4 +1,4 @@
-"""Automobilista 2's shared memory: its page, opened without creating it.
+"""Automobilista 2, read through its shared memory or a recording of it.
 
 AMS2 publishes one page, in the Project CARS 2 layout, when its Options >
 System > Shared Memory is set to "Project CARS 2"; the game keeps that
@@ -9,9 +9,15 @@ fields: plain C alignment, no packing.
 
 import ctypes
 import sys
+import time
 from ctypes import c_bool, c_char, c_float, c_int, c_uint
 
+from .base import Frame, SessionInfo
+
 TITLE = "Automobilista 2"
+# Opponents (#107) and setup files (#112) are still to come.
+CAPABILITIES: dict = {}
+CALIBRATION: dict = {}
 MAPPING = "$pcars2$"
 VERSION = 14
 SETTING = ("Automobilista 2's shared memory is off: set Options > System > "
@@ -238,3 +244,212 @@ def describe(raw: dict[str, bytes]) -> dict:
             "track": page.mTrackLocation.decode(errors="replace"),
             "track_config": page.mTrackVariation.decode(errors="replace"),
             "game_version": [page.mVersion, page.mBuildVersionNumber]}
+
+
+class Snapshot:
+    """One page as a recording holds it, with what Pages offers a Reader."""
+
+    def __init__(self, page: SharedMemory):
+        self._page = page
+
+    def page(self) -> SharedMemory:
+        return self._page
+
+    def close(self) -> None:
+        pass
+
+
+def pages_from_raw(raw: dict[str, bytes]) -> Snapshot:
+    return Snapshot(decode(raw))
+
+
+# The enums, from SharedMemory.h.
+STATUS = {0: "off", 1: "off", 2: "live", 3: "pause", 4: "pause", 5: "off",
+          6: "replay", 7: "replay"}
+GAME_RESTARTING = 5
+SESSION = {1: "practice", 2: "test", 3: "qualifying", 4: "formation lap",
+           5: "race", 6: "time attack"}
+RACE_FINISHED = 3
+# Surfaces a wheel can be on and still be on the track: road of every kind,
+# marbles, kerbs and drains. 48, newer than the published header, is the
+# garage floor and painted areas; 49, always found between a kerb and the
+# gravel, is not on the list.
+ON_TRACK = {0, 1, 2, 3, 4, 5, 10, 11, 21, 25, 29, 35, 37, 40, 41, 48}
+
+KPA_TO_PSI = 0.1450377
+G = 9.80665
+# A position this close to the line on each side, from one read to the
+# next, is the car crossing it.
+WRAP_HIGH, WRAP_LOW = 0.9, 0.1
+# Reads apart that the timer starting and the car crossing the line still
+# count as one event. They landed on the same read in every recording so
+# far, but AC's lap counter and position are known to land a tick apart. A
+# standing start, whose timer starts on the grid a second or more before
+# the car reaches the line, stays well outside it.
+CROSSING_READS = 2
+
+
+def _text(b: bytes) -> str:
+    return b.decode("utf-8", errors="replace")
+
+
+def _clock(seconds: float) -> str:
+    """A lap time as AC prints one, which is what clock_text carries."""
+    if seconds <= 0:
+        return "-:--:---"
+    ms = round(seconds * 1000)
+    return f"{ms // 60000}:{ms // 1000 % 60:02d}:{ms % 1000:03d}"
+
+
+def _ms(seconds: float) -> int:
+    # round(): the game keeps times as float32, and 60.019 truncates to
+    # 60018.
+    return round(seconds * 1000) if seconds > 0 else 0
+
+
+class Reader:
+    """AMS2's page read as Frames: `pages` is a Pages, or anything with its
+    page() and close().
+
+    AMS2 does not count the out-lap: leaving the garage, the first crossing
+    of the line starts the lap timer without advancing mLapsCompleted. The
+    collector, like AC, needs every crossing counted and the out-lap given
+    no time, so the Reader counts those crossings itself. That makes it
+    stateful, one per run of the collector; a Reader made for a single read
+    gives the game's own lap count.
+    """
+
+    name = "ams2"
+
+    def __init__(self, pages):
+        self._pages = pages
+        self._reset()
+        self._session_state = None
+
+    def _reset(self) -> None:
+        self._player = None
+        self._out_laps = 0
+        self._laps = None
+        self._time = None
+        self._pos = None
+        # mLapsCompleted's value while the lap just finished is an out-lap,
+        # whose time the game leaves at the previous timed lap's.
+        self._untimed_at = None
+        self._reads = 0
+        # The read on which the car last crossed the line, and on which the
+        # lap timer last started, with mLapsCompleted before and after.
+        self._wrapped = None
+        self._started = None
+
+    def read(self) -> Frame:
+        s = self._pages.page()
+        if (s.mGameState == GAME_RESTARTING
+                or s.mSessionState != self._session_state):
+            self._reset()
+            self._session_state = s.mSessionState
+        viewed = s.mViewedParticipantIndex
+        count = min(s.mNumParticipants, PARTICIPANTS)
+        if ((self._player is None or self._player >= count)
+                and STATUS.get(s.mGameState) in ("live", "pause")):
+            # Latched: a view switched to another car must not move the lap
+            # count to that car's. A replay may be following anyone.
+            self._player = viewed if 0 <= viewed < count else None
+        # In the menus there is no car and no track: the index is -1, which
+        # ctypes would wrap to the last car, and the length 0.
+        ready = self._player is not None and s.mTrackLength > 0
+        p = s.mParticipantInfo[self._player if ready else 0]
+        pos = p.mCurrentLapDistance / s.mTrackLength if ready else 0.0
+        laps, clock = p.mLapsCompleted, s.mCurrentTime
+        if self._laps is not None and laps < self._laps:
+            player = self._player
+            self._reset()
+            self._player = player
+        self._reads += 1
+        if (self._pos is not None and self._pos > WRAP_HIGH
+                and pos < WRAP_LOW):
+            self._wrapped = (self._reads, self._laps, laps)
+        if self._time is not None and self._time < 0 <= clock:
+            self._started = (self._reads, self._laps, laps)
+        # The timer starting as the car crosses the line, with the game's
+        # count unmoved throughout, is an out-lap ending; a crossing the game
+        # counted itself is not. Both are cleared once counted.
+        if (self._wrapped and self._started
+                and abs(self._wrapped[0] - self._started[0]) <= CROSSING_READS
+                and len({*self._wrapped[1:], *self._started[1:], laps}) == 1):
+            self._out_laps += 1
+            self._untimed_at = laps
+            self._wrapped = self._started = None
+        elif self._untimed_at is not None and laps != self._untimed_at:
+            self._untimed_at = None
+        self._laps, self._time, self._pos = laps, clock, pos
+
+        o, acc = s.mOrientation, s.mLocalAcceleration
+        tank = s.mFuelCapacity
+        heights = s.mRideHeight
+        return Frame(
+            status=(STATUS.get(s.mGameState, f"unknown ({s.mGameState})")
+                    if ready else "off"),
+            session_type=SESSION.get(s.mSessionState,
+                                     f"unknown ({s.mSessionState})"),
+            completed_laps=laps + self._out_laps,
+            last_lap_ms=(0 if self._untimed_at is not None
+                         else _ms(s.mLastLapTime)),
+            lap_time_ms=_ms(clock),
+            norm_pos=pos,
+            in_pit_lane=s.mPitMode != 0,
+            tick=s.mSequenceNumber,
+            position=p.mRacePosition if p.mRacePosition > 0 else None,
+            race_laps=s.mLapsInEvent if s.mLapsInEvent > 0 else None,
+            time_left_ms=(s.mEventTimeRemaining * 1000
+                          if s.mEventTimeRemaining > 0 else None),
+            checkered=s.mRaceState == RACE_FINISHED,
+            speed_kmh=s.mSpeed * 3.6,
+            gas=s.mThrottle, brake=s.mBrake, steer=s.mSteering,
+            gear=s.mGear, rpm=round(s.mRpm),
+            # AMS2's car frame has z pointing backward and its world is
+            # mirrored from AC's along z; these match AC's signs.
+            acc_lat=acc[0] / G, acc_lon=-acc[2] / G,
+            slip=tuple(s.mTyreSlipSpeed),
+            pressure_psi=tuple(k * KPA_TO_PSI for k in s.mAirPressure),
+            core_temp_c=tuple(k - 273.15 for k in s.mTyreCarcassTemp),
+            ride_height_m=((heights[0] + heights[1]) / 200,
+                           (heights[2] + heights[3]) / 200),
+            tyres_out=sum(t not in ON_TRACK for t in s.mTerrain),
+            world_pos=(p.mWorldPosition[0], p.mWorldPosition[1],
+                       -p.mWorldPosition[2]),
+            heading=o[1], pitch=-o[0], roll=-o[2],
+            tc_active=None, abs_active=float(s.mAntiLockActive),
+            wear=tuple(100 * (1 - w) for w in s.mTyreWear),
+            # mEngineDamage creeps up with wear on a clean lap; bodywork is
+            # what a contact shows in.
+            damage=s.mAeroDamage + sum(s.mSuspensionDamage),
+            fuel_l=s.mFuelLevel * tank if tank > 0 else None,
+            air_temp=s.mAmbientTemperature, road_temp=s.mTrackTemperature,
+            tyre_compound=_text(s.mTyreCompound[0].value),
+            clock_text=(_clock(clock),
+                        _clock(0 if self._untimed_at is not None
+                               else s.mLastLapTime),
+                        _clock(s.mBestLapTime)))
+
+    def session(self) -> SessionInfo:
+        s = self._pages.page()
+        return SessionInfo(
+            car=_text(s.mCarName), track=_text(s.mTrackLocation),
+            track_config=_text(s.mTrackVariation),
+            track_length_m=s.mTrackLength or None,
+            max_fuel_liters=(round(s.mFuelCapacity, 2)
+                             if s.mFuelCapacity > 0 else None))
+
+    def now(self) -> float:
+        return getattr(self._pages, "now", time.monotonic)()
+
+    def wait(self, seconds: float) -> None:
+        getattr(self._pages, "wait", time.sleep)(seconds)
+
+    def close(self) -> None:
+        self._pages.close()
+
+
+def live() -> Reader:
+    """Automobilista 2's shared memory, as the game writes it."""
+    return Reader(Pages())

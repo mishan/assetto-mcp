@@ -45,9 +45,10 @@ SWITCHED_OFF = "recording was switched off by stop_recording"
 
 
 class Collector:
-    def __init__(self, db_path, sim_info_factory):
+    def __init__(self, db_path, sim_info_factory, title="the game"):
         """sim_info_factory: zero-arg callable returning a game reader
-        (sims.ac.Reader), raising while the game is not running.
+        (sims.ac.Reader, sims.ams2.Reader), raising while the game is not
+        running; `title` names the game in the status.
 
         Injected so tests can run without Windows/AC. The collector opens its
         own SQLite connection inside its thread; sharing one connection across
@@ -56,6 +57,7 @@ class Collector:
         self._db_path = db_path
         self._conn = None
         self._sim_factory = sim_info_factory
+        self._title = title
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         # Set by the thread as soon as it has published a status, so start()
@@ -270,10 +272,10 @@ class Collector:
 
                 try:
                     sim = self._sim_factory()
-                except Exception as e:  # AC not running / not Windows
+                except Exception as e:  # game not running / not Windows
                     # A state rather than a failure: the game is not open
                     # yet.
-                    self._announce("waiting for Assetto Corsa")
+                    self._announce(f"waiting for {self._title}")
                     self.last_error = str(e)
                     # Result ignored on purpose: this path goes straight back
                     # round the outer loop, which re-reads both the enabled
@@ -285,7 +287,7 @@ class Collector:
                         break
                     continue
 
-                self._announce("waiting for AC to go live")
+                self._announce("waiting for the session to go live")
                 self.last_error = None
                 try:
                     self._loop(sim)
@@ -372,6 +374,7 @@ class Collector:
         lap_pitted = False       # driver entered the pit lane this lap
         session_best = None      # fastest valid lap so far, for outlier check
         last_completed = None
+        session_type = None
         lap_start_wall = None
         # Fuel on board when the current lap started at the line; None when
         # it started anywhere else, which a lap's burn cannot be read from.
@@ -413,16 +416,19 @@ class Collector:
                     last_completed = None
                     session_best = None
                     lap_samples = []
-                    # Not "recording (session 7)" while AC sits in the menus.
-                    self._announce("waiting for AC to go live")
+                    # Not "recording (session 7)" while the game sits in the
+                    # menus.
+                    self._announce("waiting for the session to go live")
                 pause(0.25)
                 continue
 
             # Restarting a session from the in-game menu resets completedLaps
             # without passing through AC_OFF. A lap counter that goes
-            # backwards can only mean a restart, so roll a fresh session.
+            # backwards can only mean a restart, so roll a fresh session; so
+            # does moving on to the next session before a lap is done.
             if (session_started and last_completed is not None
-                    and f.completed_laps < last_completed):
+                    and (f.completed_laps < last_completed
+                         or f.session_type != session_type)):
                 session_started = False
                 last_completed = None
                 session_best = None
@@ -458,6 +464,7 @@ class Collector:
                         self.session_id = None
                     return
                 last_completed = f.completed_laps
+                session_type = f.session_type
                 last_pos = None
                 lap_samples = []
                 wide_since = None
